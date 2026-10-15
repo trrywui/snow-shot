@@ -175,10 +175,13 @@ void reusablePathInputsAndSettings() {
     SettingsPageWidget desktopPage(registry, QStringLiteral("desktop-tools"), session);
     desktopPage.reveal({desktopPage.pageId(), QStringLiteral("tray"), {}});
     const auto fileControls = desktopPage.findChildren<FilePathInput*>();
-    require(fileControls.size() == 1 &&
-                adqt::icons::describeIcon(fileControls.constFirst()->browseButton()->iconRef())
-                        .key.name == QStringLiteral("file-add"),
-            "file settings must use FilePathInput with FileAddOutlined");
+    require(fileControls.size() == 2,
+            "light and dark tray icon settings must both use FilePathInput");
+    for (FilePathInput* control : fileControls) {
+        require(adqt::icons::describeIcon(control->browseButton()->iconRef()).key.name ==
+                    QStringLiteral("file-add"),
+                "file settings must use FilePathInput with FileAddOutlined");
+    }
 }
 void snapshot(AdModal* modal, const QString& name) {
     const QString directory = qEnvironmentVariable("SNOW_EXPORT_TEST_SCREENSHOT_DIR");
@@ -2886,7 +2889,7 @@ void boundedCanvasNativeDetail(QWidget& owner) {
                 content->property("previewDecodeCount").toInt() == 0,
             "large exact outputs must display a bounded preview without file decoding");
     for (int iteration = 0; iteration < 64 && canvas->zoom() < 1; ++iteration) {
-        QKeyEvent event(QEvent::KeyPress, Qt::Key_Plus, Qt::NoModifier);
+        PhysicalKeyEvent event(QEvent::KeyPress, Qt::Key_Plus, Qt::NoModifier);
         QApplication::sendEvent(canvas, &event);
     }
     require(canvas->zoom() >= 1, "native viewport keyboard zoom failed");

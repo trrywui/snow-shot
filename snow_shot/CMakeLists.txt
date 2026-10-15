@@ -10902,6 +10902,7 @@ if(APPLE AND SNOW_SHOT_BUILD_TESTS)
     add_executable(snow-shot-macos-screenshot-window-release-tests
         tests/macos_screenshot_window_release_tests.mm)
     snow_shot_link_macos_window_platform(snow-shot-macos-screenshot-window-release-tests)
+    snow_shot_import_offscreen_platform(snow-shot-macos-screenshot-window-release-tests)
     target_include_directories(snow-shot-macos-screenshot-window-release-tests PRIVATE include)
     target_link_libraries(snow-shot-macos-screenshot-window-release-tests PRIVATE Qt6::Widgets
         "-framework AppKit" "-framework QuartzCore" "-framework IOSurface")

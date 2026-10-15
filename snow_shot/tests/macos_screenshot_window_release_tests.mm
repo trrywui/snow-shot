@@ -14,9 +14,12 @@
 #include <QTimer>
 #include <QWidget>
 #include <QWindow>
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 
 namespace {
 void require(bool condition, const char* message) {
@@ -163,20 +166,77 @@ QByteArray ownedUnmappedMemory() {
     require(report.contains("REGION TYPE") && report.contains("TOTAL"),
             "vmmap must return a complete memory region summary");
     for (const QByteArray& line : report.split('\n')) {
-        if (line.trimmed().startsWith("owned unmapped "))
+        if (line.trimmed().startsWith("owned unmapped ")) {
+            std::cerr << "Owned-unmapped memory: " << line.constData() << '\n';
             return line.trimmed();
+        }
     }
     return {};
 }
 
-void requireNoRetainedCompositorFrame() {
-    QByteArray retained;
+quint64 ownedUnmappedCommittedBytes(const QByteArray& line) {
+    if (line.isEmpty())
+        return 0;
+    std::array<quint64, 4> sizes{};
+    size_t index = 0;
+    for (QByteArray field : line.simplified().split(' ')) {
+        if (field.isEmpty() || field.front() < '0' || field.front() > '9')
+            continue;
+        double factor = 1;
+        switch (field.back()) {
+        case 'K':
+            factor = 1024;
+            break;
+        case 'M':
+            factor = 1024 * 1024;
+            break;
+        case 'G':
+            factor = 1024 * 1024 * 1024;
+            break;
+        default:
+            break;
+        }
+        if (factor != 1)
+            field.chop(1);
+        bool valid = false;
+        const double count = field.toDouble(&valid);
+        require(valid && count >= 0 &&
+                    count <= static_cast<double>(std::numeric_limits<qint64>::max()) / factor,
+                "vmmap must provide a valid owned-unmapped byte count");
+        sizes[index++] = static_cast<quint64>(count * factor);
+        if (index == sizes.size()) {
+            // Columns are virtual, resident, dirty and swapped. macOS 14 can
+            // retain a virtual reservation after its screenshot pixels retire.
+            // Dirty plus swapped counts committed ownership, including pages
+            // displaced from RAM, rather than counting empty address space.
+            return sizes[2] + sizes[3];
+        }
+    }
+    require(false, "vmmap owned-unmapped row must contain all four memory sizes");
+    return 0;
+}
+
+void ownedUnmappedReportUnits() {
+    require(ownedUnmappedCommittedBytes({}) == 0 &&
+                ownedUnmappedCommittedBytes("owned unmapped memory 512M 0K 0K 0K") == 0 &&
+                ownedUnmappedCommittedBytes("owned unmapped memory 144K 0K 116K 4K") == 122880 &&
+                ownedUnmappedCommittedBytes("owned unmapped 2M 0K 1.5M 16K") == 1589248,
+            "owned-unmapped accounting must measure committed dirty and swapped bytes");
+}
+
+// Native focus/chrome bookkeeping can allocate a few pages while windows are
+// replaced. This allowance is far below the real fixture frame, and the
+// --omit-native-retirement negative control must still detect retained pixels.
+constexpr quint64 kNativeBookkeepingAllowance = 64 * 1024;
+
+void requireNoRetainedCompositorFrame(quint64 baseline) {
     waitFor(
         [&] {
-            retained = ownedUnmappedMemory();
-            return retained.isEmpty();
+            return ownedUnmappedCommittedBytes(ownedUnmappedMemory()) <=
+                   baseline + kNativeBookkeepingAllowance;
         },
-        "a retired native window must not retain an owned-unmapped compositor frame");
+        "a retired native window must not retain a compositor frame above the warmup baseline "
+        "and native bookkeeping allowance");
 }
 
 void requirePaintedPixels(CALayer* layer, const QColor& expected) {
@@ -197,10 +257,37 @@ void requirePaintedPixels(CALayer* layer, const QColor& expected) {
 
 void retainedNativeWindowsDoNotRetainPresentation() {
     using namespace snow_shot::platform;
+    // Keep the fixture application active while its last tool window is
+    // repeatedly destroyed. Otherwise Cocoa may yield activation to the test
+    // launcher between generations, independently of compositor retirement.
+    QWidget focusOwner;
+    focusOwner.setWindowTitle(QStringLiteral("Native screenshot fixture"));
+    focusOwner.setGeometry(10, 10, 96, 64);
+    focusOwner.show();
+    focusOwner.activateWindow();
+    waitFor([&] { return focusOwner.windowHandle()->isExposed(); },
+            "the native fixture focus owner must be exposed");
     ScreenshotSurface surface;
-    requireNoRetainedCompositorFrame();
-    for (int generation = 0; generation != 3; ++generation) {
+    surface.resize(640, 480);
+    // AppKit may keep process-wide drawing resources after native-window warmup.
+    // Compare persistent ownership with that baseline rather than requiring an
+    // empty vmmap category. Each actual screenshot frame must exceed this noise.
+    // Unlike cooperative -activate, the interactive fixture must actually own
+    // the foreground before asserting key-window retirement. This is test-only.
+    [NSApp activateIgnoringOtherApps:YES];
+    quint64 baseline = std::numeric_limits<quint64>::max();
+    for (int sample = 0; sample != 3; ++sample) {
         @autoreleasepool {
+            QCoreApplication::processEvents();
+            baseline = std::min(baseline, ownedUnmappedCommittedBytes(ownedUnmappedMemory()));
+        }
+    }
+    std::cout << "Warmup committed owned-unmapped baseline: " << baseline << " bytes" << std::endl;
+    for (int generation = 0; generation != 3; ++generation) {
+        NSWindow* retainedWindow = nil;
+        int paints = 0;
+        @autoreleasepool {
+            std::cout << "Presenting retained window generation " << generation << std::endl;
             surface.color = generation % 2 == 0 ? QColor(37, 101, 173) : QColor(181, 73, 29);
             surface.setUpdatesEnabled(true);
             configureScreenshotOverlayWindow(&surface);
@@ -208,25 +295,56 @@ void retainedNativeWindowsDoNotRetainPresentation() {
             surface.repaint();
             NSView* view = reinterpret_cast<NSView*>(surface.internalWinId());
             NSWindow* window = view.window;
-            [NSApp activate];
+            [NSApp activateIgnoringOtherApps:YES];
             [window makeKeyAndOrderFront:nil];
+            std::array<bool, 7> previousState{};
+            bool reportedState = false;
             waitFor(
                 [&] {
+                    // Cocoa can deliver a queued activation change after Qt
+                    // exposes a newly recreated tool window. Reassert focus
+                    // while waiting for the actual presented frame.
+                    if (!window.isKeyWindow) {
+                        [NSApp activateIgnoringOtherApps:YES];
+                        [window makeKeyAndOrderFront:nil];
+                    }
                     CALayer* layer = presentedSurfaceLayer(view.layer);
+                    const std::array<bool, 7> state{
+                        NSApp.active != NO,
+                        NSApp.keyWindow == window,
+                        window.isKeyWindow != NO,
+                        surface.windowHandle()->isExposed(),
+                        layer != nil,
+                        layer != nil && layer.presentationLayer != nil,
+                        layer != nil && layer.presentationLayer.contents == layer.contents};
+                    if (!reportedState || state != previousState) {
+                        std::cout << "Native frame state (active/key/keyFlag/exposed/layer/"
+                                     "presentation/contents):";
+                        for (bool value : state)
+                            std::cout << ' ' << value;
+                        std::cout << "; activation policy "
+                                  << static_cast<int>(NSApp.activationPolicy) << std::endl;
+                        previousState = state;
+                        reportedState = true;
+                    }
                     return NSApp.keyWindow == window && window.isKeyWindow &&
                            surface.windowHandle()->isExposed() && layer != nil &&
                            layer.presentationLayer.contents == layer.contents;
                 },
                 "the focused screenshot must present its raster surface before retirement");
             requirePaintedPixels(presentedSurfaceLayer(view.layer), surface.color);
+            require(IOSurfaceGetAllocSize(reinterpret_cast<IOSurfaceRef>(
+                        presentedSurfaceLayer(view.layer).contents)) >
+                        baseline + kNativeBookkeepingAllowance,
+                    "the native test frame must exceed the warmup memory baseline");
 
             // Model AppKit retaining a retired previous key window. Retaining
             // only NSWindow deliberately leaves the pixel content's ownership
             // in the native layer tree and Qt backing store.
-            NSWindow* retainedWindow = [window retain];
+            retainedWindow = [window retain];
             const NSRect nativeFrame = window.frame;
             CALayer* frameLayer = window.contentView.superview.layer;
-            const int paints = surface.paints;
+            paints = surface.paints;
             surface.setUpdatesEnabled(false);
             if (generation == 1) {
                 // An earlier producer may have emptied the model tree without
@@ -234,9 +352,22 @@ void retainedNativeWindowsDoNotRetainPresentation() {
                 clearModelContents(view.layer);
                 clearModelContents(frameLayer);
             }
-            retireScreenshotWindowPresentation(&surface);
-            require(presentationIsEmpty(view.layer) && presentationIsEmpty(frameLayer),
-                    "retirement must detach screenshot pixels before the first native hide");
+            const bool omitRetirement =
+                QCoreApplication::arguments().contains(QStringLiteral("--omit-native-retirement"));
+            if (omitRetirement) {
+                // Keep the old compositor frame for the memory negative control.
+            } else if (QCoreApplication::arguments().contains(
+                           QStringLiteral("--omit-retirement-flush"))) {
+                // Diagnostic negative control: keep the model-tree clear but
+                // intentionally omit the production transaction flush.
+                clearModelContents(view.layer);
+                clearModelContents(frameLayer);
+            } else {
+                retireScreenshotWindowPresentation(&surface);
+            }
+            if (!omitRetirement)
+                require(presentationIsEmpty(view.layer) && presentationIsEmpty(frameLayer),
+                        "retirement must detach screenshot pixels before the first native hide");
             require(surface.isVisible() && !surface.updatesEnabled() && window.visible &&
                         window.isKeyWindow && NSApp.keyWindow == window &&
                         NSEqualRects(window.frame, nativeFrame),
@@ -258,11 +389,14 @@ void retainedNativeWindowsDoNotRetainPresentation() {
                     "a retained retired native window must release its Qt content view");
             require(surface.internalWinId() == 0 && surface.windowHandle() == nullptr,
                     "native retirement must release the screenshot's Qt window");
-            requireNoRetainedCompositorFrame();
-            require(surface.paints == paints,
-                    "terminal surface retirement must not paint the screenshot again");
-            [retainedWindow release];
         }
+        // Observe persistent WindowServer ownership after temporary Cocoa
+        // objects retire, while NSWindow itself remains explicitly retained.
+        std::cout << "Checking retained window generation " << generation << std::endl;
+        requireNoRetainedCompositorFrame(baseline);
+        require(surface.paints == paints,
+                "terminal surface retirement must not paint the screenshot again");
+        [retainedWindow release];
     }
 }
 } // namespace
@@ -270,7 +404,10 @@ void retainedNativeWindowsDoNotRetainPresentation() {
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
-    retirementDoesNotMaterializeSurfaces();
+    ownedUnmappedReportUnits();
+    @autoreleasepool {
+        retirementDoesNotMaterializeSurfaces();
+    }
     if (QGuiApplication::platformName() == QStringLiteral("cocoa"))
         retainedNativeWindowsDoNotRetainPresentation();
     std::cout << "macOS screenshot window release tests passed\n";
