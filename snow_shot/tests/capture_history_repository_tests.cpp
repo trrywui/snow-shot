@@ -942,7 +942,8 @@ void failedCommitPreservesPublishedHistory() {
     require(QFile::rename(index, saved) && QDir().mkdir(index), "failed to block index commit");
     const auto revision = repository->recordsSnapshot().revision;
     const auto failed = repository->publish(draftAt(QDateTime::currentDateTimeUtc())).get();
-    require(!failed.storage.success && repository->records() == QVector{first.record} &&
+    require(!failed.storage.success &&
+                repository->records() == QVector<storage::CaptureHistoryRecord>{first.record} &&
                 repository->load(first.record).has_value(),
             "failed commit evicted acknowledged history");
     require(repository->recordsSnapshot().revision == revision,
@@ -950,7 +951,7 @@ void failedCommitPreservesPublishedHistory() {
     require(QDir().rmdir(index) && QFile::rename(saved, index), "failed to restore index");
     repository.reset();
     auto reopened = storage::makeCaptureHistoryRepository(temporary.path());
-    require(reopened->records() == QVector{first.record},
+    require(reopened->records() == QVector<storage::CaptureHistoryRecord>{first.record},
             "failed publication appeared after restart");
 }
 
