@@ -781,10 +781,12 @@ set(SNOW_SHOT_STORAGE_SOURCES
     src/storage/storagelogging.cpp
     src/storage/storageusagetracker.cpp
 )
-add_library(snow_shot_runtime_activity INTERFACE)
-target_include_directories(snow_shot_runtime_activity INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_sources(snow_shot_runtime_activity INTERFACE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/snow_shot/runtime/runtimeactivitytracker.h")
+add_library(snow_shot_runtime_activity STATIC
+    src/runtime/runtimeactivitytracker.cpp)
+target_include_directories(snow_shot_runtime_activity PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(snow_shot_runtime_activity PUBLIC cxx_std_20)
+set_target_properties(snow_shot_runtime_activity PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
+target_link_libraries(snow_shot_diagnostics PUBLIC snow_shot_runtime_activity)
 add_library(snow_shot_memory_optimization STATIC
     src/runtime/memoryoptimizationcontroller.cpp)
 target_link_libraries(snow_shot_memory_optimization PUBLIC snow_shot_runtime_activity Qt6::Core)
