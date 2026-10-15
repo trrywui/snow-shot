@@ -139,7 +139,7 @@ void packedLossyPlansCoverSimultaneousPictures() {
 void oddDimensionsRoundBothChromaPlanesUp() {
     const auto even =
         take(plan_resources(requestFor(packedDescriptor(8192, 8192))), "plan even WebP dimensions");
-    for (const auto size :
+    for (const auto& size :
          {std::pair{8193U, 8192U}, std::pair{8192U, 8193U}, std::pair{8193U, 8193U}}) {
         const auto odd = take(plan_resources(requestFor(packedDescriptor(size.first, size.second))),
                               "plan odd WebP dimensions");
