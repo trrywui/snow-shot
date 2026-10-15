@@ -1328,7 +1328,7 @@ void pinnedFiltersUseTheSourceResolution() {
     require(canvas.resetEditingStatePreservingTool(), "clear pinned filter selection");
     canvas.setInteractionEnabled(false);
     const QImage baseline = renderCanvas(canvas);
-    for (const auto [scale, dpr] :
+    for (const auto& [scale, dpr] :
          {std::pair{0.5, 1.0}, {0.75, 1.25}, {1.0, 1.0}, {1.0, 2.0}, {1.5, 1.0}, {2.0, 1.0}}) {
         canvas.resize(qRound(160 * scale), qRound(120 * scale));
         require(canvas.setViewportCamera(40, 30, 2 * scale), "scale pinned window");
