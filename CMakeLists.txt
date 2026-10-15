@@ -18,6 +18,11 @@ if(SNOW_APPS_MACOS14_PERSONAL)
         message(FATAL_ERROR "SNOW_APPS_MACOS14_PERSONAL requires a macOS x86_64 build")
     endif()
     add_compile_definitions(SNOW_SHOT_MACOS14_PERSONAL=1)
+    set(SNOW_MACOS_LTO_CACHE "" CACHE PATH "Optional local cache for maintained macOS linking.")
+    if(SNOW_MACOS_LTO_CACHE)
+        file(MAKE_DIRECTORY "${SNOW_MACOS_LTO_CACHE}")
+        add_link_options("LINKER:SHELL:-cache_path_lto \"${SNOW_MACOS_LTO_CACHE}\"")
+    endif()
     # Xcode 16.2 supplies C++20 cooperative cancellation behind this flag.
     # Keep the SDK/toolchain local to this build instead of replacing Xcode.
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND

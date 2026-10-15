@@ -196,6 +196,7 @@ personal_configure() {
         -DVCPKG_OVERLAY_TRIPLETS="$personal_repo/cmake/vcpkg-overlay-triplets" \
         -DQt6_DIR="$personal_root/qt/lib/cmake/Qt6" -DSNOW_QT_STATIC_DIR="$personal_root/qt/lib/cmake/Qt6" \
         -DSNOW_APPS_MACOS14_PERSONAL=ON -DSNOW_APPS_BUILD_SNOW_SHOT_MINI=OFF \
+        -DSNOW_MACOS_LTO_CACHE="$personal_root/cache/thinlto" \
         -DSNOW_APPS_BUILD_IMAGE_VIEWER=OFF -DSNOW_APPS_BUILD_DRAW_ENGINE_DEMO=OFF \
         -DSNOW_APPS_BUILD_TESTS="$tests" -DSNOW_SHOT_BUILD_TESTS="$tests" \
         -DSNOW_APPS_BUILD_BENCHMARKS="$benchmarks" -DSNOW_APPS_RELEASE_STATIC=ON \

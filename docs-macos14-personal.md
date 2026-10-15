@@ -21,7 +21,8 @@
 
 环境变量只影响脚本子进程，不修改全局 Rust 默认版本、Homebrew、shell 配置或系统证书。
 ad-hoc 签名不创建钥匙串证书。默认并行度为 2，可用 `SNOW_PERSONAL_JOBS=1` 降低负载。
-Release 的 LTO 链接可能持续数十分钟并使用数 GB 内存，这不是应用运行占用。
+Release 的首次 LTO 链接可能持续数十分钟并使用数 GB 内存，这不是应用运行占用。
+ThinLTO 链接缓存位于 `cache/thinlto`，供重复链接复用，不进入安装包。
 
 ## 构建和打包
 
