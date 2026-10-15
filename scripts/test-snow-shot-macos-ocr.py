@@ -530,6 +530,11 @@ class MacOSOcrAssets(unittest.TestCase):
         self.run.side_effect = inspect
         self.assertEqual(ocr.verify_bundle(app), ['Contents/MacOS/snow_shot'])
         self.run.assert_called_with('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
+        state['minimum'] = '14.4'
+        self.assertEqual(ocr.verify_bundle(app, minimum_macos='14.4'), ['Contents/MacOS/snow_shot'])
+        state['minimum'] = '15.0'
+        with self.assertRaisesRegex(ValueError, 'newer than macOS 14.4'):
+            ocr.verify_bundle(app, minimum_macos='14.4')
         for key, value in (('arch', 'x86_64'), ('minimum', '27.0'),
                            ('dependency', '/developer/libexample.dylib'),
                            ('dependency', '@rpath/missing.dylib'), ('rpath', '@loader_path/../../../../outside')):
@@ -539,7 +544,7 @@ class MacOSOcrAssets(unittest.TestCase):
                 ocr.verify_bundle(app)
             state[key] = previous
         self.assertEqual(sum(call.args[0] == '/usr/bin/codesign'
-                             for call in self.run.call_args_list), 1)
+                             for call in self.run.call_args_list), 2)
         state['signature_failure'] = True
         with self.assertRaises(subprocess.CalledProcessError):
             ocr.verify_bundle(app)

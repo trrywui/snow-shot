@@ -431,6 +431,15 @@ void applySnapshotReplacesConfiguration(const QTemporaryDir& temporary) {
     require(store.value(archivedKey) == archivedValue, "snapshot values must be applied");
     require(store.value(revertedKey) == storage::ConfigurationSchema::defaultValue(revertedKey),
             "keys absent from the snapshot must revert to schema defaults");
+    for (const QString& key : {QStringLiteral("pin_to_screen_shortcuts/drawing_mode"),
+                               QStringLiteral("pin_to_screen_shortcuts/toggle_playback")}) {
+        require(store.value(key) == storage::ConfigurationSchema::defaultValue(key),
+                "static-image and animation defaults may share a shortcut after restoration");
+    }
+    if (changedKeys != QStringList{revertedKey}) {
+        std::cerr << "Snapshot changed keys: " << changedKeys.join(u", ").toStdString()
+                  << "; expected: " << revertedKey.toStdString() << '\n';
+    }
     require(changedKeys == QStringList{revertedKey},
             "only settings that actually differ must announce changes");
 

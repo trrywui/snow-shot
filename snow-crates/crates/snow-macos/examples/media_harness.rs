@@ -1,7 +1,7 @@
 //! Main-run-loop host for explicit macOS capture acceptance checks.
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("This harness requires macOS 15 or later.");
+    eprintln!("This harness requires macOS 14.4 or later.");
 }
 #[cfg(target_os = "macos")]
 fn main() {
@@ -21,7 +21,7 @@ fn main() {
     }
     if args.is_empty() || args[0] == "status" {
         println!(
-            "macos_15_plus={} architecture={} screen_authorized={} microphone_authorized={} input_authorized={}",
+            "macos_14_4_plus={} architecture={} screen_authorized={} microphone_authorized={} input_authorized={}",
             permission::supported_os(),
             std::env::consts::ARCH,
             permission::screen_capture_authorized(),

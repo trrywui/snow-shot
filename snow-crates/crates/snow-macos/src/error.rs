@@ -7,7 +7,7 @@ pub enum MacError {
     MicrophonePermissionDenied,
     #[error("input monitoring permission is required")]
     InputPermissionDenied,
-    #[error("macOS 15 or later is required")]
+    #[error("macOS 14.4 or later is required")]
     UnsupportedOs,
     #[error("capture target is unavailable")]
     TargetUnavailable,

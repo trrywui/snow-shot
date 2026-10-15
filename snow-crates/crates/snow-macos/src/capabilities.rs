@@ -1,5 +1,6 @@
 //! Capability discovery never requests permission or starts a stream. Target
 //! queries enumerate current geometry and therefore require screen permission.
+use crate::availability::CaptureAvailability;
 use crate::{MacError, MacResult};
 use snow_media::{DynamicRange, PixelFormat};
 
@@ -12,16 +13,16 @@ pub struct CaptureSupport {
 impl CaptureSupport {
     pub fn current() -> Self {
         Self::from_host(
-            crate::permission::supported_os(),
+            CaptureAvailability::current(),
             cfg!(target_arch = "aarch64"),
             objc2_metal::MTLCreateSystemDefaultDevice().is_some(),
         )
     }
-    fn from_host(supported_os: bool, apple_silicon: bool, metal: bool) -> Self {
+    fn from_host(available: CaptureAvailability, apple_silicon: bool, metal: bool) -> Self {
         Self {
-            screen_capture_kit: supported_os,
-            metal_composition: supported_os && metal,
-            hdr_capture: supported_os && apple_silicon,
+            screen_capture_kit: available.screen_capture,
+            metal_composition: available.screen_capture && metal,
+            hdr_capture: available.hdr && apple_silicon,
         }
     }
     pub fn native_format(self, range: DynamicRange) -> MacResult<PixelFormat> {
@@ -32,7 +33,7 @@ impl CaptureSupport {
             DynamicRange::Sdr => Ok(PixelFormat::Bgra8),
             DynamicRange::Hdr if self.hdr_capture => Ok(PixelFormat::Rgba16Float),
             DynamicRange::Hdr => Err(MacError::Unsupported(
-                "ScreenCaptureKit canonical HDR requires Apple Silicon".into(),
+                "ScreenCaptureKit canonical HDR requires macOS 15 and Apple Silicon".into(),
             )),
         }
     }
@@ -58,7 +59,8 @@ mod tests {
     use super::*;
     #[test]
     fn architecture_os_and_pixel_depth_are_independent_capabilities() {
-        let intel = CaptureSupport::from_host(true, false, true);
+        let macos15 = CaptureAvailability::from_version(15, 0, 0);
+        let intel = CaptureSupport::from_host(macos15, false, true);
         assert_eq!(
             intel.native_format(DynamicRange::Sdr).unwrap(),
             PixelFormat::Bgra8
@@ -67,7 +69,7 @@ mod tests {
             intel.native_format(DynamicRange::Hdr),
             Err(MacError::Unsupported(_))
         ));
-        let apple = CaptureSupport::from_host(true, true, true);
+        let apple = CaptureSupport::from_host(macos15, true, true);
         assert!(
             apple
                 .validate_cpu_format(DynamicRange::Hdr, PixelFormat::Rgba16Float)
@@ -83,14 +85,33 @@ mod tests {
                 .validate_cpu_format(DynamicRange::Sdr, PixelFormat::P010)
                 .is_err()
         );
-        let old = CaptureSupport::from_host(false, true, true);
+        let old =
+            CaptureSupport::from_host(CaptureAvailability::from_version(14, 3, 0), true, true);
         assert!(matches!(
             old.native_format(DynamicRange::Sdr),
             Err(MacError::UnsupportedOs)
         ));
         assert!(!old.metal_composition);
-        let headless = CaptureSupport::from_host(true, true, false);
+        let headless = CaptureSupport::from_host(macos15, true, false);
         assert!(headless.hdr_capture);
         assert!(!headless.metal_composition);
+    }
+
+    #[test]
+    fn macos14_sdr_and_metal_do_not_imply_hdr_on_either_architecture() {
+        let macos14 = CaptureAvailability::from_version(14, 4, 0);
+        for apple_silicon in [false, true] {
+            let support = CaptureSupport::from_host(macos14, apple_silicon, true);
+            assert!(support.screen_capture_kit && support.metal_composition);
+            assert!(!support.hdr_capture);
+            assert_eq!(
+                support.native_format(DynamicRange::Sdr).unwrap(),
+                PixelFormat::Bgra8
+            );
+            assert!(matches!(
+                support.native_format(DynamicRange::Hdr),
+                Err(MacError::Unsupported(_))
+            ));
+        }
     }
 }

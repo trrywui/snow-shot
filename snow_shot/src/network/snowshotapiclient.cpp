@@ -507,7 +507,7 @@ struct SnowShotApiClient::Request {
         reply = value;
         // Cancellation can schedule deferred reply destruction after its Request ends.
         QObject::connect(value, &QObject::destroyed,
-                         [activity = activity] { static_cast<void>(activity); });
+                         [requestActivity = activity] { static_cast<void>(requestActivity); });
     }
     QPointer<QTimer> timeout;
     QMetaObject::Connection receiverDestroyed;

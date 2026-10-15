@@ -1,76 +1,57 @@
-# Snow Apps
+# Snow Shot
 
-Snow Apps repository, providing source code for Snow Shot and Snow Image Viewer.
+由 **trrywui** 维护的 Snow Shot Intel macOS 兼容分支，基于
+[mg-chao/snow-apps](https://github.com/mg-chao/snow-apps)，保留截图、标注、贴图及完整版本的其他功能。
+本分支独立发布，不是上游官方发行版。
 
-For native Windows ARM64 builds and packages, see
-[Windows ARM64 build support](docs-windows-arm64-build.md), including cross compilation,
-OCR preparation, and release validation prerequisites.
+## 下载和安装
 
-<div style="font-size: 128px">🏗️🚧🦺</div>
+从 [GitHub Releases](https://github.com/trrywui/snow-apps/releases) 下载 DMG，打开后将
+**Snow Shot.app** 拖到“应用程序”。首次启动按提示授予屏幕录制、辅助功能等所需权限。
 
-## Install Snow Shot on Windows
+- 支持 **Intel / x86_64，macOS 14.4 及以上**。
+- 当前版本：**1.0.0+up.1.2.8**；上游基线为 `6ebfb7794`（Snow Apps 1.2.8）。
+- Bundle ID：`io.github.trrywui.snowshot`。
+- Apple Silicon 不在当前发布包的支持范围内；不声明其他机器已经过交互验证。
+- 使用 ad-hoc 签名，未进行 Apple 公证；重建或升级后可能需要重新授予权限。
 
-Download the installer from [Snow Shot releases](https://github.com/mg-chao/snow-apps/releases).
-Install the offline Windows x64 package from the WinGet community repository with:
+应用使用独立配置和历史，不自动迁移旧个人兼容版或官方版数据。
+用户自行卸载旧版并安装 Release 包；构建脚本不会安装、卸载应用，也不会清理已安装应用的数据。
 
-```powershell
-winget install --exact --id mg-chao.snow-shot --source winget
-```
+## 更新与默认行为
 
-This package includes published beta versions and the default OCR resources. See
-[WinGet release support](docs/snow-shot-releases.md#winget) for upgrades, removal,
-and maintainer setup.
+采用手动更新，请从本仓库 Release 下载新版。应用不会查询上游安装包，避免安装要求更高系统版本的官方包。
 
-Once [Snow Shot's submission](https://github.com/ScoopInstaller/Extras/issues/18870)
-is accepted into Scoop's official
-[Extras bucket](https://github.com/ScoopInstaller/Extras), install the portable
-Windows x64 package with [Scoop](https://scoop.sh):
+- 保留手动 OCR、二维码识别，默认关闭自动贴图 OCR 和截图自动二维码识别，可在设置中开启。
+- 开机启动恢复上游默认值，可在设置中关闭；是否允许注册取决于安装位置、签名和系统批准。
+- 本地 MCP 桥接未编入此发布配置。
+- macOS 14 不调用 macOS 15 新增的鼠标点击圆圈设置；HDR 仍受系统和硬件限制。
 
-```powershell
-scoop bucket add extras
-scoop install extras/snowshot
-```
+兼容处理没有增加后台轮询、常驻兼容进程或截图转换缓冲区。
+与其他截图工具的内存和 CPU 对比需要在相同工作负载下测量，不宣称未经验证的节省比例。
 
-The Scoop package follows stable releases and includes the default OCR resources.
-Quit Snow Shot before running `scoop update snowshot`; use Scoop rather than the
-app's built-in updater. Settings and history persist across upgrades and ordinary
-uninstall. See [Scoop release support](docs/snow-shot-releases.md#scoop) for removal,
-data locations, and maintainer setup.
+## 构建与维护
 
-## Install Snow Shot on macOS
+参见 [构建说明](docs-macos14-personal.md)。工具、依赖、缓存、测试和产物留在仓库内被 Git 忽略的隔离目录，
+不修改全局 Rust 默认工具链、Homebrew 或 shell 配置。开发工具不会随应用常驻。
 
-Apple Silicon Macs running macOS 15 or later can install the stable release with:
+版本采用 `维护版本+up.上游版本`。每次发布递增前面的维护版本，不能只修改不参与 SemVer 排序的 `+up.…`。
+发布元数据统一维护版本、上游基线和 macOS 构建号。
 
-```sh
-brew update
-brew install --cask mg-chao/tap/snow-shot
-brew upgrade --cask snow-shot
-brew uninstall --cask snow-shot
-```
+上游自动化流程存档在 `.github/upstream-workflows/`，不会向原作者发布渠道推送；当前本机构建、手动发布。
 
-Installation reuses Snow Shot's local signing identity and may request Keychain
-access and macOS privacy permissions. See [Homebrew installation and migration](docs-macos-build.md#homebrew-installation)
-for existing installations, custom app directories, and recovery.
+## 来源与许可证
 
-## Open Source Licenses
+原作者：**mg-chao**；本分支兼容修改和维护：**trrywui**，2026 年。
+原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/6ebfb7794)。
 
-This is a multi-license repository. See [LICENSE.md](LICENSE.md) for the
-repository-level scope rules and third-party material policy.
+这是多许可证仓库，范围见 [LICENSE.md](LICENSE.md)：
 
-| Project | License |
+| 组件 | 许可证 |
 | --- | --- |
-| `ant_design_qt/` | [Apache License 2.0](ant_design_qt/LICENSE) |
-| `snow-crates/` | [Apache License 2.0](snow-crates/LICENSE) |
-| `snow_draw_engine_qt/` | [Apache License 2.0](snow_draw_engine_qt/LICENSE) |
-| `snow_rust_ffi/` | [Apache License 2.0](snow_rust_ffi/LICENSE) |
-| `snow_image/` | [GNU GPL v3.0 or later](snow_image/COPYRIGHT) |
-| `snow_image_viewer/` | [GNU GPL v3.0 or later](snow_image_viewer/COPYRIGHT) |
-| `snow_shot/` | [GNU GPL v3.0 or later](snow_shot/COPYRIGHT) |
+| Snow Shot、Snow Image、Snow Image Viewer、原始仓库构建编排 | GPL-3.0-or-later |
+| Ant Design Qt、Rust crates、绘图引擎、Rust FFI | Apache-2.0 |
 
-Synchronized and bundled third-party materials retain their upstream licenses.
-See [Ant Design Qt third-party notices](ant_design_qt/THIRD_PARTY_NOTICES.md)
-and [Snow Shot third-party notices](snow_shot/THIRD_PARTY_NOTICES.md).
-
-## Community
-
-[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-Community-blue)](https://linux.do)
+第三方材料继续遵循各自许可证，参见 [Snow Shot 第三方声明](snow_shot/THIRD_PARTY_NOTICES.md)
+和 [Ant Design Qt 第三方声明](ant_design_qt/THIRD_PARTY_NOTICES.md)。
+发布包保留许可证和版权声明，Release 提供与安装包对应的源码材料。

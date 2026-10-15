@@ -96,6 +96,10 @@ set(SNOW_SHOT_PROJECT_URL "https://github.com/mg-chao/snow-apps" CACHE STRING
     "Public Snow Shot source repository URL.")
 set(SNOW_SHOT_QQ_GROUP_3_URL "https://qm.qq.com/q/Ts3cwNdykW" CACHE STRING
     "QQ group 3 join URL.")
+if(SNOW_APPS_MACOS14_PERSONAL)
+    set(SNOW_SHOT_WEBSITE_URL "https://github.com/trrywui/snow-apps")
+    set(SNOW_SHOT_PROJECT_URL "https://github.com/trrywui/snow-apps")
+endif()
 unset(SNOW_SHOT_CAMERA_SHUTTER_AUDIO_SOURCE CACHE)
 set(
     SNOW_SHOT_CAMERA_SHUTTER_AUDIO_SOURCE
@@ -1156,6 +1160,7 @@ qt_add_resources(snow_shot_settings "snow_shot_about_assets"
     FILES resources/about/illustration.svg
 )
 target_compile_definitions(snow_shot_settings PRIVATE
+    SNOW_SHOT_UPSTREAM_VERSION="${SNOW_SHOT_UPSTREAM_VERSION}"
     SNOW_SHOT_WEBSITE_URL="${SNOW_SHOT_WEBSITE_URL}"
     SNOW_SHOT_PROJECT_URL="${SNOW_SHOT_PROJECT_URL}"
     SNOW_SHOT_QQ_GROUP_3_URL="${SNOW_SHOT_QQ_GROUP_3_URL}"
@@ -1927,6 +1932,13 @@ if(SNOW_SHOT_BUILD_TESTS)
         tests/application_storage_tests.cpp
     )
     target_link_libraries(snow-shot-application-storage-tests PRIVATE snow_shot_storage Qt6::Core)
+    if(SNOW_APPS_MACOS14_PERSONAL)
+        add_executable(snow-shot-macos14-personal-storage-tests tests/macos14_personal_storage_tests.cpp)
+        target_link_libraries(snow-shot-macos14-personal-storage-tests PRIVATE
+            snow_shot_storage snow_shot_login_item Qt6::Core)
+        add_test(NAME snow-shot-macos14-personal-storage-tests COMMAND snow-shot-macos14-personal-storage-tests)
+        set_tests_properties(snow-shot-macos14-personal-storage-tests PROPERTIES LABELS "unit;macos" TIMEOUT 30)
+    endif()
     add_test(NAME snow-shot-local-shortcut-migration-tests
         COMMAND snow-shot-application-storage-tests --local-shortcut-migration-only)
     set_tests_properties(snow-shot-local-shortcut-migration-tests PROPERTIES LABELS "unit"

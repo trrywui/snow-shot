@@ -1,3 +1,4 @@
+#include "snow_shot/app/edition.h"
 #include "snow_shot/presentation/components/aboutpagewidget.h"
 #include "snow_shot/presentation/components/contentcardwidget.h"
 #include "snow_shot/presentation/components/maincontentheaderwidget.h"
@@ -186,8 +187,8 @@ void absentVersionDoesNotInventARelease() {
 }
 
 void stableVersionsDoNotClaimToBePreviews() {
-    for (const QString& version :
-         {QStringLiteral("1.0.0"), QStringLiteral("1.0.0+build-beta.89")}) {
+    for (const QString& version : {QStringLiteral("1.0.0"), QStringLiteral("1.0.0+build-beta.89"),
+                                   QStringLiteral("1.0.0+up.1.2.8")}) {
         QCoreApplication::setApplicationVersion(version);
         AboutPageWidget page;
         require(child<QLabel>(page, "aboutPreviewBadge")->isHidden(),
@@ -296,7 +297,9 @@ void projectLinksAreExplicitAccessibleAndRecoverable() {
         {"aboutSourceCode", QUrl(project)},
         {"aboutFeedback", QUrl(project + QStringLiteral("/issues"))},
         {"aboutReleaseNotes", QUrl(project + QStringLiteral("/releases"))},
-        {"aboutQqGroup3", QUrl(QStringLiteral(SNOW_SHOT_TEST_QQ_GROUP_3_URL))},
+        {"aboutQqGroup3", QUrl(snow_shot::app::edition::isMacOS14Personal
+                                   ? QStringLiteral("https://github.com/mg-chao/snow-apps")
+                                   : QStringLiteral(SNOW_SHOT_TEST_QQ_GROUP_3_URL))},
     }};
     for (const auto& [name, url] : links) {
         auto* button = child<QAbstractButton>(page, name);
@@ -896,6 +899,17 @@ void mainNavigationSearchThemesAndLanguages() {
         require(child<QLabel>(*page, "aboutVersionValue")->text() ==
                     QStringLiteral(SNOW_SHOT_TEST_VERSION),
                 "language changes preserve the release version");
+        if constexpr (snow_shot::app::edition::isMacOS14Personal) {
+            const QString attribution =
+                translator.translate("AboutPageWidget", "Based on Snow Apps %1. Maintained by %2.");
+            require(!attribution.isEmpty() &&
+                        child<QLabel>(*page, "aboutCopyright")
+                            ->text()
+                            .contains(attribution.arg(QStringLiteral(SNOW_SHOT_TEST_VERSION)
+                                                          .section(QStringLiteral("+up."), 1),
+                                                      QStringLiteral("trrywui"))),
+                    "maintained attribution follows the active language and upstream version");
+        }
         require(child<adqt::widgets::AdButton>(*page, "aboutCopyVersion")->text() ==
                     translator.translate("AboutPageWidget", "Copy version number"),
                 "copy action retranslates");
@@ -932,7 +946,10 @@ void mainNavigationSearchThemesAndLanguages() {
             require(icon != nullptr && !icon->pixmap().isNull(), "every feature icon renders");
         }
         require(child<QAbstractButton>(*page, "aboutWebsite")->accessibleName() ==
-                        translator.translate("AboutPageWidget", "Official website") &&
+                        translator.translate("AboutPageWidget",
+                                             snow_shot::app::edition::isMacOS14Personal
+                                                 ? "Project website"
+                                                 : "Official website") &&
                     child<QWidget>(*page, "aboutArtwork")->accessibleName() ==
                         translator.translate(
                             "AboutPageWidget",
@@ -947,10 +964,15 @@ void mainNavigationSearchThemesAndLanguages() {
             {"aboutQqGroup3", "QQ Group 3", "1037819112"},
         }};
         for (const auto& group : qqGroups) {
-            const QString title = translator.translate("AboutPageWidget", group.title);
+            const bool maintained = snow_shot::app::edition::isMacOS14Personal;
+            const QString title = translator.translate(
+                "AboutPageWidget", maintained ? "Upstream project" : group.title);
             const QString description =
-                translator.translate("AboutPageWidget", "Discussion and support · Group No. %1")
-                    .arg(QString::fromLatin1(group.number));
+                maintained
+                    ? translator.translate("AboutPageWidget", "Original Snow Apps by mg-chao")
+                    : translator
+                          .translate("AboutPageWidget", "Discussion and support · Group No. %1")
+                          .arg(QString::fromLatin1(group.number));
             auto* button = child<QAbstractButton>(*page, group.objectName);
             require(button->accessibleName() == title &&
                         button->accessibleDescription() == description,

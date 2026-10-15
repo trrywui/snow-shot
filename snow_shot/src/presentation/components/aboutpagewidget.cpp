@@ -640,8 +640,11 @@ AboutPageWidget::AboutPageWidget(QWidget* parent, UrlOpener urlOpener,
             [this]() { openProjectLink(aboutProjectUrl()); });
     connect(m_ui->resources[2], &QAbstractButton::clicked, this,
             [this]() { openProjectLink(aboutProjectUrl(QStringLiteral("/issues"))); });
-    connect(m_ui->resources[3], &QAbstractButton::clicked, this,
-            [this]() { openProjectLink(QUrl(QStringLiteral(SNOW_SHOT_QQ_GROUP_3_URL))); });
+    connect(m_ui->resources[3], &QAbstractButton::clicked, this, [this]() {
+        openProjectLink(QUrl(snow_shot::app::edition::isMacOS14Personal
+                                 ? QStringLiteral("https://github.com/mg-chao/snow-apps")
+                                 : QStringLiteral(SNOW_SHOT_QQ_GROUP_3_URL)));
+    });
     connect(&themeManager, &styles::ThemeManager::themeChanged, this, &AboutPageWidget::applyTheme);
     connect(&adqt::theme::ThemeManager::instance(), &adqt::theme::ThemeManager::themeChanged, this,
             [this] { updateSkinBackgrounds(); });
@@ -837,6 +840,11 @@ void AboutPageWidget::retranslateUi() {
     m_ui->resources[0]->setCopy(tr("Official website"),
                                 tr("Discover more features and ways to use it"),
                                 QUrl(QStringLiteral(SNOW_SHOT_WEBSITE_URL)));
+    if constexpr (snow_shot::app::edition::isMacOS14Personal) {
+        m_ui->resources[0]->setCopy(tr("Project website"),
+                                    tr("Discover more features and ways to use it"),
+                                    QUrl(QStringLiteral(SNOW_SHOT_WEBSITE_URL)));
+    }
     m_ui->resources[1]->setCopy(tr("GitHub"), tr("View the source and improve it together"),
                                 aboutProjectUrl());
     m_ui->resources[2]->setCopy(tr("Feedback and suggestions"),
@@ -846,12 +854,22 @@ void AboutPageWidget::retranslateUi() {
         tr("QQ Group 3"),
         tr("Discussion and support · Group No. %1").arg(QStringLiteral("1037819112")),
         QUrl(QStringLiteral(SNOW_SHOT_QQ_GROUP_3_URL)));
+    if constexpr (snow_shot::app::edition::isMacOS14Personal) {
+        m_ui->resources[3]->setCopy(tr("Upstream project"), tr("Original Snow Apps by mg-chao"),
+                                    QUrl(QStringLiteral("https://github.com/mg-chao/snow-apps")));
+    }
     m_ui->community->setText(tr("Built for daily work, and growing with the community."));
     m_ui->license->setText(
         tr("%1 · %2").arg(tr("GNU General Public License v3.0 or later"),
                           tr("Free and open-source software. Distributed without any warranty.")));
     m_ui->copyright->setText(
         tr("Copyright © %1 %2").arg(QStringLiteral("2025–2026"), QStringLiteral("mg-chao")));
+    if constexpr (snow_shot::app::edition::isMacOS14Personal) {
+        m_ui->copyright->setText(
+            m_ui->copyright->text() + QLatin1Char('\n') +
+            tr("Based on Snow Apps %1. Maintained by %2.")
+                .arg(QStringLiteral(SNOW_SHOT_UPSTREAM_VERSION), QStringLiteral("trrywui")));
+    }
     m_ui->slogan->setText(
         snow_shot::app::edition::isMini
             ? tr("%1 · Make expression clearer").arg(snow_shot::app::edition::productName())

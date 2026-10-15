@@ -6,6 +6,7 @@ mod exclusion_update;
 pub mod permission;
 pub use error::{MacError, MacResult};
 pub mod audio;
+mod availability;
 pub mod bench;
 pub mod capabilities;
 pub mod capture;

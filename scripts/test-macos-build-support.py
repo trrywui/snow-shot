@@ -79,6 +79,9 @@ def write_static_qt_feature_targets(prefix):
     gui = prefix / 'lib/cmake/Qt6Gui/Qt6GuiTargets.cmake'
     gui.parent.mkdir(parents=True, exist_ok=True)
     gui.write_text('QT_ENABLED_PRIVATE_FEATURES "system_png"\n')
+    concurrent = prefix / 'lib/cmake/Qt6Concurrent/Qt6ConcurrentConfig.cmake'
+    concurrent.parent.mkdir(parents=True, exist_ok=True)
+    concurrent.touch()
 
 
 def static_qt_feature_fingerprint():
@@ -1286,6 +1289,18 @@ if name == 'openssl':
                                 '--dependency-prefix', str(dependencies))
         self.assertFalse(any(call[0] == 'cmake' for call in calls))
         self.assertIn(f'Validated static Qt {QT_VERSION} (arm64)', self.last_result.stdout)
+        self.run_script('build-static-qt.sh', '--install-prefix', str(prefix),
+                        '--dependency-prefix', str(dependencies), '--with-testlib', success=False)
+        self.assertIn('lacks the requested Qt Test module', self.last_result.stderr)
+        test_config = prefix / 'lib/cmake/Qt6Test/Qt6TestConfig.cmake'
+        test_config.parent.mkdir(parents=True)
+        test_config.touch()
+        self.run_script('build-static-qt.sh', '--install-prefix', str(prefix),
+                        '--dependency-prefix', str(dependencies), '--with-testlib')
+        (prefix / 'lib/cmake/Qt6Concurrent/Qt6ConcurrentConfig.cmake').unlink()
+        self.run_script('build-static-qt.sh', '--install-prefix', str(prefix),
+                        '--dependency-prefix', str(dependencies), success=False)
+        self.assertIn('lacks Qt Concurrent', self.last_result.stderr)
 
     def test_release_build_rejects_stale_or_untrimmed_static_qt_stamps(self):
         stamp = self.root / 'Qt kit/share/snow-apps/static-qt-build.json'

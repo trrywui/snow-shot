@@ -32,6 +32,10 @@
             <translation>Automatic updates are unavailable for this copy.</translation>
         </message>
         <message>
+            <source>Based on Snow Apps %1. Maintained by %2.</source>
+            <translation>Based on Snow Apps %1. Maintained by %2.</translation>
+        </message>
+        <message>
             <source>Built for daily work, and growing with the community.</source>
             <translation>Built for daily work, and growing with the community.</translation>
         </message>
@@ -162,6 +166,10 @@ so every moment on screen can be expressed clearly and shared easily.</translati
             <translation>Official website</translation>
         </message>
         <message>
+            <source>Original Snow Apps by mg-chao</source>
+            <translation>Original Snow Apps by mg-chao</translation>
+        </message>
+        <message>
             <source>Pin to screen</source>
             <translation>Pin to screen</translation>
         </message>
@@ -172,6 +180,10 @@ so every moment on screen can be expressed clearly and shared easily.</translati
         <message>
             <source>Preview</source>
             <translation>Preview</translation>
+        </message>
+        <message>
+            <source>Project website</source>
+            <translation>Project website</translation>
         </message>
         <message>
             <source>QQ Group 3</source>
@@ -236,6 +248,10 @@ so every moment on screen can be expressed clearly and shared easily.</translati
         <message>
             <source>Update failed: %1</source>
             <translation>Update failed: %1</translation>
+        </message>
+        <message>
+            <source>Upstream project</source>
+            <translation>Upstream project</translation>
         </message>
         <message>
             <source>Verifying update…</source>

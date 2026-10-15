@@ -32,6 +32,10 @@
             <translation>此副本无法使用自动更新。</translation>
         </message>
         <message>
+            <source>Based on Snow Apps %1. Maintained by %2.</source>
+            <translation>基于 Snow Apps %1，由 %2 维护。</translation>
+        </message>
+        <message>
             <source>Built for daily work, and growing with the community.</source>
             <translation>为日常工作打造，也在社区中持续成长。</translation>
         </message>
@@ -162,6 +166,10 @@ so every moment on screen can be expressed clearly and shared easily.</source>
             <translation>官方网站</translation>
         </message>
         <message>
+            <source>Original Snow Apps by mg-chao</source>
+            <translation>mg-chao 的原始 Snow Apps 项目</translation>
+        </message>
+        <message>
             <source>Pin to screen</source>
             <translation>固定到屏幕</translation>
         </message>
@@ -172,6 +180,10 @@ so every moment on screen can be expressed clearly and shared easily.</source>
         <message>
             <source>Preview</source>
             <translation>预览版</translation>
+        </message>
+        <message>
+            <source>Project website</source>
+            <translation>项目主页</translation>
         </message>
         <message>
             <source>QQ Group 3</source>
@@ -236,6 +248,10 @@ so every moment on screen can be expressed clearly and shared easily.</source>
         <message>
             <source>Update failed: %1</source>
             <translation>更新失败：%1</translation>
+        </message>
+        <message>
+            <source>Upstream project</source>
+            <translation>上游项目</translation>
         </message>
         <message>
             <source>Verifying update…</source>

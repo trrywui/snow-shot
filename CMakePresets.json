@@ -308,6 +308,51 @@
       }
     },
     {
+      "name": "snow-shot-macos14-x64-release",
+      "displayName": "Snow Shot Maintained macOS 14.4 x64 Static Release",
+      "inherits": "snow-shot-macos-x64-release",
+      "binaryDir": "${sourceDir}/.tools/macos14-personal/build",
+      "toolchainFile": "${sourceDir}/.tools/macos14-personal/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "environment": {
+        "VCPKG_ROOT": "${sourceDir}/.tools/macos14-personal/vcpkg",
+        "CARGO_HOME": "${sourceDir}/.tools/macos14-personal/cargo",
+        "RUSTUP_HOME": "${sourceDir}/.tools/macos14-personal/rustup",
+        "RUSTUP_TOOLCHAIN": "1.97.1",
+        "MACOSX_DEPLOYMENT_TARGET": "14.4",
+        "TMPDIR": "${sourceDir}/.tools/macos14-personal/tmp",
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.tools/macos14-personal/cache/vcpkg",
+        "VCPKG_DISABLE_METRICS": "1",
+        "PATH": "${sourceDir}/.tools/macos14-personal/host/venv/bin:${sourceDir}/.tools/macos14-personal/host/bin:${sourceDir}/.tools/macos14-personal/rustup/toolchains/1.97.1-x86_64-apple-darwin/bin:$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "14.4",
+        "SNOW_APPS_MACOS14_PERSONAL": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-osx-snow-shot-macos14-static",
+        "VCPKG_HOST_TRIPLET": "x64-osx-snow-shot-macos14-static",
+        "VCPKG_MANIFEST_FEATURES": "snow-shot;macos14-personal-jpeg",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/.tools/macos14-personal/installed",
+        "Qt6_DIR": "${sourceDir}/.tools/macos14-personal/qt/lib/cmake/Qt6",
+        "SNOW_QT_STATIC_DIR": "${sourceDir}/.tools/macos14-personal/qt/lib/cmake/Qt6",
+        "SNOW_RUST_CARGO_TARGET_DIR": "${sourceDir}/.tools/macos14-personal/build/cargo",
+        "SNOW_MACOS_OCR_CACHE": "${sourceDir}/.tools/macos14-personal/cache/ocr",
+        "SNOW_SHOT_QR_MODELS_CACHE": "${sourceDir}/.tools/macos14-personal/cache/qr-models-wechat",
+        "SNOW_SHOT_ENABLE_MCP": "OFF",
+        "SNOW_APPS_PACKAGE_SNOW_SHOT": "OFF"
+      }
+    },
+    {
+      "name": "snow-shot-macos14-x64-performance",
+      "displayName": "Snow Shot Maintained macOS 14.4 x64 Performance",
+      "inherits": "snow-shot-macos14-x64-release",
+      "binaryDir": "${sourceDir}/.tools/macos14-personal/performance",
+      "cacheVariables": {
+        "SNOW_APPS_BUILD_TESTS": "ON",
+        "SNOW_SHOT_BUILD_TESTS": "ON",
+        "SNOW_APPS_BUILD_BENCHMARKS": "ON",
+        "SNOW_RUST_CARGO_TARGET_DIR": "${sourceDir}/.tools/macos14-personal/performance/cargo"
+      }
+    },
+    {
       "name": "snow-shot-macos-x64-fast",
       "displayName": "Snow Shot macOS x64 Fast Static Build",
       "inherits": "macos-release-base",
@@ -580,6 +625,22 @@
         "snow_shot",
         "snow_shot_mini"
       ]
+    },
+    {
+      "name": "build-snow-shot-macos14-x64-release",
+      "configurePreset": "snow-shot-macos14-x64-release",
+      "targets": [
+        "snow_shot"
+      ],
+      "jobs": 2
+    },
+    {
+      "name": "build-snow-shot-macos14-x64-performance",
+      "configurePreset": "snow-shot-macos14-x64-performance",
+      "targets": [
+        "snow_shot"
+      ],
+      "jobs": 2
     }
   ],
   "testPresets": [

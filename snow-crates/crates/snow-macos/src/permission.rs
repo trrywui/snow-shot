@@ -1,13 +1,8 @@
 use crate::{MacError, MacResult};
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
-use objc2_foundation::{NSOperatingSystemVersion, NSProcessInfo};
 
 pub fn supported_os() -> bool {
-    NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(NSOperatingSystemVersion {
-        majorVersion: 15,
-        minorVersion: 0,
-        patchVersion: 0,
-    })
+    crate::availability::CaptureAvailability::current().screen_capture
 }
 pub fn screen_capture_authorized() -> bool {
     CGPreflightScreenCaptureAccess()

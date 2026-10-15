@@ -66,12 +66,13 @@ struct RecordingRenderJob::Impl {
         std::thread(snow_shot::runtime::trackRuntimeWork([start = std::move(startFuture),
                                                           cleanup = std::move(cleanupFuture),
                                                           cancellation = std::move(cancelFuture),
-                                                          task = task, source = source]() mutable {
+                                                          ownedTask = task,
+                                                          ownedSource = source]() mutable {
             snow_shot::platform::applyApplicationQoSToCurrentThread();
             if (start.valid()) {
                 const auto result = start.get();
                 if (result.task)
-                    task = result.task;
+                    ownedTask = result.task;
             }
             if (cleanup.valid()) {
                 const auto result = cleanup.get();
@@ -80,10 +81,10 @@ struct RecordingRenderJob::Impl {
             }
             if (cancellation.valid())
                 cancellation.get();
-            if (task)
-                snow_recording_render_task_destroy(task);
-            if (source)
-                snow_recording_source_destroy(source);
+            if (ownedTask)
+                snow_recording_render_task_destroy(ownedTask);
+            if (ownedSource)
+                snow_recording_source_destroy(ownedSource);
         })).detach();
     }
     void notify() {
@@ -128,15 +129,15 @@ struct RecordingRenderJob::Impl {
         stage = SNOW_RECORDING_RENDER_STAGE_PREPARE;
         lastError.clear();
         errorTranslation = nullptr;
-        startFuture =
-            std::async(std::launch::async, snow_shot::runtime::trackRuntimeWork([source = source] {
-                           snow_shot::platform::applyApplicationQoSToCurrentThread();
-                           StartResult result;
-                           if (snow_recording_source_render_start(source, &result.task) !=
-                               SNOW_RECORDING_RESULT_OK)
-                               result.error = nativeError();
-                           return result;
-                       }));
+        startFuture = std::async(
+            std::launch::async, snow_shot::runtime::trackRuntimeWork([renderSource = source] {
+                snow_shot::platform::applyApplicationQoSToCurrentThread();
+                StartResult result;
+                if (snow_recording_source_render_start(renderSource, &result.task) !=
+                    SNOW_RECORDING_RESULT_OK)
+                    result.error = nativeError();
+                return result;
+            }));
         timer.start();
         ensureModal();
         notify();

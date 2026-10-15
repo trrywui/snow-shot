@@ -344,11 +344,15 @@ def verify_assets(source, runtime, static_runtime=False, runtime_only=False, arc
     return actual
 
 
-def verify_bundle(app, arch='arm64'):
+def verify_bundle(app, arch='arm64', minimum_macos='15.0'):
     """Reject unresolved Mach-O loads and build-machine paths, including LC_RPATH."""
     executable_root = app / 'Contents/MacOS'
     architecture = ARCHITECTURES[arch]
     target_slice = architecture['slice']
+    maximum = tuple(int(part) for part in minimum_macos.split('.'))
+    if not 1 <= len(maximum) <= 3:
+        raise ValueError('Invalid minimum macOS version')
+    maximum = maximum + (0,) * (3 - len(maximum))
     checked = []
     for path in sorted(app.rglob('*')):
         if not path.is_file() or path.is_symlink():
@@ -362,13 +366,17 @@ def verify_bundle(app, arch='arm64'):
             raise ValueError(f'Non-{architecture["label"]} bundle dependency: {path}')
         loads = run('/usr/bin/otool', '-arch', target_slice, '-l', str(path)).splitlines()
         rpaths = []
+        load_command = None
         for i, line in enumerate(loads):
+            if line.strip().startswith('cmd '):
+                load_command = line.strip().split()[1]
             if line.strip() == 'cmd LC_RPATH':
                 rpaths.append(loads[i + 2].strip().split(' (offset')[0].removeprefix('path '))
-            if line.strip().startswith('minos '):
+            if ((load_command == 'LC_BUILD_VERSION' and line.strip().startswith('minos '))
+                    or (load_command == 'LC_VERSION_MIN_MACOSX' and line.strip().startswith('version '))):
                 minimum = tuple(int(part) for part in line.split()[1].split('.'))
-                if minimum > (15, 0, 0)[:len(minimum)]:
-                    raise ValueError(f'Bundle dependency requires newer than macOS 15: {path}')
+                if minimum + (0,) * (3 - len(minimum)) > maximum:
+                    raise ValueError(f'Bundle dependency requires newer than macOS {minimum_macos}: {path}')
         def expand(value):
             return Path(value.replace('@loader_path', str(path.parent))
                         .replace('@executable_path', str(executable_root)))
@@ -402,6 +410,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('stage', 'finalize', 'verify', 'fetch-models', 'prepare-bundle'))
     parser.add_argument('--arch', choices=ARCHITECTURES, default='arm64')
+    parser.add_argument('--minimum-macos', default='15.0')
     parser.add_argument('--manifest', type=Path, default=MANIFEST)
     parser.add_argument('--runtime-dir', type=Path)
     parser.add_argument('--cache', type=Path, default=ROOT / 'artifacts')
@@ -456,7 +465,7 @@ def main():
         finalize(source, runtime, args.static_runtime, args.runtime_only, args.arch)
     else:
         manifest = verify_assets(source, runtime, args.static_runtime, args.runtime_only, args.arch)
-        binaries = verify_bundle(args.app.resolve(), args.arch) if args.app else []
+        binaries = verify_bundle(args.app.resolve(), args.arch, args.minimum_macos) if args.app else []
         if args.report:
             atomic_json(args.report, dict(platform=f'macos-{args.arch}', runtime=manifest['runtime'],
                         bundled_model=None if args.runtime_only else manifest['default_model'],

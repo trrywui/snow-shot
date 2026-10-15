@@ -200,7 +200,7 @@ fn configure_system_audio(config: &SCStreamConfiguration) {
         // This stream has no screen-output consumer. Only the recording's video
         // stream should request cursor capture or mouse-click visualization.
         config.setShowsCursor(false);
-        config.setShowMouseClicks(false);
+        crate::availability::CaptureAvailability::current().disable_mouse_clicks(config);
         config.setCapturesAudio(true);
         config.setExcludesCurrentProcessAudio(true);
         config.setSampleRate(48_000);
@@ -358,12 +358,16 @@ mod tests {
         let config = unsafe { SCStreamConfiguration::new() };
         unsafe {
             config.setShowsCursor(true);
-            config.setShowMouseClicks(true);
+            if crate::availability::CaptureAvailability::current().mouse_clicks {
+                config.setShowMouseClicks(true);
+            }
         }
         configure_system_audio(&config);
         unsafe {
             assert!(!config.showsCursor());
-            assert!(!config.showMouseClicks());
+            if crate::availability::CaptureAvailability::current().mouse_clicks {
+                assert!(!config.showMouseClicks());
+            }
             assert!(config.capturesAudio());
             assert!(config.excludesCurrentProcessAudio());
             assert_eq!(config.sampleRate(), 48_000);

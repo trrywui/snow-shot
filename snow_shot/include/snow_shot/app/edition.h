@@ -7,6 +7,9 @@
 #ifndef SNOW_SHOT_EDITION_MINI
 #define SNOW_SHOT_EDITION_MINI 0
 #endif
+#ifndef SNOW_SHOT_MACOS14_PERSONAL
+#define SNOW_SHOT_MACOS14_PERSONAL 0
+#endif
 #ifndef SNOW_SHOT_ENABLE_QR_RECOGNITION
 #define SNOW_SHOT_ENABLE_QR_RECOGNITION (!SNOW_SHOT_EDITION_MINI)
 #endif
@@ -31,7 +34,10 @@
 
 namespace snow_shot::app::edition {
 inline constexpr bool isMini = SNOW_SHOT_EDITION_MINI != 0;
+inline constexpr bool isMacOS14Personal = SNOW_SHOT_MACOS14_PERSONAL != 0;
+inline constexpr bool automaticPinnedTextRecognition = !isMini && !isMacOS14Personal;
 inline constexpr bool qrRecognition = SNOW_SHOT_ENABLE_QR_RECOGNITION != 0;
+inline constexpr bool automaticQrRecognition = !isMacOS14Personal;
 inline constexpr bool tableRecognition = SNOW_SHOT_ENABLE_TABLE_RECOGNITION != 0;
 inline constexpr bool imageConversion = SNOW_SHOT_ENABLE_IMAGE_CONVERSION != 0;
 inline constexpr bool latexRecognition = SNOW_SHOT_ENABLE_LATEX_RECOGNITION != 0;
@@ -44,16 +50,20 @@ inline constexpr bool extendedFeatures = SNOW_SHOT_ENABLE_EXTENDED_FEATURES != 0
                   : QCoreApplication::translate("EditionMetadata", "Snow Shot");
 }
 [[nodiscard]] inline QString applicationName() {
+    if (isMacOS14Personal)
+        return QStringLiteral("snowshot");
     return isMini ? QStringLiteral("snow_shot_mini") : QStringLiteral("snow_shot");
 }
 [[nodiscard]] inline QString registryName() {
+    if (isMacOS14Personal)
+        return QStringLiteral("trrywui.snowshot");
     return isMini ? QStringLiteral("SnowShotMini") : QStringLiteral("SnowShot");
 }
 [[nodiscard]] inline QString executableName() {
 #ifdef Q_OS_WIN
     return applicationName() + QStringLiteral(".exe");
 #else
-    return applicationName();
+    return isMacOS14Personal ? QStringLiteral("snow_shot") : applicationName();
 #endif
 }
 [[nodiscard]] inline QString productId() {
@@ -77,6 +87,8 @@ inline constexpr bool extendedFeatures = SNOW_SHOT_ENABLE_EXTENDED_FEATURES != 0
 #endif
 }
 [[nodiscard]] inline QString bundleId() {
+    if (isMacOS14Personal)
+        return QStringLiteral("io.github.trrywui.snowshot");
     return QStringLiteral("com.snowshot.") + applicationName();
 }
 } // namespace snow_shot::app::edition

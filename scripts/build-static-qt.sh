@@ -4,7 +4,7 @@ source "$(dirname "$0")/snow-build-environment.sh"
 
 usage() {
     echo 'Usage: build-static-qt.sh --install-prefix PATH [--arch arm64|x64] [--parallel JOBS]'
-    echo '       [--dependency-prefix PATH] [--source-dir PATH] [--build-dir PATH] [--force]'
+    echo '       [--dependency-prefix PATH] [--source-dir PATH] [--build-dir PATH] [--with-testlib] [--force]'
 }
 
 arch=''
@@ -14,6 +14,7 @@ source_dir=''
 build_dir=''
 parallelism=4
 force=0
+qt_testlib=OFF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help) usage; exit 0 ;;
@@ -24,6 +25,7 @@ while [[ $# -gt 0 ]]; do
         --arch) [[ $# -ge 2 ]] || snow_die '--arch needs arm64 or x64'; arch="$2"; shift 2 ;;
         --parallel) [[ $# -ge 2 ]] || snow_die '--parallel needs a positive integer'; parallelism="$2"; shift 2 ;;
         --force) force=1; shift ;;
+        --with-testlib) qt_testlib=ON; shift ;;
         *) snow_die "Unknown argument: $1" ;;
     esac
 done
@@ -108,6 +110,12 @@ qt_config="$install_prefix/lib/cmake/Qt6/Qt6Config.cmake"
 stamp="$install_prefix/share/snow-apps/static-qt-build.json"
 feature_fingerprint="$(python3 "$snow_repo_root/scripts/validate-static-qt.py" --print-feature-fingerprint)"
 if [[ -f "$qt_config" && "$force" == 0 ]]; then
+    [[ -f "$install_prefix/lib/cmake/Qt6Concurrent/Qt6ConcurrentConfig.cmake" ]] || \
+        snow_die 'This Qt kit lacks Qt Concurrent required by Snow Shot. Rebuild it in a distinct prefix or pass --force.'
+    if [[ "$qt_testlib" == ON ]]; then
+        [[ -f "$install_prefix/lib/cmake/Qt6Test/Qt6TestConfig.cmake" ]] || \
+            snow_die 'This Qt kit lacks the requested Qt Test module. Rebuild it in a distinct prefix or pass --force.'
+    fi
     if python3 "$snow_repo_root/scripts/validate-static-qt.py" --prefix "$install_prefix" \
         --arch "$arch" --dependency-fingerprint "$dependency_fingerprint"; then
         printf 'Validated static Qt %s (%s) at %s\n' "$qt_version" "$arch" "$install_prefix"
@@ -154,14 +162,14 @@ mkdir -p "$build_dir"
         -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON \
         -DFEATURE_timezone=ON -DFEATURE_timezone_locale=OFF \
         -DFEATURE_dup3=OFF \
-        -DQT_FEATURE_concurrent=OFF -DQT_FEATURE_dbus=OFF \
+        -DQT_FEATURE_concurrent=ON -DQT_FEATURE_dbus=OFF \
         -DQT_FEATURE_linguist=ON -DQT_FEATURE_printsupport=OFF \
         -DQT_FEATURE_qdoc=OFF -DQT_FEATURE_qmake=OFF -DQT_FEATURE_sql=OFF \
-        -DQT_FEATURE_testlib=OFF -DQT_FEATURE_assistant=OFF \
+        -DQT_FEATURE_testlib="$qt_testlib" -DQT_FEATURE_assistant=OFF \
         -DQT_FEATURE_designer=OFF -DQT_FEATURE_pixeltool=OFF \
         -DQT_FEATURE_qdbus=OFF -DQT_FEATURE_qtattributionsscanner=OFF \
         -DQT_FEATURE_qtdiag=OFF -DQT_FEATURE_qtplugininfo=OFF \
-        "${qt_apple_options[@]}"
+        ${qt_apple_options[@]+"${qt_apple_options[@]}"}
 )
 
 cache="$build_dir/CMakeCache.txt"

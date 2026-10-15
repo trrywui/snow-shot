@@ -10,6 +10,12 @@
     { "name": "ffmpeg-bin2c", "version": "9.0" }
   ],
   "features": {
+    "macos14-personal-jpeg": {
+      "description": "Match TurboJPEG's JPEG ABI to the audited static Qt bundled JPEG v8 ABI.",
+      "dependencies": [
+        { "name": "libjpeg-turbo", "features": ["jpeg8"], "platform": "osx" }
+      ]
+    },
     "macos-media": {
       "description": "Standalone macOS recording libraries without Qt or OCR",
       "dependencies": [

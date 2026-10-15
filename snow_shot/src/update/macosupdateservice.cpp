@@ -132,6 +132,8 @@ struct UpdateService::Impl {
         return github.active || gitee.active;
     }
     void arm(std::chrono::milliseconds delay) {
+        if constexpr (app::edition::isMacOS14Personal)
+            return;
         if (started && mode == u"check")
             schedule.start(delay);
     }
@@ -407,6 +409,21 @@ struct UpdateService::Impl {
         state.deadline.start(options.requestTimeout);
     }
     void check(bool user) {
+        if constexpr (app::edition::isMacOS14Personal) {
+            if (user) {
+                errorSource = QT_TRANSLATE_NOOP(
+                    "UpdateService", "This build uses manual updates. Download new versions from "
+                                     "https://github.com/trrywui/snow-apps/releases.");
+                status = {UpdateState::Failed,
+                          {},
+                          QCoreApplication::translate("UpdateService", errorSource.constData()),
+                          0,
+                          0};
+                emit q.statusChanged();
+                emit q.operationFinished(QStringLiteral("check"), QStringLiteral("failed"));
+            }
+            return;
+        }
         if (!user && mode == u"manual")
             return;
         if (busy()) {

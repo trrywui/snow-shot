@@ -7,6 +7,7 @@
 #endif
 
 #include "snow_shot/storage/configurationschema.h"
+#include "snow_shot/storage/settingsadapters.h"
 #include "snow_shot/storage/storagelogging.h"
 #include "snow_shot/shortcuts/shortcutbinding.h"
 
@@ -100,7 +101,7 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
     if (defaultedKeys.isEmpty())
         return;
 
-    QMap<QString, shortcuts::ShortcutBindingList> assignedByScope;
+    QMap<QString, QList<std::pair<QString, shortcuts::ShortcutBinding>>> assignedByScope;
     QStringList defaultedLocalKeys;
     const auto bindingsForKey = [&result](const QString& key) {
         return shortcuts::shortcutBindingsFromJson(
@@ -116,20 +117,30 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
         if (defaultedKeys.contains(entry.key)) {
             defaultedLocalKeys.push_back(entry.key);
         } else {
-            assignedByScope[entry.key.section(u'/', 0, 0)].append(bindingsForKey(entry.key));
+            auto& assigned = assignedByScope[entry.key.section(u'/', 0, 0)];
+            const QString id = entry.key.section(u'/', 1, 1);
+            for (const auto& binding : bindingsForKey(entry.key)) {
+                assigned.push_back({id, binding});
+            }
         }
     }
     for (const QString& key : defaultedLocalKeys) {
-        auto& assigned = assignedByScope[key.section(u'/', 0, 0)];
+        const QString scope = key.section(u'/', 0, 0);
+        const QString id = key.section(u'/', 1, 1);
+        auto& assigned = assignedByScope[scope];
         const auto defaults = bindingsForKey(key);
         shortcuts::ShortcutBindingList retained;
         for (const auto& binding : defaults) {
-            if (std::any_of(assigned.cbegin(), assigned.cend(), [&binding](const auto& existing) {
-                    return shortcuts::bindingsConflict(existing, binding);
-                }))
+            if (std::any_of(assigned.cbegin(), assigned.cend(),
+                            [&binding, &id, &scope](const auto& existing) {
+                                return (scope != QStringLiteral("pin_to_screen_shortcuts") ||
+                                        PinToScreenShortcutSettings::actionsMayConflict(
+                                            existing.first, id)) &&
+                                       shortcuts::bindingsConflict(existing.second, binding);
+                            }))
                 continue;
             retained.push_back(binding);
-            assigned.push_back(binding);
+            assigned.push_back({id, binding});
         }
         if (retained.size() == defaults.size())
             continue;

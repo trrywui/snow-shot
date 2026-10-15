@@ -21,6 +21,11 @@ QString text(const char* source) {
 bool initialLoginLaunch = false;
 id launchObserver = nil;
 QString markerPath() {
+    if constexpr (app::edition::isMacOS14Personal) {
+        const QString root = qEnvironmentVariable("SNOW_SHOT_PERSONAL_DATA_DIR");
+        if (QDir::isAbsolutePath(root))
+            return QDir(root).filePath(QStringLiteral("macos-login-item.ini"));
+    }
     return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) +
            (QStringLiteral("/") + app::edition::registryName() +
             QStringLiteral("/macos-login-item.ini"));
@@ -91,9 +96,11 @@ LoginItemOperations nativeLoginItemOperations() {
                                 : [SMAppService.mainAppService unregisterAndReturnError:&error];
                     if (success)
                         return {};
-                    if ([error.domain isEqualToString:SMAppServiceErrorDomain] &&
-                        error.code == kSMErrorInvalidSignature)
-                        return {false, signatureError()};
+                    if (@available(macOS 15.0, *)) {
+                        if ([error.domain isEqualToString:SMAppServiceErrorDomain] &&
+                            error.code == kSMErrorInvalidSignature)
+                            return {false, signatureError()};
+                    }
                     return {false, text(QT_TRANSLATE_NOOP("LoginItemService",
                                                           "Could not change launch at login: %1"))
                                        .arg(QString::fromNSString(error.localizedDescription))};

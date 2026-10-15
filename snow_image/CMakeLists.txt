@@ -298,8 +298,12 @@ function(snow_image_configure_target target_name linkage)
         # to Qt's libjpeg-80 fails at jpeg_create_compress (the structs differ).
         include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SnowQt.cmake")
         snow_find_qt(COMPONENTS Core BundledLibjpeg)
+        # Apple framework kits expose Core headers inside the framework, while
+        # their bundled JPEG headers remain under the kit's normal include root.
+        get_filename_component(_snow_image_qt_headers "${QT6_INSTALL_HEADERS}" ABSOLUTE
+            BASE_DIR "${QT6_INSTALL_PREFIX}")
         find_path(_snow_image_qt_jpeg_include NAMES jpeglib.h
-            PATHS ${Qt6Core_INCLUDE_DIRS} PATH_SUFFIXES QtJpeg
+            PATHS ${Qt6Core_INCLUDE_DIRS} "${_snow_image_qt_headers}" PATH_SUFFIXES QtJpeg
             NO_DEFAULT_PATH NO_CACHE REQUIRED)
         target_include_directories(${target_name} BEFORE PRIVATE
             "${_snow_image_qt_jpeg_include}")

@@ -109,6 +109,7 @@ if(@SNOW_MACOS_OCR_ASSETS_ENABLED@)
     # signature. No bundle changes follow it, so it owns signature verification.
     execute_process(COMMAND "@Python3_EXECUTABLE@" "@SNOW_MACOS_OCR_TOOL@" verify
         --arch "@SNOW_MACOS_OCR_ARCH@"
+        --minimum-macos "@CMAKE_OSX_DEPLOYMENT_TARGET@"
         --manifest "@SNOW_MACOS_OCR_MANIFEST@"
         --runtime-dir "${_app}/Contents/MacOS" --app "${_app}"
         --report "@CMAKE_BINARY_DIR@/macos-ocr-verification.json"

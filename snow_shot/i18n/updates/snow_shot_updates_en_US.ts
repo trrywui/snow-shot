@@ -545,5 +545,9 @@
             <source>Could not check for updates. Please try again.</source>
             <translation>Could not check for updates. Please try again.</translation>
         </message>
+        <message>
+            <source>This build uses manual updates. Download new versions from https://github.com/trrywui/snow-apps/releases.</source>
+            <translation>This build uses manual updates. Download new versions from https://github.com/trrywui/snow-apps/releases.</translation>
+        </message>
     </context>
 </TS>

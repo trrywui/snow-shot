@@ -412,7 +412,8 @@ int main(int argc, char* argv[]) {
 #ifdef Q_OS_MACOS
     // Exercise normal pre-application startup without touching live user state.
     if (argc == 2 && QString::fromLocal8Bit(argv[1]) == u"--startup-probe") {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+        if constexpr (!snow_shot::app::edition::isMacOS14Personal)
+            qputenv("QT_QPA_PLATFORM", "offscreen");
         QApplication probe(argc, argv);
         adqt::widgets::initializePlatformCompatibility(probe);
         return 0;
@@ -425,23 +426,34 @@ int main(int argc, char* argv[]) {
         }
     } diagnosticsLifetime;
     snow_shot::storage::StorageInitializationOptions storageOptions;
+    if constexpr (snow_shot::app::edition::isMacOS14Personal) {
+        const QString personalRoot = qEnvironmentVariable("SNOW_SHOT_PERSONAL_DATA_DIR");
+        if (!personalRoot.isEmpty()) {
+            if (!QDir::isAbsolutePath(personalRoot)) {
+                qCritical("SNOW_SHOT_PERSONAL_DATA_DIR must be an absolute directory");
+                return 2;
+            }
+            storageOptions.appDataDirectory = QDir::cleanPath(personalRoot);
+        }
+    }
     storageOptions.resolvedDirectory =
         std::make_shared<snow_shot::storage::StorageDirectorySelection>(
-            snow_shot::storage::ApplicationStorage::resolveDirectory());
+            snow_shot::storage::ApplicationStorage::resolveDirectory(storageOptions));
     snow_shot::diagnostics::DiagnosticsOptions diagnosticsOptions;
     const auto& selectedStorage = *storageOptions.resolvedDirectory;
     if (!selectedStorage.effectiveDirectory.isEmpty()) {
         diagnosticsOptions.directories.append(
             QDir(selectedStorage.effectiveDirectory).filePath(QStringLiteral("logs")));
     }
-    diagnosticsOptions.directories.append(
-        QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-            .filePath(QStringLiteral("logs")));
+    const QString diagnosticsRoot =
+        snow_shot::app::edition::isMacOS14Personal
+            ? selectedStorage.effectiveDirectory
+            : QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    diagnosticsOptions.directories.append(QDir(diagnosticsRoot).filePath(QStringLiteral("logs")));
     // Crashpad registers process-wide exception resources once. Its live database must
     // stay at a stable path while the user-selected data/log directory is migrated.
     diagnosticsOptions.crashCaptureDirectory =
-        QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-            .filePath(QStringLiteral("logs/crashes"));
+        QDir(diagnosticsRoot).filePath(QStringLiteral("logs/crashes"));
     diagnosticsOptions.directories.append(
         QDir(QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).canonicalPath())
             .filePath(QStringLiteral("SnowShot/%1/logs").arg(applicationName)));

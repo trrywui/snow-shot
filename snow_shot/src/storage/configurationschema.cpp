@@ -1437,8 +1437,8 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      ConfigurationValueKind::Boolean},
     {QStringLiteral("pin_to_screen/confirm_before_destroying_window"), true,
      ConfigurationValueKind::Boolean},
-    {QStringLiteral("pin_to_screen/automatic_text_recognition"), !app::edition::isMini,
-     ConfigurationValueKind::Boolean},
+    {QStringLiteral("pin_to_screen/automatic_text_recognition"),
+     app::edition::automaticPinnedTextRecognition, ConfigurationValueKind::Boolean},
     {QStringLiteral("pin_to_screen/text_selection_on_recognition_results"),
      QStringLiteral("only_when_displayed"),
      ConfigurationValueKind::String,
@@ -1549,7 +1549,8 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
     {QStringLiteral("screenshot/screenshot_sound_notification"), false,
      ConfigurationValueKind::Boolean},
 #if SNOW_SHOT_ENABLE_QR_RECOGNITION
-    {QStringLiteral("screenshot/auto_recognize_qr_code"), true, ConfigurationValueKind::Boolean},
+    {QStringLiteral("screenshot/auto_recognize_qr_code"), app::edition::automaticQrRecognition,
+     ConfigurationValueKind::Boolean},
 #endif
     {QStringLiteral("screenshot/confirm_before_exiting_via_shortcut"), false,
      ConfigurationValueKind::Boolean},

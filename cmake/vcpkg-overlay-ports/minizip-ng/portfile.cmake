@@ -26,6 +26,13 @@ vcpkg_cmake_configure(
         -DMZ_LIB_SUFFIX=-ng
         -DMZ_ICONV=OFF
         -DMZ_COMPAT=OFF
+        # Only the declared zlib feature is supplied by this port. Prevent
+        # auto-detection from linking unrelated host packages into static apps.
+        # Apple encryption continues to use the native CommonCrypto backend.
+        -DMZ_BZIP2=OFF
+        -DMZ_LZMA=OFF
+        -DMZ_ZSTD=OFF
+        -DMZ_OPENSSL=OFF
     OPTIONS_RELEASE
         -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     OPTIONS_DEBUG

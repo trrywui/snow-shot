@@ -9,7 +9,12 @@
 # contains detect.prototxt, detect.caffemodel, sr.prototxt, and sr.caffemodel.
 
 function(snow_shot_fetch_qr_models out_var)
-    set(_destination "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../artifacts/qr-models-wechat")
+    set(_default_destination "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../artifacts/qr-models-wechat")
+    if(SNOW_APPS_MACOS14_PERSONAL)
+        set(_default_destination "${CMAKE_BINARY_DIR}/qr-models-wechat")
+    endif()
+    set(SNOW_SHOT_QR_MODELS_CACHE "${_default_destination}" CACHE PATH "QR model download cache")
+    set(_destination "${SNOW_SHOT_QR_MODELS_CACHE}")
     file(MAKE_DIRECTORY "${_destination}")
 
     set(_base_url "https://raw.githubusercontent.com/WeChatCV/opencv_3rdparty/a8b69ccc738421293254aec5ddb38bd523503252")

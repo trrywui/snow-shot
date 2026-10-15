@@ -46,14 +46,30 @@ else()
     target_link_libraries(snow_capture_c INTERFACE ${_snow_native_libraries})
 endif()
 
+if(NOT DEFINED SNOW_SHOT_MACOS_BUILD_VERSION)
+    set(SNOW_SHOT_MACOS_BUILD_VERSION "${SNOW_SHOT_VERSION_NUMERIC}")
+endif()
 set_target_properties(snow_shot PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/../snow_shot/packaging/macos/Info.plist.in"
     MACOSX_BUNDLE_BUNDLE_NAME "Snow Shot"
-    MACOSX_BUNDLE_BUNDLE_VERSION "${SNOW_SHOT_VERSION_NUMERIC}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${SNOW_SHOT_MACOS_BUILD_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${SNOW_SHOT_VERSION_NUMERIC}"
     MACOSX_BUNDLE_ICON_FILE "snow-shot.icns"
     INSTALL_RPATH "@executable_path/../Frameworks"
     INSTALL_RPATH_USE_LINK_PATH TRUE)
+
+if(SNOW_APPS_MACOS14_PERSONAL)
+    # Keep official metadata untouched while giving the maintained fork a stable identity.
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/../snow_shot/packaging/macos/Info.plist.in"
+        _snow_personal_plist)
+    string(REPLACE "com.snowshot.snow_shot" "io.github.trrywui.snowshot"
+        _snow_personal_plist "${_snow_personal_plist}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/macos/Info-personal.plist.in" "${_snow_personal_plist}")
+    set_target_properties(snow_shot PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/macos/Info-personal.plist.in"
+        MACOSX_BUNDLE_GUI_IDENTIFIER io.github.trrywui.snowshot
+        MACOSX_BUNDLE_BUNDLE_NAME "Snow Shot")
+endif()
 
 foreach(_snow_bundle_language IN ITEMS en zh-Hans zh-Hant)
     set(_snow_bundle_strings
@@ -162,6 +178,7 @@ set(SNOW_MACOS_OCR_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/../snow_shot/packaging/sn
 if(CMAKE_OSX_ARCHITECTURES MATCHES "^(arm64|x86_64)$" AND TARGET snow_ocr_process)
     set(SNOW_MACOS_OCR_ASSETS_ENABLED ON)
     set(_snow_macos_ocr_runtime_arguments)
+    set(SNOW_MACOS_OCR_CACHE "${CMAKE_SOURCE_DIR}/artifacts" CACHE PATH "OCR model download cache")
     if(SNOW_SHOT_OCR_STATIC_ONNXRUNTIME)
         list(APPEND _snow_macos_ocr_runtime_arguments --static-runtime)
     else()
@@ -174,6 +191,7 @@ if(CMAKE_OSX_ARCHITECTURES MATCHES "^(arm64|x86_64)$" AND TARGET snow_ocr_proces
             # relinking its Qt host. A host POST_BUILD hook would miss that update.
             add_custom_target(${_host}-ocr-assets
                 COMMAND "${Python3_EXECUTABLE}" "${SNOW_MACOS_OCR_TOOL}" stage
+                    --cache "${SNOW_MACOS_OCR_CACHE}"
                     --arch "${SNOW_MACOS_OCR_ARCH}"
                     --manifest "${SNOW_MACOS_OCR_MANIFEST}"
                     --runtime-dir "$<TARGET_FILE_DIR:${_host}>"
@@ -222,6 +240,10 @@ elseif(SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "AUTO")
     endif()
 endif()
 if(NOT SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "-")
+    set(_snow_signing_identifier "com.snowshot.snow_shot")
+    if(SNOW_APPS_MACOS14_PERSONAL)
+        set(_snow_signing_identifier "io.github.trrywui.snowshot")
+    endif()
     # Ninja otherwise leaves the raw executable linker/ad-hoc signed, making its
     # TCC designated requirement change on every relink during IDE debugging.
     # Sign a standalone copy because codesign treats the in-bundle executable as
@@ -230,7 +252,7 @@ if(NOT SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "-")
         COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:snow_shot>"
             "$<TARGET_FILE:snow_shot>.snow-signing"
         COMMAND /usr/bin/codesign --force --sign "${SNOW_MACOS_CODESIGN_IDENTITY}"
-            --identifier com.snowshot.snow_shot "$<TARGET_FILE:snow_shot>.snow-signing"
+            --identifier "${_snow_signing_identifier}" "$<TARGET_FILE:snow_shot>.snow-signing"
         COMMAND /usr/bin/codesign --verify --strict "$<TARGET_FILE:snow_shot>.snow-signing"
         COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:snow_shot>.snow-signing"
             "$<TARGET_FILE:snow_shot>"

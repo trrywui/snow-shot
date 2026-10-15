@@ -1,6 +1,7 @@
 #include "snow_shot/runtime/runtimeactivitytracker.h"
 #include "snow_shot/platform/applicationqos.h"
 #include "snow_shot/storage/storageusagetracker.h"
+#include "snow_shot/app/edition.h"
 
 #include "snow_shot/storage/storagelogging.h"
 #include "pinnedwindowstorageconstants_p.h"
@@ -99,12 +100,22 @@ void StorageUsageTracker::drain() {
 }
 
 QString StorageUsageTracker::defaultThumbnailCacheDirectory() {
+    if constexpr (app::edition::isMacOS14Personal) {
+        const QString root = qEnvironmentVariable("SNOW_SHOT_PERSONAL_DATA_DIR");
+        if (QDir::isAbsolutePath(root))
+            return QDir(root).filePath(QStringLiteral("cache/history-thumbnails"));
+    }
     const QString root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     return root.isEmpty() ? QString()
                           : QDir(root).filePath(QStringLiteral("snow-shot/history-thumbnails"));
 }
 
 QString StorageUsageTracker::defaultRecordingTempDirectory() {
+    if constexpr (app::edition::isMacOS14Personal) {
+        const QString root = qEnvironmentVariable("SNOW_SHOT_PERSONAL_DATA_DIR");
+        if (QDir::isAbsolutePath(root))
+            return QDir(root).filePath(QStringLiteral("cache/recordings"));
+    }
     QString root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     if (root.isEmpty()) {
         root = QStandardPaths::writableLocation(QStandardPaths::TempLocation);

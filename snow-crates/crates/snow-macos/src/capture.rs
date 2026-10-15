@@ -157,10 +157,8 @@ pub(crate) fn prepare_with(
             "frame rate must be 1..=240 and timeout nonzero".into(),
         ));
     }
-    if options.dynamic_range == DynamicRange::Hdr && !cfg!(target_arch = "aarch64") {
-        return Err(MacError::Unsupported(
-            "ScreenCaptureKit HDR requires Apple Silicon".into(),
-        ));
+    if options.dynamic_range == DynamicRange::Hdr {
+        crate::capabilities::CaptureSupport::current().native_format(options.dynamic_range)?;
     }
     unsafe {
         let filter = match options.target {
@@ -242,7 +240,7 @@ pub(crate) fn prepare_with(
         config.setHeight(output.height as usize);
         config.setQueueDepth(3);
         config.setShowsCursor(options.cursor == CursorMode::Embedded);
-        config.setShowMouseClicks(false);
+        crate::availability::CaptureAvailability::current().disable_mouse_clicks(&config);
         config.setIgnoreShadowsSingleWindow(true);
         config.setScalesToFit(true);
         config.setMinimumFrameInterval(CMTime {

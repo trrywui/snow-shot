@@ -2,6 +2,8 @@
 
 Copyright (C) 2025-2026 mg-chao
 
+Maintained fork modifications: Copyright (C) 2026 trrywui.
+
 Snow Apps is a multi-license repository. Each component is licensed according
 to the following table. A component license applies to the original files in
 that directory tree unless a file or nested directory states otherwise.
