@@ -2826,7 +2826,8 @@ void test_webp_first_frame_preview(Service& service) {
                        "allocate offset WebP fragment");
     const std::array color{std::byte{80}, std::byte{120}, std::byte{160}, std::byte{128}};
     for (std::size_t offset = 0; offset < pixels.pixels().size(); offset += 4)
-        std::copy(color.begin(), color.end(), pixels.pixels().begin() + static_cast<std::ptrdiff_t>(offset));
+        std::copy(color.begin(), color.end(),
+                  pixels.pixels().begin() + static_cast<std::ptrdiff_t>(offset));
     Frame frame;
     frame.image = std::move(pixels).freeze();
     source.frames.push_back(std::move(frame));
@@ -2912,7 +2913,8 @@ void test_webp_first_frame_preview(Service& service) {
             const auto offset = static_cast<std::size_t>(y * 8U + x) * 4U;
             const std::array transparent{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
             const auto& expected = (y == 2 || y == 3) && x >= 2 && x < 6 ? color : transparent;
-            require(std::equal(expected.begin(), expected.end(), hinted.pixels.begin() + static_cast<std::ptrdiff_t>(offset)),
+            require(std::equal(expected.begin(), expected.end(),
+                               hinted.pixels.begin() + static_cast<std::ptrdiff_t>(offset)),
                     "exact frame offsets retain transparent canvas and straight alpha");
         }
     }
