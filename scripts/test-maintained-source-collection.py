@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check that release sources include locked Git crates without local Git metadata."""
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -79,6 +80,45 @@ class CargoGitSources(unittest.TestCase):
             provenance = json.load(archive.extractfile('cargo-git-sources.json'))
             self.assertEqual(provenance[0]['source'], self.source)
             self.assertEqual(provenance[0]['revision'], self.revision)
+
+
+class FetchContentSources(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        self.root = self.repo / '.tools/macos14-personal'
+        for name, value in [('REPO', self.repo), ('ROOT', self.root)]:
+            replacement = patch.object(collector, name, value)
+            replacement.start()
+            self.addCleanup(replacement.stop)
+        self.checksum = hashlib.sha512(b'MicroTeX fixture source').hexdigest()
+        self.url = 'https://example.invalid/MicroTeX/zip/locked-revision'
+        (self.repo / 'cmake').mkdir()
+        self.cmake = self.repo / 'cmake/MicroTeX.cmake'
+        self.cmake.write_text('FetchContent_Declare(snow_microtex_source\n'
+                              ' URL "' + self.url + '"\n'
+                              ' URL_HASH "SHA512=' + self.checksum + '")\n')
+
+    def test_fetch_content_dependency_enters_the_native_source_records(self):
+        inventory = self.root / 'installed/triplet/share/tinyxml2/vcpkg.spdx.json'
+        inventory.parent.mkdir(parents=True)
+        inventory.write_text(json.dumps({'packages': [{'name': 'tinyxml2', 'versionInfo': '1.0'}]}))
+        records = collector.records()
+        microtex = [record for record in records if record['port'] == 'microtex']
+        self.assertEqual(len(microtex), 1)
+        self.assertEqual(microtex[0]['url'], self.url)
+        self.assertEqual(microtex[0]['sha512'], self.checksum)
+
+    def test_unpinned_fetch_content_source_is_rejected(self):
+        self.cmake.write_text('FetchContent_Declare(source URL "' + self.url + '")')
+        with self.assertRaisesRegex(ValueError, 'SHA512 pin'):
+            collector.fetch_content_sources()
+
+    def test_insecure_fetch_content_source_is_rejected(self):
+        self.cmake.write_text(self.cmake.read_text().replace('https://', 'http://'))
+        with self.assertRaisesRegex(ValueError, 'HTTPS URL'):
+            collector.fetch_content_sources()
 
 
 if __name__ == '__main__':

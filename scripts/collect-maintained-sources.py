@@ -26,6 +26,19 @@ def digest(path, algorithm):
     return result.hexdigest()
 
 
+
+def fetch_content_sources():
+    # MicroTeX is compiled by CMake FetchContent, so no vcpkg inventory lists it.
+    # Read the exact URL/hash used by the build instead of duplicating its pin.
+    cmake = (REPO / 'cmake/MicroTeX.cmake').read_text()
+    url = re.search(r'URL\s+"([^"\n]+)"', cmake)
+    checksum = re.search(r'URL_HASH\s+"SHA512=([0-9a-fA-F]{128})"', cmake)
+    if not url or not checksum or not url[1].startswith('https://'):
+        raise ValueError('MicroTeX FetchContent source must have an HTTPS URL and SHA512 pin')
+    value = checksum[1].lower()
+    return [{'port': 'microtex', 'name': 'MicroTeX', 'url': url[1],
+             'sha512': value, 'file': value + '.source'}]
+
 def records():
     result = {}
     inventories = list((ROOT / 'installed').glob('*/share/*/vcpkg.spdx.json'))
@@ -89,6 +102,8 @@ def records():
         result[name] = {'port': name, 'name': name, 'revision': revision,
                         'url': repository + '/+archive/' + revision + '.tar.gz',
                         'file': name + '-' + revision + '.tar.gz'}
+    for record in fetch_content_sources():
+        result[record['sha512']] = record
     return list(result.values())
 
 
