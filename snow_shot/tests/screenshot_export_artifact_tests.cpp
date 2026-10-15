@@ -54,9 +54,11 @@ struct ScreenshotClipboardPayloadTestAccess {
 #endif
 
 namespace {
-ScreenshotExportArtifact::PngCachePolicy pngCachePolicy(qsizetype maximumBytes) {
+ScreenshotExportArtifact::PngCachePolicy
+pngCachePolicy(qsizetype maximumBytes, std::function<void()> encodingStarted = {}) {
     ScreenshotExportArtifact::PngCachePolicy policy;
     policy.maximumBytes = maximumBytes;
+    policy.encodingStarted = std::move(encodingStarted);
     return policy;
 }
 
@@ -189,7 +191,7 @@ void clipboardSharesPendingConfiguredEncoding() {
                                                      std::move(cancellation);
                                                  return rows;
                                              }),
-        ScreenshotCompressionLevel::High, {64 * 1024 * 1024, [&] { ++encodings; }});
+        ScreenshotCompressionLevel::High, pngCachePolicy(64 * 1024 * 1024, [&] { ++encodings; }));
     QObject receiver;
     bool encoded = false;
     QByteArray canonical;
@@ -321,7 +323,8 @@ void coldClipboardRequestsShareCanonicalRowsAndRetryFailures() {
                                                      std::move(cancellation);
                                                  return source;
                                              }),
-        ScreenshotCompressionLevel::Low, {64 * 1024 * 1024, [&] { encodings.fetch_add(1); }});
+        ScreenshotCompressionLevel::Low,
+        pngCachePolicy(64 * 1024 * 1024, [&] { encodings.fetch_add(1); }));
     QObject receiver;
     ScreenshotClipboardPayload first;
     ScreenshotClipboardPayload second;
@@ -478,8 +481,9 @@ void clipboardIgnoresCachedPngWithDifferentCompression() {
             if (cached == configured)
                 continue;
             std::atomic_int encodings = 0;
-            ScreenshotExportArtifact artifact(ScreenshotExportSource::fromImage(image), configured,
-                                              {64 * 1024 * 1024, [&] { ++encodings; }});
+            ScreenshotExportArtifact artifact(
+                ScreenshotExportSource::fromImage(image), configured,
+                pngCachePolicy(64 * 1024 * 1024, [&] { ++encodings; }));
             QObject receiver;
             QByteArray otherPng;
             require(artifact.requestPng(&receiver, cached,
