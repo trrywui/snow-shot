@@ -11,7 +11,6 @@ import shutil
 import ssl
 import subprocess
 import tarfile
-import tomllib
 import urllib.request
 
 REPO = Path(__file__).resolve().parents[1]
@@ -144,8 +143,12 @@ def prepare():
 def cargo_git_sources():
     locked = {}
     for name in ('snow-crates', 'snow_rust_ffi'):
-        data = tomllib.loads((REPO / name / 'Cargo.lock').read_text())
-        for package in data.get('package', []):
+        # Cargo emits package scalar fields as quoted strings. Read only those fields;
+        # keep this packaging helper usable with macOS's pre-tomllib system Python.
+        text = (REPO / name / 'Cargo.lock').read_text()
+        for block in re.split(r'(?m)^\[\[package\]\]\s*$', text)[1:]:
+            package = dict(re.findall(
+                r'(?m)^(name|version|source)\s*=\s*"([^"\r\n]*)"\s*$', block))
             source = package.get('source', '')
             if source.startswith('git+'):
                 locked.setdefault(source, set()).add(package['name'] + '-' + package['version'])
