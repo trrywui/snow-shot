@@ -73,6 +73,14 @@ namespace settings = snow_shot::presentation::settings;
 namespace pipeline = screenshot_save_export;
 using Format = ScreenshotImageFileFormat;
 
+ScreenshotSaveExportOptions fixtureExportOptions(QSize size, Format format, int quality) {
+    ScreenshotSaveExportOptions options;
+    options.size = size;
+    options.format = format;
+    options.quality = quality;
+    return options;
+}
+
 void require(bool condition, const char* message) {
     if (!condition) {
         std::cerr << message << '\n';
@@ -2627,8 +2635,8 @@ void boundedPreviewAndNativeRegions() {
             require(source.rows.isValid() && reads->load() == 0 &&
                         source.preview.constBits() == rows.previewImage.constBits(),
                     "verified opaque previews must bypass full-source reads");
-            auto png =
-                pipeline::render(source, {image.size(), Format::Png, 100}, cancellation, &error);
+            auto png = pipeline::render(
+                source, fixtureExportOptions(image.size(), Format::Png, 100), cancellation, &error);
             require(png != nullptr && png->pixels->exactImage.isNull(),
                     "large row-only PNG must retain its streaming pixels");
             const int encodedReads = reads->load();
@@ -2667,7 +2675,8 @@ void boundedPreviewAndNativeRegions() {
                     "wide native viewport regions fitting 16MiB must preserve every pixel");
             const auto wideSource = pipeline::prepare(wideRows, cancellation, &error);
             const auto wideJpeg =
-                pipeline::render(wideSource, {wide.size(), Format::Jpeg, 72}, cancellation, &error);
+                pipeline::render(wideSource, fixtureExportOptions(wide.size(), Format::Jpeg, 72),
+                                 cancellation, &error);
             require(wideJpeg != nullptr, "wide JPEG viewport fixture encoding failed");
             const QImage wideDecoded =
                 pipeline::decodeRegion(*wideJpeg, wideRegion, cancellation, &error);
@@ -2704,10 +2713,12 @@ void boundedPreviewAndNativeRegions() {
                         scalingReads->load() > 0,
                     "resized outputs above the preview cap must retain a separately bounded cache");
             const int preparedReads = scalingReads->load();
-            const auto scalingEncoded = pipeline::render(
-                scalingPixels, {scalingSize, Format::Png, 100}, cancellation, &error);
-            const auto scalingJpeg = pipeline::render(
-                scalingPixels, {scalingSize, Format::Jpeg, 85}, cancellation, &error);
+            const auto scalingEncoded =
+                pipeline::render(scalingPixels, fixtureExportOptions(scalingSize, Format::Png, 100),
+                                 cancellation, &error);
+            const auto scalingJpeg =
+                pipeline::render(scalingPixels, fixtureExportOptions(scalingSize, Format::Jpeg, 85),
+                                 cancellation, &error);
             require(scalingEncoded && scalingJpeg && scalingReads->load() == preparedReads,
                     "PNG and JPEG must reuse cached resized pixels without recalculating rows");
             const QImage scaledPreview =
@@ -2756,8 +2767,8 @@ void boundedPreviewAndNativeRegions() {
             }
             for (const auto format :
                  {Format::Jpeg, Format::Webp, Format::Jxl, Format::Avif, Format::Pdf}) {
-                const auto encoded =
-                    pipeline::render(source, {image.size(), format, 72}, cancellation, &error);
+                const auto encoded = pipeline::render(
+                    source, fixtureExportOptions(image.size(), format, 72), cancellation, &error);
                 require(encoded != nullptr, "bounded codec preview encoding failed");
                 const QImage reduced = pipeline::preview(*encoded, source, cancellation, &error);
                 require(!reduced.isNull() && reduced.width() <= 2048 && reduced.height() <= 2048,
@@ -2803,8 +2814,8 @@ void boundedPreviewAndNativeRegions() {
             require(samePixels(native, reference.copy(resizedRegion)) && admitted->size() == 3 &&
                         !admitted->at(1).expired() && admitted->at(2).expired(),
                     "lazy resize native detail must match the full scaler and retire scratch");
-            auto encoded =
-                pipeline::render(resized, {largeSize, Format::Png, 100}, cancellation, &error);
+            auto encoded = pipeline::render(
+                resized, fixtureExportOptions(largeSize, Format::Png, 100), cancellation, &error);
             require(encoded &&
                         samePixels(pipeline::decode(*encoded, cancellation, &error), reference),
                     "lazy PNG export must match every pixel from the full resize reference");
@@ -2893,9 +2904,10 @@ void oversizedManualPngStreamsWithoutPopulatingCache(QWidget& owner, const QTemp
     require(settings.setLastManualSaveState(QStringLiteral("png"), {}),
             "streaming PNG fixture settings failed");
     const QImage image = fixture();
+    ScreenshotExportArtifact::PngCachePolicy cachePolicy;
+    cachePolicy.maximumBytes = 1;
     auto artifact = std::make_shared<ScreenshotExportArtifact>(
-        ScreenshotExportSource::fromImage(image), ScreenshotCompressionLevel::Low,
-        ScreenshotExportArtifact::PngCachePolicy{1, {}});
+        ScreenshotExportSource::fromImage(image), ScreenshotCompressionLevel::Low, cachePolicy);
     require(!artifact->shouldCachePng(image.size()), "large image should use streaming");
     QString savedPath;
     require(ScreenshotSaveAsFileDialog::open(&owner, &owner, artifact,
