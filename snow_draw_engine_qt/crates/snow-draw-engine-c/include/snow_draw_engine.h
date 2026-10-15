@@ -498,6 +498,11 @@ typedef enum SnowRectangleShape {
     SNOW_RECTANGLE_SHAPE_DIAMOND = 2
 } SnowRectangleShape;
 
+typedef enum SnowBrushMode {
+    SNOW_BRUSH_MODE_REGULAR = 0,
+    SNOW_BRUSH_MODE_PRESSURE_SENSITIVE = 1
+} SnowBrushMode;
+
 typedef struct SnowShapeStyle {
     SnowColorRgba8 fill;
     SnowColorRgba8 stroke;
@@ -513,6 +518,7 @@ typedef struct SnowShapeStyle {
     double opacity;
     SnowHighlightShape highlight_shape;
     SnowRectangleShape shape;
+    SnowBrushMode brush_mode;
 } SnowShapeStyle;
 
 typedef enum SnowShapeKind {
@@ -541,6 +547,7 @@ typedef enum SnowShapeKind {
 #define SNOW_SHAPE_STYLE_PROPERTY_OPACITY (1u << 9)
 #define SNOW_SHAPE_STYLE_PROPERTY_HIGHLIGHT_SHAPE (1u << 10)
 #define SNOW_SHAPE_STYLE_PROPERTY_SHAPE (1u << 11)
+#define SNOW_SHAPE_STYLE_PROPERTY_BRUSH_MODE (1u << 14)
 #define SNOW_SHAPE_STYLE_PROPERTY_LINE                                                             \
     (SNOW_SHAPE_STYLE_PROPERTY_FILL | SNOW_SHAPE_STYLE_PROPERTY_FILL_STYLE |                       \
      SNOW_SHAPE_STYLE_PROPERTY_STROKE | SNOW_SHAPE_STYLE_PROPERTY_STROKE_WIDTH |                   \
@@ -550,7 +557,8 @@ typedef enum SnowShapeKind {
 #define SNOW_SHAPE_STYLE_PROPERTY_FREE_DRAW                                                        \
     (SNOW_SHAPE_STYLE_PROPERTY_FILL | SNOW_SHAPE_STYLE_PROPERTY_FILL_STYLE |                       \
      SNOW_SHAPE_STYLE_PROPERTY_STROKE | SNOW_SHAPE_STYLE_PROPERTY_STROKE_WIDTH |                   \
-     SNOW_SHAPE_STYLE_PROPERTY_STROKE_STYLE | SNOW_SHAPE_STYLE_PROPERTY_OPACITY)
+     SNOW_SHAPE_STYLE_PROPERTY_STROKE_STYLE | SNOW_SHAPE_STYLE_PROPERTY_OPACITY |                  \
+     SNOW_SHAPE_STYLE_PROPERTY_BRUSH_MODE)
 
 typedef struct SnowRectangleShapeStyle {
     SnowColorRgba8 fill;
@@ -1024,8 +1032,11 @@ typedef struct SnowPointerEvent {
     double position_y;
     SnowPointerButton button;
     uint8_t buttons;
-    uint8_t reserved0[3];
+    uint8_t has_pressure;
+    uint8_t reserved0[2];
     SnowModifiers modifiers;
+    double pressure;
+    uint64_t timestamp_ms;
 } SnowPointerEvent;
 
 typedef struct SnowWheelEvent {
@@ -1095,6 +1106,11 @@ typedef struct SnowPenFilterGeometryPatch {
     uint8_t reserved0[6];
 } SnowPenFilterGeometryPatch;
 
+typedef enum SnowPathGeometryRole {
+    SNOW_PATH_GEOMETRY_ROLE_CENTERLINE = 0,
+    SNOW_PATH_GEOMETRY_ROLE_PRESSURE_OUTLINE = 1
+} SnowPathGeometryRole;
+
 typedef struct SnowPathGeometryPatch {
     SnowElementId element_id;
     uint64_t expected_geometry_revision;
@@ -1112,7 +1128,8 @@ typedef struct SnowPathGeometryPatch {
     uint8_t closed;
     uint8_t full_reset;
     uint8_t element_removed;
-    uint8_t reserved0[5];
+    uint8_t role;
+    uint8_t reserved0[4];
 } SnowPathGeometryPatch;
 
 typedef struct SnowPathChunkRange {
@@ -1317,6 +1334,7 @@ typedef struct SnowSceneDisplayItem {
     uint8_t is_free_draw;
     uint8_t text_bold;
     uint8_t text_italic;
+    uint8_t brush_mode;
     SnowArrowhead arrow_start_head;
     SnowArrowhead arrow_end_head;
     SnowStrokeStyle arrow_stroke_style;

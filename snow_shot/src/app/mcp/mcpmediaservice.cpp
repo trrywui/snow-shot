@@ -266,6 +266,9 @@ class McpMediaService::Impl {
             reply({}, QStringLiteral("empty_source"));
             return;
         }
+        const auto textStyle = ScreenshotClipboardContentReader::capturePinnedTextStyle();
+        if (snapshot)
+            snapshot->textStyle = textStyle;
         auto content = std::make_shared<std::optional<ScreenshotClipboardContent>>();
         const QString token = uuid();
         const auto id = r.params.value(QStringLiteral("id")).toString();
@@ -291,7 +294,7 @@ class McpMediaService::Impl {
         auto job = ScreenshotExportCoordinator::shared().submit(
             &q, ScreenshotExportCoordinator::Priority::Foreground,
             [snapshot = std::move(snapshot), path, kind, content, dpr, replace,
-             replacementTransform](const ScreenshotExportCancellation& cancel) mutable {
+             replacementTransform, textStyle](const ScreenshotExportCancellation& cancel) mutable {
                 if (kind == QStringLiteral("file")) {
                     const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path});
                     if (files.size() != 1)
@@ -300,6 +303,7 @@ class McpMediaService::Impl {
                             QStringLiteral("unsupported_source"));
                     ScreenshotClipboardContentSnapshot file;
                     file.localImage = files.front();
+                    file.textStyle = textStyle;
                     file.devicePixelRatio = dpr;
                     snapshot = std::move(file);
                 }
@@ -765,9 +769,15 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
             }
         }
 #if SNOW_SHOT_ENABLE_IMAGE_CONVERSION || SNOW_SHOT_ENABLE_LATEX_RECOGNITION ||                     \
-    SNOW_SHOT_ENABLE_QR_RECOGNITION
+    SNOW_SHOT_ENABLE_QR_RECOGNITION || SNOW_SHOT_ENABLE_TABLE_RECOGNITION
         else if (!original) {
-            if (const auto snapshot = window->automationFileSnapshot()) {
+            const QPointer<ScreenshotPinnedWindow> snapshotLifetime(window);
+            const auto snapshot = window->automationFileSnapshot();
+            if (!snapshotLifetime) {
+                reply({}, QStringLiteral("pinned_not_found"));
+                return;
+            }
+            if (snapshot) {
                 const auto path = p.value(QStringLiteral("path")).toString();
                 if (!QFileInfo(path).isAbsolute() ||
                     !QFileInfo(QFileInfo(path).absolutePath()).isDir()) {

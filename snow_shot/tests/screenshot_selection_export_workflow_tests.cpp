@@ -132,27 +132,10 @@ class FakeDestination final : public ScreenshotSelectionExportDestinationPort {
     bool presentationSucceeds = true;
 };
 
-class FakeStore final : public ScreenshotSelectionParamsStorePort {
-  public:
-    void setPreviousSelectionParams(const ScreenshotSelectionParams& params) override {
-        ++writeCount;
-        lastParams = params;
-    }
-
-    int writeCount = 0;
-    std::optional<ScreenshotSelectionParams> lastParams;
-};
-
 struct Fixture {
     Fixture()
-        : workflow(ScreenshotSelectionExportWorkflowContext{captureState,
-                                                            geometry,
-                                                            selection,
-                                                            composer,
-                                                            destination,
-                                                            store,
-                                                            callbackContext,
-                                                            {}}) {
+        : workflow(ScreenshotSelectionExportWorkflowContext{
+              captureState, geometry, selection, composer, destination, callbackContext, {}}) {
         CapturedDisplayModel display;
         display.physicalRect = QRect(0, 0, 100, 80);
         display.canvasRect = display.physicalRect;
@@ -170,12 +153,11 @@ struct Fixture {
     ScreenshotSelectionModel selection;
     FakeComposer composer;
     FakeDestination destination;
-    FakeStore store;
     QObject callbackContext;
     ScreenshotSelectionExportWorkflow workflow;
 };
 
-void publicationSuccessPersistsAndCompletes() {
+void publicationSuccessCompletes() {
     Fixture fixture;
     std::optional<bool> completion;
     QImage completedImage;
@@ -192,11 +174,9 @@ void publicationSuccessPersistsAndCompletes() {
             "destination did not receive a valid prepared payload");
     require(completion == true && completedImage.size() == QSize(8, 6),
             "successful publication did not return the rendered image");
-    require(fixture.store.writeCount == 1 && fixture.store.lastParams.has_value(),
-            "selection settings were not persisted after publication");
 }
 
-void publicationFailureDoesNotPersist() {
+void publicationFailureCompletesWithFailure() {
     Fixture fixture;
     fixture.destination.publicationSucceeds = false;
     std::optional<bool> completion;
@@ -209,8 +189,6 @@ void publicationFailureDoesNotPersist() {
             "failing clipboard request was not scheduled");
     require(fixture.destination.publishCount == 1, "publication failure bypassed destination");
     require(completion == false, "publication failure was not propagated");
-    require(fixture.store.writeCount == 0,
-            "selection settings were persisted after publication failure");
 }
 
 void invalidPayloadDoesNotPublish() {
@@ -226,8 +204,7 @@ void invalidPayloadDoesNotPublish() {
             "invalid-payload request was not scheduled");
     require(fixture.destination.publishCount == 0,
             "invalid payload reached the clipboard destination");
-    require(completion == false && fixture.store.writeCount == 0,
-            "invalid payload was treated as a successful copy");
+    require(completion == false, "invalid payload was treated as a successful copy");
 }
 
 void staleResultHasNoSideEffects() {
@@ -240,8 +217,7 @@ void staleResultHasNoSideEffects() {
                                                                   "stale result returned an image");
                                                       }),
             "stale-result request was not scheduled");
-    require(fixture.destination.publishCount == 0 && fixture.store.writeCount == 0 &&
-                completionCalled,
+    require(fixture.destination.publishCount == 0 && completionCalled,
             "stale clipboard result did not complete with a failure");
 }
 } // namespace
@@ -250,8 +226,8 @@ int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
         saveDialogOwnerFollowsSelection();
-        publicationSuccessPersistsAndCompletes();
-        publicationFailureDoesNotPersist();
+        publicationSuccessCompletes();
+        publicationFailureCompletesWithFailure();
         invalidPayloadDoesNotPublish();
         staleResultHasNoSideEffects();
     } catch (const std::exception& error) {

@@ -105,6 +105,7 @@ class ScreenshotToolbarCommandSink {
     virtual void applyTextTargetLanguage(const QString&) {}
     virtual void startScrollingScreenshot() = 0;
     virtual void restartScrollingScreenshot() {}
+    virtual void splitScrollingScreenshot() {}
     virtual void setScrollingScreenshotRecognitionMode(ScreenshotScrollingRecognitionMode) {}
     virtual void setScrollingScreenshotAutoScroll(bool) {}
     virtual void setScrollingScreenshotAutoScrollIntervalMs(int) {}

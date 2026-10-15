@@ -80,6 +80,7 @@ pub fn editor_style_defaults() -> EditorStyleDefaults {
             arrow_ratio: 1.0,
         },
         line: ShapeStyle {
+            brush_mode: Default::default(),
             shape: snow_draw_engine_document::HighlightShape::Rectangle,
             fill: ColorRgba8::default(),
             fill_style: FillStyle::Solid,
@@ -101,6 +102,7 @@ pub fn editor_style_defaults() -> EditorStyleDefaults {
             highlight_shape: snow_draw_engine_document::HighlightShape::Rectangle,
         },
         free_draw: ShapeStyle {
+            brush_mode: Default::default(),
             shape: snow_draw_engine_document::HighlightShape::Rectangle,
             fill: ColorRgba8::default(),
             fill_style: FillStyle::Solid,
@@ -122,6 +124,7 @@ pub fn editor_style_defaults() -> EditorStyleDefaults {
             highlight_shape: snow_draw_engine_document::HighlightShape::Rectangle,
         },
         rectangle_highlight: ShapeStyle {
+            brush_mode: Default::default(),
             shape: snow_draw_engine_document::HighlightShape::Rectangle,
             fill: stroke,
             fill_style: FillStyle::Solid,
@@ -138,6 +141,7 @@ pub fn editor_style_defaults() -> EditorStyleDefaults {
             highlight_shape: snow_draw_engine_document::HighlightShape::Rectangle,
         },
         pen_highlight: ShapeStyle {
+            brush_mode: Default::default(),
             shape: snow_draw_engine_document::HighlightShape::Rectangle,
             fill: ColorRgba8::default(),
             fill_style: FillStyle::Solid,

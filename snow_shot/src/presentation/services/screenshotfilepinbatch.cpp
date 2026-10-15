@@ -109,6 +109,7 @@ void ScreenshotFilePinBatch::startSource(Source source, Present present, Failure
                                          DuplicateFilter filter, Completion completion) {
     cancel();
     m_active = true;
+    m_textStyle = ScreenshotClipboardContentReader::capturePinnedTextStyle();
     m_present = std::move(present);
     m_completion = std::move(completion);
     m_duplicateFilter = std::move(filter);
@@ -118,7 +119,7 @@ void ScreenshotFilePinBatch::startSource(Source source, Present present, Failure
     auto selection = std::make_shared<snow_shot::platform::SelectedFileResult>();
     m_snapshotJob = ScreenshotExportCoordinator::shared().submit(
         this, ScreenshotExportCoordinator::Priority::Foreground,
-        [source = std::move(source), files, first, selection,
+        [source = std::move(source), files, first, selection, textStyle = m_textStyle,
          identities = m_duplicateFilter.identities](const ScreenshotExportCancellation& token) {
             *selection = source(token);
             if (selection->error != snow_shot::platform::SelectedFileError::None) {
@@ -131,6 +132,7 @@ void ScreenshotFilePinBatch::startSource(Source source, Present present, Failure
                 // from paying a queue round trip before its decode starts.
                 ScreenshotClipboardContentSnapshot snapshot;
                 snapshot.localImage = files->constFirst();
+                snapshot.textStyle = textStyle;
                 *first = ScreenshotClipboardContentReader::decode(
                     std::move(snapshot), [&token]() { return token.isCancellationRequested(); });
             }
@@ -170,6 +172,7 @@ void ScreenshotFilePinBatch::startSource(Source source, Present present, Failure
 void ScreenshotFilePinBatch::submitDecode(quint64 generation, qsizetype index) {
     ScreenshotClipboardContentSnapshot snapshot;
     snapshot.localImage = m_files.at(index);
+    snapshot.textStyle = m_textStyle;
     auto content = std::make_shared<std::optional<ScreenshotClipboardContent>>();
     const ScreenshotExportJobHandle job = ScreenshotExportCoordinator::shared().submit(
         this, ScreenshotExportCoordinator::Priority::Foreground,

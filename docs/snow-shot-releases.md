@@ -8,7 +8,7 @@ Priorities: data preservation and authenticity > recovery > testability > mainta
 | U1 | One SemVer feed, signed metadata, no automatic downgrade | update contract tests |
 | U2 | Background check/download; explicit restart; preserve active work | update service and About tests |
 | U3 | Apply only verified owned files; journal, probe, recover | update transaction tests |
-| R1 | Audited local Windows/macOS packages published directly to GitHub and Gitee | publisher tests |
+| R1 | Audited local release assets on GitHub; update and installer downloads on Gitee | publisher tests |
 | R2 | Private local signing key; immutable verified release assets | signing and publisher tests |
 
 The first updater release is `1.0.0-beta`. Binaries without an updater require one manual
@@ -57,16 +57,36 @@ arguments, or checked-in configuration. Optional `GITEE_USERNAME` defaults to `m
 
 The default publisher authenticates Gitee before building. After the compiled updater
 audits the signed packages, it saves `artifacts/publish-*/local-release.json`, prepares
-the reproducible Homebrew archive from the local DMG and tagged source, and publishes
-the same local files and detailed notes to both destinations. Gitee uploads run on
-the local machine; there is no GitHub release synchronization workflow. Main branch
-source mirroring remains separate. `-SkipGitee` explicitly selects GitHub-only
+the reproducible Homebrew archive from the local DMG and tagged source for GitHub,
+and publishes identical detailed notes to both destinations. Gitee receives only
+the download assets below, directly from the same audited local files:
+
+- Windows Full/Mini x64/ARM64 installers, update ZIPs, and portable ZIPs, with
+  their `.sha256` sidecars. Portable ZIPs are also required for portable auto-updates.
+- The four signed Windows update feeds.
+- Available macOS DMGs and their `.sha256` sidecars, plus the standalone installer script.
+
+Homebrew archives, separate package audit manifests, symbols, package-manager
+metadata, and unrelated service assets stay on GitHub. The local manifest retains
+the complete asset set for auditing and retries. Gitee publication and verification
+select the download subset automatically; they do not require a separate manifest.
+The publisher rejects a selected set larger than 1,000,000,000 bytes (1 decimal GB)
+before creating tags, releases, or attachments. The orchestration checks this budget
+before GitHub publication as well.
+
+Gitee uploads run on the local machine; there is no GitHub release synchronization
+or main-branch source mirroring workflow. New Gitee release tags reference a small,
+deterministic root commit containing `release.json` with the GitHub source commit,
+repository URL, and release tag; no application source or Git history is pushed.
+Existing tags that reference the audited source commit remain valid and are never
+rewritten. The complete source and source tags remain on GitHub.
+`-SkipGitee` explicitly selects GitHub-only
 publication; `-AuditOnly` and `-WhatIf` do not contact Gitee or require a token.
 
 Gitee API reads use the local publication token to avoid anonymous rate limits.
 Transient HTTP 502/503/504 read failures receive at most three short retries;
 upload POST requests are never automatically repeated after an ambiguous response.
-Gitee retries verify all existing bytes before filling missing assets, upload signed
+Gitee retries verify all existing download bytes before filling missing assets, upload signed
 metadata last, and download each attachment to check its size and SHA-256. Conflicting
 bytes, source tags, titles, or notes fail without overwrite. Resume an interrupted
 publication with its saved local manifest, without rebuilding or downloading GitHub
@@ -77,8 +97,12 @@ python scripts/publish-snow-shot-gitee-release.py --manifest artifacts/publish-T
 python scripts/publish-snow-shot-gitee-release.py --manifest artifacts/publish-TRANSACTION/local-release.json --auditor build/snow-shot-msvc-release/snow_shot/Release/snow-shot-updater.exe --verify-only
 ```
 
-`--verify-only` requires no token and performs no uploads; it uses a locally configured
-token when available for authenticated reads. Keep the local manifest and
+`--verify-only` requires no token and performs no uploads or deletions; it uses a locally configured
+token when available for authenticated reads. It also accepts older releases with
+additional GitHub-only assets listed in the local manifest, without downloading those assets.
+Publication removes these obsolete attachments after all download assets pass verification.
+Before deletion, the complete removal plan must match local names, byte sizes, exact
+download URLs, and distinct attachment ids. Keep the local manifest and
 all referenced files until both public release pages and asset downloads are verified.
 
 Gitee retains the newest Snow Shot release. After a publication passes all attachment
@@ -89,11 +113,12 @@ retained. Verification-only runs never delete releases.
 
 If an attachment upload is explicitly rejected for exceeding Gitee's repository
 attachment quota, the publisher first checks whether that attachment was added. If
-it is still missing, it removes older Gitee releases and retries only that upload
+it is still missing, it removes known obsolete GitHub-only attachments and older
+Gitee releases, then retries only that upload
 once. This exception runs only after the new release entry and its existing bytes
 have passed validation; the main workflow has already published and verified GitHub.
 Ambiguous upload failures do not trigger deletion or automatic retries. Ambiguous
-release deletions are reconciled by reading the exact release id before proceeding.
+release and attachment deletions are reconciled by reading the exact resource before proceeding.
 
 ## Release contract
 
@@ -197,8 +222,10 @@ in `snow-shot-mini-installation.json`, its portable marker is
 manager submissions use separate Mini identities (`mg-chao.snow-shot-mini`,
 `snowshot-mini`, and `snow-shot-mini` Homebrew casks).
 
-GitHub and Gitee publish versioned Windows installer and update assets, their checksum
-sidecars and audit manifests, plus `latest-version.json`. When macOS packaging is
+GitHub publishes versioned Windows installer and update assets, their checksum
+sidecars and audit manifests, plus the signed update feeds. Gitee publishes the
+installer/update assets, checksum sidecars, and feeds, omitting separate audit manifests.
+When macOS packaging is
 configured, the default release also includes Full DMGs for ARM64 and Intel,
 the ARM64 Mini DMG, their `.sha256` sidecars, and `install-snow-shot-macos.sh`.
 Signed metadata is uploaded last. The Windows
@@ -688,7 +715,8 @@ in-app.
 The separate `snow-shot-homebrew.yml` workflow updates
 `mg-chao/homebrew-tap` (`main`, `Casks/snow-shot.rb` and edition/channel casks)
 from published stable and beta GitHub releases. It does not change the Windows
-packaging workflow or Gitee mirror. The tag must be `v<version>[_snow-shot]`,
+packaging workflow or Gitee downloads. Homebrew distribution archives are hosted
+only on GitHub. The tag must be `v<version>[_snow-shot]`,
 where the version is stable or ends in `-beta` / `-beta.<number>`, matching
 `SNOW_SHOT_VERSION` in its source checkout. That source must contain the installer
 with `--prepare-app` support. Old releases lacking it cannot be backfilled using

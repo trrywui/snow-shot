@@ -658,6 +658,7 @@ impl EditorState {
                 ..default_styles.arrow
             },
             default_line_style: ShapeStyle {
+                brush_mode: Default::default(),
                 arrow_type: normalized_line_arrow_type(default_styles.line.arrow_type),
                 arrow_shaft_type: Default::default(),
                 arrow_ratio: 1.0,

@@ -516,6 +516,7 @@ pub struct SnowCaptureDirectRecordingConfig {
     audio_mode: u32,
     system_audio_gain_db: i32,
     microphone_gain_db: i32,
+    mouse_highlight_radius: u32,
 }
 
 #[repr(C)]
@@ -525,7 +526,7 @@ struct SnowCaptureDirectRecordingConfigHeader {
     struct_size: u32,
 }
 
-pub const DIRECT_RECORDING_CONFIG_VERSION: u32 = 11;
+pub const DIRECT_RECORDING_CONFIG_VERSION: u32 = 12;
 // Version 8 ended with four padding bytes now occupied by quality.
 const DIRECT_RECORDING_CONFIG_V8_SIZE: u32 = 256;
 const DIRECT_RECORDING_CONFIG_V4_FIELDS_SIZE: usize =
@@ -560,6 +561,8 @@ fn direct_config_size(version: u32) -> Result<u32, String> {
         ),
         8 | 9 => Ok(DIRECT_RECORDING_CONFIG_V8_SIZE),
         10 => Ok(std::mem::offset_of!(SnowCaptureDirectRecordingConfig, microphone_gain_db) as u32),
+        // Version 12 uses the four tail-padding bytes of the version-11 structure.
+        11 => Ok(272),
         DIRECT_RECORDING_CONFIG_VERSION => Ok(DIRECT_RECORDING_CONFIG_SIZE),
         _ => Err(format!(
             "unsupported direct recording config version: {version}"
@@ -1079,6 +1082,11 @@ fn parse_direct_recording_config(
             u64::from(config.mouse_trail_duration_ms)
         },
         mouse_click_rgba: packed_rgba(config.mouse_click_rgba),
+        mouse_highlight_radius: if config.version >= 12 {
+            config.mouse_highlight_radius
+        } else {
+            snow_screen_recorder::EffectsConfig::default().mouse_highlight_radius
+        },
         mouse_highlight_rgba: if config.version >= 7 {
             packed_rgba(config.mouse_highlight_rgba)
         } else {
@@ -1864,7 +1872,7 @@ mod tests {
 
     #[test]
     fn direct_recording_exclusion_abi_layout() {
-        assert_eq!(DIRECT_RECORDING_CONFIG_VERSION, 11);
+        assert_eq!(DIRECT_RECORDING_CONFIG_VERSION, 12);
         assert_eq!(
             std::mem::offset_of!(SnowCaptureDirectRecordingConfig, exclusions),
             192
@@ -2215,12 +2223,42 @@ mod tests {
         assert!(!parsed.record_mouse_clicks && parsed.keyboard.is_none());
         assert_eq!(parsed.mouse_highlight_rgba, [0; 4]);
     }
+    #[test]
+    fn custom_highlight_radius_and_legacy_tail_padding() {
+        let output = c"highlight.mp4";
+        let mut raw = direct_config(output);
+        for radius in [8, 41, 96, 128] {
+            raw.mouse_highlight_radius = radius;
+            assert_eq!(
+                parse_direct_recording_config(&raw)
+                    .unwrap()
+                    .mouse_highlight_radius,
+                radius
+            );
+        }
+        for radius in [0, 7, 129, u32::MAX] {
+            raw.mouse_highlight_radius = radius;
+            assert!(parse_direct_recording_config(&raw).is_err());
+        }
+        raw.version = 11;
+        raw.struct_size = direct_config_size(11).unwrap();
+        let copied = unsafe { read_direct_recording_config(&raw) }.unwrap();
+        assert_eq!(
+            parse_direct_recording_config(&copied)
+                .unwrap()
+                .mouse_highlight_radius,
+            41
+        );
+    }
+
     pub(super) fn direct_config(output: &CStr) -> SnowCaptureDirectRecordingConfig {
         SnowCaptureDirectRecordingConfig {
             exclusions: Default::default(),
             audio_mode: 0,
             system_audio_gain_db: 0,
             microphone_gain_db: 0,
+            mouse_highlight_radius: snow_screen_recorder::EffectsConfig::default()
+                .mouse_highlight_radius,
             version: DIRECT_RECORDING_CONFIG_VERSION,
             struct_size: std::mem::size_of::<SnowCaptureDirectRecordingConfig>() as u32,
             x: -100,

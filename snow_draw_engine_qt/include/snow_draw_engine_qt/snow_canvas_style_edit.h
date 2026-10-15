@@ -176,6 +176,8 @@ inline void snowCanvasMergeStyle(SnowCanvasShapeStyle& target, const SnowCanvasS
         target.opacity = value.opacity;
     if ((properties & SnowCanvasShapeStylePropertyShape) != 0)
         target.shape = value.shape;
+    if ((properties & SnowCanvasShapeStylePropertyBrushMode) != 0)
+        target.brushMode = value.brushMode;
 }
 
 inline void snowCanvasMergeStyle(SnowCanvasTextStyle& target, const SnowCanvasTextStyle& value,

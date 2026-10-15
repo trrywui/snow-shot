@@ -115,7 +115,7 @@ class ScreenshotOcrController final : public QObject {
     [[nodiscard]] bool translating() const;
     [[nodiscard]] bool hasTextResult() const;
     [[nodiscard]] QString sourceTextDraft() const;
-    [[nodiscard]] std::optional<ScreenshotRecognitionFileSnapshot> fileExportSnapshot() const;
+    [[nodiscard]] std::optional<ScreenshotRecognitionFileSnapshot> fileExportSnapshot();
     [[nodiscard]] ScreenshotRecognitionResults cachedRecognitionResults() const;
     [[nodiscard]] ScreenshotRecognitionResults recognitionResultsSnapshot() const;
     void setTextDraft(const QString& text);

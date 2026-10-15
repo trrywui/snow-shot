@@ -719,8 +719,9 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
     } else if (event->type() == QEvent::KeyPress && !keyEvent->isAutoRepeat()) {
         m_impl->noteKeyPress(*keyEvent);
     }
-    const QVector<Impl::Candidate> candidates =
+    QVector<Impl::Candidate> candidates =
         keyRelease ? m_impl->releaseCandidates(*keyEvent) : m_impl->candidates(*keyEvent);
+    bool heldRepeat = false;
     if (!keyRelease || keyEvent->isAutoRepeat()) {
         for (const auto& registered : m_impl->m_bindings) {
             if (std::any_of(registered.activeReleaseBindings.cbegin(),
@@ -728,6 +729,16 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
                             [keyEvent](const auto& binding) {
                                 return shortcuts::shortcutReleaseMatchesEvent(binding, *keyEvent);
                             })) {
+                const auto repeat = std::find_if(
+                    candidates.cbegin(), candidates.cend(),
+                    [&](const auto& candidate) { return candidate.handle == registered.handle; });
+                if (registered.binding.autoRepeat && repeat != candidates.cend()) {
+                    // A repeating held action keeps ownership of the sequence. Only
+                    // its original binding may receive repeats, until physical release.
+                    candidates = {*repeat};
+                    heldRepeat = true;
+                    break;
+                }
                 event->accept();
                 return true;
             }
@@ -768,6 +779,10 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
                 event->accept();
                 return true;
             }
+        }
+        if (heldRepeat) {
+            event->accept();
+            return true;
         }
         return QObject::eventFilter(watched, event);
     }
@@ -880,6 +895,10 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
             event->accept();
             return true;
         }
+    }
+    if (heldRepeat) {
+        event->accept();
+        return true;
     }
     return QObject::eventFilter(watched, event);
 }

@@ -324,10 +324,16 @@ function(snow_add_rust_static_libraries batch_name)
 
     foreach(_index RANGE ${_rust_library_last})
         list(GET SNOW_RUST_TARGETS ${_index} _target_name)
+        list(GET SNOW_RUST_PACKAGES ${_index} _package)
         list(GET _static_libraries ${_index} _static_library)
         list(GET _debug_libraries ${_index} _debug_library)
         list(GET _release_libraries ${_index} _release_library)
         add_library("${_target_name}" STATIC IMPORTED GLOBAL)
+        set_target_properties("${_target_name}" PROPERTIES
+            SNOW_RUST_MANIFEST_DIR "${SNOW_RUST_MANIFEST_DIR}"
+            SNOW_RUST_PACKAGE "${_package}"
+            SNOW_RUST_FEATURES "${SNOW_RUST_FEATURES}"
+            SNOW_RUST_TARGET "${SNOW_RUST_TARGET}")
         if(CMAKE_CONFIGURATION_TYPES)
             set_target_properties("${_target_name}" PROPERTIES
                 IMPORTED_CONFIGURATIONS "DEBUG;RELEASE;RELWITHDEBINFO;MINSIZEREL"
@@ -539,6 +545,12 @@ function(snow_add_rust_executable target_name)
         VERBATIM
     )
     add_executable("${target_name}" IMPORTED GLOBAL)
+    set_target_properties("${target_name}" PROPERTIES
+        SNOW_RUST_MANIFEST_DIR "${SNOW_RUST_MANIFEST_DIR}"
+        SNOW_RUST_PACKAGE "${SNOW_RUST_PACKAGE}"
+        SNOW_RUST_FEATURES "${SNOW_RUST_FEATURES}"
+        SNOW_RUST_NO_DEFAULT_FEATURES "${SNOW_RUST_NO_DEFAULT_FEATURES}"
+        SNOW_RUST_TARGET "${_rust_target}")
     if(SNOW_RUST_PERFORMANCE_PROFILE)
         set_target_properties("${target_name}" PROPERTIES
             IMPORTED_CONFIGURATIONS "DEBUG;RELEASE;RELWITHDEBINFO;MINSIZEREL"

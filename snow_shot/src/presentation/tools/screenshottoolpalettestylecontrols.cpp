@@ -95,6 +95,8 @@ constexpr char kRoleMagnifierRadius[] = "magnifier-corner-radius";
 constexpr char kRoleShapeKind[] = "shape-kind";
 constexpr char kRoleArrowType[] = "arrow-type";
 constexpr char kRoleLineType[] = "line-type";
+constexpr char kRoleBrushMode[] = "brush-mode";
+constexpr char kSignatureBrushMode[] = "icon-options:brush-mode";
 constexpr char kRoleArrowRatio[] = "arrow-ratio";
 constexpr char kSignatureArrowRatio[] = "numeric:arrow-ratio";
 constexpr char kRoleArrowShaft[] = "arrow-shaft-type";
@@ -113,6 +115,10 @@ constexpr char kRoleEraserMode[] = "eraser-mode";
 [[maybe_unused]] constexpr const char* kEraserTranslations[] = {
     QT_TRANSLATE_NOOP("ScreenshotToolPalette", "Current brush eraser stroke width"),
     QT_TRANSLATE_NOOP("ScreenshotToolPalette", "Brush eraser stroke width %1 (%2px)"),
+};
+[[maybe_unused]] constexpr const char* kBrushTranslations[] = {
+    QT_TRANSLATE_NOOP("ScreenshotToolPalette", "Regular brush"),
+    QT_TRANSLATE_NOOP("ScreenshotToolPalette", "Pressure-sensitive brush"),
 };
 constexpr char kRoleFilterType[] = "filter-type";
 constexpr char kRoleFilterIntensity[] = "filter-intensity";
@@ -257,7 +263,7 @@ QVector<QByteArray> styleEditorRoles(ScreenshotToolPalette::Tool tool) {
     case Tool::Line:
         return {kRoleOutlineStroke, kRoleOutlineWidth, kRoleLineType, kRoleShapeFill};
     case Tool::FreeDraw:
-        return {kRoleOutlineStroke, kRoleOutlineWidth, kRoleShapeFill};
+        return {kRoleOutlineStroke, kRoleOutlineWidth, kRoleBrushMode, kRoleShapeFill};
     case Tool::Distance:
         return {kRoleDistanceColor,    kRoleOutlineWidth,  kRoleDistanceValue,   kRoleDistanceUnit,
                 kRoleDistanceDecimals, kRoleDistanceScale, kRoleDistanceEndpoint};
@@ -1371,6 +1377,8 @@ void ScreenshotToolPaletteStyleControls::stageDestinationStyleEditors(
             stageWidget(kRoleCornerRadius);
         } else if (destination == Tool::Line) {
             stageWidget(kRoleLineType);
+        } else if (destination == Tool::FreeDraw) {
+            stageWidget(kRoleBrushMode);
         }
         break;
     case Tool::Distance:
@@ -1680,6 +1688,43 @@ ScreenshotToolPaletteShapeFamilyResult ScreenshotToolPaletteStyleControls::build
     }
     tagEditor(m_shapeStrokeWidthEditor.get(), kRoleOutlineWidth, kSignatureStrokeWidth);
     registerEditor(m_shapeStrokeWidthEditor.get());
+
+    if (styleTool == ScreenshotToolPalette::Tool::FreeDraw) {
+        if (host.addGroupSeparator) {
+            host.addGroupSeparator(layout);
+        }
+        ScreenshotToolPaletteRadioEditorConfig brushModeConfig;
+        brushModeConfig.objectName = QStringLiteral("screenshotBrushModeButtonGroup");
+        brushModeConfig.options = {
+            {0, QStringLiteral("Regular brush"), custom_outlined_icons::BrushRegular()},
+            {1, QStringLiteral("Pressure-sensitive brush"),
+             custom_outlined_icons::BrushPressureSensitive()},
+        };
+        brushModeConfig.initialId = 0;
+        QWidget* brushControls =
+            takeReusableWidget(kRoleBrushMode, kSignatureBrushMode, layout, controls);
+        if (brushControls == nullptr) {
+            const auto editor =
+                createScreenshotToolPaletteRadioEditor(controls, brushModeConfig, metrics);
+            brushControls = editor.container;
+            m_brushModeButtonGroup = editor.group;
+            layout->addWidget(brushControls);
+        } else {
+            m_brushModeButtonGroup = brushControls->findChild<adqt::widgets::AdRadioButtonGroup*>();
+        }
+        brushControls->setObjectName(brushModeConfig.objectName);
+        brushControls->setProperty("screenshotStyleEditorRoot", true);
+        brushControls->setProperty("screenshotStyleEditorRole", kRoleBrushMode);
+        brushControls->setProperty("screenshotStyleEditorSignature", kSignatureBrushMode);
+        QObject::connect(m_brushModeButtonGroup,
+                         &adqt::widgets::AdRadioButtonGroup::checkedIdChanged,
+                         controlCallbackContext(controls), [this](int id) {
+                             if (id >= 0) {
+                                 setBrushMode(id == 1 ? SnowCanvasBrushMode::PressureSensitive
+                                                      : SnowCanvasBrushMode::Regular);
+                             }
+                         });
+    }
 
     if (includeLineTypeEditor) {
         if (host.addGroupSeparator) {
@@ -4329,6 +4374,17 @@ void ScreenshotToolPaletteStyleControls::registerShapeEntries() {
                                                   mixed(SnowCanvasShapeStylePropertyStrokeWidth));
              }
          }},
+        {ShapeBrushModeRefresh,
+         [this, mixed]() {
+             if (m_brushModeButtonGroup == nullptr) {
+                 return;
+             }
+             const QSignalBlocker blocker(m_brushModeButtonGroup);
+             m_brushModeButtonGroup->setCheckedId(
+                 mixed(SnowCanvasShapeStylePropertyBrushMode)                               ? -1
+                 : activeShapeStyle().brushMode() == SnowCanvasBrushMode::PressureSensitive ? 1
+                                                                                            : 0);
+         }},
         {ShapeStrokeRefresh,
          [this, mixed]() {
              SNOW_SHOT_TOOLBAR_PERF_COUNTER("style.shape.stroke_refresh");
@@ -4943,6 +4999,7 @@ void ScreenshotToolPaletteStyleControls::releaseControlBindings() {
     m_arrowStrokeWidthEditor.reset();
     m_arrowStrokeEditor.reset();
     m_arrowTypeButtonGroup = nullptr;
+    m_brushModeButtonGroup = nullptr;
     m_arrowRatioEditor = nullptr;
     m_startArrowheadEditor.reset();
     m_arrowShaftEditor.reset();
@@ -5072,6 +5129,9 @@ void ScreenshotToolPaletteStyleControls::discardBindingsExcept(int destinationTo
     }
     if (destination != Tool::Line) {
         m_lineTypeButtonGroup = nullptr;
+    }
+    if (destination != Tool::FreeDraw) {
+        m_brushModeButtonGroup = nullptr;
     }
     if (!keepDistance) {
         m_distanceValueInput = nullptr;
@@ -5658,6 +5718,7 @@ void ScreenshotToolPaletteStyleControls::refreshToolbarMetrics(
     configureScreenshotToolPaletteStyleRadioButtonGroup(m_shapeButtonGroup, metrics);
     configureScreenshotToolPaletteStyleRadioButtonGroup(m_spotlightShapeButtonGroup, metrics);
     configureScreenshotToolPaletteStyleRadioButtonGroup(m_lineTypeButtonGroup, metrics);
+    configureScreenshotToolPaletteStyleRadioButtonGroup(m_brushModeButtonGroup, metrics);
     configureScreenshotToolPaletteStyleRadioButtonGroup(m_arrowTypeButtonGroup, metrics);
     configureScreenshotToolPaletteStyleRadioButtonGroup(m_distanceUnitGroup, metrics, true);
     configureScreenshotToolPaletteIconNumericValueButton(m_distanceScaleEditor, metrics);
@@ -5997,6 +6058,13 @@ void ScreenshotToolPaletteStyleControls::setShape(SnowCanvasRectangleShape shape
     updateRectangleStyleControls();
     notifyShapeStyleChanged(activeShapeStyle().rectangleStyle(), SnowCanvasShapeStylePropertyShape,
                             activeShapeKind());
+}
+
+void ScreenshotToolPaletteStyleControls::setBrushMode(SnowCanvasBrushMode brushMode) {
+    commitShapeProperty(SnowCanvasShapeStylePropertyBrushMode,
+                        [brushMode](ScreenshotToolPaletteRectangleStyleModel& style) {
+                            return style.setBrushMode(brushMode);
+                        });
 }
 
 void ScreenshotToolPaletteStyleControls::updateSpotlightShapeControls() {
@@ -7213,6 +7281,9 @@ void ScreenshotToolPaletteStyleControls::setStyleToolbarState(
         if (previous.strokeWidth != displayedStyle.strokeWidth ||
             (mixedChanged & SnowCanvasShapeStyleMixedStrokeWidth) != 0)
             groups |= ShapeStrokeWidthRefresh;
+        if (previous.brushMode != displayedStyle.brushMode ||
+            (mixedChanged & SnowCanvasShapeStyleMixedBrushMode) != 0)
+            groups |= ShapeBrushModeRefresh;
         if (previous.stroke != displayedStyle.stroke ||
             previous.strokeStyle != displayedStyle.strokeStyle ||
             (mixedChanged &

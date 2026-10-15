@@ -1,5 +1,6 @@
 #include "translation_test_support.h"
 #include "snow_shot/translation/translationservice.h"
+#include "snow_shot/translation/translationlanguagedetector.h"
 #include "snow_shot/storage/configurationstore.h"
 #include "snow_shot/translation/translationlanguages.h"
 #include <QTemporaryDir>
@@ -112,16 +113,17 @@ void secondaryTargetsPersistAndReachEveryUnit(const QString& directory) {
     preferences.modelId = QStringLiteral("general");
     require(service.savePreferences(preferences), "save shared secondary preferences");
     QObject owner;
-    auto* job = service.createJob({QStringLiteral("中文"), QStringLiteral("Hello")}, &owner);
+    const QStringList texts{QStringLiteral("The complete source text is written in English."),
+                            QStringLiteral("Hello")};
+    auto* job = service.createJob(texts, &owner);
     job->start();
     waitUntil([&] { return server.streams.size() == 2; }, "each input block has its own request");
     for (const auto& stream : server.streams) {
         const auto messages = stream.body.value(QStringLiteral("messages")).toArray();
         const auto prompt = messages.first().toObject().value(QStringLiteral("content")).toString();
-        require(prompt.contains(QStringLiteral("Primary target language: zh-Hans")) &&
-                    prompt.contains(QStringLiteral("Secondary target language: ja")) &&
-                    prompt.contains(QStringLiteral("independent text block")),
-                "every unit receives both shared targets and independent routing instructions");
+        require(prompt.contains(QStringLiteral("Target language: zh-Hans")) &&
+                    !prompt.contains(QStringLiteral("Secondary target language")),
+                "every unit receives the same concrete primary target for unmatched source text");
     }
     job->cancel();
     require(settings.flushNow().success, "persist secondary preference before reopening");
@@ -129,6 +131,265 @@ void secondaryTargetsPersistAndReachEveryUnit(const QString& directory) {
     require(reopened.value(QStringLiteral("screenshot_translation/secondary_target_language")) ==
                 QStringLiteral("ja"),
             "secondary preference survives storage reload");
+}
+
+void detectionIsDeferredUntilRoutingNeedsIt(const QString& directory) {
+    Server server;
+    SnowShotApiClient client(server.url());
+    ConfigurationStore settings(directory + QStringLiteral("/lazy-detection.json"), true, true,
+                                60000);
+    const QStringList texts{QStringLiteral("Bonjour"),
+                            QStringLiteral("The remaining source text is written in English.")};
+    int detectionCalls = 0;
+    auto& service = TranslationService::forClient(
+        client, settings, QLocale::English, [&](const QString& input) {
+            ++detectionCalls;
+            require(input == texts.join(u'\n'), "deferred detection keeps the complete input");
+            return std::optional<DetectedTranslationLanguage>{{QStringLiteral("eng"), 0.8}};
+        });
+    auto preferences = service.preferences();
+    preferences.modelId = QStringLiteral("general");
+    preferences.targetLanguage = QStringLiteral("en");
+    preferences.secondaryTargetLanguage = QStringLiteral("en");
+    require(service.savePreferences(preferences), "configure identical translation targets");
+    QObject owner;
+    auto* job = service.createJob(texts, &owner);
+    const auto verifyTarget = [&](int count, const QString& target) {
+        waitUntil([&] { return server.streams.size() == count; }, "send lazy-routing units");
+        for (qsizetype index = count - texts.size(); index < count; ++index) {
+            const auto prompt = server.streams[index]
+                                    .body.value(QStringLiteral("messages"))
+                                    .toArray()
+                                    .first()
+                                    .toObject()
+                                    .value(QStringLiteral("content"))
+                                    .toString();
+            require(prompt.contains(QStringLiteral("Target language: %1\n").arg(target)),
+                    "lazy routing sends the concrete target to every unit");
+        }
+    };
+    job->start();
+    verifyTarget(2, QStringLiteral("en"));
+    require(detectionCalls == 0, "identical targets need no language detection");
+    job->cancel();
+    preferences.secondaryTargetLanguage = QStringLiteral("fr");
+    require(service.savePreferences(preferences), "enable target switching before retry");
+    job->retry();
+    verifyTarget(4, QStringLiteral("fr"));
+    require(detectionCalls == 1, "routing first detects when a retry enables switching");
+    job->cancel();
+    preferences.secondaryTargetLanguage = QStringLiteral("en");
+    require(service.savePreferences(preferences), "disable target switching before retry");
+    job->retry();
+    verifyTarget(6, QStringLiteral("en"));
+    job->cancel();
+    preferences.secondaryTargetLanguage = QStringLiteral("fr");
+    require(service.savePreferences(preferences), "re-enable target switching before retry");
+    job->retry();
+    verifyTarget(8, QStringLiteral("fr"));
+    require(detectionCalls == 1, "re-enabled routing reuses the original detection");
+    job->cancel();
+
+    preferences.secondaryTargetLanguage.clear();
+    auto* fixed = service.createJob(texts, preferences, &owner);
+    fixed->start();
+    verifyTarget(10, QStringLiteral("en"));
+    require(detectionCalls == 1, "an absent secondary target needs no detection");
+    fixed->cancel();
+    auto* empty = service.createJob({QString(), QStringLiteral("\t\n")}, &owner);
+    empty->start();
+    empty->retry();
+    require(empty->state() == TranslationJob::State::Completed && detectionCalls == 1 &&
+                server.streams.size() == 10,
+            "empty jobs complete without detection or provider requests");
+}
+
+void completeInputRoutingReachesEveryProviderAndRetries(const QString& directory) {
+    const QStringList texts{QStringLiteral("Bonjour"),
+                            QStringLiteral("The rest of the complete input is written in English, "
+                                           "and both output blocks must use the same target.")};
+    for (const auto& provider : {QStringLiteral("general"), QStringLiteral("specialist"),
+                                 QStringLiteral("custom"), QStringLiteral("native")}) {
+        Server builtIn;
+        Server external;
+        external.streamPath = provider == QStringLiteral("native")
+                                  ? QByteArrayLiteral("/v2/translate")
+                                  : QByteArrayLiteral("/v1/chat/completions");
+        SnowShotApiClient client(builtIn.url());
+        ConfigurationStore settings(directory + QStringLiteral("/routing-%1.json").arg(provider),
+                                    true, true, 60000);
+        QString model = provider;
+        if (provider == QStringLiteral("custom")) {
+            const snow_shot::CustomAiModelConfiguration configuration{
+                QStringLiteral("11111111-1111-4111-8111-111111111111"),
+                QStringLiteral("Custom routing test"),
+                external.url() + QStringLiteral("/v1"),
+                QStringLiteral("test-key"),
+                QStringLiteral("provider-model"),
+                false};
+            require(settings.setValue(QStringLiteral("api_configuration/custom_models"),
+                                      snow_shot::customAiModelsToJson({configuration})),
+                    "configure custom routing provider");
+            model = configuration.selectionId();
+        } else if (provider == QStringLiteral("native")) {
+            const snow_shot::TextTranslationConfiguration configuration{
+                QStringLiteral("22222222-2222-4222-8222-222222222222"),
+                QStringLiteral("Native routing test"),
+                QStringLiteral("deepl"),
+                external.url() + QStringLiteral("/v2/translate"),
+                QStringLiteral("test-key"),
+                {},
+                4};
+            require(
+                settings.setValue(QStringLiteral("api_configuration/text_translation"),
+                                  snow_shot::textTranslationConfigurationsToJson({configuration})),
+                "configure native routing provider");
+            model = configuration.selectionId();
+        }
+        int detectionCalls = 0;
+        auto& service = TranslationService::forClient(
+            client, settings, QLocale::English, [&](const QString& input) {
+                ++detectionCalls;
+                require(input == texts.join(u'\n'),
+                        "one detection call receives every complete original block together");
+                return std::optional<DetectedTranslationLanguage>{{QStringLiteral("eng"), 0.8}};
+            });
+        auto preferences = service.preferences();
+        preferences.sourceLanguage = QStringLiteral("ja");
+        preferences.targetLanguage = QStringLiteral("en");
+        preferences.secondaryTargetLanguage = QStringLiteral("fr");
+        preferences.languageDetectionConfidenceThreshold = 60;
+        preferences.modelId = model;
+        require(service.savePreferences(preferences), "save routing preferences");
+        Server& server =
+            provider == QStringLiteral("custom") || provider == QStringLiteral("native") ? external
+                                                                                         : builtIn;
+        const auto verifyRequests = [&](int first, const QString& target) {
+            waitUntil([&] { return server.streams.size() == first + texts.size(); },
+                      "all original units reach the selected provider");
+            QStringList transmittedTexts;
+            for (int index = first; index < first + texts.size(); ++index) {
+                const auto& body = server.streams[index].body;
+                if (provider == QStringLiteral("native")) {
+                    require(body.value(QStringLiteral("target_lang")) == target.toUpper() &&
+                                body.value(QStringLiteral("source_lang")) == QStringLiteral("JA"),
+                            "native provider receives resolved target and unchanged source hint");
+                    transmittedTexts.append(
+                        body.value(QStringLiteral("text")).toArray().first().toString());
+                } else if (provider == QStringLiteral("specialist")) {
+                    const auto options =
+                        body.value(QStringLiteral("translation_options")).toObject();
+                    require(options.value(QStringLiteral("target_lang")) == target &&
+                                options.value(QStringLiteral("source_lang")) ==
+                                    QStringLiteral("ja"),
+                            "Qwen MT receives resolved target and unchanged source hint");
+                    transmittedTexts.append(body.value(QStringLiteral("messages"))
+                                                .toArray()
+                                                .first()
+                                                .toObject()
+                                                .value(QStringLiteral("content"))
+                                                .toString());
+                } else {
+                    const auto messages = body.value(QStringLiteral("messages")).toArray();
+                    const auto prompt =
+                        messages.first().toObject().value(QStringLiteral("content")).toString();
+                    require(
+                        prompt.contains(QStringLiteral("Source language: ja\nTarget language: %1\n")
+                                            .arg(target)) &&
+                            !prompt.contains(QStringLiteral("Secondary target language")),
+                        "chat model receives resolved target without language routing");
+                    transmittedTexts.append(
+                        messages.last().toObject().value(QStringLiteral("content")).toString());
+                }
+            }
+            transmittedTexts.sort();
+            auto originalTexts = texts;
+            originalTexts.sort();
+            require(transmittedTexts == originalTexts,
+                    "translation preserves each original unit while sharing the detected target");
+        };
+        QObject owner;
+        auto* job = service.createJob(texts, &owner);
+        job->start();
+        verifyRequests(0, QStringLiteral("fr"));
+        require(detectionCalls == 1, "initial routing detects complete input once");
+        job->cancel();
+        auto changed = preferences;
+        changed.secondaryTargetLanguage = QStringLiteral("de");
+        changed.languageDetectionConfidenceThreshold = 90;
+        require(service.savePreferences(changed), "raise threshold before retry");
+        job->retry();
+        verifyRequests(2, QStringLiteral("en"));
+        require(detectionCalls == 1 && job->preferences() == changed,
+                "retry reapplies current threshold to the cached complete input detection");
+        job->cancel();
+
+        auto* fixed = service.createJob(texts, preferences, &owner);
+        fixed->start();
+        verifyRequests(4, QStringLiteral("fr"));
+        require(detectionCalls == 2, "each separate job detects its complete input once");
+        fixed->cancel();
+        fixed->retry();
+        verifyRequests(6, QStringLiteral("fr"));
+        require(detectionCalls == 2 && fixed->preferences() == preferences,
+                "fixed retry retains captured threshold and target preferences");
+        fixed->cancel();
+    }
+}
+
+void failedUnitRetryKeepsCompletedInputContext(const QString& directory) {
+    Server server;
+    SnowShotApiClient client(server.url());
+    ConfigurationStore settings(directory + QStringLiteral("/routing-partial-retry.json"), true,
+                                true, 60000);
+    const QStringList texts{QStringLiteral("Bonjour"),
+                            QStringLiteral("The completed block contains the English context "
+                                           "that determines the target for the entire input.")};
+    int detectionCalls = 0;
+    auto& service = TranslationService::forClient(
+        client, settings, QLocale::English, [&](const QString& input) {
+            ++detectionCalls;
+            return std::optional<DetectedTranslationLanguage>{
+                {input == texts.join(u'\n') ? QStringLiteral("eng") : QStringLiteral("fra"), 0.8}};
+        });
+    auto preferences = service.preferences();
+    preferences.targetLanguage = QStringLiteral("en");
+    preferences.secondaryTargetLanguage = QStringLiteral("fr");
+    preferences.modelId = QStringLiteral("general");
+    require(service.savePreferences(preferences), "configure partial retry routing");
+    QObject owner;
+    auto* job = service.createJob(texts, &owner);
+    job->start();
+    waitUntil([&] { return server.streams.size() == 2; }, "send both original input blocks");
+    const auto firstText = server.streams.first()
+                               .body.value(QStringLiteral("messages"))
+                               .toArray()
+                               .last()
+                               .toObject()
+                               .value(QStringLiteral("content"))
+                               .toString();
+    const int completedStream = firstText == texts[1] ? 0 : 1;
+    const int failedStream = 1 - completedStream;
+    server.delta(completedStream, QStringLiteral("completed translation"));
+    server.finish(completedStream);
+    waitUntil([&] { return job->units()[1].state == TranslationJob::State::Completed; },
+              "retain the context-bearing completed block");
+    server.fail(failedStream);
+    waitUntil([&] { return job->state() == TranslationJob::State::Failed; },
+              "the other block fails independently");
+    job->retry();
+    waitUntil([&] { return server.streams.size() == 3; }, "retry only the failed block");
+    const auto messages = server.streams.last().body.value(QStringLiteral("messages")).toArray();
+    require(detectionCalls == 1 &&
+                messages.first()
+                    .toObject()
+                    .value(QStringLiteral("content"))
+                    .toString()
+                    .contains(QStringLiteral("Target language: fr")) &&
+                messages.last().toObject().value(QStringLiteral("content")) == texts[0] &&
+                job->units()[1].text == QStringLiteral("completed translation"),
+            "failed-unit retry uses cached full-input detection and preserves completed context");
+    job->cancel();
 }
 
 void customModelsStayAvailableAndInvalidateTogether(const QString& directory) {
@@ -544,6 +805,9 @@ int main(int argc, char** argv) {
         return 0;
     discoverySharesRequestsAndCancellation(directory.path());
     secondaryTargetsPersistAndReachEveryUnit(directory.path());
+    detectionIsDeferredUntilRoutingNeedsIt(directory.path());
+    completeInputRoutingReachesEveryProviderAndRetries(directory.path());
+    failedUnitRetryKeepsCompletedInputContext(directory.path());
     customModelsStayAvailableAndInvalidateTogether(directory.path());
     failuresAndOwnerLifetimes(directory.path());
     serverChangesRefreshModelsAndPreserveStreams(directory.path());

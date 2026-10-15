@@ -498,6 +498,8 @@ void ScreenshotToolbarWindow::connectScrollingScreenshotCommands(
             [this]() { m_commands.startScrollingScreenshot(); });
     connect(&toolPalette, &ScreenshotToolPalette::scrollingCaptureSettingsChanged, this,
             [this]() { m_commands.restartScrollingScreenshot(); });
+    connect(&toolPalette, &ScreenshotToolPalette::scrollingImageSplittingRequested, this,
+            [this]() { m_commands.splitScrollingScreenshot(); });
     connect(&toolPalette, &ScreenshotToolPalette::scrollingSelectionMoveStarted, this,
             [this](ScreenshotScrollingRecognitionMode axis, QPoint position) {
                 m_commands.beginScrollingSelectionMove(axis, position);

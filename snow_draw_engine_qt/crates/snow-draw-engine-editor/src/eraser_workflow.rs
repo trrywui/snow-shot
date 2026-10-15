@@ -227,6 +227,8 @@ mod tests {
         button: Option<PointerButton>,
     ) -> InputEvent {
         InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id,
             event_type,
             device: PointerDevice::Mouse,

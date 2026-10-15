@@ -486,7 +486,11 @@ bool snowCanvasCopyRgba8888Rows(const QImage& image, int firstRow, int rowCount,
     const auto sourceAddress = reinterpret_cast<std::uintptr_t>(image.constBits());
     const auto destinationAddress = reinterpret_cast<std::uintptr_t>(destination);
     constexpr auto addressMaximum = std::numeric_limits<std::uintptr_t>::max();
-    const auto sourceBytes = static_cast<std::uintptr_t>(image.sizeInBytes());
+    // Borrowed crops keep their original stride; padding after their final pixel row is not
+    // readable source storage and must not falsely overlap an adjacent destination buffer.
+    const auto sourceBytes =
+        static_cast<std::uintptr_t>(image.sizeInBytes() - image.bytesPerLine() +
+                                    (qsizetype(image.width()) * image.depth() + 7) / 8);
     const auto destinationExtent = static_cast<std::uintptr_t>(required);
     if (sourceBytes > addressMaximum - sourceAddress ||
         destinationExtent > addressMaximum - destinationAddress ||
@@ -495,6 +499,8 @@ bool snowCanvasCopyRgba8888Rows(const QImage& image, int firstRow, int rowCount,
         return false;
 
     const bool transformColor = colorSpace.isValid() && image.colorSpace() != colorSpace;
+    const bool preservePremultiplication =
+        transformColor && image.pixelFormat().premultiplied() == QPixelFormat::Premultiplied;
     const auto copyRows = [&](const QImage& converted) {
         if (converted.isNull())
             return false;
@@ -508,7 +514,8 @@ bool snowCanvasCopyRgba8888Rows(const QImage& image, int firstRow, int rowCount,
         return copyRows(image);
 
     try {
-        if ((flags & Qt::PreferDither) && (flags & Qt::Dither_Mask) != Qt::ThresholdDither) {
+        if ((flags & Qt::PreferDither) && (flags & Qt::Dither_Mask) != Qt::ThresholdDither &&
+            !preservePremultiplication) {
             // Qt 6.11's indexed color converter writes the palette of its
             // shallow source copy. Give that path independent image metadata
             // while borrowing the same immutable pixels for this call.
@@ -554,11 +561,19 @@ bool snowCanvasCopyRgba8888Rows(const QImage& image, int firstRow, int rowCount,
                     view.setColorSpace(sourceColorSpace);
                     const QImage converted =
                         !transformColor ? view.convertToFormat(QImage::Format_RGBA8888, flags)
-                        : image.format() <= QImage::Format_Indexed8
-                            // Qt converts the global palette before expanding
-                            // pixels; colorTransformed follows a different route.
-                            ? view.convertedToColorSpace(colorSpace, QImage::Format_RGBA8888, flags)
-                            : view.colorTransformed(transform, QImage::Format_RGBA8888, flags);
+                        : preservePremultiplication
+                            // Qt's combined color/format conversion can mark premultiplied
+                            // channels as straight RGBA. Preserve native precision/alpha for
+                            // color conversion, then explicitly unpremultiply this bounded tile.
+                            ? view.colorTransformed(transform).convertToFormat(
+                                  QImage::Format_RGBA8888, flags)
+                            : image.format() <= QImage::Format_Indexed8
+                                  // Qt converts the global palette before expanding
+                                  // pixels; colorTransformed follows a different route.
+                                  ? view.convertedToColorSpace(colorSpace, QImage::Format_RGBA8888,
+                                                               flags)
+                                  : view.colorTransformed(transform, QImage::Format_RGBA8888,
+                                                          flags);
                     if (converted.isNull()) {
                         failed.store(true, std::memory_order_relaxed);
                         return;

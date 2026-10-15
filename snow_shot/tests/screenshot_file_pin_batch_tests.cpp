@@ -1,7 +1,10 @@
 #include "snow_shot/presentation/screenshotfilepinbatch.h"
 
 #include "snow_shot/platform/selectedfiles.h"
+#include "snow_shot/storage/applicationstorage.h"
+#include "snow_shot/storage/settingsadapters.h"
 #include "pinned_animation_fixtures.h"
+#include "bmp_import_fixtures.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -52,7 +55,10 @@ QString imageFile(QTemporaryDir& directory, const QString& name, QColor color = 
     const QString path = directory.filePath(name);
     QImage image(7, 5, QImage::Format_RGBA8888);
     image.fill(color);
-    require(image.save(path, "PNG"), "fixture must encode");
+    require(QFileInfo(path).suffix().compare(QStringLiteral("bmp"), Qt::CaseInsensitive) == 0
+                ? bmp_import_fixtures::write(path, image)
+                : image.save(path, "PNG"),
+            "fixture must encode");
     return path;
 }
 
@@ -82,6 +88,45 @@ class FakeBackend final : public SelectedFileBackend {
     }
 };
 
+void textBatchesCaptureOneStyle() {
+    QTemporaryDir directory;
+    auto& storage = snow_shot::storage::ApplicationStorage::instance();
+    require(
+        storage.initialize({directory.filePath(QStringLiteral("bin")), directory.path()}).success,
+        "isolated style settings initialize");
+    const snow_shot::storage::PinToScreenSettings settings;
+    require(settings.setTextMaximumWidth(240) && settings.setTextFontSize(20),
+            "configure batch style");
+    QStringList paths;
+    for (int index = 0; index < 5; ++index) {
+        const auto path = directory.filePath(QStringLiteral("%1.txt").arg(index));
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly) && file.write("Pinned batch text") > 0,
+                "write text file");
+        paths.append(path);
+    }
+    auto backend = std::make_shared<FakeBackend>();
+    backend->paths = paths;
+    backend->block = true;
+    ScreenshotFilePinBatch batch;
+    int presented = 0;
+    batch.startSelection(backend, backend->target, [&](ScreenshotClipboardContent content) {
+        require(content.originalContent.textStyle &&
+                    content.originalContent.textStyle->maximumWidth == 240 &&
+                    content.originalContent.textStyle->fontSize == 20,
+                "every file uses the style captured before selection and decoding");
+        ++presented;
+        return true;
+    });
+    require(backend->entered.tryAcquire(1, 5000), "selection worker starts");
+    require(settings.setTextMaximumWidth(800) && settings.setTextFontSize(48),
+            "change settings while import waits");
+    backend->release.release();
+    finish(batch);
+    require(presented == 5, "all text files pin using the same captured style");
+    storage.shutdown();
+}
+
 void mixedFilesAndLargeBatches() {
     QTemporaryDir directory;
     require(directory.isValid(), "temporary directory must exist");
@@ -89,7 +134,9 @@ void mixedFilesAndLargeBatches() {
     for (int index = 0; index < 20; ++index) {
         expected.append(imageFile(directory, QStringLiteral("%1.png").arg(index)));
     }
-    const QString corrupt = directory.filePath(QStringLiteral("corrupt.png"));
+    expected.append(imageFile(directory, QStringLiteral("bitmap.bmp")));
+    expected.append(imageFile(directory, QStringLiteral("bitmap-uppercase.BMP")));
+    const QString corrupt = directory.filePath(QStringLiteral("corrupt.bmp"));
     QFile file(corrupt);
     require(file.open(QIODevice::WriteOnly) && file.write("invalid") == 7, "write corrupt fixture");
     file.close();
@@ -137,6 +184,33 @@ void profiledFilesSurviveBatchDecode() {
     });
     finish(batch);
     require(presented == 1, "profiled file must be presented once");
+}
+
+void alphaBmpFilesSurviveBatchDecode() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "alpha BMP fixture directory must exist");
+    QImage source(3, 2, QImage::Format_RGBA8888);
+    source.fill(Qt::green);
+    source.setPixelColor(0, 0, Qt::red);
+    source.setPixelColor(1, 0, QColor(10, 20, 30, 40));
+    source.setPixelColor(2, 1, QColor(90, 80, 70, 0));
+    const auto path = directory.filePath(QStringLiteral("alpha.BMP"));
+    require(bmp_import_fixtures::write(path, source), "write alpha BMP pin fixture");
+    const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path});
+    require(files.size() == 1, "alpha BMP must be admitted before batch decoding");
+    ScreenshotFilePinBatch batch;
+    int presented = 0;
+    batch.start({path}, [&](ScreenshotClipboardContent content) {
+        require(bmp_import_fixtures::samePixels(content.image, source) &&
+                    content.originalContent.localFilePath == path &&
+                    content.sourceIdentity == files.first().sourceIdentity &&
+                    !content.animationSource,
+                "asynchronous BMP pinning preserves RGBA pixels and original file identity");
+        ++presented;
+        return true;
+    });
+    finish(batch);
+    require(presented == 1, "alpha BMP file must be presented once");
 }
 
 void duplicateFiltering() {
@@ -361,7 +435,7 @@ void selectionFailures() {
 void clipboardFiles() {
     QTemporaryDir directory;
     const QString first = imageFile(directory, QStringLiteral("first.png"));
-    const QString second = imageFile(directory, QStringLiteral("second.png"));
+    const QString second = imageFile(directory, QStringLiteral("second.BMP"));
     QMimeData mime;
     mime.setUrls({QUrl::fromLocalFile(first), QUrl("https://example.com/image.png"),
                   QUrl::fromLocalFile(second)});
@@ -438,10 +512,10 @@ void completionReportsResults() {
 
 void queuedShellRequestsContinueAndRemainIndependent() {
     QTemporaryDir directory;
-    const QString first = imageFile(directory, QStringLiteral("图片 first.PNG"));
+    const QString first = imageFile(directory, QStringLiteral("图片 first.BMP"));
     const QString second = imageFile(directory, QStringLiteral("second.png"));
     const QString missing = directory.filePath(QStringLiteral("missing.png"));
-    const QString corrupt = directory.filePath(QStringLiteral("corrupt.png"));
+    const QString corrupt = directory.filePath(QStringLiteral("corrupt.bmp"));
     QFile invalid(corrupt);
     require(invalid.open(QIODevice::WriteOnly) && invalid.write("invalid") == 7,
             "write queued failed-decode fixture");
@@ -597,8 +671,10 @@ void queuedAnimatedShellRequestsRetainSources() {
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    textBatchesCaptureOneStyle();
     mixedFilesAndLargeBatches();
     profiledFilesSurviveBatchDecode();
+    alphaBmpFilesSurviveBatchDecode();
     duplicateFiltering();
     changedFilesAndPresentationStop();
     prefetchKeepsPresentationOrder();

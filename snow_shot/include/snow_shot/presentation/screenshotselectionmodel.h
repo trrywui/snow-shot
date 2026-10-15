@@ -15,13 +15,20 @@
 class ScreenshotSelectionModel final {
   public:
     enum class RegionOperation { Replace, Add, Subtract };
+    ScreenshotSelectionModel() = default;
+    ScreenshotSelectionModel(const ScreenshotSelectionModel&) = default;
+    ScreenshotSelectionModel(ScreenshotSelectionModel&&) = default;
+    ScreenshotSelectionModel& operator=(const ScreenshotSelectionModel& other);
+    ScreenshotSelectionModel& operator=(ScreenshotSelectionModel&& other);
+
+    [[nodiscard]] quint64 changeRevision() const {
+        return m_changeRevision;
+    }
     void reset();
     ScreenshotRegionType regionType() const {
         return m_regionType;
     }
-    void setRegionType(ScreenshotRegionType type) {
-        m_regionType = type;
-    }
+    void setRegionType(ScreenshotRegionType type);
     bool constructionActive() const {
         return m_draftRegion.has_value();
     }
@@ -109,6 +116,9 @@ class ScreenshotSelectionModel final {
     [[nodiscard]] bool applyParams(const ScreenshotSelectionParams& params, const QRect& bounds);
 
   private:
+    class ChangeRevisionGuard;
+    [[nodiscard]] bool hasSameSelectionState(const ScreenshotSelectionModel& other) const;
+
     struct MarqueeRegion {
         QRect pixels;
         ScreenshotRegionGeometry region;
@@ -137,6 +147,8 @@ class ScreenshotSelectionModel final {
     // Pointer drags already resolve their ratio; confirmation must preserve their geometry.
     bool m_selectionFromDrag = false;
     double m_lockedAspectRatio = 0.0;
+    // Replacements preserve the destination's revision, including candidate-copy validation.
+    quint64 m_changeRevision = 0;
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTSELECTIONMODEL_H

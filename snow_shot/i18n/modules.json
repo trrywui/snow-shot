@@ -90,7 +90,8 @@
     "RecordingTrimSession",
     "RecordingTrimToolbar",
     "ScreenRecordingController",
-    "ScreenRecordingSettingsDialog"
+    "ScreenRecordingSettingsDialog",
+    "ScreenRecordingToolbarWindow"
   ],
   "recognition": [
     "OcrTextOptions",
@@ -113,13 +114,24 @@
     "snow_shot::translation::TranslationService"
   ],
   "history": [
+    "CollageDocument",
+    "CollageEditorWidget",
+    "CollagePdfExport",
+    "CollagePdfPageGrid",
+    "CollagePdfSettingsWidget",
+    "CollageWindow",
     "HistoryEntryWidget",
+    "ImageSplitDocument",
+    "ImageSplitEditorWidget",
+    "ImageSplitExport",
+    "ImageSplitPreviewCanvas",
+    "ImageSplitWindow",
     "PinnedWindowManagementPageWidget",
-    "snow_shot::presentation::PinnedWindowSelectionController",
     "ScreenshotHistoryPageWidget",
     "ScreenshotPinnedWindow",
     "WindowGroupSwitcher",
     "snow_shot::presentation::PinnedWindowGroupManager",
+    "snow_shot::presentation::PinnedWindowSelectionController",
     "snow_shot::presentation::WindowGroupSwitcherController"
   ],
   "updates": [

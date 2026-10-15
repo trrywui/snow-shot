@@ -724,6 +724,12 @@ impl Default for SnowDistanceStyle {
 impl From<SnowShapeStyle> for ShapeStyle {
     fn from(value: SnowShapeStyle) -> Self {
         Self {
+            brush_mode: match value.brush_mode {
+                SnowBrushMode::Regular => snow_draw_engine_core::BrushMode::Regular,
+                SnowBrushMode::PressureSensitive => {
+                    snow_draw_engine_core::BrushMode::PressureSensitive
+                }
+            },
             fill: value.fill.into(),
             fill_style: snow_fill_style_to_rust(value.fill_style),
             stroke: value.stroke.into(),
@@ -997,6 +1003,12 @@ impl From<SerialNumberStyle> for SnowSerialNumberStyle {
 impl From<ShapeStyle> for SnowShapeStyle {
     fn from(value: ShapeStyle) -> Self {
         Self {
+            brush_mode: match value.brush_mode {
+                snow_draw_engine_core::BrushMode::Regular => SnowBrushMode::Regular,
+                snow_draw_engine_core::BrushMode::PressureSensitive => {
+                    SnowBrushMode::PressureSensitive
+                }
+            },
             fill: value.fill.into(),
             fill_style: snow_document_fill_style_from_rust(value.fill_style),
             stroke: value.stroke.into(),
@@ -1059,6 +1071,7 @@ unsafe fn runtime_style_default_enums_are_valid(defaults: *const SnowStyleDefaul
                 && raw_c_enum_is_valid(std::ptr::addr_of!((*shape).arrow_shaft_type))
                 && raw_c_enum_is_valid(std::ptr::addr_of!((*shape).highlight_shape))
                 && raw_c_enum_is_valid(std::ptr::addr_of!((*shape).shape))
+                && raw_c_enum_is_valid(std::ptr::addr_of!((*shape).brush_mode))
         } {
             return false;
         }
@@ -1552,6 +1565,9 @@ pub(crate) fn snow_pointer_event_to_rust(value: &SnowPointerEvent) -> PointerEve
     };
 
     PointerEvent {
+        pressure: (value.has_pressure != 0 && value.pressure.is_finite())
+            .then(|| value.pressure.clamp(0.0, 1.0)),
+        timestamp_ms: value.timestamp_ms,
         pointer_id: value.pointer_id,
         event_type,
         device,
@@ -1562,6 +1578,55 @@ pub(crate) fn snow_pointer_event_to_rust(value: &SnowPointerEvent) -> PointerEve
         button,
         buttons: PointerButtons(value.buttons),
         modifiers: snow_modifiers_to_rust(value.modifiers),
+    }
+}
+
+#[cfg(test)]
+mod pressure_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn brush_mode_round_trips_without_changing_nominal_width() {
+        let style = SnowShapeStyle {
+            brush_mode: SnowBrushMode::PressureSensitive,
+            stroke_width: 12.0,
+            ..SnowShapeStyle::default()
+        };
+        let native: ShapeStyle = style.into();
+        assert_eq!(
+            native.brush_mode,
+            snow_draw_engine_core::BrushMode::PressureSensitive
+        );
+        assert_eq!(SnowShapeStyle::from(native), style);
+    }
+
+    #[test]
+    fn pointer_pressure_is_optional_clamped_and_preserves_time() {
+        let mut pointer = SnowPointerEvent {
+            pointer_id: 7,
+            event_type: SnowPointerEventType::Move,
+            device: SnowPointerDevice::Pen,
+            position_x: 10.0,
+            position_y: 20.0,
+            button: SnowPointerButton::None,
+            buttons: 1,
+            has_pressure: 1,
+            reserved0: [0; 2],
+            modifiers: SnowModifiers::default(),
+            pressure: 0.25,
+            timestamp_ms: 1234,
+        };
+        let native = snow_pointer_event_to_rust(&pointer);
+        assert_eq!(native.pressure, Some(0.25));
+        assert_eq!(native.timestamp_ms, 1234);
+        pointer.pressure = 2.0;
+        assert_eq!(snow_pointer_event_to_rust(&pointer).pressure, Some(1.0));
+        pointer.pressure = f64::NAN;
+        assert_eq!(snow_pointer_event_to_rust(&pointer).pressure, None);
+        pointer.pressure = 0.0;
+        assert_eq!(snow_pointer_event_to_rust(&pointer).pressure, Some(0.0));
+        pointer.has_pressure = 0;
+        assert_eq!(snow_pointer_event_to_rust(&pointer).pressure, None);
     }
 }
 

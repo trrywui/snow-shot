@@ -4,6 +4,7 @@
 #include "theme/theme_manager.h"
 
 #include <QColor>
+#include <QCoreApplication>
 #include <QEnterEvent>
 #include <QEvent>
 #include <QFrame>
@@ -11,6 +12,7 @@
 #include <QResizeEvent>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
+#include <QWheelEvent>
 
 #include <algorithm>
 
@@ -426,6 +428,17 @@ void AdScrollArea::resizeEvent(QResizeEvent* event) {
   QScrollArea::resizeEvent(event);
   syncContentSize();
   syncOverlayScrollBars();
+}
+
+void AdScrollArea::wheelEvent(QWheelEvent* event) {
+  QScrollBar* horizontal = horizontalScrollBar();
+  // Qt selects the scrollbar by wheel axis alone; Shift selects horizontal scrolling here.
+  if (event->modifiers().testFlag(Qt::ShiftModifier) && event->angleDelta().x() == 0 &&
+      horizontal->maximum() > horizontal->minimum()) {
+    QCoreApplication::sendEvent(horizontal, event);
+    return;
+  }
+  QScrollArea::wheelEvent(event);
 }
 
 void AdScrollArea::applyScrollBarStyle() {

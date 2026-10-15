@@ -189,6 +189,8 @@ class ShortcutSettings final {
     bool setSwitchWindowGroup(const shortcuts::ShortcutBindingList& bindings) const;
     [[nodiscard]] shortcuts::ShortcutBindingList globalCanvas() const;
     bool setGlobalCanvas(const shortcuts::ShortcutBindingList& bindings) const;
+    [[nodiscard]] shortcuts::ShortcutBindingList stitchSelectedImages() const;
+    bool setStitchSelectedImages(const shortcuts::ShortcutBindingList& bindings) const;
     [[nodiscard]] shortcuts::ShortcutBindingList openPinToScreenManagement() const;
     bool setOpenPinToScreenManagement(const shortcuts::ShortcutBindingList& bindings) const;
     [[nodiscard]] shortcuts::ShortcutBindingList openSettings() const;
@@ -324,6 +326,7 @@ class ScreenshotShortcutSettings final {
     [[nodiscard]] shortcuts::ShortcutBindingList previousScreenshotHistory() const;
     [[nodiscard]] shortcuts::ShortcutBindingList nextScreenshotHistory() const;
     [[nodiscard]] shortcuts::ShortcutBindingList selectPreviouslySelectedArea() const;
+    [[nodiscard]] shortcuts::ShortcutBindingList selectNextPreviouslySelectedArea() const;
     [[nodiscard]] shortcuts::ShortcutBindingList recapture() const;
     [[nodiscard]] shortcuts::ShortcutBindingList copyColor() const;
     [[nodiscard]] shortcuts::ShortcutBindingList toggleCoordinateMode() const;
@@ -382,6 +385,7 @@ struct ScreenshotTranslationConfiguration {
     QString modelId;
     QString layoutProcessing = QStringLiteral("smart_merge");
     QString secondaryTargetLanguage = QStringLiteral("en");
+    int languageDetectionConfidenceThreshold = 60;
 
     friend bool operator==(const ScreenshotTranslationConfiguration& first,
                            const ScreenshotTranslationConfiguration& second) = default;
@@ -511,6 +515,8 @@ class RecordingSettings final {
     bool setRecordMouseClicks(bool enabled) const;
     [[nodiscard]] QColor mouseHighlightColor() const;
     bool setMouseHighlightColor(const QColor& color) const;
+    [[nodiscard]] int mouseHighlightRadius() const;
+    bool setMouseHighlightRadius(int radius) const;
     [[nodiscard]] bool showCursor() const;
     bool setShowCursor(bool show) const;
     [[nodiscard]] QString encoder() const;
@@ -521,6 +527,8 @@ class RecordingSettings final {
     bool setEncodingPreset(const QString& preset) const;
     [[nodiscard]] bool captureToolbarInRecording() const;
     bool setCaptureToolbarInRecording(bool capture) const;
+    [[nodiscard]] bool autoHideToolbar() const;
+    bool setAutoHideToolbar(bool enabled) const;
     [[nodiscard]] bool autoExitAfterRecordingEnds() const;
     bool setAutoExitAfterRecordingEnds(bool enabled) const;
     [[nodiscard]] bool notifyAfterExportCompletes() const;
@@ -594,6 +602,17 @@ class DrawTemplateSettings final {
 
 class PinToScreenSettings final {
   public:
+    [[nodiscard]] int textMaximumWidth() const;
+    bool setTextMaximumWidth(int value) const;
+    [[nodiscard]] QString textFontFamily() const;
+    bool setTextFontFamily(const QString& value) const;
+    [[nodiscard]] int textFontSize() const;
+    bool setTextFontSize(int value) const;
+    // Invalid colors represent the system palette until customized.
+    [[nodiscard]] QColor textColor() const;
+    bool setTextColor(const QColor& value) const;
+    [[nodiscard]] QColor textBackgroundColor() const;
+    bool setTextBackgroundColor(const QColor& value) const;
     [[nodiscard]] bool showBorderByDefault() const;
     bool setShowBorderByDefault(bool enabled) const;
     [[nodiscard]] bool showShadowByDefault() const;
@@ -640,6 +659,10 @@ class TraySettings final {
     bool setIcon(const QString& icon) const;
     [[nodiscard]] QString customIcon() const;
     bool setCustomIcon(const QString& path) const;
+    [[nodiscard]] QString darkIcon() const;
+    bool setDarkIcon(const QString& icon) const;
+    [[nodiscard]] QString darkCustomIcon() const;
+    bool setDarkCustomIcon(const QString& path) const;
     [[nodiscard]] QString leftClickAction() const;
     [[nodiscard]] QString middleClickAction() const;
     bool setMiddleClickAction(const QString& action) const;

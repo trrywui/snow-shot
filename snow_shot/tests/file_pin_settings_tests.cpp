@@ -8,6 +8,8 @@
 #include "snow_shot/storage/configurationschema.h"
 #include "snow_shot/storage/settingsadapters.h"
 #include <QApplication>
+#include <QPalette>
+#include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include <QHash>
 #include <QTemporaryDir>
 #include <cstdlib>
@@ -45,6 +47,92 @@ class Backend final : public GlobalShortcutBackend {
         registrations.remove(id);
     }
 };
+void pinnedTextStyleSettings() {
+    const storage::PinToScreenSettings stored;
+    GlobalShortcutManager manager(std::make_unique<Backend>(), nullptr, [] { return false; });
+    settings::BuiltInSettingsBackend backend(manager);
+    settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
+    const auto* page =
+        settings::builtInSettingsRegistry().catalog().page(QStringLiteral("pinned-windows"));
+    require(page && page->sections.size() == 4 &&
+                page->sections.at(2).id == QStringLiteral("pin-to-screen-text-style") &&
+                page->sections.at(2).items.size() == 5 &&
+                page->sections.at(2).reset == settings::SettingsSectionReset::PinTextStyle,
+            "Text Style is a separate five-control section before Action Toolbar");
+    require(stored.textMaximumWidth() == 1024 && stored.textFontSize() == 16 &&
+                stored.textFontFamily().isEmpty() && !stored.textColor().isValid() &&
+                !stored.textBackgroundColor().isValid(),
+            "initial text style uses legacy dimensions and theme colors");
+    require(backend.colorValue(settings::SettingsColorBinding::PinTextColor) ==
+                    QApplication::palette().color(QPalette::Text) &&
+                backend.colorValue(settings::SettingsColorBinding::PinTextBackgroundColor) ==
+                    QApplication::palette().color(QPalette::Base),
+            "system color swatches resolve the current palette");
+    for (const int width : {100, 2000})
+        require(session.applyIntegerValue(settings::SettingsIntegerBinding::PinTextMaximumWidth,
+                                          width) &&
+                    stored.textMaximumWidth() == width,
+                "both maximum-width boundaries are accepted");
+    for (const int width : {99, 2001})
+        require(!backend.applyIntegerValue(settings::SettingsIntegerBinding::PinTextMaximumWidth,
+                                           width),
+                "out-of-range widths are rejected");
+    for (const int size : {8, 96})
+        require(
+            session.applyIntegerValue(settings::SettingsIntegerBinding::PinTextFontSize, size) &&
+                stored.textFontSize() == size,
+            "both font-size boundaries are accepted");
+    for (const int size : {7, 97})
+        require(!backend.applyIntegerValue(settings::SettingsIntegerBinding::PinTextFontSize, size),
+                "out-of-range font sizes are rejected");
+    const QString missingFont = QStringLiteral("Snow Shot Missing Test Font");
+    require(session.applySelectValue(settings::SettingsSelectBinding::PinTextFont, missingFont),
+            "an unavailable font preference remains portable");
+    session.requestFontOptions();
+    bool foundMissing = false;
+    for (const auto& option :
+         session.dynamicSelectOptions(settings::SettingsSelectBinding::PinTextFont))
+        foundMissing |= option.value == missingFont;
+    require(foundMissing && stored.textFontFamily() == missingFont,
+            "font options preserve an unavailable saved family");
+    require(session.applySelectValue(settings::SettingsSelectBinding::PinTextFont, QString()),
+            "System default can be selected again");
+    const QColor foreground(170, 20, 80, 128), background(10, 30, 60, 64);
+    require(session.applyColorValue(settings::SettingsColorBinding::PinTextColor, foreground) &&
+                session.applyColorValue(settings::SettingsColorBinding::PinTextBackgroundColor,
+                                        background),
+            "both RGBA defaults can be customized");
+    const auto captured = ScreenshotClipboardContentReader::capturePinnedTextStyle();
+    require(captured.isValid() && captured.maximumWidth == 2000 && captured.fontSize == 96 &&
+                captured.textColor == foreground && captured.backgroundColor == background,
+            "GUI style capture resolves all configured defaults");
+    auto& applicationStorage = storage::ApplicationStorage::instance();
+    require(applicationStorage.configuration().flushNow().success, "text preferences flush");
+    storage::ConfigurationStore reloaded(applicationStorage.configurationDirectory() +
+                                             QStringLiteral("/config.json"),
+                                         true, true, 60000);
+    require(reloaded.value(QStringLiteral("pin_to_screen/text_maximum_width")).toInt() == 2000 &&
+                reloaded.value(QStringLiteral("pin_to_screen/text_color")).toString() ==
+                    storage::colorToRgbaString(foreground),
+            "text style preferences survive reload");
+    require(stored.setShowWindowButtons(false) &&
+                backend.resetSection(settings::SettingsSectionReset::PinTextStyle) &&
+                !stored.showWindowButtons() && stored.textMaximumWidth() == 1024 &&
+                stored.textFontSize() == 16 && stored.textFontFamily().isEmpty() &&
+                !stored.textColor().isValid() && !stored.textBackgroundColor().isValid(),
+            "Text Style reset restores only its own fields");
+    require(captured.textColor == foreground && captured.fontSize == 96 &&
+                stored.setShowWindowButtons(true),
+            "captured styles remain unchanged after reset");
+    require(!storage::ConfigurationSchema::normalize(QStringLiteral("pin_to_screen/text_color"),
+                                                     QStringLiteral("invalid"))
+                    .valid &&
+                storage::ConfigurationSchema::normalize(QStringLiteral("pin_to_screen/text_color"),
+                                                        QStringLiteral("system"))
+                    .valid,
+            "system colors are accepted and malformed colors rejected");
+}
+
 void windowButtonSettings() {
     const storage::PinToScreenSettings stored;
     const auto binding = settings::SettingsSwitchBinding::PinShowWindowButtons;
@@ -342,6 +430,7 @@ int main(int argc, char** argv) {
     require(
         storage.initialize({directory.filePath(QStringLiteral("bin")), directory.path()}).success,
         "temporary storage must initialize");
+    pinnedTextStyleSettings();
     windowButtonSettings();
     windowConfirmationSettings();
     textSelectionSettings();

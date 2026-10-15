@@ -18,6 +18,7 @@ members = [
     "crates/snow-ui-selector-c",
     "crates/snow-selected-text",
     "crates/snow-selected-text-c",
+    "crates/snow-language-detection-c",
     "crates/snow-stitch-images",
     "crates/snow-stitch-images-c",
     "crates/snow-ocr-process",
@@ -62,6 +63,7 @@ uuid = { version = "1.18.1", features = ["v4"] }
 windows = "0.62.2"
 windows-core = "0.62.2"
 num_cpus = "1.17.0"
+whatlang = "0.18.0"
 rstar = "0.12.2"
 zstd = "0.13.3"
 

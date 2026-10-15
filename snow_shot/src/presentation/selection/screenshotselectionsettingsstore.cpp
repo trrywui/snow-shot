@@ -40,32 +40,6 @@ std::optional<ScreenshotSelectionParams> selectionFromJson(const QJsonValue& val
 
 ScreenshotSelectionSettingsStore::ScreenshotSelectionSettingsStore() = default;
 
-bool ScreenshotSelectionSettingsStore::hasPreviousSelectionParams() const {
-    return selectionFromJson(
-               configuration().value(QStringLiteral("screenshot_selection/previous_selection")))
-        .has_value();
-}
-
-ScreenshotSelectionParams ScreenshotSelectionSettingsStore::previousSelectionParams() const {
-    return selectionFromJson(
-               configuration().value(QStringLiteral("screenshot_selection/previous_selection")))
-        .value_or(ScreenshotSelectionParams{});
-}
-
-std::optional<ScreenshotSelectionParams>
-ScreenshotSelectionSettingsStore::previousSelectionParams(const QRect& bounds) const {
-    const auto params = selectionFromJson(
-        configuration().value(QStringLiteral("screenshot_selection/previous_selection")));
-    return params ? clampScreenshotSelectionParamsForRestore(*params, bounds) : std::nullopt;
-}
-
-void ScreenshotSelectionSettingsStore::setPreviousSelectionParams(
-    const ScreenshotSelectionParams& params) {
-    static_cast<void>(
-        configuration().setValue(QStringLiteral("screenshot_selection/previous_selection"),
-                                 storage::persistedSelectionToJson(persistedSelection(params))));
-}
-
 QVector<ScreenshotSelectionPreset> ScreenshotSelectionSettingsStore::presets() const {
     QVector<ScreenshotSelectionPreset> result;
     const QJsonArray array =
@@ -161,7 +135,6 @@ void ScreenshotSelectionSettingsStore::setPresets(
 
 void ScreenshotSelectionSettingsStore::clear() {
     static_cast<void>(configuration().setValues({
-        {QStringLiteral("screenshot_selection/previous_selection"), QJsonValue::Null},
         {QStringLiteral("screenshot_selection/selection_rect_presets"), QJsonArray()},
         {QStringLiteral("screenshot_selection/corner_radius"), 0},
         {QStringLiteral("screenshot_selection/shadow_width"), 0},

@@ -283,6 +283,8 @@ mod double_click_tests {
             .process_input(
                 &document,
                 InputEvent::Pointer(PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 1,
                     event_type: PointerEventType::DoubleClick,
                     device: PointerDevice::Mouse,
@@ -315,6 +317,8 @@ mod stroke_cursor_tests {
 
     fn pointer(event_type: PointerEventType, position: Point<f64>) -> InputEvent {
         InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type,
             device: PointerDevice::Mouse,
@@ -327,6 +331,8 @@ mod stroke_cursor_tests {
 
     fn primary_pointer_down(position: Point<f64>) -> InputEvent {
         InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type: PointerEventType::Down,
             device: PointerDevice::Mouse,
@@ -492,6 +498,7 @@ mod stroke_cursor_tests {
             vec![PathSegmentMode::Curve],
             false,
             FreeDrawStyle {
+                brush_mode: Default::default(),
                 stroke: Default::default(),
                 stroke_width: 12.0,
                 stroke_style: StrokeStyle::Solid,

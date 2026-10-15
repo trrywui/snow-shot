@@ -10,8 +10,8 @@ use crate::{Engine, history::HistoryStore};
 
 // Persisted counters became authoritative for badge creation in version 9.
 const SERIAL_NUMBER_COUNTERS_SESSION_SCHEMA_VERSION: u32 = 9;
-pub const DOCUMENT_SESSION_SCHEMA_VERSION: u32 = 13;
-pub const DOCUMENT_HISTORY_SCHEMA_VERSION: u32 = 9;
+pub const DOCUMENT_SESSION_SCHEMA_VERSION: u32 = 14;
+pub const DOCUMENT_HISTORY_SCHEMA_VERSION: u32 = 10;
 pub const MAX_DOCUMENT_SESSION_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]

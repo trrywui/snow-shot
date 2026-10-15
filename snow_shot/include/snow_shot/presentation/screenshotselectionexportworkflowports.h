@@ -244,11 +244,4 @@ class ScreenshotSelectionExportDestinationPort {
                            PinnedCompletion completion) = 0;
 };
 
-class ScreenshotSelectionParamsStorePort {
-  public:
-    virtual ~ScreenshotSelectionParamsStorePort() = default;
-
-    virtual void setPreviousSelectionParams(const ScreenshotSelectionParams& params) = 0;
-};
-
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTSELECTIONEXPORTWORKFLOWPORTS_H

@@ -3,6 +3,13 @@ mod windows;
 
 #[cfg(target_os = "windows")]
 pub(crate) use windows::WindowsCursorSampler as CursorSamplerImpl;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::system_crosshair_shape;
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn system_crosshair_shape(_width: u32, _height: u32) -> Option<crate::CursorShape> {
+    None
+}
 
 #[cfg(not(target_os = "windows"))]
 pub(crate) struct CursorSamplerImpl;

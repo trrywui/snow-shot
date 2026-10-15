@@ -444,6 +444,68 @@ class QtLicenseMetadata(unittest.TestCase):
 
 
 class MacOSBundleMetadata(unittest.TestCase):
+    def test_mini_installs_offscreen_plugin_from_the_selected_qt_target(self):
+        managed_cmake = ROOT / '.tools/macos-dev/bin/cmake'
+        cmake = str(managed_cmake) if managed_cmake.is_file() else shutil.which('cmake')
+        self.assertIsNotNone(cmake)
+        cases = ((False, 'Debug', False), (False, 'Release', True), (True, 'Release', False))
+        for static, config, stale_cache in cases:
+            with self.subTest(static=static, config=config, stale_cache=stale_cache), \
+                    tempfile.TemporaryDirectory(prefix='snow mini install ') as directory:
+                root = Path(directory)
+                plugin = root / 'selected Qt/plugins/platforms/libqoffscreen.dylib'
+                plugin.parent.mkdir(parents=True)
+                plugin.write_bytes(b'selected Qt offscreen plugin')
+                stale = root / 'old Qt/libqoffscreen.dylib'
+                stale.parent.mkdir()
+                stale.write_bytes(b'stale Qt offscreen plugin')
+                # Keep the real CMake install rule; unrelated application build
+                # and deployment APIs need neither a compiler nor native tools.
+                mocks = ''.join(f'function({command})\nendfunction()\n' for command in
+                                ('target_sources', 'target_link_options',
+                                 'add_custom_target', 'add_dependencies'))
+                qt_target = '' if static else f'''
+add_library(Qt6::QOffscreenIntegrationPlugin MODULE IMPORTED)
+set_target_properties(Qt6::QOffscreenIntegrationPlugin PROPERTIES
+    IMPORTED_CONFIGURATIONS RELWITHDEBINFO
+    IMPORTED_LOCATION_RELWITHDEBINFO [==[{plugin.as_posix()}]==])
+'''
+                cache = '' if not stale_cache else \
+                    f'set(SNOW_QT_OFFSCREEN_PLUGIN [==[{stale.as_posix()}]==] CACHE FILEPATH "")'
+                (root / 'CMakeLists.txt').write_text(f'''
+cmake_minimum_required(VERSION 4.2)
+project(snow_mini_install_contract LANGUAGES NONE)
+add_executable(snow_shot_mini IMPORTED)
+set(SNOW_SHOT_QT_STATIC {'ON' if static else 'OFF'})
+set(SNOW_SHOT_RELEASE_STATIC OFF)
+set(SNOW_SHOT_OCR_STATIC_ONNXRUNTIME ON)
+set(SNOW_MACOS_CODESIGN_IDENTITY "-")
+{qt_target}
+{cache}
+{mocks}
+function(install)
+    cmake_parse_arguments(rule "" "DESTINATION" "" ${{ARGN}})
+    if(rule_DESTINATION MATCHES "/PlugIns/platforms$")
+        _install(${{ARGV}})
+    endif()
+endfunction()
+include([==[{(ROOT / 'cmake/SnowShotMiniMacOS.cmake').as_posix()}]==])
+''')
+                build = root / 'build'
+                stage = root / 'stage'
+                for command in ([cmake, '-S', str(root), '-B', str(build),
+                                 f'-DCMAKE_BUILD_TYPE={config}'],
+                                [cmake, '--install', str(build), '--component', 'SnowShotMini',
+                                 '--prefix', str(stage)]):
+                    result = subprocess.run(command, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                installed = stage / 'snow_shot_mini.app/Contents/PlugIns/platforms/libqoffscreen.dylib'
+                if static:
+                    self.assertFalse(installed.exists())
+                else:
+                    self.assertTrue(installed.is_file())
+                    self.assertEqual(installed.read_bytes(), plugin.read_bytes())
+
     def test_native_deployment_fixture_has_no_mcp_bridge_requirement(self):
         fixture = (ROOT / 'test-support/macos-build/CMakeLists.txt').read_text()
         setup = fixture.split('if(NOT SNOW_FFMPEG_ROOT)', 1)[0]

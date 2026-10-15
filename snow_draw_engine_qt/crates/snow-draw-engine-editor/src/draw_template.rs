@@ -9,7 +9,7 @@ use snow_draw_engine_model::DocumentModel;
 
 use crate::{ApplyTransactionCommand, Editor, EditorCommand, expanded_duplicate_ids};
 
-pub const DRAW_TEMPLATE_SCHEMA_VERSION: u32 = 4;
+pub const DRAW_TEMPLATE_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

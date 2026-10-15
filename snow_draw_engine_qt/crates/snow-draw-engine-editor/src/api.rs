@@ -110,6 +110,8 @@ pub struct ArrowStyle {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShapeStyle {
+    #[serde(default)]
+    pub brush_mode: snow_draw_engine_core::BrushMode,
     pub fill: ColorRgba8,
     pub fill_style: FillStyle,
     pub stroke: ColorRgba8,
@@ -239,6 +241,8 @@ pub const SHAPE_STYLE_PROPERTY_START_ARROWHEAD: u32 = 1 << 5;
 pub const SHAPE_STYLE_PROPERTY_END_ARROWHEAD: u32 = 1 << 6;
 pub const SHAPE_STYLE_PROPERTY_STROKE_STYLE: u32 = 1 << 7;
 pub const SHAPE_STYLE_PROPERTY_ARROW_RATIO: u32 = 1 << 13;
+pub const SHAPE_STYLE_PROPERTY_BRUSH_MODE: u32 = 1 << 14;
+pub const SHAPE_STYLE_MIXED_BRUSH_MODE: u32 = SHAPE_STYLE_PROPERTY_BRUSH_MODE;
 pub const SHAPE_STYLE_PROPERTY_ARROW_SHAFT_TYPE: u32 = 1 << 12;
 pub const SHAPE_STYLE_PROPERTY_ARROW_TYPE: u32 = 1 << 8;
 pub const SHAPE_STYLE_PROPERTY_OPACITY: u32 = 1 << 9;
@@ -272,12 +276,14 @@ pub const SHAPE_STYLE_PROPERTY_FREE_DRAW: u32 = SHAPE_STYLE_PROPERTY_FILL
     | SHAPE_STYLE_PROPERTY_STROKE
     | SHAPE_STYLE_PROPERTY_STROKE_WIDTH
     | SHAPE_STYLE_PROPERTY_STROKE_STYLE
-    | SHAPE_STYLE_PROPERTY_OPACITY;
+    | SHAPE_STYLE_PROPERTY_OPACITY
+    | SHAPE_STYLE_PROPERTY_BRUSH_MODE;
 pub const SHAPE_STYLE_PROPERTY_ALL: u32 = SHAPE_STYLE_PROPERTY_RECTANGLE
     | SHAPE_STYLE_PROPERTY_ARROW
     | SHAPE_STYLE_PROPERTY_LINE
     | SHAPE_STYLE_PROPERTY_HIGHLIGHT_SHAPE
-    | SHAPE_STYLE_PROPERTY_SHAPE;
+    | SHAPE_STYLE_PROPERTY_SHAPE
+    | SHAPE_STYLE_PROPERTY_BRUSH_MODE;
 
 impl ShapeKind {
     pub const fn supported_properties(self) -> u32 {
@@ -405,6 +411,8 @@ pub struct PenFilterPreview {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FreeDrawPreview {
     pub geometry: Arc<PathGeometry>,
+    pub brush_mode: snow_draw_engine_core::BrushMode,
+    pub pressure_geometry: Option<Arc<PathGeometry>>,
     pub stroke: ColorRgba8,
     pub stroke_width: f64,
     pub stroke_style: StrokeStyle,

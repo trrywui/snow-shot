@@ -20,6 +20,7 @@ struct ScreenshotSelectionResizeRequest {
     QWidget* ownerWindow = nullptr;
     ScreenshotSelectionResizeFinishedCallback onFinished;
     bool canvasUsesPoints = false;
+    std::optional<ScreenshotSelectionParams> previousParams;
 };
 
 struct ScreenshotSelectionEditUiActions {

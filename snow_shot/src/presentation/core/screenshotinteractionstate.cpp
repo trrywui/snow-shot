@@ -37,6 +37,7 @@ void ScreenshotInteractionState::resetEffectEditors() {
 }
 
 void ScreenshotInteractionState::reset() {
+    ++m_selectionModeRevision;
     resetEffectEditors();
     m_effectEditorsSuppressed = false;
     m_activeTool = ScreenshotActiveTool::Move;
@@ -47,6 +48,7 @@ void ScreenshotInteractionState::reset() {
 }
 
 void ScreenshotInteractionState::beginCapture() {
+    ++m_selectionModeRevision;
     resetEffectEditors();
     m_activeTool = ScreenshotActiveTool::Move;
     m_mode = ScreenshotCaptureMode::ManualSelecting;
@@ -56,6 +58,7 @@ void ScreenshotInteractionState::beginCapture() {
 }
 
 void ScreenshotInteractionState::enterOverlayVisible(bool selectorReady) {
+    ++m_selectionModeRevision;
     resetEffectEditors();
     m_activeTool = ScreenshotActiveTool::Move;
     m_mode = selectorReady ? ScreenshotCaptureMode::IntelligentSelecting
@@ -75,6 +78,7 @@ void ScreenshotInteractionState::setMoveTool(bool hasSelection, bool selectorRea
         m_mode = ScreenshotCaptureMode::MovingSelection;
         return;
     }
+    ++m_selectionModeRevision;
     m_mode = selectorReady ? ScreenshotCaptureMode::IntelligentSelecting
                            : ScreenshotCaptureMode::ManualSelecting;
 }
@@ -114,6 +118,8 @@ void ScreenshotInteractionState::applySelectionParams() {
 }
 
 void ScreenshotInteractionState::enterScrollingCapture() {
+    if (!scrollingCapture())
+        ++m_selectionModeRevision;
     resetEffectEditors();
     m_activeTool = ScreenshotActiveTool::Move;
     m_mode = ScreenshotCaptureMode::ScrollingCapture;
@@ -123,6 +129,7 @@ void ScreenshotInteractionState::enterScrollingCapture() {
 }
 
 void ScreenshotInteractionState::returnToSelectionMode(bool selectorReady) {
+    ++m_selectionModeRevision;
     resetEffectEditors();
     m_activeTool = ScreenshotActiveTool::Move;
     m_mode = selectorReady ? ScreenshotCaptureMode::IntelligentSelecting
@@ -138,8 +145,10 @@ bool ScreenshotInteractionState::enterSelectionDrag(ScreenshotSelectionDragMode 
         return false;
     }
 
-    if (!m_dragging)
+    if (!m_dragging) {
+        ++m_selectionModeRevision;
         m_marqueeGesture = dragMode == ScreenshotSelectionDragMode::Marquee;
+    }
     // A selection is unconfirmed for the entire create/move/resize transaction.
     m_mode = ScreenshotCaptureMode::ManualSelecting;
     m_dragMode = dragMode;

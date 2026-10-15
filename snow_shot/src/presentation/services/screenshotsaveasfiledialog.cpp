@@ -70,6 +70,8 @@ bool formatSupportsLossless(Format format) {
 }
 
 bool samePreviewPixels(ScreenshotSaveExportOptions left, ScreenshotSaveExportOptions right) {
+    if (left.format == Format::Png && right.format == Format::Png)
+        left.compressionLevel = right.compressionLevel;
     if (left.format == Format::Pdf && right.format == Format::Pdf) {
         // The paper is drawn by the preview canvas; title and page layout never alter the tiles.
         left.pdfPageSize = right.pdfPageSize;
@@ -96,6 +98,9 @@ class SaveContent final : public QWidget {
                 ScreenshotSaveAsFileDialog::Saved saved)
         : m_modal(modal), m_artifact(std::move(artifact)), m_saved(std::move(saved)) {
         setObjectName(QStringLiteral("saveDialogContent"));
+        m_renderTimer.setSingleShot(true);
+        m_renderTimer.setInterval(100);
+        connect(&m_renderTimer, &QTimer::timeout, this, [this] { startRender(); });
         m_state = ScreenshotSaveDialogState::initial({});
         loadRememberedFormatOptions();
         applyRememberedFormatOptions();
@@ -280,6 +285,7 @@ class SaveContent final : public QWidget {
     void cancel(bool cancelSource = false) {
         m_closed = true;
         ++m_generation;
+        m_renderTimer.stop();
         if (m_menu)
             m_menu->dismissPopup();
         m_job.cancel();
@@ -442,6 +448,12 @@ class SaveContent final : public QWidget {
                              !QDir::isAbsolutePath(m_state.directory.trimmed());
         setError(QStringLiteral("directory"), badPath ? error : QString());
         setError(QStringLiteral("filename"), !badPath && error != imageError ? error : QString());
+        const bool existingFile =
+            !badPath && error == imageError && QFileInfo::exists(m_state.outputPath());
+        m_form->itemForName(QStringLiteral("filename"))
+            ->setWarningMessages(existingFile
+                                     ? QStringList{tr("A file with this name already exists")}
+                                     : QStringList{});
         m_width->setStatus(imageError.isEmpty() ? AdInputNumber::Status::None
                                                 : AdInputNumber::Status::Error);
         m_height->setStatus(imageError.isEmpty() ? AdInputNumber::Status::None
@@ -788,7 +800,6 @@ class SaveContent final : public QWidget {
         const auto sync = [this, preserveEmpty](AdInputNumber* input, int pixels, int source) {
             const QSignalBlocker blocker(input);
             const bool empty = preserveEmpty && !input->hasValue();
-            input->setDecimals(m_percentage ? 2 : 0);
             input->setRange(0, m_percentage && source > 0 ? 100.0 * kMaximumDimension / source
                                                           : kMaximumDimension);
             input->setSuffixText(m_percentage ? QStringLiteral("%") : QString());
@@ -858,6 +869,7 @@ class SaveContent final : public QWidget {
         if (options && options == m_requestedOptions)
             return;
         m_requestedOptions = options;
+        m_renderTimer.stop();
         m_outputDescription->clear();
         ++m_generation;
         m_job.cancel();
@@ -869,7 +881,13 @@ class SaveContent final : public QWidget {
             return;
         }
         m_preview->setBusy(true);
-        startRender();
+        const bool cachedPng = options->format == Format::Png &&
+                               options->size == m_state.sourceSize &&
+                               m_artifact->cachedPng(options->compressionLevel).isValid();
+        if (m_generation == 1 || cachedPng || (m_encoded && m_encoded->options == *options))
+            startRender();
+        else
+            m_renderTimer.start();
     }
     void loadSource() {
         const bool started = m_artifact->requestRowSource(
@@ -904,8 +922,14 @@ class SaveContent final : public QWidget {
                         syncDimensionInputs();
                         m_form->setDisabled(false);
                         m_modal->acceptButton()->setEnabled(true);
-                        m_preview->setSource(m_source.preview, m_state.sourceSize);
-                        m_preview->setOutput(m_source.preview);
+                        m_preview->setSource(
+                            m_source.preview, m_state.sourceSize,
+                            [rows = m_source.rows](QRect region,
+                                                   const ScreenshotExportCancellation& cancellation,
+                                                   QString* error) {
+                                return pipeline::readRegion(rows, region, cancellation, error);
+                            });
+                        m_preview->setOutput(m_source.preview, m_state.sourceSize);
                         changed();
                     });
                 if (!m_job.isValid())
@@ -999,7 +1023,8 @@ class SaveContent final : public QWidget {
                 m_encoded = *encoded;
                 updateOutputDescription();
                 setProperty("encodedGeneration", QVariant::fromValue(generation));
-                startRender();
+                if (generation == m_generation)
+                    startRender();
             });
         if (!m_job.isValid()) {
             m_renderGeneration.reset();
@@ -1010,6 +1035,17 @@ class SaveContent final : public QWidget {
         ++m_decodeSerial;
         m_decodeJob.cancel();
         m_decodeJob = {};
+    }
+    void publishPreview(QImage image, const ScreenshotSaveExportOptions& options) {
+        m_renderedPreviewOptions = options;
+        m_preview->setOutput(
+            std::move(image), options.size,
+            [encoded = m_encoded](QRect region, const ScreenshotExportCancellation& cancellation,
+                                  QString* error) {
+                return pipeline::decodeRegion(*encoded, region, cancellation, error);
+            });
+        m_preview->setBusy(false);
+        setProperty("previewGeneration", QVariant::fromValue(m_generation));
     }
     void startDecode() {
         if (m_closed || m_saving || !m_encoded || !m_requestedOptions ||
@@ -1025,25 +1061,31 @@ class SaveContent final : public QWidget {
             return;
         }
         if (m_encoded->codecResult.roundTrip == snow::image::PixelRoundTrip::exact &&
-            m_encoded->pixels && !m_encoded->pixels->exactImage.isNull()) {
-            m_renderedPreviewOptions = m_encoded->options;
-            m_preview->setOutput(m_encoded->pixels->exactImage);
-            m_preview->setBusy(false);
-            setProperty("previewGeneration", QVariant::fromValue(m_generation));
-            return;
+            m_encoded->pixels) {
+            if (m_encoded->options.size == m_source.rows.size) {
+                publishPreview(m_source.preview, m_encoded->options);
+                return;
+            }
+            const QImage& exact = m_encoded->pixels->exactImage;
+            if (!exact.isNull() && exact.width() <= 2048 && exact.height() <= 2048) {
+                publishPreview(exact, m_encoded->options);
+                return;
+            }
         }
         if (m_decodeJob.isValid())
             return;
         m_preview->setBusy(true);
-        setProperty("previewDecodeCount", property("previewDecodeCount").toInt() + 1);
+        if (m_encoded->codecResult.roundTrip != snow::image::PixelRoundTrip::exact)
+            setProperty("previewDecodeCount", property("previewDecodeCount").toInt() + 1);
         const quint64 generation = m_generation;
         const quint64 serial = ++m_decodeSerial;
         const auto options = m_encoded->options;
         m_decodeJob = ScreenshotExportCoordinator::shared().submit(
             this, ScreenshotExportCoordinator::Priority::Foreground,
-            [encoded = m_encoded](const ScreenshotExportCancellation& cancellation) {
+            [encoded = m_encoded,
+             source = m_source](const ScreenshotExportCancellation& cancellation) {
                 ScreenshotExportTaskResult result;
-                result.image = pipeline::decode(*encoded, cancellation, &result.error);
+                result.image = pipeline::preview(*encoded, source, cancellation, &result.error);
                 if (result.image.isNull())
                     result.failureStage = ScreenshotExportFailureStage::Render;
                 return result;
@@ -1058,9 +1100,7 @@ class SaveContent final : public QWidget {
                         tr("The encoded preview could not be displayed: %1").arg(result.error));
                     return;
                 }
-                m_renderedPreviewOptions = options;
-                m_preview->setOutput(std::move(result.image));
-                setProperty("previewGeneration", QVariant::fromValue(generation));
+                publishPreview(std::move(result.image), options);
             });
         if (!m_decodeJob.isValid()) {
             m_preview->setBusy(false);
@@ -1075,6 +1115,7 @@ class SaveContent final : public QWidget {
             ScreenshotImageFileService::formatKey(m_state.output.format),
             serializedFormatOptions()));
         m_saving = true;
+        m_renderTimer.stop();
         m_savePath = m_state.outputPath();
         m_form->setDisabled(true);
         m_modal->setAcceptButtonBusy(true);
@@ -1160,6 +1201,7 @@ class SaveContent final : public QWidget {
     ScreenshotExportJobHandle m_job;
     ScreenshotExportJobHandle m_decodeJob;
     ScreenshotExportJobHandle m_saveJob;
+    QTimer m_renderTimer;
     quint64 m_generation = 0;
     quint64 m_decodeSerial = 0;
     bool m_closed = false;
@@ -1292,7 +1334,8 @@ bool ScreenshotSaveDialogState::lossless() const {
 
 bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
                                       std::shared_ptr<ScreenshotExportArtifact> source, Saved saved,
-                                      Finished finished, QWidget* stackingOwner) {
+                                      Finished finished, QWidget* stackingOwner,
+                                      Qt::WindowModality modality) {
     if (!lifetime || !owner || !source || !source->isValid())
         return false;
     const QPointer<QWidget> stackingWindow(
@@ -1304,7 +1347,7 @@ bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
     if (stackingWindow) {
         QObject::connect(stackingWindow, &QObject::destroyed, modal, &AdModal::reject);
     }
-    modal->setWindowModality(Qt::ApplicationModal);
+    modal->setWindowModality(modality);
     modal->setCentered(true);
     modal->setMaskVisible(false);
     modal->setCloseOnMaskClick(false);
@@ -1353,11 +1396,12 @@ bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
     return true;
 }
 bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner, const QImage& image,
-                                      Saved saved, Finished finished, QWidget* stackingOwner) {
+                                      Saved saved, Finished finished, QWidget* stackingOwner,
+                                      Qt::WindowModality modality) {
     if (image.isNull())
         return false;
     return open(
         lifetime, owner,
         std::make_shared<ScreenshotExportArtifact>(ScreenshotExportSource::fromImage(image)),
-        std::move(saved), std::move(finished), stackingOwner);
+        std::move(saved), std::move(finished), stackingOwner, modality);
 }

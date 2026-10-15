@@ -45,6 +45,27 @@ void screenshotSaveHotkeysReset(settings::SettingsRuntimeSession& session) {
             "Screenshot reset persists both cleared save hotkeys");
 }
 
+void copyShortcutReset(settings::SettingsRuntimeSession& session) {
+    constexpr auto scope = settings::SettingsLocalShortcutScope::Screenshot;
+    const QString id = QStringLiteral("copy_to_clipboard");
+    const shortcuts::ShortcutBindingList defaults{QStringLiteral("Ctrl+C"),
+                                                  QStringLiteral("Return")};
+    auto& configuration = storage::ApplicationStorage::instance().configuration();
+    const auto before = configuration.snapshot();
+    require(session.localShortcuts(scope, id) == defaults,
+            "screenshot copy must initially default to Ctrl+C and Enter");
+    for (const auto& value : {shortcuts::ShortcutBindingList{QStringLiteral("Alt+C")},
+                              shortcuts::ShortcutBindingList{}}) {
+        require(session.applyLocalShortcuts(scope, id, value) &&
+                    session.localShortcuts(scope, id) == value,
+                "screenshot copy must support custom keys and disabling");
+        require(session.reset(settings::SettingsSectionReset::ScreenshotEditorShortcuts) &&
+                    session.localShortcuts(scope, id) == defaults &&
+                    configuration.snapshot() == before,
+                "reset must restore both Ctrl+C and Enter for screenshot copy");
+    }
+}
+
 void printShortcutsReset(settings::SettingsRuntimeSession& session) {
     auto& configuration = storage::ApplicationStorage::instance().configuration();
     const shortcuts::ShortcutBindingList defaults{QStringLiteral("Ctrl+P")};
@@ -254,6 +275,7 @@ int main(int argc, char** argv) {
         settings::BuiltInSettingsBackend backend(manager);
         settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
         screenshotSaveHotkeysReset(session);
+        copyShortcutReset(session);
         printShortcutsReset(session);
         selectionTypeShortcutsPersistValidateAndReset(
             session, backend,

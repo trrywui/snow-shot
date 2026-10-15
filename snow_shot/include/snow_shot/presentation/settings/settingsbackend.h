@@ -366,7 +366,11 @@ class BuiltInSettingsBackend final : public SettingsBackend {
     void refreshStorageStatusIfStale() override;
     [[nodiscard]] bool resetSection(SettingsSectionReset reset) override;
 
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
   private:
+    void observeAppearanceChanges();
     void connectSkinControllerIfNeeded();
     [[nodiscard]] platform::windows::AdministratorResult applyStartupSettings(bool enabled,
                                                                               bool elevated);

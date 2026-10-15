@@ -259,6 +259,11 @@ if(NOT SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "-")
         COMMAND "${CMAKE_COMMAND}" -E rm -f "$<TARGET_FILE:snow_shot>.snow-signing"
         VERBATIM)
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/SnowRustLicenses.cmake")
+snow_install_rust_licenses(
+    COMPONENT SnowShot
+    DESTINATION "snow_shot.app/Contents/Resources/snow-shot/licenses/third-party/cargo"
+    TARGETS snow_shot_full_rust_ffi_bundle snow_selected_text_c snow_ocr_process snow_shot_mcp)
 # Full includes its default model; Mini supplies its own runtime-only policy.
 set(SNOW_MACOS_OCR_RUNTIME_ONLY OFF)
 configure_file("${CMAKE_CURRENT_LIST_DIR}/DeploySnowShotMacOS.cmake.in"

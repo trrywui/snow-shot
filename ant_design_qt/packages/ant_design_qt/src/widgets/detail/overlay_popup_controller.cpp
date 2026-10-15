@@ -1853,6 +1853,8 @@ bool OverlayPopupController::popupIsVisible() const {
   return popupVisible_ && popup && popup->isVisible();
 }
 
+bool OverlayPopupController::popupIsRequestedVisible() const { return popupVisible_; }
+
 bool OverlayPopupController::popupWantsHostFrameRelayout() const { return false; }
 
 bool OverlayPopupController::popupContainsGlobalPos(const QPoint& globalPos) const {

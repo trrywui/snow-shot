@@ -347,6 +347,7 @@ impl EditorSession {
         state.default_magnifier_style = persisted.magnifier;
         crate::validate_angle_style(persisted.angle)?;
         state.default_line_style = ShapeStyle {
+            brush_mode: Default::default(),
             arrow_type: crate::style::normalized_line_arrow_type(persisted.line.arrow_type),
             arrow_shaft_type: Default::default(),
             arrow_ratio: 1.0,
@@ -431,6 +432,10 @@ impl EditorSession {
 
     pub fn set_active_tool(&mut self, active_tool: ActiveTool) -> Result<(), ErrorCode> {
         self.editor.set_active_tool(active_tool)
+    }
+
+    pub fn defer_free_draw_preview(&mut self, defer: bool) {
+        self.editor.defer_free_draw_preview(defer);
     }
 
     pub fn reset_editing_state(&mut self) {

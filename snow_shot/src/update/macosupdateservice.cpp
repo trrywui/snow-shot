@@ -413,7 +413,7 @@ struct UpdateService::Impl {
             if (user) {
                 errorSource = QT_TRANSLATE_NOOP(
                     "UpdateService", "This build uses manual updates. Download new versions from "
-                                     "https://github.com/trrywui/snow-apps/releases.");
+                                     "https://github.com/trrywui/snow-shot/releases.");
                 status = {UpdateState::Failed,
                           {},
                           QCoreApplication::translate("UpdateService", errorSource.constData()),

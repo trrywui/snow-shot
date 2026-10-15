@@ -226,6 +226,7 @@ case "$personal_mode" in
     qt-dependencies) personal_qt_dependencies ;;
     qt) personal_qt ;;
     configure) personal_configure "$personal_root/build" OFF OFF ;;
+    configure-tests) personal_configure "$personal_root/build" ON OFF ;;
     icon)
         cmake --build "$personal_root/build" --target snow_shot/macos/snow-shot.icns --parallel 1
         ;;
@@ -301,5 +302,5 @@ case "$personal_mode" in
         personal_configure "$personal_root/build" OFF OFF
         cmake --build "$personal_root/build" --target snow_shot --parallel "$personal_jobs"
         ;;
-    *) echo 'Modes: status bootstrap dependencies qt-dependencies qt configure build build-target translations performance native-tests app-tests probe test package sources run measure all clean [--all]' >&2; exit 2 ;;
+    *) echo 'Modes: status bootstrap dependencies qt-dependencies qt configure configure-tests build build-target translations performance native-tests app-tests probe test package sources run measure all clean [--all]' >&2; exit 2 ;;
 esac

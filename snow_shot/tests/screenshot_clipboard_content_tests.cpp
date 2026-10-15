@@ -6,6 +6,7 @@
 #include "pinned_animation_native_fixtures.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include "snow_shot/image/supportedimagefiles.h"
+#include "bmp_import_fixtures.h"
 #include "../../test-support/virtualmemory.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -54,6 +55,48 @@ void imageFileExtensionsMatchShellRegistration() {
     allFiles.append({QStringLiteral("txt"), QStringLiteral("html"), QStringLiteral("htm")});
     require(ScreenshotClipboardContentReader::supportedFileExtensions() == allFiles,
             "existing file pinning retains its additional formatted-text formats");
+}
+
+void bmpFilesPreservePixelsAndIdentity() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "BMP import fixture directory must exist");
+    QImage opaque(3, 2, QImage::Format_RGB888);
+    opaque.fill(Qt::green);
+    opaque.setPixelColor(0, 0, Qt::red);
+    opaque.setPixelColor(2, 1, Qt::blue);
+    QImage alpha = opaque.convertToFormat(QImage::Format_RGBA8888);
+    alpha.setPixelColor(1, 0, QColor(10, 20, 30, 40));
+    alpha.setPixelColor(0, 1, QColor(90, 80, 70, 0));
+    const QStringList paths{directory.filePath(QStringLiteral("opaque.bmp")),
+                            directory.filePath(QStringLiteral("透明 image.BMP"))};
+    require(opaque.save(paths[0], "BMP") && bmp_import_fixtures::write(paths[1], alpha),
+            "write 24-bit opaque and 32-bit alpha BMP fixtures");
+    const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles(paths);
+    require(files.size() == 2 && files[0].suffix == QStringLiteral("bmp") &&
+                files[1].suffix == QStringLiteral("bmp"),
+            "BMP snapshots accept lowercase and uppercase suffixes in source order");
+    for (qsizetype index = 0; index < paths.size(); ++index) {
+        QMimeData mime;
+        mime.setUrls({QUrl::fromLocalFile(paths[index])});
+        const auto content = ScreenshotClipboardContentReader::readMimeData(&mime, 1.0);
+        require(content && !content->isFormattedText() && !content->animationSource &&
+                    bmp_import_fixtures::samePixels(content->image, index == 0 ? opaque : alpha) &&
+                    content->originalContent.localFilePath == paths[index] &&
+                    content->sourceIdentity == files[index].sourceIdentity,
+                "BMP file imports preserve dimensions, RGBA pixels and original file identity");
+    }
+    const auto corrupt = directory.filePath(QStringLiteral("corrupt.bmp"));
+    QFile file(corrupt);
+    require(file.open(QIODevice::WriteOnly) && file.write("not a bitmap") > 0,
+            "write malformed BMP fixture");
+    file.close();
+    const auto corruptFiles = ScreenshotClipboardContentReader::snapshotLocalFiles({corrupt});
+    require(corruptFiles.size() == 1, "malformed BMP fixture must reach the decoder");
+    ScreenshotClipboardContentSnapshot snapshot;
+    snapshot.localImage = corruptFiles.first();
+    snapshot.devicePixelRatio = 1;
+    require(!ScreenshotClipboardContentReader::decode(std::move(snapshot)),
+            "malformed BMP files must fail decoding");
 }
 
 void animatedSourcesSurviveImport() {
@@ -130,6 +173,67 @@ QByteArray profiledApng(const QColorSpace& profile) {
     auto result = pinned_animation_fixtures::images().back().bytes;
     result.insert(33, metadata);
     return result;
+}
+
+void firstFrameFilesKeepCompositionProfilesAndRevisionChecks() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "first-frame fixture directory must exist");
+    auto fixtures = pinned_animation_native_fixtures::images();
+    fixtures.append(pinned_animation_fixtures::hiddenPosterAnimation());
+    fixtures.append(pinned_animation_fixtures::singleFrameImages());
+    fixtures.append({QStringLiteral("apng"), QStringLiteral("image/apng"),
+                     profiledApng(QColorSpace(QColorSpace::DisplayP3))});
+    for (qsizetype index = 0; index < fixtures.size(); ++index) {
+        const auto& fixture = fixtures[index];
+        const auto path =
+            directory.filePath(QStringLiteral("first-%1.%2").arg(index).arg(fixture.suffix));
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly) &&
+                    file.write(fixture.bytes) == fixture.bytes.size(),
+                "write first-frame file fixture");
+        file.close();
+        const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path});
+        require(files.size() == 1, "snapshot first-frame file fixture");
+        ScreenshotClipboardContentSnapshot snapshot;
+        snapshot.localImage = files.first();
+        const auto complete = ScreenshotClipboardContentReader::decode(snapshot);
+        const auto budgeted =
+            ScreenshotClipboardContentReader::decode(snapshot, {}, [](qint64) { return true; });
+        const auto image = ScreenshotClipboardContentReader::decodeImageFile(
+            files.first(), {}, [](qint64) { return true; });
+        require(
+            complete && budgeted && budgeted->image == complete->image &&
+                image == complete->image && image.colorSpace() == complete->image.colorSpace(),
+            "budgeted full/first-frame files preserve animated canvas composition and profiles");
+        require(
+            ScreenshotClipboardContentReader::decodeImageFile(files.first(), [] { return true; })
+                .isNull(),
+            "first-frame file decode honors cancellation before reading");
+        int calls = 0;
+        require(ScreenshotClipboardContentReader::decodeImageFile(
+                    files.first(), {},
+                    [&](qint64) {
+                        ++calls;
+                        return false;
+                    }).isNull() &&
+                    calls == 1,
+                "first-frame file decoding admits encoded bytes before allocation");
+        require(file.open(QIODevice::Append) && file.write("changed") == 7,
+                "mutate a captured first-frame source");
+        file.close();
+        require(ScreenshotClipboardContentReader::decodeImageFile(files.first()).isNull() &&
+                    !image.isNull(),
+                "changed file revisions fail while previously decoded first frames remain valid");
+    }
+    const auto malformed = directory.filePath(QStringLiteral("malformed.apng"));
+    QFile file(malformed);
+    require(file.open(QIODevice::WriteOnly) && file.write("not an image") > 0,
+            "write malformed first-frame fixture");
+    file.close();
+    const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({malformed});
+    require(files.size() == 1 &&
+                ScreenshotClipboardContentReader::decodeImageFile(files.first()).isNull(),
+            "first-frame-only decoding rejects malformed image files");
 }
 
 void animationReplacementPreparationIsAtomicAndWorkerSafe() {
@@ -1125,6 +1229,91 @@ void htmlSourceBackgroundOverridesApplicationTheme() {
     QApplication::setPalette(originalPalette);
 }
 
+void pinnedTextStylesPreserveFormattingAndSnapshots() {
+    snow_shot::storage::PinnedTextStyle style;
+    style.maximumWidth = 320;
+    style.fontFamily = QApplication::font().family();
+    style.fontSize = 28;
+    style.textColor = QColor(255, 0, 255, 128);
+    style.backgroundColor = Qt::transparent;
+    ScreenshotClipboardContentSnapshot snapshot;
+    snapshot.text = QStringLiteral("Pinned text ").repeated(100);
+    snapshot.textStyle = style;
+    snapshot.devicePixelRatio = 2.0;
+    const auto content = ScreenshotClipboardContentReader::decode(snapshot);
+    require(content && content->formattedDocument->defaultFont().pixelSize() == 28 &&
+                content->formattedDocument->defaultFont().family() == style.fontFamily &&
+                content->image.width() == 640 && content->image.devicePixelRatio() == 2.0 &&
+                content->image.pixelColor(0, 0).alpha() == 0 &&
+                content->originalContent.textStyle == style,
+            "pinned text uses captured dimensions, font, transparent background, and DPI");
+    require(
+        content->formattedDocument->begin().begin().fragment().charFormat().foreground().color() ==
+            style.textColor,
+        "unstyled text materializes the captured foreground including alpha");
+    const auto restored = ScreenshotClipboardContentReader::renderOriginalText(
+        content->originalContent, 2.0, Qt::red);
+    require(restored && restored->image == content->image &&
+                restored->originalContent.text == snapshot.text,
+            "restoring captured text ignores later palette defaults and retains original source");
+    for (const int width : {100, 2000}) {
+        snapshot.textStyle->maximumWidth = width;
+        const auto wrapped = ScreenshotClipboardContentReader::decode(snapshot);
+        require(wrapped && wrapped->image.width() == width * 2,
+                "configured width boundaries cap long text in logical pixels");
+    }
+    for (const int size : {8, 96}) {
+        snapshot.text = QStringLiteral("Text");
+        snapshot.textStyle->fontSize = size;
+        const auto sized = ScreenshotClipboardContentReader::decode(snapshot);
+        require(sized && sized->formattedDocument->defaultFont().pixelSize() == size,
+                "configured font-size boundaries render successfully");
+    }
+    snapshot.textStyle->maximumWidth = 99;
+    require(!ScreenshotClipboardContentReader::decode(snapshot),
+            "invalid captured styles cannot reach raster allocation");
+
+    snapshot.textStyle = style;
+    snapshot.html =
+        QStringLiteral("<p>Default <span style=\"font-family: serif; font-size: 11px; color: "
+                       "#00ff00; background-color: #ffff00\">Explicit</span></p>");
+    const auto html = ScreenshotClipboardContentReader::decode(snapshot);
+    require(html && html->originalContent.html == snapshot.html, "HTML keeps its original source");
+    bool inherited = false, explicitStyle = false;
+    for (auto block = html->formattedDocument->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            if (fragment.text().contains(QStringLiteral("Default")))
+                inherited = fragment.charFormat().foreground().color() == style.textColor;
+            if (fragment.text().contains(QStringLiteral("Explicit"))) {
+                const auto format = fragment.charFormat();
+                explicitStyle =
+                    format.foreground().color() == QColor(Qt::green) &&
+                    format.background().color() == QColor(Qt::yellow) &&
+                    format.intProperty(QTextFormat::FontPixelSize) == 11 &&
+                    format.fontFamilies().toStringList().contains(QStringLiteral("serif"));
+            }
+        }
+    }
+    require(inherited && explicitStyle,
+            "explicit HTML styles override inherited defaults without affecting unstyled text");
+    snapshot.html =
+        QStringLiteral("<body style=\"background-color: #123456\"><p>Source background</p></body>");
+    const auto body = ScreenshotClipboardContentReader::decode(snapshot);
+    require(body && body->image.pixelColor(0, 0) == QColor(QStringLiteral("#123456")),
+            "HTML body background overrides a configured default");
+
+    snapshot.html.clear();
+    snapshot.text = QStringLiteral("Worker captured text");
+    auto future = std::async(std::launch::async, [snapshot] {
+        return ScreenshotClipboardContentReader::decode(snapshot);
+    });
+    const auto worker = future.get();
+    require(worker && worker->originalContent.textStyle == style &&
+                worker->formattedDocument->thread() == qApp->thread(),
+            "workers consume immutable style snapshots and return GUI-affine documents");
+}
+
 void formattedTextUsesOwningDisplayDevicePixelRatio() {
     QMimeData mime;
     mime.setHtml(
@@ -1311,6 +1500,11 @@ void nativeDibMaskColoredPixelsRemainPixels() {
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
     QApplication::setQuitOnLastWindowClosed(false);
+    if (application.arguments().contains(QStringLiteral("--first-frame-only"))) {
+        firstFrameFilesKeepCompositionProfilesAndRevisionChecks();
+        bmpFilesPreservePixelsAndIdentity();
+        return EXIT_SUCCESS;
+    }
     imageFileExtensionsMatchShellRegistration();
     embeddedImagesUseManagedCachedPixels();
     if (application.arguments().contains(QStringLiteral("--embedded-images-only"))) {
@@ -1320,7 +1514,9 @@ int main(int argc, char** argv) {
         liveSnapshotRetainsBitmapFallback();
     }
     localTextFilesAreSupported();
+    bmpFilesPreservePixelsAndIdentity();
     animatedSourcesSurviveImport();
+    firstFrameFilesKeepCompositionProfilesAndRevisionChecks();
     animationReplacementPreparationIsAtomicAndWorkerSafe();
     animationOffersPrecedeStaticThumbnails();
     singleFrameAnimationContainersStayStatic();
@@ -1344,6 +1540,7 @@ int main(int argc, char** argv) {
     formattedTextHasPaddingOnEverySide();
     formattedTextBackgroundFollowsApplicationTheme();
     htmlSourceBackgroundOverridesApplicationTheme();
+    pinnedTextStylesPreserveFormattingAndSnapshots();
     formattedTextUsesOwningDisplayDevicePixelRatio();
 #if defined(Q_OS_WIN) || defined(_WIN32)
     standardRgbDibOrientationAndAlphaAreHandled();

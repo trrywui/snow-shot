@@ -8,6 +8,7 @@
 #include <QRectF>
 #include <QString>
 #include "snow_shot/presentation/globalmousetypes.h"
+#include "snow_shot/presentation/screenshotpinnedimagesnapshot.h"
 
 #include <memory>
 #include <functional>
@@ -133,6 +134,8 @@ class ScreenshotController : public QObject {
     void mcpRedoCanvasEdit();
 
   signals:
+    void imageStitchingRequested(const QVector<ScreenshotPinnedImageSnapshot>& snapshots);
+    void imageSplittingRequested(const ScreenshotPinnedImageSnapshot& snapshot);
     void recordingExportNotificationRequested(const QString& path);
     void captureActivityChanged(const QString& source, bool active);
     void selectedFilePinFailed(const QString& message);

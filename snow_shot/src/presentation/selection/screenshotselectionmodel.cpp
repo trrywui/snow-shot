@@ -10,7 +10,81 @@ using snow_shot::presentation::kScreenshotSelectionShadowWidthMax;
 constexpr qreal kNewMarqueeAspectRatio = 1.0;
 } // namespace
 
+// Composite operations may temporarily replace a region before restoring an equivalent operand.
+// Publish one revision for the resulting semantic change, without counting those intermediates.
+class ScreenshotSelectionModel::ChangeRevisionGuard final {
+  public:
+    explicit ChangeRevisionGuard(ScreenshotSelectionModel& model)
+        : m_model(model), m_previous(model) {}
+
+    ~ChangeRevisionGuard() {
+        m_model.m_changeRevision =
+            m_previous.m_changeRevision + !m_model.hasSameSelectionState(m_previous);
+    }
+
+  private:
+    ScreenshotSelectionModel& m_model;
+    ScreenshotSelectionModel m_previous;
+};
+
+bool ScreenshotSelectionModel::hasSameSelectionState(const ScreenshotSelectionModel& other) const {
+    return m_regionType == other.m_regionType && m_draftRegion == other.m_draftRegion &&
+           m_draftVertices == other.m_draftVertices && m_region == other.m_region &&
+           m_confirmedRegion == other.m_confirmedRegion &&
+           m_regionOperation == other.m_regionOperation && m_start == other.m_start &&
+           m_end == other.m_end && m_cornerRadius == other.m_cornerRadius &&
+           m_shadowWidth == other.m_shadowWidth && m_shadowColor == other.m_shadowColor &&
+           m_aspectRatioLockEnabled == other.m_aspectRatioLockEnabled &&
+           m_aspectRatioPreset == other.m_aspectRatioPreset &&
+           m_selectionFromDrag == other.m_selectionFromDrag &&
+           qFuzzyCompare(1.0 + m_lockedAspectRatio, 1.0 + other.m_lockedAspectRatio);
+}
+
+ScreenshotSelectionModel&
+ScreenshotSelectionModel::operator=(const ScreenshotSelectionModel& other) {
+    if (this == &other)
+        return *this;
+    const bool changed = !hasSameSelectionState(other);
+    m_draftVertices = other.m_draftVertices;
+    m_cachedSelectionRegion = other.m_cachedSelectionRegion;
+    m_cachedMarqueeRegion = other.m_cachedMarqueeRegion;
+    m_regionType = other.m_regionType;
+    m_draftRegion = other.m_draftRegion;
+    m_region = other.m_region;
+    m_confirmedRegion = other.m_confirmedRegion;
+    m_moveOriginalRegion = other.m_moveOriginalRegion;
+    m_regionOperation = other.m_regionOperation;
+    m_start = other.m_start;
+    m_end = other.m_end;
+    m_moveStart = other.m_moveStart;
+    m_moveOriginalSelection = other.m_moveOriginalSelection;
+    m_cornerRadius = other.m_cornerRadius;
+    m_shadowWidth = other.m_shadowWidth;
+    m_shadowColor = other.m_shadowColor;
+    m_aspectRatioLockEnabled = other.m_aspectRatioLockEnabled;
+    m_aspectRatioPreset = other.m_aspectRatioPreset;
+    m_selectionFromDrag = other.m_selectionFromDrag;
+    m_lockedAspectRatio = other.m_lockedAspectRatio;
+    if (changed)
+        ++m_changeRevision;
+    return *this;
+}
+
+ScreenshotSelectionModel& ScreenshotSelectionModel::operator=(ScreenshotSelectionModel&& other) {
+    // The implicitly shared geometry and Qt values stay cheap to copy while assignment keeps
+    // the same destination-owned revision semantics for both lvalues and rvalues.
+    return operator=(static_cast<const ScreenshotSelectionModel&>(other));
+}
+
+void ScreenshotSelectionModel::setRegionType(ScreenshotRegionType type) {
+    if (m_regionType == type)
+        return;
+    m_regionType = type;
+    ++m_changeRevision;
+}
+
 void ScreenshotSelectionModel::reset() {
+    const ChangeRevisionGuard revision(*this);
     m_cachedSelectionRegion.reset();
     m_cachedMarqueeRegion.reset();
     m_draftVertices.clear();
@@ -46,6 +120,7 @@ bool ScreenshotSelectionModel::hasPixelSelection() const {
 }
 
 void ScreenshotSelectionModel::clearSelection() {
+    const ChangeRevisionGuard revision(*this);
     m_cachedSelectionRegion.reset();
     m_cachedMarqueeRegion.reset();
     m_draftVertices.clear();
@@ -64,9 +139,12 @@ void ScreenshotSelectionModel::clearSelection() {
 
 bool ScreenshotSelectionModel::setSelectionRect(const QRectF& selection) {
     const QRectF normalized = selection.normalized();
+    const bool previouslyDragged = m_selectionFromDrag;
     m_selectionFromDrag = false;
     if (!m_draftRegion && !m_region && m_draftVertices.isEmpty() &&
         m_start == normalized.topLeft() && m_end == normalized.bottomRight()) {
+        if (previouslyDragged)
+            ++m_changeRevision;
         return false;
     }
     // Subpixel detection/animation targets can change without changing their
@@ -82,6 +160,7 @@ bool ScreenshotSelectionModel::setSelectionRect(const QRectF& selection) {
     m_region.reset();
     m_start = normalized.topLeft();
     m_end = normalized.bottomRight();
+    ++m_changeRevision;
     return true;
 }
 
@@ -125,6 +204,7 @@ QRectF ScreenshotSelectionModel::boundedSelectionRect(const QRectF& selection, c
 
 bool ScreenshotSelectionModel::adjustFromToolbar(int minDx, int minDy, int maxDx, int maxDy,
                                                  const QRectF& bounds, qreal minimumSelectionSize) {
+    const ChangeRevisionGuard revision(*this);
     if (!rectangular() && (minDx != maxDx || minDy != maxDy)) {
         return false;
     }
@@ -208,6 +288,7 @@ bool ScreenshotSelectionModel::setCornerRadius(int radius) {
     }
 
     m_cornerRadius = clampedRadius;
+    ++m_changeRevision;
     return true;
 }
 
@@ -218,14 +299,20 @@ bool ScreenshotSelectionModel::setShadowWidth(int shadowWidth) {
     }
 
     m_shadowWidth = clampedShadowWidth;
+    ++m_changeRevision;
     return true;
 }
 
 void ScreenshotSelectionModel::setShadowColor(const QColor& color) {
-    m_shadowColor = color.isValid() ? color : QColor(0x33, 0x33, 0x33);
+    const QColor sanitized = color.isValid() ? color : QColor(0x33, 0x33, 0x33);
+    if (m_shadowColor == sanitized)
+        return;
+    m_shadowColor = sanitized;
+    ++m_changeRevision;
 }
 
 bool ScreenshotSelectionModel::setAspectRatioLockEnabled(bool enabled, qreal minimumSelectionSize) {
+    const ChangeRevisionGuard revision(*this);
     const bool enabledChanged = m_aspectRatioLockEnabled != enabled;
     m_aspectRatioLockEnabled = enabled;
     if (!enabled) {
@@ -263,6 +350,7 @@ void ScreenshotSelectionModel::toggleAspectRatioLock(qreal minimumSelectionSize)
 bool ScreenshotSelectionModel::setAspectRatioPreset(ScreenshotSelectionAspectRatioPreset preset,
                                                     const QRectF& bounds,
                                                     qreal minimumSelectionSize) {
+    const ChangeRevisionGuard revision(*this);
     if (preset == ScreenshotSelectionAspectRatioPreset::Free) {
         return setAspectRatioLockEnabled(false, minimumSelectionSize);
     }
@@ -296,6 +384,7 @@ bool ScreenshotSelectionModel::setAspectRatioPreset(ScreenshotSelectionAspectRat
 
 bool ScreenshotSelectionModel::setDraggedAspectRatioPreset(
     ScreenshotSelectionAspectRatioPreset preset) {
+    const ChangeRevisionGuard revision(*this);
     const qreal ratio = screenshotSelectionAspectRatioHeightOverWidth(preset);
     if (ratio <= 0.0) {
         return false;
@@ -310,6 +399,7 @@ bool ScreenshotSelectionModel::setDraggedAspectRatioPreset(
 
 bool ScreenshotSelectionModel::finalizeAspectRatio(const QRectF& bounds,
                                                    qreal minimumSelectionSize) {
+    const ChangeRevisionGuard revision(*this);
     bool presetCleared = false;
     if (m_selectionFromDrag && m_aspectRatioPreset != ScreenshotSelectionAspectRatioPreset::Free &&
         rectangular()) {
@@ -331,6 +421,7 @@ bool ScreenshotSelectionModel::finalizeAspectRatio(const QRectF& bounds,
 }
 
 void ScreenshotSelectionModel::clearAspectRatioPresetForReplacement() {
+    const ChangeRevisionGuard revision(*this);
     m_aspectRatioPreset = ScreenshotSelectionAspectRatioPreset::Free;
     static_cast<void>(setAspectRatioLockEnabled(
         m_aspectRatioLockEnabled, snow_shot::presentation::kScreenshotSelectionMinimumSize));
@@ -350,6 +441,7 @@ ScreenshotSelectionParams ScreenshotSelectionModel::params(const QRect& bounds) 
 
 bool ScreenshotSelectionModel::applyParams(const ScreenshotSelectionParams& params,
                                            const QRect& bounds) {
+    const ChangeRevisionGuard revision(*this);
     if (bounds.isEmpty()) {
         return false;
     }
@@ -439,6 +531,7 @@ QRectF ScreenshotSelectionModel::pendingMarquee() const {
 }
 
 void ScreenshotSelectionModel::beginRegionOperation(RegionOperation operation) {
+    const ChangeRevisionGuard revision(*this);
     const ScreenshotRegionGeometry confirmed = confirmedRegion();
     clearSelection();
     m_confirmedRegion = confirmed;
@@ -446,6 +539,7 @@ void ScreenshotSelectionModel::beginRegionOperation(RegionOperation operation) {
 }
 
 void ScreenshotSelectionModel::setSelectionRegion(const ScreenshotRegionGeometry& region) {
+    const ChangeRevisionGuard revision(*this);
     const ScreenshotRegionGeometry snapshot = region;
     // Replacing the operation/confirmed region changes the composed result even
     // when its bounding rectangle is the same as the previous marquee.
@@ -470,6 +564,7 @@ void ScreenshotSelectionModel::cancelRegionOperation() {
 
 void ScreenshotSelectionModel::setDraggedSelectionRect(const QRectF& rect,
                                                        ScreenshotSelectionDragMode mode) {
+    const ChangeRevisionGuard revision(*this);
     if (!regionOperationActive() && mode == ScreenshotSelectionDragMode::All &&
         m_moveOriginalRegion.rectCount() > 1) {
         setSelectionRegion(m_moveOriginalRegion.translated(
@@ -491,6 +586,7 @@ ScreenshotResultStyle ScreenshotSelectionModel::resultStyle() const {
 
 void ScreenshotSelectionModel::setDraftRegion(const ScreenshotRegionGeometry& region,
                                               const QVector<QPointF>& vertices) {
+    const ChangeRevisionGuard revision(*this);
     m_cachedSelectionRegion.reset();
     m_cachedMarqueeRegion.reset();
     m_draftVertices = vertices;
@@ -502,6 +598,7 @@ void ScreenshotSelectionModel::setDraftRegion(const ScreenshotRegionGeometry& re
 }
 
 void ScreenshotSelectionModel::clearDraftRegion() {
+    const ChangeRevisionGuard revision(*this);
     m_cachedSelectionRegion.reset();
     m_cachedMarqueeRegion.reset();
     m_draftVertices.clear();

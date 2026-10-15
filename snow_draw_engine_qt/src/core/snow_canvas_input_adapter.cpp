@@ -9,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <QMouseEvent>
+#include <QTabletEvent>
 #include <QWheelEvent>
 
 QCursor snowCanvasCornerRadiusCursor(qreal devicePixelRatio) {
@@ -98,8 +99,25 @@ QCursor cursorForSnowCursor(SnowCursorStyle style, qreal devicePixelRatio) {
 }
 
 SnowInputEvent makePointerInput(const QMouseEvent& event, SnowPointerEventType eventType) {
-    return makePointerInput(event.position(), event.button(), event.buttons(), event.modifiers(),
-                            eventType);
+    auto input = makePointerInput(event.position(), event.button(), event.buttons(),
+                                  event.modifiers(), eventType);
+    input.pointer.timestamp_ms = event.timestamp();
+    return input;
+}
+
+SnowInputEvent makePointerInput(const QTabletEvent& event, SnowPointerEventType eventType) {
+    auto input = makePointerInput(event.position(), event.button(), event.buttons(),
+                                  event.modifiers(), eventType);
+    input.pointer.pointer_id = 2;
+    input.pointer.device = SNOW_POINTER_DEVICE_PEN;
+    input.pointer.timestamp_ms = event.timestamp();
+    if (event.pointingDevice() != nullptr &&
+        event.pointingDevice()->capabilities().testFlag(QInputDevice::Capability::Pressure) &&
+        std::isfinite(event.pressure())) {
+        input.pointer.has_pressure = 1;
+        input.pointer.pressure = std::clamp(event.pressure(), 0.0, 1.0);
+    }
+    return input;
 }
 
 SnowInputEvent makePointerInput(const QPointF& position, Qt::MouseButton button,

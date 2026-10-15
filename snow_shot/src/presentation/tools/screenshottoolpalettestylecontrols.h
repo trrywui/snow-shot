@@ -321,7 +321,8 @@ class ScreenshotToolPaletteStyleControls final {
         ShapeCornerRefresh = 1u << 4,
         ShapeArrowTypeRefresh = 1u << 5,
         ShapeArrowheadsRefresh = 1u << 6,
-        AllShapeRefreshes = (1u << 7) - 1,
+        ShapeBrushModeRefresh = 1u << 7,
+        AllShapeRefreshes = (1u << 8) - 1,
     };
     enum TextRefreshGroup : quint32 {
         TextColorRefresh = 1u << 0,
@@ -399,6 +400,7 @@ class ScreenshotToolPaletteStyleControls final {
     void cycleStrokeWidth();
     void setStrokeColor(const QColor& color);
     void setStrokeStyle(SnowCanvasStrokeStyle strokeStyle);
+    void setBrushMode(SnowCanvasBrushMode brushMode);
     void setFillColor(const QColor& color);
     void setFillStyle(SnowCanvasFillStyle fillStyle);
     void setCornerRadius(int cornerRadius);
@@ -568,6 +570,7 @@ class ScreenshotToolPaletteStyleControls final {
     std::unique_ptr<ScreenshotToolPaletteNumericPresetEditor> m_arrowStrokeWidthEditor;
     std::unique_ptr<ScreenshotToolPaletteStrokeEditor> m_arrowStrokeEditor;
     adqt::widgets::AdRadioButtonGroup* m_arrowTypeButtonGroup = nullptr;
+    QPointer<adqt::widgets::AdRadioButtonGroup> m_brushModeButtonGroup;
     std::unique_ptr<ScreenshotToolPaletteIconOptionEditor> m_arrowShaftEditor;
     IconNumericValuePreviewButton* m_arrowRatioEditor = nullptr;
     std::unique_ptr<ScreenshotToolPaletteIconOptionEditor> m_startArrowheadEditor;

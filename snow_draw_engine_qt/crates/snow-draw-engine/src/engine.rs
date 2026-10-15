@@ -1020,3 +1020,7 @@ impl Engine {
 #[cfg(test)]
 #[path = "engine/serial_number_drag_tests.rs"]
 mod serial_number_drag_tests;
+
+#[cfg(test)]
+#[path = "engine/pressure_brush_tests.rs"]
+mod pressure_brush_tests;

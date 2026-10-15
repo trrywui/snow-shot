@@ -28,7 +28,7 @@ bool shapeStylesEqual(const SnowShapeStyle& lhs, const SnowShapeStyle& rhs) {
            lhs.stroke_style == rhs.stroke_style && lhs.arrow_type == rhs.arrow_type &&
            lhs.arrow_ratio == rhs.arrow_ratio && lhs.arrow_shaft_type == rhs.arrow_shaft_type &&
            lhs.opacity == rhs.opacity && lhs.highlight_shape == rhs.highlight_shape &&
-           lhs.shape == rhs.shape;
+           lhs.shape == rhs.shape && lhs.brush_mode == rhs.brush_mode;
 }
 
 bool fontFamiliesEqual(const char* lhs, std::uint32_t lhsLength, const char* rhs,

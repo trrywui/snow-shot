@@ -2381,9 +2381,9 @@ QString ScreenshotRecognitionSessionController::latexDraft() const {
 }
 
 std::optional<ScreenshotRecognitionFileSnapshot>
-ScreenshotRecognitionSessionController::fileExportSnapshot() const {
+ScreenshotRecognitionSessionController::fileExportSnapshot() {
 #if SNOW_SHOT_ENABLE_IMAGE_CONVERSION || SNOW_SHOT_ENABLE_LATEX_RECOGNITION ||                     \
-    SNOW_SHOT_ENABLE_QR_RECOGNITION
+    SNOW_SHOT_ENABLE_QR_RECOGNITION || SNOW_SHOT_ENABLE_TABLE_RECOGNITION
     if (!m_active)
         return std::nullopt;
     switch (m_mode) {
@@ -2405,8 +2405,21 @@ ScreenshotRecognitionSessionController::fileExportSnapshot() const {
         return ScreenshotRecognitionFileSnapshot{ScreenshotRecognitionFileKind::Qr,
                                                  m_qrContents.join(QLatin1Char('\n'))};
 #endif
+#if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
+    case Mode::Table: {
+        const QPointer<ScreenshotRecognitionSessionController> lifetime(this);
+        if (content())
+            content()->commitActiveTableEdit();
+        if (!lifetime || !m_active || m_mode != Mode::Table)
+            return std::nullopt;
+        ScreenshotRecognitionFileSnapshot snapshot;
+        snapshot.kind = ScreenshotRecognitionFileKind::Table;
+        if (m_tableSession)
+            snapshot.table = m_tableSession->document;
+        return snapshot;
+    }
+#endif
     case Mode::Text:
-    case Mode::Table:
     default:
         return std::nullopt;
     }

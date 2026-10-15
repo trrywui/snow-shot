@@ -1427,6 +1427,8 @@ mod line_creation_tests {
             .process_arrow_creation_pointer_event(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type: PointerEventType::DoubleClick,
                     device: PointerDevice::Mouse,
@@ -1469,6 +1471,8 @@ mod line_creation_tests {
             .process_arrow_creation_pointer_event(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type: PointerEventType::DoubleClick,
                     device: PointerDevice::Mouse,
@@ -1508,6 +1512,8 @@ mod line_creation_tests {
             .process_arrow_creation_pointer_event(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type: PointerEventType::DoubleClick,
                     device: PointerDevice::Mouse,
@@ -1546,6 +1552,8 @@ mod line_creation_tests {
             .handle_arrow_pointer_up(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type: PointerEventType::Up,
                     device: PointerDevice::Mouse,
@@ -1585,6 +1593,8 @@ mod line_creation_tests {
             .handle_arrow_pointer_down(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type: PointerEventType::Down,
                     device: PointerDevice::Mouse,
@@ -1630,6 +1640,8 @@ mod line_creation_tests {
             editor.state.default_line_style.arrow_type = arrow_type;
             let pointer = |event_type, position, button, buttons| {
                 InputEvent::Pointer(PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type,
                     device: PointerDevice::Mouse,
@@ -1711,6 +1723,8 @@ mod line_creation_tests {
             .handle_arrow_double_click(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 4,
                     event_type: PointerEventType::DoubleClick,
                     device: PointerDevice::Mouse,
@@ -1745,6 +1759,8 @@ mod line_creation_tests {
             .handle_rectangle_pointer_up(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 7,
                     event_type: PointerEventType::Up,
                     device: PointerDevice::Mouse,
@@ -1783,6 +1799,8 @@ mod line_creation_tests {
             start_canvas_position: Point::new(10.0, 20.0),
         });
         let event = |event_type, position| PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 9,
             event_type,
             device: PointerDevice::Mouse,
@@ -1844,6 +1862,8 @@ mod line_creation_tests {
             start_canvas_position: Point::new(10.0, 20.0),
         });
         let event = |event_type, position| PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 7,
             event_type,
             device: PointerDevice::Mouse,
@@ -1918,6 +1938,8 @@ mod line_creation_tests {
                     start.y + projected_length * locked_angle.sin(),
                 );
                 let event = |event_type, shift| PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 7,
                     event_type,
                     device: PointerDevice::Mouse,
@@ -1998,6 +2020,8 @@ mod line_creation_tests {
                 .process_pen_highlight_creation_pointer_event(
                     &document,
                     PointerEvent {
+                        pressure: None,
+                        timestamp_ms: 0,
                         pointer_id: 3,
                         event_type,
                         device: PointerDevice::Mouse,
@@ -2046,6 +2070,8 @@ mod line_creation_tests {
             .handle_arrow_pointer_move(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 1,
                     event_type: PointerEventType::Move,
                     device: PointerDevice::Mouse,
@@ -2070,6 +2096,8 @@ mod line_creation_tests {
             .handle_arrow_pointer_move(
                 &document,
                 PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 1,
                     event_type: PointerEventType::Move,
                     device: PointerDevice::Mouse,

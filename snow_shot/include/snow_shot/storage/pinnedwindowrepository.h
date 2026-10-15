@@ -38,6 +38,9 @@ struct PinnedWindowPreviewSource final {
     QString originalHtml;
     QString originalText;
     double firstCreationTextDpi = 1.0;
+    QString originalFileName{};
+    QDateTime createdUtc{};
+    std::optional<PinnedTextStyle> textStyle;
 };
 
 enum class PinnedWindowOperation {
@@ -69,7 +72,8 @@ class PinnedWindowRepository final {
     [[nodiscard]] std::optional<PinnedWindowRecord>
     loadRecord(const QString& id, std::function<bool(qint64)> allocationCheck = {}) const;
     [[nodiscard]] std::optional<PinnedWindowPreviewSource>
-    loadPreviewSource(const QString& id) const;
+    loadPreviewSource(const QString& id, std::function<bool(qint64)> allocationCheck = {},
+                      std::function<bool()> cancelled = {}) const;
     [[nodiscard]] std::optional<quint64> previewSourceRevision(const QString& id) const;
     [[nodiscard]] QVector<PinnedWindowSummary> summaries() const;
     // One metadata snapshot across persisted records and pending first saves.

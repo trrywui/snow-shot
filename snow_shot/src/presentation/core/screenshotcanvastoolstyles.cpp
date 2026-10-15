@@ -33,7 +33,8 @@ constexpr quint32 kLineShapeProperties =
 constexpr quint32 kFreeDrawShapeProperties =
     SnowCanvasShapeStylePropertyFillColor | SnowCanvasShapeStylePropertyFillStyle |
     SnowCanvasShapeStylePropertyStrokeColor | SnowCanvasShapeStylePropertyStrokeWidth |
-    SnowCanvasShapeStylePropertyStrokeStyle | SnowCanvasShapeStylePropertyOpacity;
+    SnowCanvasShapeStylePropertyStrokeStyle | SnowCanvasShapeStylePropertyOpacity |
+    SnowCanvasShapeStylePropertyBrushMode;
 constexpr quint32 kRectangleHighlightProperties = SnowCanvasShapeStylePropertyFillColor |
                                                   SnowCanvasShapeStylePropertyStrokeColor |
                                                   SnowCanvasShapeStylePropertyStrokeWidth;
@@ -296,6 +297,15 @@ QJsonObject lineValue(const SnowCanvasShapeStyle& style) {
     return value;
 }
 
+QJsonObject freeDrawValue(const SnowCanvasShapeStyle& style) {
+    QJsonObject value = shapeValue(style);
+    value.insert(QStringLiteral("brush_mode"),
+                 style.brushMode == SnowCanvasBrushMode::PressureSensitive
+                     ? QStringLiteral("pressure-sensitive")
+                     : QStringLiteral("regular"));
+    return value;
+}
+
 void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style) {
     if (style == nullptr)
         return;
@@ -508,6 +518,11 @@ SnowCanvasStyleDefaults screenshotCanvasToolStyleDefaults() {
     readMagnifierValue(configuration.value(kMagnifierKey).toObject(), &defaults.magnifier);
     readLineValue(configuration.value(kLineKey).toObject(), &defaults.line);
     readShapeValue(configuration.value(kFreeDrawKey).toObject(), &defaults.freeDraw);
+    defaults.freeDraw.brushMode =
+        configuration.value(kFreeDrawKey).toObject().value(QStringLiteral("brush_mode")) ==
+                QStringLiteral("pressure-sensitive")
+            ? SnowCanvasBrushMode::PressureSensitive
+            : SnowCanvasBrushMode::Regular;
     readShapeValue(configuration.value(kRectangleHighlightKey).toObject(),
                    &defaults.rectangleHighlight);
     readShapeValue(configuration.value(kPenHighlightKey).toObject(), &defaults.penHighlight);
@@ -612,7 +627,7 @@ bool persistToolStyles(const SnowCanvasStyleDefaults& defaults,
         {kAngleKey, angleValue(defaults.angle)},
         {kMagnifierKey, magnifierValue(defaults.magnifier)},
         {kLineKey, lineValue(defaults.line)},
-        {kFreeDrawKey, shapeValue(defaults.freeDraw)},
+        {kFreeDrawKey, freeDrawValue(defaults.freeDraw)},
         {kRectangleHighlightKey, shapeValue(defaults.rectangleHighlight)},
         {kPenHighlightKey, shapeValue(defaults.penHighlight)},
         {kRectangleFilterKey, filterValue(defaults.rectangleFilter)},

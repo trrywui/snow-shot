@@ -647,36 +647,24 @@ QRectF sceneItemBounds(const SceneDisplayInfo& displayInfo, const SnowCanvasScen
         return bounds;
     }
 
-    double minX = 0.0;
-    double minY = 0.0;
-    double maxX = 0.0;
-    double maxY = 0.0;
-    bool hasCanvasBounds = false;
-    for (const SnowCanvasSceneItem::PathChunk& chunk : item.pathChunks()) {
-        if (hasCanvasBounds) {
-            minX = qMin(minX, chunk.canvasBounds.left());
-            minY = qMin(minY, chunk.canvasBounds.top());
-            maxX = qMax(maxX, chunk.canvasBounds.right());
-            maxY = qMax(maxY, chunk.canvasBounds.bottom());
-        } else {
-            minX = chunk.canvasBounds.left();
-            minY = chunk.canvasBounds.top();
-            maxX = chunk.canvasBounds.right();
-            maxY = chunk.canvasBounds.bottom();
-        }
-        hasCanvasBounds = true;
-    }
-    if (!hasCanvasBounds) {
-        return bounds;
-    }
-
     const ViewProjection projection = sceneProjection(displayInfo);
-    const QPointF topLeft = canvasToView(projection, minX, minY);
-    const QPointF bottomRight = canvasToView(projection, maxX, maxY);
-    const double halfStroke = qMax(0.0, item.stroke_width * projection.cameraZoom) / 2.0;
-    const QRectF pathBounds = QRectF(topLeft, bottomRight)
-                                  .normalized()
-                                  .adjusted(-halfStroke, -halfStroke, halfStroke, halfStroke);
+    const QRectF canvasBounds = item.pathCanvasBounds();
+    const QPointF topLeft = canvasToView(projection, canvasBounds.left(), canvasBounds.top());
+    const QPointF bottomRight =
+        canvasToView(projection, canvasBounds.right(), canvasBounds.bottom());
+    const bool pressure =
+        item.is_free_draw != 0 && item.brush_mode == SNOW_BRUSH_MODE_PRESSURE_SENSITIVE;
+    const double halfStroke =
+        pressure ? 0.0 : qMax(0.0, item.stroke_width * projection.cameraZoom) / 2.0;
+    QRectF pathBounds = QRectF(topLeft, bottomRight)
+                            .normalized()
+                            .adjusted(-halfStroke, -halfStroke, halfStroke, halfStroke);
+    if (pressure && !item.pressurePathChunks().empty()) {
+        const QRectF ink = item.pressureCanvasBounds();
+        pathBounds = pathBounds.united(QRectF(canvasToView(projection, ink.left(), ink.top()),
+                                              canvasToView(projection, ink.right(), ink.bottom()))
+                                           .normalized());
+    }
     return bounds.isEmpty() ? pathBounds : bounds.united(pathBounds);
 }
 

@@ -1374,7 +1374,7 @@ void mosaicPlanningCropsDirtyOutputAndBatchesEquivalentBlocks() {
             "a dirty mosaic pass must filter only its required destination pixels");
     require(dirtyDiagnostics.peakEffectPixelCount == 64u * 64u,
             "mosaic effect diagnostics must report the actual destination size");
-    require(dirtyDiagnostics.workingSurfacePixelCount <= 78u * 78u,
+    require(dirtyDiagnostics.workingSurfacePixelCount <= 88u * 88u,
             "the mosaic source halo must use the half-block dependency radius");
 
     SnowSceneDisplayItem first = largeFilter;

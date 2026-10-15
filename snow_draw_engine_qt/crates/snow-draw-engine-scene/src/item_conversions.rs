@@ -157,6 +157,8 @@ pub(crate) fn scene_item_from_arrow(id: ElementId, arrow: ArrowData) -> SceneDis
     ));
     let arrowhead_primitives = arrowhead_display_primitives(&arrow, shaft.as_ref());
     SceneDisplayItem::Arrow(ArrowDisplayItem {
+        brush_mode: Default::default(),
+        pressure_geometry: None,
         bound_text_id: None,
         label_bounds: None,
         bound_text_overlay: arrow.is_angle(),
@@ -215,7 +217,12 @@ pub(crate) fn scene_item_from_free_draw(
     free_draw: FreeDrawData,
     geometry: Arc<snow_draw_engine_core::PathGeometry>,
 ) -> SceneDisplayItem {
+    let pressure_geometry = free_draw
+        .pressure_geometry(geometry.revision, &geometry)
+        .map(Arc::new);
     SceneDisplayItem::Arrow(ArrowDisplayItem {
+        brush_mode: free_draw.brush_mode,
+        pressure_geometry,
         bound_text_id: None,
         label_bounds: None,
         bound_text_overlay: false,
@@ -249,12 +256,14 @@ pub(crate) fn scene_item_from_free_draw_preview(
     preview: &FreeDrawPreview,
 ) -> SceneDisplayItem {
     SceneDisplayItem::Arrow(ArrowDisplayItem {
+        brush_mode: preview.brush_mode,
+        pressure_geometry: preview.pressure_geometry.clone(),
         bound_text_id: None,
         label_bounds: None,
         bound_text_overlay: false,
         id: display_item_id(id),
         points: Vec::new(),
-        path_commands: preview.geometry.flattened_commands(),
+        path_commands: Vec::new(),
         geometry: preview.geometry.clone(),
         arrow_type: snow_draw_engine_core::arrow::ArrowType::Curve,
         arrow_shaft_type: Default::default(),
@@ -275,7 +284,11 @@ pub(crate) fn scene_item_from_free_draw_preview(
 
 pub(crate) fn free_draw_preview_bounds(preview: &FreeDrawPreview) -> DrawRect {
     let bounds = preview.geometry.canvas_bounds;
-    let outset = preview.stroke_width.max(0.0) * 0.5;
+    let outset = if preview.brush_mode == snow_draw_engine_core::BrushMode::PressureSensitive {
+        snow_draw_engine_core::pressure_radius(preview.stroke_width, 1.0)
+    } else {
+        preview.stroke_width.max(0.0) * 0.5
+    };
     DrawRect::new(
         bounds[0] - outset,
         bounds[1] - outset,
@@ -1292,8 +1305,8 @@ mod tests {
 
         assert_eq!(item.filter.filter_type, DisplayFilterType::GaussianBlur);
         assert_eq!(item.filter.strength, 1.0);
-        assert_eq!(item.filter.blur_sigma, 18.5);
-        assert_eq!(item.filter.sampling_radius, 56.5);
+        assert_eq!(item.filter.blur_sigma, 36.5);
+        assert_eq!(item.filter.sampling_radius, 110.5);
         assert_eq!(item.opacity, 0.65);
         assert_eq!((item.center_x, item.center_y), (12.0, 18.0));
         assert_eq!((item.width, item.height), (80.0, 40.0));
@@ -1630,6 +1643,8 @@ pub(crate) fn scene_item_from_speech_bubble(
         .flat_map(|chunk| chunk.commands.iter().copied())
         .collect();
     let path = ArrowDisplayItem {
+        brush_mode: Default::default(),
+        pressure_geometry: None,
         id: display_item_id(id),
         bound_text_id: bubble.text_element_id.map(display_item_id),
         label_bounds: None,

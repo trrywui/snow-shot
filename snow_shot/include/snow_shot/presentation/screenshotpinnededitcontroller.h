@@ -120,6 +120,8 @@ class ScreenshotPinnedEditController final : public QObject {
     bool m_updatingPlacement = false;
     bool m_resizeWindowToolActive = false;
     bool m_nativeWindowInteractionActive = false;
+    bool m_tabletFrameGesture = false;
+    bool m_tabletSamplingReleasePending = false;
     bool m_recognitionToolActivationPending = false;
     std::optional<int> m_toolBeforeWindowResize;
     bool m_canvasColorSamplingCursorOverridden = false;

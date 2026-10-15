@@ -223,8 +223,9 @@ bash install-snow-shot-macos.sh --lang zh-TW
 
 The local publisher includes `install-snow-shot-macos.sh`, a versioned DMG,
 and its matching `.sha256` asset in the GitHub release when macOS packaging
-is configured. The Gitee release workflow mirrors these exact bytes after
-GitHub publication.
+is configured. The local Gitee publisher uploads these exact installer/download
+bytes after GitHub publication. Homebrew distribution archives remain on GitHub;
+Gitee hosts only update and installer downloads within a 1 GB attachment budget.
 
 | Architecture | Release asset |
 | --- | --- |
@@ -555,7 +556,9 @@ QR models. Executable-relative
 asset lookup paths remain under `Contents/MacOS`; deployment moves data into
 `Contents/Resources` and creates relative `assets`/`audios` directory links so
 code signing seals them as resources. Static Qt and vcpkg source-license notices
-are included under `Contents/Resources/snow-shot/licenses/third-party`. A plain
+are included under `Contents/Resources/snow-shot/licenses/third-party`. Installation
+also collects original Rust dependency notices offline from each edition's compiled
+Cargo targets and feature selections. Missing notices stop packaging. A plain
 `cmake --install build/<preset> --component SnowShot --prefix /path/to/staging`
 performs the same deployment and static-link audit without a DMG. Shared Debug
 and performance deployments continue to put libraries in `Contents/Frameworks`.

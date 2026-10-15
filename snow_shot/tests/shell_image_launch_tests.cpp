@@ -18,7 +18,8 @@ void require(bool condition, const char* message) {
 void launchArguments() {
     using namespace snow_shot::app;
     const QStringList paths{QDir::temp().filePath(QStringLiteral("image one.png")),
-                            QDir::temp().filePath(QStringLiteral("图片 two.JPEG"))};
+                            QDir::temp().filePath(QStringLiteral("图片 two.JPEG")),
+                            QDir::temp().filePath(QStringLiteral("bitmap three.BMP"))};
     auto arguments = shellImageLaunchArguments(paths);
     arguments.prepend(QStringLiteral("snow-shot.exe"));
     arguments.append(QStringLiteral("--show-main-window"));
@@ -57,10 +58,10 @@ void launchArguments() {
 
 void imageSuffixes() {
     const auto extensions = snow_shot::image::supportedImageFileExtensions();
-    require(extensions == QStringList{QStringLiteral("gif"), QStringLiteral("apng"),
-                                      QStringLiteral("png"), QStringLiteral("jpg"),
-                                      QStringLiteral("jpeg"), QStringLiteral("webp"),
-                                      QStringLiteral("jxl"), QStringLiteral("avif")},
+    require(extensions ==
+                QStringList{QStringLiteral("gif"), QStringLiteral("apng"), QStringLiteral("png"),
+                            QStringLiteral("jpg"), QStringLiteral("jpeg"), QStringLiteral("webp"),
+                            QStringLiteral("jxl"), QStringLiteral("avif"), QStringLiteral("bmp")},
             "shell registration covers the formats accepted by Snow Shot's file image reader");
     require(!extensions.contains(QStringLiteral("txt")) &&
                 !extensions.contains(QStringLiteral("html")) &&

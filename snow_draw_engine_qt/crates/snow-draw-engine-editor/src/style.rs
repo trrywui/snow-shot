@@ -134,6 +134,7 @@ impl ShapeStyle {
 
     pub fn from_rectangle_shape_style(style: RectangleShapeStyle) -> Self {
         Self {
+            brush_mode: Default::default(),
             fill: style.fill,
             fill_style: style.fill_style,
             stroke: style.stroke,
@@ -246,6 +247,9 @@ impl ShapeStylePatch {
         if properties & SHAPE_STYLE_PROPERTY_OPACITY != 0 {
             current.opacity = self.style.opacity;
         }
+        if properties & crate::SHAPE_STYLE_PROPERTY_BRUSH_MODE != 0 {
+            current.brush_mode = self.style.brush_mode;
+        }
         if properties & SHAPE_STYLE_PROPERTY_ARROW_TYPE != 0 {
             current.arrow_type = normalized_line_arrow_type(self.style.arrow_type);
         }
@@ -275,6 +279,7 @@ impl ShapeStylePatch {
 
 #[derive(Clone, Copy)]
 struct ShapeStyleSample {
+    brush_mode: Option<snow_draw_engine_core::BrushMode>,
     fill: Option<ColorRgba8>,
     fill_style: Option<FillStyle>,
     stroke: Option<ColorRgba8>,
@@ -294,6 +299,7 @@ struct ShapeStyleSample {
 impl ShapeStyleSample {
     fn from_rectangle(rectangle: &RectangleData) -> Self {
         Self {
+            brush_mode: None,
             fill: Some(rectangle.fill),
             fill_style: Some(rectangle.fill_style),
             stroke: Some(rectangle.stroke),
@@ -315,6 +321,7 @@ impl ShapeStyleSample {
 
     fn from_arrow(arrow: &ArrowData) -> Self {
         Self {
+            brush_mode: None,
             fill: arrow.is_line().then_some(arrow.fill),
             fill_style: arrow.is_line().then_some(arrow.fill_style),
             stroke: Some(arrow.stroke),
@@ -334,6 +341,7 @@ impl ShapeStyleSample {
 
     fn from_free_draw(free_draw: &snow_draw_engine_document::FreeDrawData) -> Self {
         Self {
+            brush_mode: Some(free_draw.brush_mode),
             fill: Some(free_draw.fill),
             fill_style: Some(free_draw.fill_style),
             stroke: Some(free_draw.stroke),
@@ -384,6 +392,7 @@ impl ArrowStyle {
 impl ShapeStyle {
     pub(crate) fn from_line(line: &ArrowData) -> Self {
         Self {
+            brush_mode: Default::default(),
             fill: line.fill,
             fill_style: line.fill_style,
             stroke: line.stroke,
@@ -403,6 +412,7 @@ impl ShapeStyle {
 
     pub(crate) fn from_free_draw(free_draw: &snow_draw_engine_document::FreeDrawData) -> Self {
         Self {
+            brush_mode: free_draw.brush_mode,
             fill: free_draw.fill,
             fill_style: free_draw.fill_style,
             stroke: free_draw.stroke,
@@ -1334,6 +1344,7 @@ impl Editor {
             })
             .or_else(|| {
                 (self.state.active_tool == ActiveTool::Spotlight).then(|| ShapeStyle {
+                    brush_mode: Default::default(),
                     shape: self.state.default_spotlight_shape,
                     corner_radii: self.state.default_spotlight_corner_radii,
                     ..ShapeStyle::from_rectangle_shape_style(
@@ -1455,6 +1466,9 @@ impl Editor {
         };
 
         selected.fold(0, |mut mixed, style| {
+            if style.brush_mode != first.brush_mode {
+                mixed |= crate::SHAPE_STYLE_MIXED_BRUSH_MODE;
+            }
             if style.fill != first.fill {
                 mixed |= SHAPE_STYLE_MIXED_FILL;
             }
@@ -2005,6 +2019,7 @@ impl Editor {
                         updated.stroke_width = style.stroke_width;
                         updated.stroke_style = style.stroke_style;
                         updated.opacity = style.opacity;
+                        updated.brush_mode = style.brush_mode;
                     }
                     if updated != *current_free_draw {
                         transaction.update_free_draw(id, updated.clone());

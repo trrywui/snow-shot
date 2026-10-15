@@ -546,8 +546,8 @@
             <translation>无法检查更新，请重试。</translation>
         </message>
         <message>
-            <source>This build uses manual updates. Download new versions from https://github.com/trrywui/snow-apps/releases.</source>
-            <translation>此版本采用手动更新，请从 https://github.com/trrywui/snow-apps/releases 下载新版本。</translation>
+            <source>This build uses manual updates. Download new versions from https://github.com/trrywui/snow-shot/releases.</source>
+            <translation>此版本采用手动更新，请从 https://github.com/trrywui/snow-shot/releases 下载新版本。</translation>
         </message>
     </context>
 </TS>

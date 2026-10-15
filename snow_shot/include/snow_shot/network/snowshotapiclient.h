@@ -70,7 +70,6 @@ struct SnowShotTranslationRequest {
     QString targetLanguage;
     QString text;
     QString translationMode = QStringLiteral("default");
-    QString secondaryTargetLanguage = {};
 };
 
 struct SnowShotTranslationResult {

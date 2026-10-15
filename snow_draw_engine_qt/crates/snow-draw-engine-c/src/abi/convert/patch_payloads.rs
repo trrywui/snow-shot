@@ -333,6 +333,7 @@ pub(crate) fn snow_scene_display_item_from_rust(
             out.arrow_shaft_type = super::snow_arrow_shaft_type_from_rust(item.arrow_shaft_type);
             out.arrow_ratio = item.arrow_ratio;
             out.is_free_draw = u8::from(item.is_free_draw);
+            out.brush_mode = item.brush_mode as u8;
             out.arrow_start_head = snow_arrowhead_from_rust(item.start_arrowhead);
             out.arrow_end_head = snow_arrowhead_from_rust(item.end_arrowhead);
             out.arrow_stroke_style = snow_stroke_style_from_rust(item.stroke_style);
@@ -849,9 +850,9 @@ mod tests {
         assert_eq!(item.view.element_id.generation, 4);
         assert_eq!(item.view.filter.filter_type, 1);
         assert_eq!(item.view.filter.strength, 0.625);
-        assert_eq!(item.view.filter.mosaic_block_size, 8.25);
-        assert_eq!(item.view.filter.blur_sigma, 11.75);
-        assert_eq!(item.view.filter.sampling_radius, 36.25);
+        assert_eq!(item.view.filter.mosaic_block_size, 9.8125);
+        assert_eq!(item.view.filter.blur_sigma, 14.5625);
+        assert_eq!(item.view.filter.sampling_radius, 44.6875);
         assert_eq!(item.view.opacity, 0.4);
         assert_eq!((item.view.center_x, item.view.center_y), (21.0, 34.0));
         assert_eq!((item.view.width, item.view.height), (55.0, 89.0));

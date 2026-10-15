@@ -37,6 +37,7 @@ void shortcutFamiliesAreComplete() {
         {GlobalShortcutAction::OpenCaptureHistory, std::nullopt},
         {GlobalShortcutAction::OpenPinToScreenManagement, std::nullopt},
         {GlobalShortcutAction::GlobalCanvas, std::nullopt},
+        {GlobalShortcutAction::StitchSelectedImages, std::nullopt},
         {GlobalShortcutAction::OpenSettings, std::nullopt},
         {GlobalShortcutAction::PinClipboardContent, FeatureFamily::PinToScreen},
         {GlobalShortcutAction::TranslateSelectedText, std::nullopt},

@@ -17,6 +17,23 @@ typedef struct SnowCaptureCancellationTokenImpl SnowCaptureCancellationToken;
 typedef struct SnowCaptureScreenshotResultImpl SnowCaptureScreenshotResult;
 typedef struct SnowCaptureCursorSnapshotImpl SnowCaptureCursorSnapshot;
 
+/* Immutable 32x32 RGBA crosshair artwork, with a white fill, black outline and
+ * hotspot (16,16). Pixels remain valid for the lifetime of the process. */
+typedef struct SnowCaptureCursorImageView {
+    const uint8_t* rgba;
+    size_t rgba_len;
+    uint32_t width;
+    uint32_t height;
+    uint32_t hotspot_x;
+    uint32_t hotspot_y;
+} SnowCaptureCursorImageView;
+
+/* Returns 1 and fills the view, or 0 when view is null. For physical scaling,
+ * sample source pixel (x*32/width, y*32/height) using integer division. Scale
+ * the hotspot using ceiling division, clamped to width-1/height-1, to select
+ * the first physical pixel of the white center. */
+uint8_t snow_capture_crosshair_cursor_image(SnowCaptureCursorImageView* view);
+
 /* Copies the current global cursor, including its pixels, hotspot, desktop position and
  * visibility (physical pixels on Windows, desktop points on macOS).
  * Immutable and safe to share across capture threads. Null reports a sampling error;

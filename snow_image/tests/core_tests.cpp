@@ -4563,6 +4563,39 @@ void test_parallel_resize_determinism() {
             "parallel resize honors cancellation");
 }
 
+void test_resize_table_resource_estimates() {
+    using snow::image::ResamplingMethod;
+    using snow::image::ResizeOptions;
+    const ResizeOptions extreme{1, 1, ResamplingMethod::lanczos3, true, false, 1};
+    const auto horizontal =
+        take(snow::image::estimate_resize_resources(65'536, 1, snow::image::kRgba8, extreme),
+             "estimate extreme horizontal resize tables");
+    const auto vertical =
+        take(snow::image::estimate_resize_resources(1, 65'536, snow::image::kRgba8, extreme),
+             "estimate extreme vertical resize tables");
+    require(horizontal.retained_bytes >= 65'536U * 8U &&
+                horizontal.working_bytes >= (std::uint64_t{8} << 20U) &&
+                vertical.retained_bytes >= 65'536U * 8U &&
+                vertical.working_bytes < (std::uint64_t{32} << 20U),
+            "resize admission includes both axis tables and bounded inversion scratch");
+    auto nearest = extreme;
+    nearest.method = ResamplingMethod::nearest;
+    const auto sparse =
+        take(snow::image::estimate_resize_resources(1, 65'536, snow::image::kRgba8, nearest),
+             "estimate nearest sampling tables");
+    require(sparse.retained_bytes < vertical.retained_bytes,
+            "nearest sampling does not budget a Lanczos-sized coefficient table");
+    const auto identity = take(snow::image::estimate_resize_resources(
+                                   65'536, 1, snow::image::kRgba8, ResizeOptions{65'536, 1}),
+                               "estimate identity rows");
+    require(identity.retained_bytes == 0, "identity rows retain no filter tables");
+    require(!snow::image::estimate_resize_resources(0, 1, snow::image::kRgba8, extreme) &&
+                !snow::image::estimate_resize_resources(
+                    1, 1, snow::image::kRgba8,
+                    ResizeOptions{std::numeric_limits<std::uint32_t>::max(), 1}),
+            "resize estimates reject unsupported dimensions before allocation");
+}
+
 Document patterned_resize_document(std::uint32_t width, std::uint32_t height,
                                    snow::image::PixelFormat format) {
     snow::image::MutableImage image =
@@ -4789,6 +4822,12 @@ void test_jxl_opaque_progressive_preview(Service& service) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    if (argc == 2 && std::string_view(argv[1]) == "--resize-only") {
+        test_parallel_resize_determinism();
+        test_streaming_resize();
+        test_resize_table_resource_estimates();
+        return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--webp-only") {
         Service service;
         test_webp(service);

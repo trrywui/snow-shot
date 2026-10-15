@@ -113,6 +113,19 @@ fn draw_path_item_bounds(
     frame_view: FrameView,
     item: &snow_draw_engine_display::ArrowDisplayItem,
 ) -> Option<DirtyRegion> {
+    if let Some(pressure) = &item.pressure_geometry {
+        let mut bounds = pressure.canvas_bounds;
+        if item.fill.a != 0 {
+            let center = item.geometry.canvas_bounds;
+            bounds = [
+                bounds[0].min(center[0]),
+                bounds[1].min(center[1]),
+                bounds[2].max(center[2]),
+                bounds[3].max(center[3]),
+            ];
+        }
+        return draw_path_geometry_bounds(frame_view, bounds, 0.0, &[]);
+    }
     draw_path_geometry_bounds(
         frame_view,
         item.geometry.canvas_bounds,

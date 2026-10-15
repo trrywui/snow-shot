@@ -644,6 +644,10 @@
             <translation>图像</translation>
         </message>
         <message>
+            <source>Image Splitting</source>
+            <translation>图片分割</translation>
+        </message>
+        <message>
             <source>Integers</source>
             <translation>整数</translation>
         </message>
@@ -788,6 +792,10 @@
             <translation>鼠标高亮预览</translation>
         </message>
         <message>
+            <source>Mouse highlight radius</source>
+            <translation>鼠标高亮半径</translation>
+        </message>
+        <message>
             <source>Mouse trail color</source>
             <translation>鼠标轨迹颜色</translation>
         </message>
@@ -900,6 +908,10 @@
             <translation>后处理效果</translation>
         </message>
         <message>
+            <source>Pressure-sensitive brush</source>
+            <translation>压感画笔</translation>
+        </message>
+        <message>
             <source>Print</source>
             <translation>打印</translation>
         </message>
@@ -982,6 +994,10 @@
         <message>
             <source>Redo</source>
             <translation>重做</translation>
+        </message>
+        <message>
+            <source>Regular brush</source>
+            <translation>普通画笔</translation>
         </message>
         <message>
             <source>Reset</source>

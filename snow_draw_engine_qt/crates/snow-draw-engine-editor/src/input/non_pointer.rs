@@ -237,6 +237,8 @@ mod tests {
         let document = DocumentModel::new();
         let mut editor = editor_for(ActiveTool::FreeDraw);
         let enter = InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type: PointerEventType::Enter,
             device: PointerDevice::Mouse,

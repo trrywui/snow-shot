@@ -30,6 +30,7 @@
 #include <QEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QTabletEvent>
 #include <QPointer>
 #include <QScreen>
 #include <QScopeGuard>
@@ -212,6 +213,49 @@ void ScreenshotPinnedEditController::updateCanvasColorSamplingAfterCursorMove(
 bool ScreenshotPinnedEditController::eventFilter(QObject* watched, QEvent* event) {
     if (watched != &m_canvas || event == nullptr || !m_editMode) {
         return QObject::eventFilter(watched, event);
+    }
+    if (event->type() == QEvent::FocusOut || event->type() == QEvent::Hide) {
+        m_tabletFrameGesture = false;
+        m_tabletSamplingReleasePending = false;
+    }
+
+    if (event->type() == QEvent::TabletPress || event->type() == QEvent::TabletMove ||
+        event->type() == QEvent::TabletRelease) {
+        auto* tablet = static_cast<QTabletEvent*>(event);
+        if (m_tabletSamplingReleasePending) {
+            if (event->type() == QEvent::TabletRelease) {
+                m_tabletSamplingReleasePending = false;
+            }
+            event->accept();
+            return true;
+        }
+        const bool outsideContent = !m_pinnedWindow.contentViewRect().contains(
+            m_pinnedWindow.windowPositionForEvent(watched, tablet->position()));
+        if (m_tabletFrameGesture || (event->type() != QEvent::TabletRelease &&
+                                     QWidget::mouseGrabber() != &m_canvas && outsideContent)) {
+            m_tabletFrameGesture = event->type() != QEvent::TabletRelease &&
+                                   (m_tabletFrameGesture || event->type() == QEvent::TabletPress);
+            // Keep Qt's existing mouse fallback for frame resizing, while preventing
+            // the native brush handler from receiving this host-owned gesture.
+            event->ignore();
+            return true;
+        }
+        const auto type = event->type() == QEvent::TabletPress     ? QEvent::MouseButtonPress
+                          : event->type() == QEvent::TabletRelease ? QEvent::MouseButtonRelease
+                                                                   : QEvent::MouseMove;
+        QMouseEvent pointer(type, tablet->position(), tablet->globalPosition(), tablet->button(),
+                            tablet->buttons(), tablet->modifiers(), tablet->pointingDevice());
+        const bool samplingPress =
+            event->type() == QEvent::TabletPress && !m_canvasColorSamplingTarget.isNull();
+        const QPointer<ScreenshotPinnedEditController> lifetime(this);
+        if (eventFilter(watched, &pointer)) {
+            if (lifetime) {
+                m_tabletSamplingReleasePending = samplingPress;
+            }
+            event->accept();
+            return true;
+        }
+        return false;
     }
 
     if (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonPress ||
@@ -560,6 +604,8 @@ void ScreenshotPinnedEditController::setEditMode(bool enabled) {
     }
 
     m_editMode = enabled;
+    m_tabletFrameGesture = false;
+    m_tabletSamplingReleasePending = false;
     m_angleWheelSteps.reset();
     if (enabled) {
         const QPointer<ScreenshotPinnedEditController> guard(this);

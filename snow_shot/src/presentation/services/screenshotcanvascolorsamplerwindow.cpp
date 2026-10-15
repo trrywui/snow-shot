@@ -1,4 +1,5 @@
 #include "snow_shot/presentation/screenshotcanvascolorsamplerwindow.h"
+#include "snow_shot/presentation/crosshaircursor.h"
 
 #include "snow_shot/presentation/components/icons/iconrenderutils.h"
 #include "snow_shot/presentation/components/icons/snowshoticons.h"
@@ -173,7 +174,7 @@ QCursor ScreenshotCanvasColorSamplerWindow::samplingCursor() {
     const QPixmap foreground = snow_shot::presentation::icons::renderTintedIconPixmap(
         icon, QSize(kCursorIconSize, kCursorIconSize), devicePixelRatio, QColor(0, 0, 0));
     if (outline.isNull() || foreground.isNull()) {
-        return QCursor(Qt::CrossCursor);
+        return snow_shot::presentation::crosshairCursor(devicePixelRatio);
     }
 
     QPainter painter(&cursorPixmap);

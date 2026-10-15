@@ -4,7 +4,9 @@
 #include "snow_shot/presentation/components/pinnedwindowmanagementpagewidget.h"
 
 #include "snow_shot/presentation/components/historyselectionbar.h"
+#include "snow_shot/presentation/components/actionpopupmenu.h"
 #include "snow_shot/presentation/components/historypagecommon.h"
+#include "snow_shot/presentation/components/icons/snowshoticons.h"
 #include "snow_shot/presentation/components/thumbnailcache.h"
 #include "snow_shot/presentation/components/emptystateicon.h"
 #include "snow_shot/presentation/components/pagecontainerwidget.h"
@@ -95,6 +97,7 @@ QImage loadPinnedImage(storage::PinnedWindowRepository* repository, const QStrin
         ScreenshotClipboardOriginalContent content;
         content.html = record->originalHtml;
         content.text = record->originalText;
+        content.textStyle = record->textStyle;
         const auto rendered = ScreenshotClipboardContentReader::renderOriginalText(
             content, record->firstCreationTextDpi);
         if (rendered) {
@@ -113,6 +116,7 @@ QImage loadPinnedPreview(storage::PinnedWindowRepository* repository, const QStr
         ScreenshotClipboardOriginalContent content;
         content.html = source->originalHtml;
         content.text = source->originalText;
+        content.textStyle = source->textStyle;
         const auto rendered = ScreenshotClipboardContentReader::renderOriginalText(
             content, source->firstCreationTextDpi);
         return rendered ? rendered->image : QImage{};
@@ -502,6 +506,10 @@ PinnedWindowManagementPageWidget::PinnedWindowManagementPageWidget(
     m_deleteSelected->setObjectName(QStringLiteral("pinnedManagementDeleteSelected"));
     history_page::configureSelectionAction(m_deleteSelected, true);
     selectionActionsLayout->addWidget(m_deleteSelected);
+    m_collageButton = new adqt::widgets::AdButton(m_selectionActions);
+    m_collageButton->setObjectName(QStringLiteral("pinnedManagementCollage"));
+    history_page::configureSelectionAction(m_collageButton, false);
+    selectionActionsLayout->addWidget(m_collageButton);
     m_selectPage = new adqt::widgets::AdButton(m_selectionActions);
     m_selectPage->setObjectName(QStringLiteral("pinnedManagementSelectAll"));
     history_page::configureSelectionAction(m_selectPage, false);
@@ -579,6 +587,15 @@ PinnedWindowManagementPageWidget::PinnedWindowManagementPageWidget(
     });
     connect(m_selectPage, &QAbstractButton::clicked, this,
             &PinnedWindowManagementPageWidget::selectCurrentPage);
+    connect(m_collageButton, &QAbstractButton::clicked, this, [this] {
+        QStringList selected;
+        for (const auto& record : std::as_const(m_records)) {
+            if (m_selected.contains(record.id))
+                selected.append(record.id);
+        }
+        if (!selected.isEmpty())
+            emit collageRequested(selected);
+    });
     connect(m_deselect, &QAbstractButton::clicked, this,
             &PinnedWindowManagementPageWidget::clearSelection);
     connect(m_sourceFilter, &adqt::widgets::AdSelect::currentValuesChanged, this,
@@ -856,6 +873,35 @@ void PinnedWindowManagementPageWidget::rebuildEntries() {
             remove->setAccentRole(adqt::widgets::AdButton::AccentRole::Danger);
             remove->setText(tr("Delete"));
             actions->addWidget(remove);
+            auto* more = new adqt::widgets::AdButton(details);
+            more->setObjectName(QStringLiteral("pinnedManagementEntryMore"));
+            more->setButtonStyle(adqt::widgets::AdButton::ButtonStyle::Text);
+            more->setAccentRole(adqt::widgets::AdButton::AccentRole::Primary);
+            more->setIconRef(outlined_icons::Ellipsis());
+            actions->addWidget(more);
+            new presentation::ActionPopupMenu(
+                more,
+                [this, row, id = record.id] {
+                    auto* menu = new adqt::widgets::AdContextMenu(row);
+                    menu->setObjectName(QStringLiteral("pinnedManagementEntryMoreMenu"));
+                    auto* stitch =
+                        menu->addItem(tr("Stitch Image"),
+                                      presentation::icons::custom::outlined::ImageStitching());
+                    stitch->setObjectName(QStringLiteral("pinnedManagementEntryStitch"));
+                    stitch->setToolTip(tr("Stitch Image"));
+                    const QString splitLabel = tr("Image Splitting");
+                    auto* split = menu->addItem(
+                        splitLabel, presentation::icons::custom::outlined::ImageSplitting());
+                    split->setObjectName(QStringLiteral("pinnedManagementEntrySplit"));
+                    split->setToolTip(splitLabel);
+                    connect(stitch, &QAction::triggered, row,
+                            [this, id] { emit collageRequested({id}); });
+                    connect(split, &QAction::triggered, row,
+                            [this, id] { emit splitRequested(id); });
+                    return menu;
+                },
+                presentation::ActionPopupMenu::Placement::BottomLeft,
+                presentation::ActionPopupMenu::Surface::Widget);
             actions->addStretch(1);
             detailsLayout->addLayout(actions);
             rowLayout->addWidget(details, 1);
@@ -919,6 +965,22 @@ void PinnedWindowManagementPageWidget::rebuildEntries() {
                                       : tr("Not Closed"));
         row->findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementEntryShow"))
             ->setText(record.ignored ? tr("Restore") : tr("Show"));
+        auto* more =
+            row->findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementEntryMore"));
+        more->setText(tr("More"));
+        more->setToolTip(tr("More actions"));
+        more->setAccessibleName(tr("More actions"));
+        for (auto* stitch :
+             row->findChildren<QAction*>(QStringLiteral("pinnedManagementEntryStitch"))) {
+            stitch->setText(tr("Stitch Image"));
+            stitch->setToolTip(tr("Stitch Image"));
+        }
+        for (auto* split :
+             row->findChildren<QAction*>(QStringLiteral("pinnedManagementEntrySplit"))) {
+            const QString label = tr("Image Splitting");
+            split->setText(label);
+            split->setToolTip(label);
+        }
         row->findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementEntryDelete"))
             ->setText(tr("Delete"));
         const QString altText = tr("Pinned window image");
@@ -969,6 +1031,7 @@ void PinnedWindowManagementPageWidget::updateHeader() {
 
 void PinnedWindowManagementPageWidget::updateSelectionBar() {
     const int count = static_cast<int>(m_selected.size());
+    m_collageButton->setEnabled(count > 0);
     history_page::updateSelectionBar(
         {m_selectionBar, m_selectionLayout, m_selectionSummary, m_selectionActions, m_selectPage,
          m_deleteSelected, m_deselect, m_deleteSelectedConfirmation},
@@ -1048,6 +1111,9 @@ void PinnedWindowManagementPageWidget::retranslateUi() {
     m_deleteSelected->setText(tr("Delete"));
     m_deleteSelected->setToolTip(tr("Delete selected pinned windows"));
     m_deleteSelected->setAccessibleName(tr("Delete selected pinned windows"));
+    m_collageButton->setText(tr("Collage"));
+    m_collageButton->setToolTip(tr("Create a collage from selected pinned windows"));
+    m_collageButton->setAccessibleName(tr("Create a collage from selected pinned windows"));
     m_selectPage->setText(tr("Select all"));
     m_selectPage->setToolTip(tr("Select all entries on this page"));
     m_selectPage->setAccessibleName(tr("Select all entries on this page"));

@@ -278,6 +278,18 @@ SettingsItemDefinition globalCanvasItem() {
         []() { return custom_outlined_icons::FullScreenCanvas(); });
 }
 
+SettingsItemDefinition stitchSelectedImagesItem() {
+    return quickActionItem(
+        QStringLiteral("quick.stitch-selected-images"),
+        QT_TRANSLATE_NOOP("SettingsCatalog", "Stitch Selected Images"),
+        QT_TRANSLATE_NOOP("SettingsCatalog",
+                          "Open Image Stitching with selected image files, or an empty window if "
+                          "no images are selected"),
+        {}, GlobalShortcutAction::StitchSelectedImages,
+        QStringLiteral("global_shortcuts/stitch_selected_images"),
+        []() { return custom_outlined_icons::ImageStitching(); });
+}
+
 SettingsItemDefinition themeItem() {
     SettingsSelectDefinition payload;
     payload.options = {
@@ -694,6 +706,54 @@ SettingsItemDefinition floatingToolbarEnabledItem() {
             SettingsSwitchDefinition{SettingsSwitchBinding::FloatingToolbarEnabled}};
 }
 
+QVector<SettingsItemDefinition> pinTextStyleItems() {
+    SettingsSelectDefinition font;
+    font.binding = SettingsSelectBinding::PinTextFont;
+    font.source = SettingsSelectSource::FontFamilies;
+    font.options = {
+        {QStringLiteral(""), settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "System default"))}};
+    return {
+        {QStringLiteral("pin-to-screen.text-maximum-width"),
+         settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Maximum text width")),
+         settingsText(QT_TRANSLATE_NOOP("SettingsCatalog",
+                                        "Limit the width of pinned text, including padding")),
+         {},
+         QStringLiteral("pin_to_screen/text_maximum_width"),
+         SettingsIntegerDefinition{SettingsIntegerBinding::PinTextMaximumWidth,
+                                   settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "px"))}},
+        {QStringLiteral("pin-to-screen.text-font-family"),
+         settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Default text font")),
+         settingsText(
+             QT_TRANSLATE_NOOP("SettingsCatalog", "Choose the default font for newly pinned text")),
+         {},
+         QStringLiteral("pin_to_screen/text_font_family"),
+         font},
+        {QStringLiteral("pin-to-screen.text-font-size"),
+         settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Default text font size")),
+         settingsText(QT_TRANSLATE_NOOP("SettingsCatalog",
+                                        "Choose the default font size for newly pinned text")),
+         {},
+         QStringLiteral("pin_to_screen/text_font_size"),
+         SettingsIntegerDefinition{SettingsIntegerBinding::PinTextFontSize,
+                                   settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "px"))}},
+        screenshotColorItem(
+            QStringLiteral("pin-to-screen.text-color"),
+            QT_TRANSLATE_NOOP("SettingsCatalog", "Default text color"),
+            QT_TRANSLATE_NOOP(
+                "SettingsCatalog",
+                "Use the theme text color until customized. Reset Text Style to restore it."),
+            QStringLiteral("pin_to_screen/text_color"), SettingsColorBinding::PinTextColor),
+        screenshotColorItem(
+            QStringLiteral("pin-to-screen.text-background-color"),
+            QT_TRANSLATE_NOOP("SettingsCatalog", "Background color"),
+            QT_TRANSLATE_NOOP(
+                "SettingsCatalog",
+                "Use the theme background until customized. Reset Text Style to restore it."),
+            QStringLiteral("pin_to_screen/text_background_color"),
+            SettingsColorBinding::PinTextBackgroundColor),
+    };
+}
+
 SettingsItemDefinition pinBorderColorItem() {
     return screenshotColorItem(
         QStringLiteral("interface.pin-to-screen.border-color"),
@@ -825,6 +885,42 @@ SettingsItemDefinition trayCustomIconItem() {
             SettingsFilePathBinding::TrayCustomIcon,
             settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Browse")),
             settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Select tray icon")),
+            settingsText(QT_TRANSLATE_NOOP(
+                "SettingsCatalog",
+                "Image files (*.png *.ico);;PNG images (*.png);;Icon files (*.ico)"))}};
+}
+
+SettingsItemDefinition trayDarkIconItem() {
+    SettingsRadioDefinition payload = std::get<SettingsRadioDefinition>(trayIconItem().payload);
+    payload.binding = SettingsRadioBinding::TrayDarkIcon;
+    payload.options.prepend(
+        {QStringLiteral("inherit"),
+         settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Use regular icon settings")),
+         QStringLiteral(":/snow-shot/app-icons/snow-shot-tray-default.png")});
+    return {QStringLiteral("interface.tray.dark-icon"),
+            settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Dark theme icon")),
+            settingsText(QT_TRANSLATE_NOOP(
+                "SettingsCatalog",
+                "Choose the bundled icon used in dark theme, or reuse the regular icon settings")),
+            {settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Tray appearance"))},
+            QStringLiteral("tray/dark_icon"),
+            payload};
+}
+
+SettingsItemDefinition trayDarkCustomIconItem() {
+    return {
+        QStringLiteral("interface.tray.dark-custom-icon"),
+        settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Dark theme custom icon")),
+        settingsText(QT_TRANSLATE_NOOP(
+            "SettingsCatalog",
+            "Enter or browse to a PNG or ICO file for dark theme; invalid files use the selected "
+            "bundled icon")),
+        {settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Tray icon path"))},
+        QStringLiteral("tray/dark_custom_icon"),
+        SettingsFilePathDefinition{
+            SettingsFilePathBinding::TrayDarkCustomIcon,
+            settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Browse")),
+            settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Select dark theme tray icon")),
             settingsText(QT_TRANSLATE_NOOP(
                 "SettingsCatalog",
                 "Image files (*.png *.ico);;PNG images (*.png);;Icon files (*.ico)"))}};
@@ -2062,6 +2158,17 @@ SettingsItemDefinition screenRecordingAutoExitAfterRecordingEndsItem() {
         SettingsSwitchBinding::ScreenRecordingAutoExitAfterRecordingEnds);
 }
 
+SettingsItemDefinition screenRecordingAutoHideToolbarItem() {
+    return switchItem(
+        QStringLiteral("screen-recording.auto-hide-toolbar"),
+        QT_TRANSLATE_NOOP("SettingsCatalog", "Auto-hide toolbar"),
+        QT_TRANSLATE_NOOP("SettingsCatalog",
+                          "Hide the toolbar near the left or right screen edge. Hover over the "
+                          "edge control to show it again."),
+        QStringLiteral("screen_recording/auto_hide_toolbar"),
+        SettingsSwitchBinding::ScreenRecordingAutoHideToolbar);
+}
+
 SettingsItemDefinition screenRecordingNotifyAfterExportCompletesItem() {
     return switchItem(QStringLiteral("screen-recording.notify-after-export-completes"),
                       QT_TRANSLATE_NOOP("SettingsCatalog", "Notify after export completes"),
@@ -2277,7 +2384,11 @@ QVector<SettingsItemDefinition> screenshotShortcutItems() {
                           []() { return outlined_icons::History(); }),
         localShortcutItem(SettingsLocalShortcutScope::Screenshot,
                           QStringLiteral("select_previously_selected_area"),
-                          QT_TRANSLATE_NOOP("SettingsCatalog", "Select previously selected area"),
+                          QT_TRANSLATE_NOOP("SettingsCatalog", "Previous selection area"),
+                          []() { return outlined_icons::Rest(); }),
+        localShortcutItem(SettingsLocalShortcutScope::Screenshot,
+                          QStringLiteral("select_next_previously_selected_area"),
+                          QT_TRANSLATE_NOOP("SettingsCatalog", "Next selection area"),
                           []() { return outlined_icons::Rest(); }),
         localShortcutItem(SettingsLocalShortcutScope::Screenshot,
                           QStringLiteral("toggle_cursor_visibility"),
@@ -2929,6 +3040,7 @@ QVector<SettingsPageDefinition> builtInPages() {
                     {
                         openCaptureHistoryItem(),
                         globalCanvasItem(),
+                        stitchSelectedImagesItem(),
 #if SNOW_SHOT_ENABLE_TEXT_TRANSLATION
                         translateSelectedTextItem(),
 #endif
@@ -3291,6 +3403,15 @@ QVector<SettingsPageDefinition> builtInPages() {
                   pinShadowActiveColorItem(), pinLockedShadowColorItem()},
              },
              {
+                 QStringLiteral("pin-to-screen-text-style"),
+                 settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Text Style")),
+                 settingsText(QT_TRANSLATE_NOOP(
+                     "SettingsCatalog",
+                     "Defaults for newly pinned text; source formatting is preserved")),
+                 SettingsSectionReset::PinTextStyle,
+                 pinTextStyleItems(),
+             },
+             {
                  QStringLiteral("pin-to-screen-toolbar"),
                  settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Action Toolbar")),
                  settingsText(
@@ -3358,7 +3479,8 @@ QVector<SettingsPageDefinition> builtInPages() {
                  settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Interaction")),
                  settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Screen recording behavior")),
                  SettingsSectionReset::ScreenRecordingInteraction,
-                 {screenRecordingAutoExitAfterRecordingEndsItem(),
+                 {screenRecordingAutoHideToolbarItem(),
+                  screenRecordingAutoExitAfterRecordingEndsItem(),
                   screenRecordingNotifyAfterExportCompletesItem(),
                   screenRecordingDeleteFilesOnRecordingCloseItem()},
              },
@@ -3418,12 +3540,24 @@ QVector<SettingsPageDefinition> builtInPages() {
                       QStringLiteral("translation.secondary-target-language"),
                       QT_TRANSLATE_NOOP("SettingsCatalog", "Secondary Target Language"),
                       QT_TRANSLATE_NOOP("SettingsCatalog",
-                                        "Prompt-capable models use this language when the input "
-                                        "matches the primary target language"),
+                                        "Use this language when local language detection matches "
+                                        "the primary target language at the configured confidence"),
                       QStringLiteral("screenshot_translation/secondary_target_language"),
                       SettingsSelectBinding::TranslationSecondaryTargetLanguage,
                       translationLanguageOptions(false)),
-                  translationServiceItem(), originalImageTranslationItem(),
+                  {QStringLiteral("translation.language-detection-confidence-threshold"),
+                   settingsText(QT_TRANSLATE_NOOP("SettingsCatalog",
+                                                  "Language Detection Confidence Threshold")),
+                   settingsText(QT_TRANSLATE_NOOP(
+                       "SettingsCatalog",
+                       "Minimum confidence required to switch to the secondary target language")),
+                   {},
+                   QStringLiteral("screenshot_translation/language_detection_confidence_threshold"),
+                   SettingsIntegerDefinition{
+                       SettingsIntegerBinding::TranslationLanguageDetectionConfidenceThreshold,
+                       settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "%"))}},
+                  translationServiceItem(),
+                  originalImageTranslationItem(),
                   translationLayoutProcessingItem()},
              },
 #endif
@@ -3556,8 +3690,9 @@ QVector<SettingsPageDefinition> builtInPages() {
                  settingsText(
                      QT_TRANSLATE_NOOP("SettingsCatalog", "System tray icon, actions and menu")),
                  SettingsSectionReset::Tray,
-                 {trayEnabledItem(), trayIconItem(), trayCustomIconItem(), trayLeftClickItem(),
-                  trayMiddleClickItem(), trayMenuOptionsItem()},
+                 {trayEnabledItem(), trayIconItem(), trayCustomIconItem(), trayDarkIconItem(),
+                  trayDarkCustomIconItem(), trayLeftClickItem(), trayMiddleClickItem(),
+                  trayMenuOptionsItem()},
              },
              {
                  QStringLiteral("floating-toolbar"),
@@ -4004,6 +4139,8 @@ QString shortcutConfigurationKey(GlobalShortcutAction action) {
         return QStringLiteral("global_shortcuts/switch_window_group");
     case GlobalShortcutAction::GlobalCanvas:
         return QStringLiteral("global_shortcuts/global_canvas");
+    case GlobalShortcutAction::StitchSelectedImages:
+        return QStringLiteral("global_shortcuts/stitch_selected_images");
     case GlobalShortcutAction::OpenPinToScreenManagement:
         return QStringLiteral("global_shortcuts/open_pin_to_screen_management");
     case GlobalShortcutAction::OpenSettings:
@@ -4394,6 +4531,10 @@ TrayCommandManifest buildBuiltInTrayCommandManifest() {
                                   "Full-screen canvas (enable/disable click-through)"),
                 GlobalShortcutAction::GlobalCanvas,
                 []() { return custom_outlined_icons::FullScreenCanvas(); }),
+          quick(QStringLiteral("quick.stitch-selected-images"),
+                QT_TRANSLATE_NOOP("SettingsCatalog", "Stitch Selected Images"),
+                GlobalShortcutAction::StitchSelectedImages,
+                []() { return custom_outlined_icons::ImageStitching(); }),
           quick(QStringLiteral("quick.translate-selected-text"),
                 QT_TRANSLATE_NOOP("SettingsCatalog", "Translate Selected Text"),
                 GlobalShortcutAction::TranslateSelectedText,
@@ -4598,6 +4739,10 @@ QStringList SettingsCatalog::validationErrors() const {
                         break;
                     case SettingsSelectBinding::TrayMenuSkinPosition:
                         expectedKey = QStringLiteral("interface/tray_menu_skin_position");
+                        break;
+                    case SettingsSelectBinding::PinTextFont:
+                        expectedKey = QStringLiteral("pin_to_screen/text_font_family");
+                        expectedSource = SettingsSelectSource::FontFamilies;
                         break;
                     case SettingsSelectBinding::AppFont:
                         expectedKey = QStringLiteral("interface/app_font");
@@ -4919,6 +5064,9 @@ QStringList SettingsCatalog::validationErrors() const {
                         expectedKey =
                             QStringLiteral("screen_recording/capture_toolbar_in_recording");
                         break;
+                    case SettingsSwitchBinding::ScreenRecordingAutoHideToolbar:
+                        expectedKey = QStringLiteral("screen_recording/auto_hide_toolbar");
+                        break;
                     case SettingsSwitchBinding::ScreenRecordingAutoExitAfterRecordingEnds:
                         expectedKey =
                             QStringLiteral("screen_recording/auto_exit_after_recording_ends");
@@ -4998,6 +5146,12 @@ QStringList SettingsCatalog::validationErrors() const {
                         std::get_if<SettingsIntegerDefinition>(&itemDefinition.payload)) {
                     QString expectedKey;
                     switch (integer->binding) {
+                    case SettingsIntegerBinding::PinTextMaximumWidth:
+                        expectedKey = QStringLiteral("pin_to_screen/text_maximum_width");
+                        break;
+                    case SettingsIntegerBinding::PinTextFontSize:
+                        expectedKey = QStringLiteral("pin_to_screen/text_font_size");
+                        break;
                     case SettingsIntegerBinding::HistoryRetentionDays:
                         expectedKey = QStringLiteral("capture_history/retention_days");
                         break;
@@ -5018,6 +5172,10 @@ QStringList SettingsCatalog::validationErrors() const {
                         break;
                     case SettingsIntegerBinding::ScreenshotDelaySeconds:
                         expectedKey = QStringLiteral("screenshot/delay_seconds");
+                        break;
+                    case SettingsIntegerBinding::TranslationLanguageDetectionConfidenceThreshold:
+                        expectedKey = QStringLiteral(
+                            "screenshot_translation/language_detection_confidence_threshold");
                         break;
                     }
                     if (itemDefinition.configurationKey != expectedKey || schemaEntry == nullptr ||
@@ -5162,6 +5320,12 @@ QStringList SettingsCatalog::validationErrors() const {
                         std::get_if<SettingsColorDefinition>(&itemDefinition.payload)) {
                     QString expectedKey;
                     switch (color->binding) {
+                    case SettingsColorBinding::PinTextColor:
+                        expectedKey = QStringLiteral("pin_to_screen/text_color");
+                        break;
+                    case SettingsColorBinding::PinTextBackgroundColor:
+                        expectedKey = QStringLiteral("pin_to_screen/text_background_color");
+                        break;
                     case SettingsColorBinding::ThemePrimaryColor:
                         expectedKey = QStringLiteral("interface/theme_primary_color");
                         break;
@@ -5235,6 +5399,9 @@ QStringList SettingsCatalog::validationErrors() const {
                     case SettingsRadioBinding::TrayIcon:
                         expectedKey = QStringLiteral("tray/icon");
                         break;
+                    case SettingsRadioBinding::TrayDarkIcon:
+                        expectedKey = QStringLiteral("tray/dark_icon");
+                        break;
                     }
                     QSet<QString> configuredValues;
                     for (const SettingsRadioOptionDefinition& option : radio->options) {
@@ -5263,6 +5430,9 @@ QStringList SettingsCatalog::validationErrors() const {
                     switch (filePath->binding) {
                     case SettingsFilePathBinding::TrayCustomIcon:
                         expectedKey = QStringLiteral("tray/custom_icon");
+                        break;
+                    case SettingsFilePathBinding::TrayDarkCustomIcon:
+                        expectedKey = QStringLiteral("tray/dark_custom_icon");
                         break;
                     case SettingsFilePathBinding::SkinPath:
                         expectedKey = QStringLiteral("interface/skin_path");

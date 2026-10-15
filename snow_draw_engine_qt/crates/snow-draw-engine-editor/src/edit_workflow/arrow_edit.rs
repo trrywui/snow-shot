@@ -415,6 +415,8 @@ mod tests {
             suggested_binding: None,
         });
         let pointer_up = PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 9,
             event_type: PointerEventType::Up,
             device: PointerDevice::Mouse,
@@ -572,6 +574,8 @@ mod tests {
         editor.set_surface_size(400, 400).unwrap();
 
         let move_event = |canvas_x: f64, canvas_y: f64| PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type: PointerEventType::Move,
             device: PointerDevice::Mouse,
@@ -622,6 +626,8 @@ mod tests {
                 .is_some()
         );
         let pointer_up = PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type: PointerEventType::Up,
             device: PointerDevice::Mouse,

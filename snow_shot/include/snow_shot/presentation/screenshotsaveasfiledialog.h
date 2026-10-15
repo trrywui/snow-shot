@@ -45,10 +45,12 @@ class ScreenshotSaveAsFileDialog final {
     [[nodiscard]] static bool open(QObject* lifetime, QWidget* owner,
                                    std::shared_ptr<ScreenshotExportArtifact> source,
                                    Saved saved = {}, Finished finished = {},
-                                   QWidget* stackingOwner = nullptr);
+                                   QWidget* stackingOwner = nullptr,
+                                   Qt::WindowModality modality = Qt::ApplicationModal);
     [[nodiscard]] static bool open(QObject* lifetime, QWidget* owner, const QImage& image,
                                    Saved saved = {}, Finished finished = {},
-                                   QWidget* stackingOwner = nullptr);
+                                   QWidget* stackingOwner = nullptr,
+                                   Qt::WindowModality modality = Qt::ApplicationModal);
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTSAVEASFILEDIALOG_H

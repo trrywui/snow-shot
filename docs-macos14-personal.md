@@ -1,7 +1,7 @@
 # Snow Shot Intel macOS 维护分支
 
-正式名称为 **Snow Shot**，版本 **1.0.0+up.1.2.8**，Bundle ID 为 `io.github.trrywui.snowshot`。
-最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `6ebfb7794`。
+正式名称为 **Snow Shot**，版本 **1.1.0+up.1.3.0**，Bundle ID 为 `io.github.trrywui.snowshot`。
+最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `8982d6660c03`。
 
 ## 构建隔离
 
@@ -38,16 +38,16 @@ bash scripts/macos14-personal.sh package
 `macos14-personal-jpeg` feature 使 TurboJPEG 与静态 Qt 的 JPEG v8 ABI 一致，不应删除。
 
 ```text
-.tools/macos14-personal/artifacts/1.0.0+up.1.2.8/Snow Shot.app
-.tools/macos14-personal/artifacts/1.0.0+up.1.2.8/snow-shot-1.0.0+up.1.2.8-intel.dmg
-.tools/macos14-personal/artifacts/1.0.0+up.1.2.8/snow-shot-1.0.0+up.1.2.8-intel.dmg.sha256
+.tools/macos14-personal/artifacts/1.1.0+up.1.3.0/Snow Shot.app
+.tools/macos14-personal/artifacts/1.1.0+up.1.3.0/snow-shot-1.1.0+up.1.3.0-intel.dmg
+.tools/macos14-personal/artifacts/1.1.0+up.1.3.0/snow-shot-1.1.0+up.1.3.0-intel.dmg.sha256
 ```
 
 打包保留 OCR 模型、许可证和第三方声明，并验证签名、Mach-O 系统依赖及最低版本。
 不覆盖已有同版本产物；重打包前先移动对应版本目录保存回退材料。
 
 版本唯一配置为 `snow_shot/packaging/macos/maintained-release.json`。
-应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.0.0`，内部构建号为 `1`。
+应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.0`，内部构建号为 `2`。
 后续发布递增维护版本及构建号，上游版本需与根构建声明一致。
 
 ## 正式运行与开发测试
@@ -87,6 +87,7 @@ bash scripts/macos14-personal.sh test capabilities::
 ```
 
 翻译使用 `translations` 模式提取，再补齐全部英文、简体中文、繁体中文目录。
+`configure-tests` 只开启测试目标供 `build-target` 按名称构建，不运行全量测试。
 `probe` 只验证 Qt / AppKit 初始化，不能代替截图、贴图、快捷键和睡眠恢复等交互验收。
 基准测试只使用 `performance` 配置和相关目标。
 

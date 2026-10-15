@@ -1621,6 +1621,7 @@ mod tests {
                 vec![PathSegmentMode::Curve],
                 false,
                 snow_draw_engine_document::FreeDrawStyle {
+                    brush_mode: Default::default(),
                     stroke: ColorRgba8::default(),
                     stroke_width: 2.0,
                     stroke_style: snow_draw_engine_document::StrokeStyle::Solid,

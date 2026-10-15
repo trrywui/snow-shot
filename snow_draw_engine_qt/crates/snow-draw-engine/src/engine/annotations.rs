@@ -530,6 +530,7 @@ impl Engine {
                         Vec::new(),
                         closed,
                         FreeDrawStyle {
+                            brush_mode: Default::default(),
                             stroke: rgba(s.stroke),
                             stroke_width: s.stroke_width,
                             stroke_style: s.stroke_style,

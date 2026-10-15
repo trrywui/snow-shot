@@ -140,14 +140,44 @@ void foreignOwnerAndLanguageRefresh() {
 void authoritativeSuffixes() {
     Registry registry;
     auto options = registry.options();
+    options.imageExtensions = snow_shot::image::supportedImageFileExtensions();
+    options.imageExtensions.removeAll(QStringLiteral("bmp"));
+    windows::ShellContextMenuRegistration previousRegistration(options);
+    require(previousRegistration.setEnabled(true) &&
+                !registry.keys.contains(Registry::path(QStringLiteral("bmp"))),
+            "previous installations register the existing formats without BMP");
     options.imageExtensions.clear();
     windows::ShellContextMenuRegistration registration(std::move(options));
+    const auto previous = registry.keys;
+    registry.writesBeforeFailure = 0;
+    require(!registration.setEnabled(true) && registry.keys == previous,
+            "failed BMP registration preserves the previous installation's image verbs");
     require(registration.setEnabled(true) &&
                 registry.keys.size() == snow_shot::image::supportedImageFileExtensions().size(),
             "default registrar uses the shared authoritative image extension list");
     for (const auto& extension : snow_shot::image::supportedImageFileExtensions())
         require(registry.keys.contains(Registry::path(extension)),
                 "every supported image extension receives the context menu entry");
+    const auto bmp = Registry::path(QStringLiteral("bmp"));
+    const auto key = registry.keys.value(bmp);
+    require(key.exists &&
+                stringText(key.values.value(QStringLiteral("ProductId"))) ==
+                    snow_shot::app::edition::productId() &&
+                stringText(key.children.value(QStringLiteral("command")).values.value({})) ==
+                    registration.expectedCommand(),
+            "startup reconciliation adds an owned BMP verb using the current edition command");
+    const int writes = registry.writes;
+    require(registration.setEnabled(true) && registry.writes == writes,
+            "BMP registration is idempotent on later launches");
+    const auto enabled = registry.keys;
+    registry.writesBeforeFailure = 1;
+    require(!registration.setEnabled(false) && registry.keys == enabled,
+            "partial removal failure restores BMP and the existing image verbs");
+    require(!registration.changeEnabled(false, [] { return false; }).success &&
+                registry.keys == enabled,
+            "failed preference persistence restores BMP with the rest of the menu");
+    require(registration.setEnabled(false) && registry.keys.isEmpty(),
+            "disabling the menu removes BMP and every other owned image verb");
 }
 
 #ifdef Q_OS_WIN
@@ -164,15 +194,24 @@ void isolatedNativeRegistry() {
     options.classesRoot = root;
     options.executablePath =
         QStringLiteral("C:/Native Snow Shot/雪/") + snow_shot::app::edition::executableName();
-    options.imageExtensions = {QStringLiteral("png"), QStringLiteral("jpg")};
+    options.imageExtensions = {QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("bmp")};
     windows::ShellContextMenuRegistration registration(std::move(options));
     require(registration.setEnabled(true), "native isolated registry can enable the image verbs");
     const auto before = registration.snapshot();
-    require(before.valid && before.keys.size() == 2, "native snapshots read every supported verb");
+    require(before.valid && before.keys.size() == 3 &&
+                before.keys
+                    .value(root + QStringLiteral("\\SystemFileAssociations\\.bmp\\shell\\") +
+                           snow_shot::app::edition::registryName() + QStringLiteral(".Edit"))
+                    .exists,
+            "native snapshots include the BMP verb in the isolated registry root");
     require(!registration.changeEnabled(false, [] { return false; }).success &&
                 registration.snapshot().keys == before.keys,
             "native rollback restores registration trees in an isolated HKCU root");
     require(registration.setEnabled(false), "native isolated registry can disable the image verbs");
+    const auto disabled = registration.snapshot();
+    require(disabled.valid && std::all_of(disabled.keys.cbegin(), disabled.keys.cend(),
+                                          [](const auto& key) { return !key.exists; }),
+            "native removal deletes BMP with the other owned image verbs");
     neighbors.sync();
     require(neighbors.value(QStringLiteral("SystemFileAssociations/.png/shell/ParentValue")) ==
                     123 &&

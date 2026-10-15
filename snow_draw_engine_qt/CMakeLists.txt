@@ -226,6 +226,19 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_BENCHMARKS)
         snow_draw_engine_qt_canvas
     )
 
+    add_executable(snow-canvas-pressure-brush-benchmark
+        tests/snow_canvas_pressure_brush_benchmark.cpp)
+    target_include_directories(snow-canvas-pressure-brush-benchmark PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-pressure-brush-benchmark PRIVATE snow_draw_engine_qt_canvas)
+    target_compile_definitions(snow-canvas-pressure-brush-benchmark PRIVATE
+        $<$<NOT:$<CONFIG:Release>>:SNOW_PRESSURE_BENCHMARK_NOT_RELEASE>)
+    if(WIN32)
+        target_link_libraries(snow-canvas-pressure-brush-benchmark PRIVATE psapi)
+    endif()
+    snow_shot_import_offscreen_platform(snow-canvas-pressure-brush-benchmark)
+
     add_executable(snow-canvas-watermark-benchmark
         tests/snow_canvas_watermark_benchmark.cpp
     )
@@ -251,6 +264,44 @@ endif()
 
 if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     enable_testing()
+    add_executable(snow-canvas-pressure-mask-tests tests/snow_canvas_pressure_mask_tests.cpp)
+    target_include_directories(snow-canvas-pressure-mask-tests PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-pressure-mask-tests PRIVATE snow_draw_engine_qt_canvas)
+    snow_shot_import_offscreen_platform(snow-canvas-pressure-mask-tests)
+    add_test(NAME snow-canvas-pressure-mask-tests COMMAND snow-canvas-pressure-mask-tests)
+    snow_shot_offscreen_qpa_environment(_snow_canvas_pressure_mask_qpa_environment)
+    set_tests_properties(snow-canvas-pressure-mask-tests PROPERTIES
+        LABELS "unit" TIMEOUT 60
+        ENVIRONMENT "${_snow_canvas_pressure_mask_qpa_environment}"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(snow-canvas-pressure-brush-render-tests
+        tests/snow_canvas_pressure_brush_render_tests.cpp)
+    target_include_directories(snow-canvas-pressure-brush-render-tests PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-pressure-brush-render-tests PRIVATE snow_draw_engine_qt_canvas)
+    snow_shot_import_offscreen_platform(snow-canvas-pressure-brush-render-tests)
+    add_test(NAME snow-canvas-pressure-brush-render-tests
+        COMMAND snow-canvas-pressure-brush-render-tests -platform offscreen)
+    snow_shot_offscreen_qpa_environment(_snow_canvas_pressure_qpa_environment)
+    set_tests_properties(snow-canvas-pressure-brush-render-tests PROPERTIES
+        LABELS "unit" TIMEOUT 60
+        ENVIRONMENT "${_snow_canvas_pressure_qpa_environment}"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(snow-canvas-tablet-input-tests tests/snow_canvas_tablet_input_tests.cpp)
+    target_include_directories(snow-canvas-tablet-input-tests PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-tablet-input-tests PRIVATE snow_draw_engine_qt_canvas)
+    snow_shot_import_offscreen_platform(snow-canvas-tablet-input-tests)
+    add_test(NAME snow-canvas-tablet-input-tests COMMAND snow-canvas-tablet-input-tests)
+    snow_shot_offscreen_qpa_environment(_snow_canvas_tablet_qpa_environment)
+    set_tests_properties(snow-canvas-tablet-input-tests PROPERTIES
+        ENVIRONMENT "${_snow_canvas_tablet_qpa_environment}"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+        LABELS "unit" TIMEOUT 30)
     add_executable(snow-canvas-lifetime-tests tests/snow_canvas_lifetime_tests.cpp)
     target_include_directories(snow-canvas-lifetime-tests PRIVATE
         ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
@@ -283,10 +334,13 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
         snow_draw_engine_qt_canvas snow_test_cli_guard_qt)
     snow_shot_import_offscreen_platform(snow-canvas-magnifier-render-tests)
     add_test(NAME snow-canvas-magnifier-render-tests COMMAND snow-canvas-magnifier-render-tests)
+    add_test(NAME snow-canvas-selection-guide-tests
+        COMMAND snow-canvas-magnifier-render-tests --selection-guides-only)
     add_test(NAME snow-canvas-magnifier-damage-tests
         COMMAND snow-canvas-magnifier-render-tests --gradient-damage-only)
     snow_shot_offscreen_qpa_environment(_snow_canvas_magnifier_qpa_environment)
-    set_tests_properties(snow-canvas-magnifier-render-tests snow-canvas-magnifier-damage-tests PROPERTIES
+    set_tests_properties(snow-canvas-magnifier-render-tests snow-canvas-magnifier-damage-tests
+        snow-canvas-selection-guide-tests PROPERTIES
         LABELS "unit" TIMEOUT 60
         ENVIRONMENT "${_snow_canvas_magnifier_qpa_environment}"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
@@ -502,6 +556,12 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
         COMMAND snow-canvas-custom-renderer-tests --eraser-only)
     snow_shot_import_offscreen_platform(snow-canvas-custom-renderer-tests)
     snow_shot_offscreen_qpa_environment(_snow_canvas_reset_qpa_environment)
+    add_test(NAME snow-canvas-crosshair-factory-tests
+        COMMAND snow-canvas-custom-renderer-tests --crosshair-factory-only)
+    set_tests_properties(snow-canvas-crosshair-factory-tests PROPERTIES
+        ENVIRONMENT "${_snow_canvas_reset_qpa_environment}"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+        LABELS "unit" TIMEOUT 60)
     add_test(NAME snow-canvas-background-coverage-tests
         COMMAND snow-canvas-custom-renderer-tests --background-coverage-only)
     set_tests_properties(snow-canvas-background-coverage-tests PROPERTIES

@@ -348,8 +348,8 @@ if ($AuditOnly) {
     if ($tagCommit -cne $head) { throw 'GitHub release tag does not match the audited source checkout.' }
     $localManifestPath = Join-Path $releaseDirectory 'local-release.json'
     if (-not $SkipGitee) {
-        # Both destinations receive the same local audit inputs. Gitee never downloads
-        # packages from GitHub, including the reproducible Homebrew distribution archive.
+        # Preserve every local audit input for retries. GitHub receives the full asset
+        # set; the Gitee publisher selects only update and installer downloads.
         $sharedDirectory = Join-Path $releaseDirectory 'github-assets'
         $null = New-Item -ItemType Directory -Force -Path $sharedDirectory
         $descriptors = foreach ($name in $githubAssets.Keys) {

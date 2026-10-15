@@ -101,6 +101,10 @@ const char* nativeCaptureError() {
 #include <stdexcept>
 
 void recordingPopupExclusionTests();
+void runScreenRecordingToolbarAutoHideTests();
+void renderScreenRecordingToolbarAutoHidePreviews();
+void setRecordingToolbarAutoHideTestCursor(ScreenRecordingToolbarWindow& toolbar,
+                                           const QPoint& position);
 
 struct SnowRecordingClipImpl {
     quint64 revision = 0;
@@ -1738,11 +1742,15 @@ void controllerPreviewTransitions() {
             "controller edits must persist with color alpha");
     palette()->recordingMouseHighlightEnabledChanged(true);
     palette()->recordingMouseHighlightColorChanged(QColor(255, 255, 0, 128));
+    require(state->highlightRadius == 41, "highlight preview retains its original default radius");
+    palette()->recordingMouseHighlightRadiusChanged(96);
     palette()->recordingRecordMouseClicksChanged(true);
     palette()->recordingKeyboardVisibleChanged(false);
     palette()->recordingCursorVisibleChanged(true);
     pumpPreview();
-    require(state->highlight == 0xffff0080 && state->recordMouseClicks && !state->showKeyboard,
+    require(state->highlight == 0xffff0080 && state->highlightRadius == 96 &&
+                RecordingSettings().mouseHighlightRadius() == 96 && state->recordMouseClicks &&
+                !state->showKeyboard,
             "highlight and click-only recording must reach preview independently");
     palette()->recordingCursorVisibleChanged(false);
     pumpPreview();
@@ -1840,6 +1848,10 @@ std::vector<uint32_t> prepareExpectedRecordingExclusions(ScreenshotToolPalette* 
     if (captureToolbar)
         return expected;
     if (auto id = snow_shot::platform::captureWindowId(toolbarPalette->window()))
+        expected.push_back(*id);
+    auto* toolbar = qobject_cast<ScreenRecordingToolbarWindow*>(toolbarPalette->window());
+    require(toolbar != nullptr, "recording exclusion fixture needs the recording toolbar");
+    if (auto id = snow_shot::platform::captureWindowId(toolbar->autoHideControlWindow()))
         expected.push_back(*id);
     return expected;
 }
@@ -1955,6 +1967,13 @@ void recordingStartupFailureAllowsRetry() {
 
 void recordingCaptureExclusionWiring() {
     using snow_shot::storage::RecordingSettings;
+    const RecordingSettings settings;
+    const bool savedAutoHide = settings.autoHideToolbar();
+    const auto restoreAutoHide = qScopeGuard([&] {
+        require(settings.setAutoHideToolbar(savedAutoHide),
+                "restore capture-exclusion auto-hide preference");
+    });
+    require(settings.setAutoHideToolbar(false), "disable auto-hide before exclusion fixtures");
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     require(RecordingSettings().setStartDelaySeconds(0), "disable countdown");
     for (bool captureToolbar : {false, true}) {
@@ -1966,14 +1985,55 @@ void recordingCaptureExclusionWiring() {
             qApp->installEventFilter(&observer);
             ScreenRecordingController controller(testEffectsSource);
             controller.open({40, 40, 320, 240});
-            QWidget* toolbar = palette()->window();
+            auto* toolbar = qobject_cast<ScreenRecordingToolbarWindow*>(palette()->window());
+            require(toolbar != nullptr, "recording capture has a toolbar window");
+            QWidget* edgeControl = toolbar->autoHideControlWindow();
+            require(edgeControl != nullptr && edgeControl->parentWidget() == nullptr &&
+                        !edgeControl->isVisible() && edgeControl->windowHandle() != nullptr,
+                    "edge control owns a retained native surface before recording startup");
             const auto expected = prepareExpectedRecordingExclusions(palette(), captureToolbar);
 #ifdef Q_OS_MACOS
             const auto sharingMatches = macosCaptureSharingProbe(toolbar);
+            const auto edgeSharingMatches = macosCaptureSharingProbe(edgeControl);
 #endif
             failStart = failure == 1;
             failStartOperation = failure == 2;
+            const bool holdCollapsedStart = !captureToolbar && !fail;
+            std::promise<void> releaseStart;
+            if (holdCollapsedStart) {
+                require(settings.setAutoHideToolbar(true), "enable the collapsed-start fixture");
+                const QRect monitor = toolbar->screen()->geometry();
+                const QRect row = toolbar->paletteHost()->mainToolbarContentRect();
+                toolbar->moveContentTo(
+                    QPoint(monitor.left() - row.left(), toolbar->contentPosition().y()));
+                setRecordingToolbarAutoHideTestCursor(*toolbar,
+                                                      monitor.bottomRight() + QPoint(100, 100));
+                auto* retreat =
+                    toolbar->findChild<QTimer*>(QStringLiteral("recordingToolbarRetreatTimer"));
+                require(retreat != nullptr && retreat->isActive(),
+                        "collapsed-start fixture schedules retreat at the monitor edge");
+                retreat->stop();
+                require(QMetaObject::invokeMethod(retreat, "timeout", Qt::DirectConnection) &&
+                            !toolbar->isVisible() && edgeControl->isVisible(),
+                        "recording can start while its toolbar is already collapsed");
+                sessionCreateEntered = false;
+                sessionCreateGate = releaseStart.get_future().share();
+            }
             controller.startRecording();
+            if (holdCollapsedStart) {
+                QElapsedTimer deadline;
+                deadline.start();
+                while (!sessionCreateEntered && deadline.elapsed() < 3000)
+                    QCoreApplication::processEvents(
+                        QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents, 25);
+                require(sessionCreateEntered && toolbar->isVisible() && !edgeControl->isVisible(),
+                        "capture policy transition reveals a collapsed toolbar before native "
+                        "startup, including when native exclusion is unavailable");
+                releaseStart.set_value();
+                sessionCreateGate = {};
+                require(settings.setAutoHideToolbar(false),
+                        "restore auto-hide after the guarded startup transition");
+            }
             if (fail) {
                 QElapsedTimer deadline;
                 deadline.start();
@@ -2030,11 +2090,15 @@ void recordingCaptureExclusionWiring() {
                 QObject::disconnect(requestedConnection);
             }
             require(lastExcludedWindows == expected,
-                    "recording creation excludes the toolbar; popup identities are handled lazily");
+                    "recording creation excludes the toolbar and retained edge control; popup "
+                    "identities are handled lazily");
             require(toolbar->isVisible(), "toolbar remains visible on success and failure");
 #ifdef Q_OS_MACOS
             require(sharingMatches(!captureToolbar && !fail),
                     "recording start applies sharing policy and failure restores it");
+            require(
+                edgeSharingMatches(!captureToolbar && !fail),
+                "recording start applies and restores the retained edge control sharing policy");
 #endif
             if (!fail) {
                 palette()->recordingStopRequested();
@@ -2044,6 +2108,8 @@ void recordingCaptureExclusionWiring() {
             }
 #ifdef Q_OS_MACOS
             require(sharingMatches(false), "recording stop restores the original sharing policy");
+            require(edgeSharingMatches(false),
+                    "recording stop restores the edge control's original sharing policy");
 #endif
             palette()->recordingCloseRequested();
             failStart = false;
@@ -2054,15 +2120,21 @@ void recordingCaptureExclusionWiring() {
 #ifdef Q_OS_MACOS
     require(RecordingSettings().setCaptureToolbarInRecording(false), "exclude toolbar");
     std::function<bool(bool)> sharingMatches;
+    std::function<bool(bool)> edgeSharingMatches;
     {
         ScreenRecordingController controller(testEffectsSource);
         controller.open({40, 40, 320, 240});
         sharingMatches = macosCaptureSharingProbe(palette()->window());
+        edgeSharingMatches = macosCaptureSharingProbe(
+            qobject_cast<ScreenRecordingToolbarWindow*>(palette()->window())
+                ->autoHideControlWindow());
         controller.startRecording();
         waitForRecording(controller);
         require(sharingMatches(true), "active toolbar is excluded before destruction");
+        require(edgeSharingMatches(true), "active edge control is excluded before destruction");
     }
     require(sharingMatches(false), "controller destruction restores native sharing");
+    require(edgeSharingMatches(false), "controller destruction restores edge control sharing");
 #endif
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
@@ -2982,9 +3054,30 @@ void recordingSettingsDialog() {
                 "recording preferences must keep descriptions out of the compact form rows");
     }
     const int apiModeCount = form->field(QStringLiteral("screen-recording.api-mode")) ? 1 : 0;
-    // Video/audio (4), animation (3), encoding (2), capture (1), interaction (3).
-    require(form->items().size() == expectedCount && expectedCount == 13 + apiModeCount,
+    // Video/audio (4), animation (3), encoding (2), capture (1), interaction (4).
+    require(form->items().size() == expectedCount && expectedCount == 14 + apiModeCount,
             "recording popup must contain exactly the requested settings categories");
+    auto* autoHide =
+        form->findChild<AdSwitch*>(QStringLiteral("screen-recording.auto-hide-toolbar"));
+    require(autoHide && !autoHide->isChecked(),
+            "recording settings include auto-hide toolbar disabled by default");
+    auto* recordingToolbar = qobject_cast<ScreenRecordingToolbarWindow*>(toolbarPalette->window());
+    require(recordingToolbar != nullptr, "recording settings have their recording toolbar");
+    const QRect toolbarMonitor = recordingToolbar->screen()->geometry();
+    const QRect toolbarRow = recordingToolbar->paletteHost()->mainToolbarContentRect();
+    recordingToolbar->moveContentTo(
+        QPoint(toolbarMonitor.left() - toolbarRow.left(), recordingToolbar->contentPosition().y()));
+    auto* retreat =
+        recordingToolbar->findChild<QTimer*>(QStringLiteral("recordingToolbarRetreatTimer"));
+    require(retreat != nullptr, "recording settings fixture has an auto-hide retreat timer");
+    const QPoint outside = toolbarMonitor.bottomRight() + QPoint(100, 100);
+    require(snow_shot::storage::RecordingSettings().setAutoHideToolbar(true),
+            "enable auto-hide while real recording preferences are open");
+    setRecordingToolbarAutoHideTestCursor(*recordingToolbar, outside);
+    require(recordingToolbar->isVisible() && !retreat->isActive(),
+            "real recording preferences inhibit auto-hide even outside the toolbar");
+    require(snow_shot::storage::RecordingSettings().setAutoHideToolbar(false),
+            "restore auto-hide before checking default recording preferences");
     auto* notifyExport = form->findChild<AdSwitch*>(
         QStringLiteral("screen-recording.notify-after-export-completes"));
     require(notifyExport && !notifyExport->isChecked(),
@@ -3010,6 +3103,11 @@ void recordingSettingsDialog() {
             "install recording settings translations");
     QCoreApplication::processEvents();
     require(modal->windowTitle() == QStringLiteral("Translated: Recording settings") &&
+                form->field(QStringLiteral("screen-recording.auto-hide-toolbar"))->label() ==
+                    QStringLiteral("Translated: Auto-hide toolbar") &&
+                form->field(QStringLiteral("screen-recording.auto-hide-toolbar"))->tooltipText() ==
+                    registry.field(QStringLiteral("screen-recording.auto-hide-toolbar"))
+                        ->definition->description.translated() &&
                 form->field(QStringLiteral("screen-recording.notify-after-export-completes"))
                         ->label() == QStringLiteral("Translated: Notify after export completes") &&
                 form->field(QStringLiteral("screen-recording.delete-files-on-recording-close"))
@@ -3024,6 +3122,10 @@ void recordingSettingsDialog() {
             "open recording preferences must retranslate their title, labels and options");
     QCoreApplication::removeTranslator(&translator);
     QCoreApplication::processEvents();
+    autoHide->setChecked(true);
+    require(snow_shot::storage::RecordingSettings().autoHideToolbar(),
+            "recording settings auto-hide switch persists immediately");
+    autoHide->setChecked(false);
     notifyExport->setChecked(true);
     require(snow_shot::storage::RecordingSettings().notifyAfterExportCompletes(),
             "recording settings notification switch persists immediately");
@@ -3059,6 +3161,15 @@ void recordingSettingsDialog() {
                     registry.field(QStringLiteral("screen-recording.capture-toolbar"))
                         ->definition->description.translated(),
             "the system recording preference and its description must remain reachable");
+    require(modal->contentWidget()->rect().contains(
+                autoHide->mapTo(modal->contentWidget(), autoHide->rect().center())) &&
+                form->field(QStringLiteral("screen-recording.auto-hide-toolbar"))->label() ==
+                    registry.field(QStringLiteral("screen-recording.auto-hide-toolbar"))
+                        ->definition->title.translated() &&
+                form->field(QStringLiteral("screen-recording.auto-hide-toolbar"))->tooltipText() ==
+                    registry.field(QStringLiteral("screen-recording.auto-hide-toolbar"))
+                        ->definition->description.translated(),
+            "auto-hide toolbar and its description remain reachable in the compact settings form");
     const auto select = [form](const char* id, const QVariant& value) {
         auto* control = form->findChild<AdSelect*>(QString::fromLatin1(id));
         require(control != nullptr, "recording select must exist");
@@ -3087,27 +3198,36 @@ void recordingSettingsDialog() {
     toggle("screen-recording.loop-animated-images", false);
     toggle("screen-recording.separate-audio-tracks", true);
     toggle("screen-recording.capture-toolbar", false);
+    toggle("screen-recording.auto-hide-toolbar", true);
     const snow_shot::storage::RecordingSettings saved;
     require(saved.screenRecordingClarity() == QStringLiteral("4k") && saved.frameRate() == 60 &&
                 saved.animatedImageClarity() == QStringLiteral("1080p") &&
                 saved.animatedImageFrameRate() == 15 && saved.encoder() == QStringLiteral("h265") &&
                 saved.encodingPreset() == QStringLiteral("medium") && saved.videoQuality() == 65 &&
                 !saved.loopAnimatedImages() && saved.separateAudioTracks() &&
-                !saved.captureToolbarInRecording(),
+                !saved.captureToolbarInRecording() && saved.autoHideToolbar(),
             "every recording popup editor must persist through the shared settings backend");
-    require(saved.setFrameRate(30), "external settings write must succeed");
+    require(saved.setFrameRate(30) && saved.setAutoHideToolbar(false),
+            "external settings write must succeed");
     QCoreApplication::processEvents();
     require(form->findChild<AdSelect*>(QStringLiteral("screen-recording.frame-rate"))
-                    ->currentValue()
-                    .toInt() == 30,
+                        ->currentValue()
+                        .toInt() == 30 &&
+                !autoHide->isChecked(),
             "an open recording form must follow settings changed elsewhere");
     QPointer<AdModal> retired(modal);
+    require(saved.setAutoHideToolbar(true),
+            "enable auto-hide before closing recording preferences");
     modal->accept();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     require(retired.isNull(), "closing recording settings must release its form and popup windows");
     require(!recordingArea->testAttribute(Qt::WA_TransparentForMouseEvents) &&
                 moveHandle->isVisible(),
             "closing recording preferences must restore region controls");
+    setRecordingToolbarAutoHideTestCursor(*recordingToolbar, outside);
+    require(retreat->isActive(),
+            "closing real recording preferences releases auto-hide protection");
+    require(saved.setAutoHideToolbar(false), "restore auto-hide before opening effect settings");
     toolbarPalette->findChild<AdButton*>(QStringLiteral("screenRecordingEffectSettings"))->click();
     QCoreApplication::processEvents();
     auto* effects =
@@ -3116,11 +3236,18 @@ void recordingSettingsDialog() {
                 recordingArea->testAttribute(Qt::WA_TransparentForMouseEvents) &&
                 !moveHandle->isVisible(),
             "effect settings must suspend the same recording input and region controls");
+    require(saved.setAutoHideToolbar(true), "enable auto-hide while effect settings are open");
+    setRecordingToolbarAutoHideTestCursor(*recordingToolbar, outside);
+    require(recordingToolbar->isVisible() && !retreat->isActive(),
+            "real recording effect settings inhibit auto-hide outside the toolbar");
     effects->accept();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     require(!recordingArea->testAttribute(Qt::WA_TransparentForMouseEvents) &&
                 moveHandle->isVisible(),
             "closing effect settings must restore region controls");
+    setRecordingToolbarAutoHideTestCursor(*recordingToolbar, outside);
+    require(retreat->isActive(), "closing recording effect settings releases auto-hide protection");
+    require(saved.setAutoHideToolbar(false), "restore auto-hide after modal protection checks");
     controller.open(QRect(200, 150, 320, 240));
     button->click();
     modal = controller.findChild<AdModal*>(QStringLiteral("screenRecordingSettingsModal"));
@@ -3141,6 +3268,7 @@ void recordingSettingsDialog() {
     retired = modal;
     const auto expectedExclusions = prepareExpectedRecordingExclusions(
         toolbarPalette, snow_shot::storage::RecordingSettings().captureToolbarInRecording());
+    toolbarPalette->recordingMouseHighlightRadiusChanged(72);
     controller.startRecording();
     waitForRecording(controller);
     require(!button->isEnabled() && (retired.isNull() || !retired->isOpen()),
@@ -3151,6 +3279,7 @@ void recordingSettingsDialog() {
                 lastDirectConfig.preset == SNOW_CAPTURE_VIDEO_ENCODING_PRESET_MEDIUM &&
                 lastDirectConfig.quality == 65 && lastDirectConfig.loop_animated_images == 0 &&
                 lastDirectConfig.audio_mode == SNOW_CAPTURE_RECORDING_AUDIO_SEPARATE &&
+                lastDirectConfig.mouse_highlight_radius == 72 &&
                 lastExcludedWindows == expectedExclusions,
             "the next recording must use preferences saved in the popup");
     toolbarPalette->recordingCloseRequested();
@@ -5679,6 +5808,9 @@ int main(int argc, char** argv) {
             checkOption(QStringLiteral("keyboard_size"), 96, [](const QJsonValue& value) {
                 palette()->recordingKeyboardSizeChanged(value.toInt());
             });
+            checkOption(QStringLiteral("mouse_highlight_radius"), 72, [](const QJsonValue& value) {
+                palette()->recordingMouseHighlightRadiusChanged(value.toInt());
+            });
             checkOption(QStringLiteral("mouse_trail"), QStringLiteral("#ff123456"),
                         [](const QJsonValue& value) {
                             palette()->recordingMouseTrailColorChanged(QColor(value.toString()));
@@ -5712,15 +5844,28 @@ int main(int argc, char** argv) {
                                             {{QStringLiteral("quality"), 101}}, &error) &&
                     error == QStringLiteral("invalid_parameters") && !controller.isOpen(),
                 "out-of-range video quality must reject before opening recording UI");
+        for (const auto radius : {7.0, 129.0, 41.5}) {
+            require(!controller.startAutomation(
+                        QRect(10, 10, 320, 240),
+                        {{QStringLiteral("mouse_highlight_radius"), radius}}, &error) &&
+                        !controller.isOpen(),
+                    "automation rejects invalid highlight radii before opening recording UI");
+        }
         require(controller.startAutomation(QRect(10, 10, 320, 240),
                                            {{QStringLiteral("format"), QStringLiteral("gif")},
                                             {QStringLiteral("start_delay_seconds"), 10},
+                                            {QStringLiteral("mouse_highlight_radius"), 72},
                                             {QStringLiteral("animated_frame_rate"), 15}},
                                            &error),
                 "automation must support isolated recording options");
         require(controller.automationState().value(QStringLiteral("operation")).toString() ==
                     QStringLiteral("counting_down"),
                 "automation state must expose countdown");
+        require(controller.automationState()
+                        .value(QStringLiteral("options"))
+                        .toObject()
+                        .value(QStringLiteral("mouse_highlight_radius")) == 72,
+                "automation exposes the session-specific highlight radius");
         const int previousStarts = starts.load();
         controller.detachAutomation();
         QCoreApplication::processEvents();
@@ -5812,6 +5957,16 @@ int main(int argc, char** argv) {
     if (app.arguments().contains(QStringLiteral("--capture-exclusion-only"))) {
         recordingPopupExclusionTests();
         recordingCaptureExclusionWiring();
+        ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--toolbar-auto-hide-only"))) {
+        runScreenRecordingToolbarAutoHideTests();
+        ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--toolbar-auto-hide-preview-only"))) {
+        renderScreenRecordingToolbarAutoHidePreviews();
         ApplicationStorage::instance().shutdown();
         return 0;
     }

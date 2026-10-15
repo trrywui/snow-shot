@@ -4,6 +4,8 @@
 #include "snow_shot/presentation/screenshotselectiongeometry.h"
 #include "snow_shot/presentation/screenshotselectioneffectgeometry.h"
 
+#include <QtGlobal>
+
 #include <functional>
 #include <optional>
 
@@ -106,6 +108,10 @@ class ScreenshotInteractionState final {
     void finishDrag();
     void cancelDrag();
 
+    [[nodiscard]] quint64 selectionModeRevision() const {
+        return m_selectionModeRevision;
+    }
+
     [[nodiscard]] ScreenshotActiveTool activeTool() const;
     [[nodiscard]] ScreenshotCaptureMode mode() const;
     [[nodiscard]] ScreenshotSelectionDragMode dragMode() const;
@@ -137,6 +143,7 @@ class ScreenshotInteractionState final {
     bool m_dragging = false;
     bool m_marqueeGesture = false;
     bool m_recognitionSelectionActive = false;
+    quint64 m_selectionModeRevision = 0;
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTINTERACTIONSTATE_H

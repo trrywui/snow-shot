@@ -200,6 +200,8 @@ void configuredShortcutRowsUseActualValues() {
          shortcutBindings({QStringLiteral("G"), QStringLiteral("Ctrl+Alt+Q")})},
         {QStringLiteral("select_previously_selected_area"),
          shortcutBindings({QStringLiteral("P")})},
+        {QStringLiteral("select_next_previously_selected_area"),
+         shortcutBindings({QStringLiteral("Shift+P")})},
         {QStringLiteral("print"), shortcutBindings({QStringLiteral("Ctrl+Alt+P")})},
         {QStringLiteral("copy_color"), shortcutBindings({QStringLiteral("Alt+C")})},
         {QStringLiteral("toggle_coordinate_mode"), shortcutBindings({QStringLiteral("Alt+P")})},
@@ -210,7 +212,7 @@ void configuredShortcutRowsUseActualValues() {
     };
 
     const QVector<ScreenshotShortcutHintRow> rows = screenshotShortcutHintRows(context);
-    require(rows.size() == 13, "manual-selection configured hint row count changed");
+    require(rows.size() == 12, "manual-selection configured hint row count changed");
     require(rows.at(0).label == QStringLiteral("Move cursor up") &&
                 rows.at(0).shortcut ==
                     shortcutDisplay({QStringLiteral("Ctrl+Alt+I"), QStringLiteral("Up")}) &&
@@ -226,23 +228,22 @@ void configuredShortcutRowsUseActualValues() {
                 rows.at(6).label == QStringLiteral("Selection Aspect Ratio Snap") &&
                 rows.at(6).shortcut ==
                     shortcutDisplay({QStringLiteral("G"), QStringLiteral("Ctrl+Alt+Q")}) &&
-                rows.at(7).shortcut == shortcutDisplay({QStringLiteral("P")}) &&
-                rows.at(8).shortcut == shortcutDisplay({QStringLiteral("Alt+C")}),
+                rows.at(7).shortcut == shortcutDisplay({QStringLiteral("Alt+C")}),
             "selection action hints must use configured shortcuts");
-    require(rows.at(9).label == QStringLiteral("Toggle Global/Relative Coordinates") &&
-                rows.at(9).shortcut == shortcutDisplay({QStringLiteral("Alt+P")}),
+    require(rows.at(8).label == QStringLiteral("Toggle Global/Relative Coordinates") &&
+                rows.at(8).shortcut == shortcutDisplay({QStringLiteral("Alt+P")}),
             "coordinate toggle must follow Copy color and show the configured binding");
-    require(rows.at(10).label == QStringLiteral("Toggle cursor visibility") &&
-                rows.at(10).shortcut == shortcutDisplay({QStringLiteral("`")}),
+    require(rows.at(9).label == QStringLiteral("Toggle cursor visibility") &&
+                rows.at(9).shortcut == shortcutDisplay({QStringLiteral("`")}),
             "cursor visibility must show its configurable backtick default");
-    require(rows.at(11).label == QStringLiteral("Switch color format") &&
-                rows.at(11).shortcut == shortcutDisplay({QStringLiteral("Shift")}),
+    require(rows.at(10).label == QStringLiteral("Switch color format") &&
+                rows.at(10).shortcut == shortcutDisplay({QStringLiteral("Shift")}),
             "the fixed color-format shortcut must remain visible");
-    require(rows.at(12).label == QStringLiteral("Switch screenshot history") &&
-                rows.at(12).shortcut ==
+    require(rows.at(11).label == QStringLiteral("Switch screenshot history") &&
+                rows.at(11).shortcut ==
                     shortcutDisplay({QStringLiteral("PgUp"), QStringLiteral("["),
                                      QStringLiteral("PgDown"), QStringLiteral("]")}) &&
-                rows.at(12).shortcutChips ==
+                rows.at(11).shortcutChips ==
                     QStringList{shortcutDisplay({QStringLiteral("PgUp"), QStringLiteral("[")}),
                                 shortcutDisplay({QStringLiteral("PgDown"), QStringLiteral("]")})},
             "history hint must split the previous and next shortcuts into separate chips");
@@ -292,6 +293,30 @@ void printShortcutIsNotHinted() {
     }
 }
 
+void previousSelectionShortcutsAreNotHinted() {
+    const snow_shot::shortcuts::ShortcutBindingMap configured{
+        {QStringLiteral("select_previously_selected_area"),
+         shortcutBindings({QStringLiteral("Alt+F9")})},
+        {QStringLiteral("select_next_previously_selected_area"),
+         shortcutBindings({QStringLiteral("Alt+F10")})},
+    };
+    for (const auto mode :
+         {ScreenshotShortcutHintMode::Selection, ScreenshotShortcutHintMode::SmartSelection}) {
+        for (const auto& rows :
+             {screenshotShortcutHintRows(mode), screenshotShortcutHintRows(mode, configured)}) {
+            require(std::none_of(rows.cbegin(), rows.cend(),
+                                 [](const auto& row) {
+                                     return row.label ==
+                                                QStringLiteral("Previous selection area") ||
+                                            row.label == QStringLiteral("Next selection area") ||
+                                            row.label ==
+                                                QStringLiteral("Select previously selected area");
+                                 }),
+                    "selection hints must omit both previous-area navigation shortcuts");
+        }
+    }
+}
+
 void defaultHistoryShortcutUsesSeparateChips() {
     const QVector<ScreenshotShortcutHintRow> rows =
         screenshotShortcutHintRows(ScreenshotShortcutHintMode::Selection);
@@ -334,7 +359,6 @@ void unconfiguredRowsFallBackToSchemaDefaults() {
         QStringLiteral("switch_selection_between_window_and_window_sub_element"),
         QStringLiteral("previous_screenshot_history"),
         QStringLiteral("next_screenshot_history"),
-        QStringLiteral("select_previously_selected_area"),
         QStringLiteral("copy_color"),
         QStringLiteral("toggle_coordinate_mode"),
     };
@@ -478,6 +502,7 @@ int main(int argc, char** argv) {
     configuredShortcutRowsUseActualValues();
     coordinateHintFollowsCopyColor();
     printShortcutIsNotHinted();
+    previousSelectionShortcutsAreNotHinted();
     defaultHistoryShortcutUsesSeparateChips();
     unassignedConfiguredShortcutIsNotHinted();
     unconfiguredRowsFallBackToSchemaDefaults();

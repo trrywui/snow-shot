@@ -404,7 +404,7 @@ impl Editor {
             ToolEmptyCanvasAction::CreateFreeDraw => {
                 let start_canvas_position =
                     self.snap_creation_start_position(canvas_point, event.modifiers);
-                self.begin_free_draw_creation(event.pointer_id, start_canvas_position);
+                self.begin_free_draw_creation(event, start_canvas_position);
                 Ok(InteractionOutput {
                     consumed: true,
                     capture: self.capture_command_for_start(event.pointer_id),
@@ -697,6 +697,8 @@ mod empty_canvas_selection_tests {
 
     fn pointer(event_type: PointerEventType, position: Point<f64>) -> InputEvent {
         InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type,
             device: PointerDevice::Mouse,

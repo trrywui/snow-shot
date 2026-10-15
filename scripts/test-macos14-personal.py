@@ -85,6 +85,12 @@ class PersonalWorkflow(unittest.TestCase):
                          '-DSNOW_SHOT_ENABLE_MCP=OFF', '-DSNOW_APPS_BUILD_SNOW_SHOT_MINI=OFF',
                          '-DSNOW_APPS_BUILD_TESTS=OFF', '-DSNOW_APPS_QT_STATIC=ON'):
             self.assertIn(expected, args)
+        tests_result = self.command('configure-tests', env=env)
+        self.assertEqual(tests_result.returncode, 0, tests_result.stderr)
+        test_args = log.read_text().splitlines()
+        self.assertIn('-DSNOW_APPS_BUILD_TESTS=ON', test_args)
+        self.assertIn('-DSNOW_SHOT_BUILD_TESTS=ON', test_args)
+        self.assertIn('-DSNOW_APPS_BUILD_BENCHMARKS=OFF', test_args)
         self.assertIn(f'-DVCPKG_INSTALLED_DIR={self.personal}/installed', args)
         self.assertIn(f'-DSNOW_RUST_CARGO_TARGET_DIR={self.personal}/build/cargo', args)
         self.assertIn(f'-DSNOW_SHOT_QR_MODELS_CACHE={self.personal}/cache/qr-models-wechat', args)

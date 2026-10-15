@@ -7,6 +7,7 @@
 #include "close_release_native_test_support.h"
 #include "screenshot_guide_targets_test_support.h"
 #include "snow_shot/presentation/screenshotcanvasrenderer.h"
+#include "snow_shot/presentation/crosshaircursor.h"
 #include "snow_shot/presentation/screenshotcursorimagesource.h"
 #include "snow_shot/presentation/directcapturehistory.h"
 #include "snow_shot/presentation/screenshothistoryservice.h"
@@ -62,6 +63,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QMouseEvent>
+#include <QTabletEvent>
 #include <QObject>
 #include <QPainter>
 #include <QStyleOptionGraphicsItem>
@@ -195,17 +197,78 @@ void pointerPresentationRespectsOverlayInputGate() {
     require(sink.pointerCalls == 0,
             "rejected startup pointer input must not alter presentation state");
 
+    QPointingDevice pen(QStringLiteral("overlay tablet"), 91, QInputDevice::DeviceType::Stylus,
+                        QPointingDevice::PointerType::Pen,
+                        QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1,
+                        3);
+    const auto sendTabletMove = [&](const QPointF& position) {
+        QTabletEvent event(QEvent::TabletMove, &pen, position,
+                           QPointF(overlay.captureGeometry().topLeft()) + position, 0.5, 0, 0, 0, 0,
+                           0, Qt::NoModifier, Qt::NoButton, Qt::LeftButton);
+        QApplication::sendEvent(canvas, &event);
+    };
+    sendTabletMove(QPointF(20.5, 21.25));
+    require(sink.pointerCalls == 0,
+            "rejected startup tablet input must not alter pointer presentation");
+
     sink.inputAllowed = true;
     const QPointF livePosition(319.75, 239.125);
     sendMove(livePosition);
     require(sink.pointerCalls == 1 && sink.pointerOwner == &overlay &&
                 sink.pointerPosition == livePosition,
             "accepted canvas-owned pointer input preserves its owner and fractional position");
+    sendTabletMove(livePosition);
+    require(sink.pointerCalls == 2 && sink.pointerOwner == &overlay &&
+                sink.pointerPosition == livePosition,
+            "accepted tablet input follows the same owner and subpixel pointer presentation");
 
     sink.inputAllowed = false;
     sendMove(QPointF(4.0, 5.0));
-    require(sink.pointerCalls == 1 && sink.pointerPosition == livePosition,
+    sendTabletMove(QPointF(4.0, 5.0));
+    require(sink.pointerCalls == 2 && sink.pointerPosition == livePosition,
             "closing the input gate must preserve the last accepted pointer presentation");
+}
+
+void nativeTabletBarrelButtonsPreserveOverlayBrushOwnership() {
+    class Sink final : public NoopOverlayEventSink {
+      public:
+        int rightClicks = 0;
+        ScreenshotOverlayRightClickResult handleOverlayRightClick(ScreenshotOverlayWindow*,
+                                                                  const QPointF&) override {
+            ++rightClicks;
+            return ScreenshotOverlayRightClickResult::CancelCapture;
+        }
+    } sink;
+    auto* canvas = new SnowCanvasWidget;
+    ScreenshotOverlayWindow overlay(sink, canvas);
+    overlay.setCaptureGeometry(QRect(0, 0, 320, 240));
+    overlay.show();
+    QApplication::processEvents();
+    canvas->setInteractionEnabled(true);
+    require(canvas->setCanvasTool(SnowCanvasTool::FreeDraw), "activate the overlay tablet brush");
+    QPointingDevice pen(QStringLiteral("overlay barrel tablet"), 94,
+                        QInputDevice::DeviceType::Stylus, QPointingDevice::PointerType::Pen,
+                        QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1,
+                        3);
+    const auto pointer = [&](QEvent::Type type, QPointF point, Qt::MouseButton button,
+                             Qt::MouseButtons buttons) {
+        QTabletEvent event(type, &pen, point, canvas->mapToGlobal(point), 0.6, 0, 0, 0, 0, 0,
+                           Qt::NoModifier, button, buttons);
+        event.setAccepted(false);
+        QApplication::sendEvent(canvas, &event);
+        require(event.isAccepted(), "overlay accepts every owned tablet brush packet");
+    };
+    pointer(QEvent::TabletPress, {40, 100}, Qt::LeftButton, Qt::LeftButton);
+    pointer(QEvent::TabletMove, {140, 100}, Qt::NoButton, Qt::LeftButton);
+    pointer(QEvent::TabletPress, {140, 100}, Qt::RightButton, Qt::LeftButton | Qt::RightButton);
+    pointer(QEvent::TabletRelease, {140, 100}, Qt::RightButton, Qt::LeftButton);
+    require(sink.rightClicks == 0 && !canvas->canvasHistoryState().canUndo,
+            "an active tablet barrel button cannot cancel capture or end the brush stroke");
+    pointer(QEvent::TabletMove, {220, 100}, Qt::NoButton, Qt::LeftButton);
+    pointer(QEvent::TabletRelease, {220, 100}, Qt::LeftButton, Qt::NoButton);
+    require(canvas->canvasHistoryState().canUndo && canvas->undo() &&
+                !canvas->canvasHistoryState().canUndo,
+            "lifting the tip commits the overlay's entire native brush gesture once");
 }
 
 // QWidget::setCursor()/unsetCursor() each emit CursorChange and, once the
@@ -1922,7 +1985,6 @@ void shortcutHintStagesUseTheExactRequiredLines() {
                 {QStringLiteral("D"), QStringLiteral("Right")}),
     };
     const QStringList commonLines{
-        QStringLiteral("Select previously selected area: R"),
         QStringLiteral("Copy color: C"),
         keyLine(QStringLiteral("Toggle Global/Relative Coordinates"), {QStringLiteral("Shift+P")}),
         keyLine(QStringLiteral("Toggle cursor visibility"), {QStringLiteral("`")}),
@@ -4631,7 +4693,8 @@ void ocrRectangularPreviewCachesRetainOnlyEdgesAndExactInterior() {
         const QImage green = renderOcrSelectionLayer(layer, dpr);
         const auto builds = layer.previewRasterBuildCount();
         const auto hits = layer.previewRasterHitCount();
-        const qreal fullInteriorBytes = 12.0 * 175 * 120 * 0.9 * 0.9 * dpr * dpr * 4;
+        const qsizetype fullInteriorBytes =
+            static_cast<qsizetype>(12.0 * 175 * 120 * 0.9 * 0.9 * dpr * dpr * 4);
         require(builds == 12 && layer.previewRasterBytes() < fullInteriorBytes / 2,
                 "axis-aligned preview caches must retain thin edges instead of solid interiors");
         require(renderOcrSelectionLayer(layer, dpr) == green &&
@@ -8003,11 +8066,13 @@ void canvasCursorLayersKeepToolCursorAfterScreenshotSelection() {
             "the canvas tool cursor should be applied to the widget");
 
     presenter.updateOverlayCursors(displays, true, false);
-    require(canvas->cursor().shape() == Qt::CrossCursor,
+    require(canvas->cursor() ==
+                snow_shot::presentation::crosshairCursor(canvas->devicePixelRatioF()),
             "the screenshot selection cursor should override the canvas tool cursor");
 
     canvas->setCursorForLayer(SnowCanvasCursorLayer::CanvasTool, QCursor(Qt::ArrowCursor));
-    require(canvas->cursor().shape() == Qt::CrossCursor,
+    require(canvas->cursor() ==
+                snow_shot::presentation::crosshairCursor(canvas->devicePixelRatioF()),
             "canvas tool updates must not contend with an active screenshot cursor");
 
     presenter.updateOverlayCursors(displays, false, false);
@@ -8031,7 +8096,8 @@ void overlaySelectionCursorUpdatesAreIdempotentWhileSelecting() {
     ScreenshotOverlayCanvasPresenter presenter({});
 
     presenter.updateOverlayCursors(displays, true, false);
-    require(canvas->cursor().shape() == Qt::CrossCursor,
+    require(canvas->cursor() ==
+                snow_shot::presentation::crosshairCursor(canvas->devicePixelRatioF()),
             "the selection crosshair should be applied when selecting begins");
     require(inactiveCanvas->cursor().shape() == Qt::ArrowCursor,
             "inactive displays must not receive the selection crosshair");
@@ -8049,7 +8115,8 @@ void overlaySelectionCursorUpdatesAreIdempotentWhileSelecting() {
     require(inactiveChanges.count == 0,
             "overlays without a selection cursor must not receive cursor transitions while "
             "selecting");
-    require(canvas->cursor().shape() == Qt::CrossCursor,
+    require(canvas->cursor() ==
+                snow_shot::presentation::crosshairCursor(canvas->devicePixelRatioF()),
             "the selection crosshair must survive streamed selection updates");
 
     presenter.updateOverlayCursors(displays, false, false);
@@ -8940,6 +9007,7 @@ void overlayWindowHasNoNativeShadow() {
 
 void runScreenshotCursorTests();
 void runScreenshotSelectionEffectEditorTests();
+void runScreenshotOverlayInputTests();
 #if defined(SNOW_SHOT_CURSOR_BENCHMARK)
 void runScreenshotCursorBenchmark();
 #endif
@@ -9004,6 +9072,7 @@ int main(int argc, char** argv) {
     }
     if (application.arguments().contains(QStringLiteral("--pointer-presentation-only"))) {
         pointerPresentationRespectsOverlayInputGate();
+        nativeTabletBarrelButtonsPreserveOverlayBrushOwnership();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--background-coverage-only"))) {
@@ -9046,6 +9115,8 @@ int main(int argc, char** argv) {
     }
     if (application.arguments().contains(QStringLiteral("--cursor-only"))) {
         runScreenshotCursorTests();
+        canvasCursorLayersKeepToolCursorAfterScreenshotSelection();
+        overlaySelectionCursorUpdatesAreIdempotentWhileSelecting();
         return 0;
     }
 #if defined(SNOW_SHOT_CURSOR_BENCHMARK)
@@ -9073,6 +9144,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--overlay-boundary-input"))) {
+        runScreenshotOverlayInputTests();
 #ifdef Q_OS_MACOS
         if (QGuiApplication::platformName() == QStringLiteral("cocoa")) {
             if (!macCanPostMouseEvents())
@@ -9267,6 +9339,7 @@ int main(int argc, char** argv) {
     ocrGlyphCachingPreservesOriginalAndCffFontCoverage();
     ocrGlyphCachesCropTransparentMarginsWithoutChangingPhase();
     pointerPresentationRespectsOverlayInputGate();
+    nativeTabletBarrelButtonsPreserveOverlayBrushOwnership();
     pinnedFiltersUseTheSourceResolution();
     ocrBackgroundFillSamplesRobustlyAndChoosesContrastingText();
     ocrSolidFillRendersAdaptiveTextPerBlock();

@@ -13,6 +13,8 @@ const QString sourceKey = QStringLiteral("screenshot_translation/source_language
 const QString targetKey = QStringLiteral("screenshot_translation/target_language");
 const QString secondaryTargetKey =
     QStringLiteral("screenshot_translation/secondary_target_language");
+const QString confidenceThresholdKey =
+    QStringLiteral("screenshot_translation/language_detection_confidence_threshold");
 const QString modelKey = QStringLiteral("screenshot_translation/model");
 const QString customKey = QStringLiteral("api_configuration/custom_models");
 const QString textKey = QStringLiteral("api_configuration/text_translation");
@@ -22,20 +24,25 @@ const QString serverKey = QStringLiteral("api_configuration/server_url");
 
 TranslationService& TranslationService::forClient(SnowShotApiClient& client,
                                                   storage::ConfigurationStore& settings,
-                                                  const QLocale& locale) {
+                                                  const QLocale& locale,
+                                                  TranslationLanguageDetector languageDetector) {
     for (auto* service :
          client.findChildren<TranslationService*>(QString(), Qt::FindDirectChildrenOnly)) {
         if (service->m_settings == &settings) {
             return *service;
         }
     }
-    return *new TranslationService(client, settings, locale);
+    return *new TranslationService(client, settings, locale, std::move(languageDetector));
 }
 
 TranslationService::TranslationService(SnowShotApiClient& client,
-                                       storage::ConfigurationStore& settings, QLocale locale)
+                                       storage::ConfigurationStore& settings, QLocale locale,
+                                       TranslationLanguageDetector languageDetector)
     : QObject(&client), m_client(&client), m_settings(&settings), m_locale(std::move(locale)),
-      m_defaultTarget(defaultTranslationTargetLanguage(m_locale)) {
+      m_defaultTarget(defaultTranslationTargetLanguage(m_locale)),
+      m_languageDetector(languageDetector
+                             ? std::move(languageDetector)
+                             : TranslationLanguageDetector(detectTranslationLanguage)) {
     client.setCustomModels(customAiModelsFromJson(settings.value(customKey)));
     client.setTextTranslationConfigurations(
         textTranslationConfigurationsFromJson(settings.value(textKey)));
@@ -56,8 +63,9 @@ TranslationService::TranslationService(SnowShotApiClient& client,
                 } else if (key == proxyKey) {
                     m_client->setUseSystemProxy(m_settings->value(proxyKey).toString() ==
                                                 QStringLiteral("system"));
-                } else if (!m_saving && (key == sourceKey || key == targetKey ||
-                                         key == secondaryTargetKey || key == modelKey)) {
+                } else if (!m_saving &&
+                           (key == sourceKey || key == targetKey || key == secondaryTargetKey ||
+                            key == confidenceThresholdKey || key == modelKey)) {
                     syncPreferences(ChangeReason::UserPreferences);
                 }
             });
@@ -92,7 +100,8 @@ void TranslationService::syncPreferences(ChangeReason reason) {
         return;
     TranslationPreferences next{
         m_settings->value(sourceKey).toString(), m_settings->value(targetKey).toString(),
-        m_settings->value(modelKey).toString(), m_settings->value(secondaryTargetKey).toString()};
+        m_settings->value(modelKey).toString(), m_settings->value(secondaryTargetKey).toString(),
+        m_settings->value(confidenceThresholdKey).toInt(60)};
     if (next.sourceLanguage.isEmpty())
         next.sourceLanguage = QStringLiteral("auto");
     if (next.targetLanguage.isEmpty())
@@ -126,11 +135,13 @@ std::optional<bool> TranslationService::writePreferences(const QMap<QString, QJs
 }
 
 bool TranslationService::savePreferences(const TranslationPreferences& preferences) {
-    const auto saved = writePreferences({{sourceKey, preferences.sourceLanguage},
-                                         {targetKey, preferences.targetLanguage},
-                                         {secondaryTargetKey, preferences.secondaryTargetLanguage},
-                                         {modelKey, preferences.modelId}},
-                                        ChangeReason::UserPreferences);
+    const auto saved = writePreferences(
+        {{sourceKey, preferences.sourceLanguage},
+         {targetKey, preferences.targetLanguage},
+         {secondaryTargetKey, preferences.secondaryTargetLanguage},
+         {confidenceThresholdKey, preferences.languageDetectionConfidenceThreshold},
+         {modelKey, preferences.modelId}},
+        ChangeReason::UserPreferences);
     if (!saved.has_value())
         return false;
     const QPointer<TranslationService> lifetime(this);
@@ -286,6 +297,7 @@ void TranslationJob::retry() {
                          m_state == State::Invalidated;
     if (!m_fixedPreferences)
         m_preferences = m_service->preferences();
+    bool hasPendingUnits = false;
     for (auto& unit : m_units) {
         if (changed) {
             unit.text.clear();
@@ -295,7 +307,21 @@ void TranslationJob::retry() {
             unit.state = State::Completed;
         else if (unit.state != State::Completed)
             unit.state = State::Idle;
+        hasPendingUnits |= unit.state == State::Idle;
     }
+    // Detect lazily so unchanged targets and empty jobs avoid joining and analyzing text.
+    // A later retry can enable routing; its first detection still includes every original unit.
+    if (hasPendingUnits && !m_languageDetectionAttempted &&
+        !m_preferences.secondaryTargetLanguage.isEmpty() &&
+        m_preferences.secondaryTargetLanguage != m_preferences.targetLanguage) {
+        QStringList sources;
+        sources.reserve(m_units.size());
+        for (const auto& unit : m_units)
+            sources.append(unit.sourceText);
+        m_languageDetectionAttempted = true;
+        m_detectedLanguage = m_service->m_languageDetector(sources.join(u'\n'));
+    }
+    m_effectiveTargetLanguage = resolveTranslationTarget(m_preferences, m_detectedLanguage);
     m_state = State::WaitingForModels;
     const QPointer<TranslationJob> guard(this);
     emit stateChanged();
@@ -359,12 +385,9 @@ void TranslationJob::pump() {
             continue;
         unit.state = State::Streaming;
         unit.text.clear();
-        const SnowShotTranslationRequest request{m_preferences.modelId,
-                                                 m_preferences.sourceLanguage,
-                                                 m_preferences.targetLanguage,
-                                                 unit.sourceText,
-                                                 m_translationMode,
-                                                 m_preferences.secondaryTargetLanguage};
+        const SnowShotTranslationRequest request{
+            m_preferences.modelId, m_preferences.sourceLanguage, m_effectiveTargetLanguage,
+            unit.sourceText, m_translationMode};
         const auto token = m_client->streamTranslation(
             request, this,
             [this, generation, index](const QString& delta) {

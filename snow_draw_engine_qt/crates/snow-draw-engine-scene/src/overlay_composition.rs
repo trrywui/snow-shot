@@ -876,6 +876,7 @@ mod tests {
             ],
             false,
             snow_draw_engine_document::FreeDrawStyle {
+                brush_mode: Default::default(),
                 stroke: ColorRgba8::default(),
                 stroke_width: 12.0,
                 stroke_style: StrokeStyle::Dashed,

@@ -1769,6 +1769,8 @@ fn serial_number_drag_ignores_other_pointer_and_secondary_release() {
                 viewport,
                 InputEvent::Pointer(PointerEvent {
                     pointer_id,
+                    pressure: None,
+                    timestamp_ms: 0,
                     event_type,
                     device: PointerDevice::Mouse,
                     position: Point::new(600.0, 450.0),

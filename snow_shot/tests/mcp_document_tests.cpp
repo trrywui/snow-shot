@@ -44,6 +44,7 @@
 
 using namespace snow_shot::app::mcp;
 void runMcpApplicationTests();
+void runMcpTranslationTests();
 namespace {
 std::optional<double> currentThreadCpuMilliseconds() {
 #ifdef Q_OS_WIN
@@ -2654,6 +2655,11 @@ int main(int argc, char** argv) {
         const int result = serve(application, application.arguments().at(serveIndex + 1));
         snow_shot::storage::ApplicationStorage::instance().shutdown();
         return result;
+    }
+    if (application.arguments().contains(QStringLiteral("--translation-only"))) {
+        runMcpTranslationTests();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
     }
     if (application.arguments().contains(QStringLiteral("--application-only"))) {
         runMcpApplicationTests();

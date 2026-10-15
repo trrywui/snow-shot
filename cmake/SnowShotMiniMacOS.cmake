@@ -50,7 +50,7 @@ if(NOT SNOW_SHOT_OCR_STATIC_ONNXRUNTIME)
         RENAME libonnxruntime.dylib COMPONENT SnowShotMini)
 endif()
 if(NOT SNOW_SHOT_QT_STATIC)
-    install(FILES "${SNOW_QT_OFFSCREEN_PLUGIN}"
+    install(FILES "$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>"
         DESTINATION "snow_shot_mini.app/Contents/PlugIns/platforms" COMPONENT SnowShotMini)
 endif()
 if(SNOW_SHOT_RELEASE_STATIC)
@@ -60,6 +60,11 @@ if(SNOW_SHOT_RELEASE_STATIC)
         DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/third-party/vcpkg"
         COMPONENT SnowShotMini FILES_MATCHING PATTERN copyright)
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/SnowRustLicenses.cmake")
+snow_install_rust_licenses(
+    COMPONENT SnowShotMini
+    DESTINATION "snow_shot_mini.app/Contents/Resources/snow-shot-mini/licenses/third-party/cargo"
+    TARGETS snow_shot_rust_ffi_bundle snow_ocr_process snow_shot_mini_mcp)
 file(READ "${CMAKE_CURRENT_LIST_DIR}/DeploySnowShotMacOS.cmake.in" _mini_deploy)
 string(REPLACE "@SNOW_MACOS_OCR_RUNTIME_ONLY@" "ON" _mini_deploy "${_mini_deploy}")
 string(REPLACE "snow_shot.app" "snow_shot_mini.app" _mini_deploy "${_mini_deploy}")

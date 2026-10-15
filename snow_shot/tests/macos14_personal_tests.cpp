@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
             "manual checks explain personal updates");
     require(updates.status().error.contains(u"manual updates"),
             "manual update guidance is visible");
-    require(updates.status().error.contains(u"https://github.com/trrywui/snow-apps/releases"),
+    require(updates.status().error.contains(u"https://github.com/trrywui/snow-shot/releases"),
             "manual updates point to the maintained releases");
     require(updates.status().downloadUrl.isEmpty(), "no official installer is offered");
     require(!updates.busy() && !releases.hasPendingConnections(),

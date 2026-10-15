@@ -286,9 +286,10 @@ void routingPolicy() {
     require(requiredPermissions(A::TranslateSelectedText, false) ==
                 AppPermissions{P::Accessibility},
             "selected text needs Accessibility");
-    for (auto action : {A::OpenScreenRecordingFolder, A::OpenCaptureHistory,
-                        A::OpenPinToScreenManagement, A::GlobalCanvas, A::OpenSettings,
-                        A::PinClipboardContent, A::PinSelectedFiles, A::HideShowAllWindows})
+    for (auto action :
+         {A::OpenScreenRecordingFolder, A::OpenCaptureHistory, A::OpenPinToScreenManagement,
+          A::GlobalCanvas, A::StitchSelectedImages, A::OpenSettings, A::PinClipboardContent,
+          A::PinSelectedFiles, A::HideShowAllWindows})
         require(requiredPermissions(action, true).isEmpty(),
                 "permission-free actions must remain usable");
     using M = settings::SettingsGlobalMouseAction;

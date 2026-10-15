@@ -266,9 +266,6 @@ inline void appendScreenshotCursorMovementShortcutHintRows(
                                               QStringLiteral("selection_aspect_ratio_snap"),
                                               "Selection Aspect Ratio Snap");
     appendScreenshotConfiguredShortcutHintRow(rows, configuredShortcuts,
-                                              QStringLiteral("select_previously_selected_area"),
-                                              "Select previously selected area");
-    appendScreenshotConfiguredShortcutHintRow(rows, configuredShortcuts,
                                               QStringLiteral("copy_color"), "Copy color");
     appendScreenshotConfiguredShortcutHintRow(rows, configuredShortcuts,
                                               QStringLiteral("toggle_coordinate_mode"),

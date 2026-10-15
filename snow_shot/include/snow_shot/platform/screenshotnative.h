@@ -8,6 +8,11 @@ using ScrollInputResult = windows::ScrollInputResult;
 // Give Qt exclusive drag ownership, including after native surface recreation.
 void configureControlledWindowDragging(QWidget* widget, bool controlResizing = false);
 void configureScreenshotOverlayWindow(QWidget* widget);
+// Disable Qt updates before this terminal presentation retirement, then hide and
+// destroy the surface without painting again. Call before the first native hide.
+// Call on the GUI thread outside any caller-owned explicit CATransaction, so the
+// empty presentation can be committed before returning to the terminal hide.
+void retireScreenshotWindowPresentation(QWidget* widget);
 void configureScreenshotColorPickerWindow(QWidget* widget);
 void configureGlobalCanvasWindow(QWidget* widget);
 void configureScreenRecordingAreaWindow(QWidget* widget);

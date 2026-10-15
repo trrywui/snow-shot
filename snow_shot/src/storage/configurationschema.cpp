@@ -374,6 +374,8 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
       QStringLiteral("fr"), QStringLiteral("it"), QStringLiteral("ja"), QStringLiteral("ko"),
       QStringLiteral("pt"), QStringLiteral("ru"), QStringLiteral("tr"), QStringLiteral("zh-Hans"),
       QStringLiteral("zh-Hant")}},
+    {QStringLiteral("screenshot_translation/language_detection_confidence_threshold"), 60,
+     ConfigurationValueKind::Integer, ConfigurationIntegerRange{30, 100}},
     {QStringLiteral("screenshot_translation/model"), QString(), ConfigurationValueKind::String},
 #endif
 #if SNOW_SHOT_ENABLE_IMAGE_CONVERSION
@@ -537,6 +539,12 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      std::nullopt,
      {},
      2},
+    {QStringLiteral("global_shortcuts/stitch_selected_images"),
+     QJsonArray(),
+     ConfigurationValueKind::StringList,
+     std::nullopt,
+     {},
+     2},
     {QStringLiteral("global_shortcuts/open_settings"),
      QJsonArray(),
      ConfigurationValueKind::StringList,
@@ -682,8 +690,10 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      ConfigurationValueKind::Boolean},
     {QStringLiteral("screen_recording/mouse_highlight_color"), QStringLiteral("#FFFF0080"),
      ConfigurationValueKind::String},
+    {QStringLiteral("screen_recording/mouse_highlight_radius"), 41, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{8, 128, 1}},
     {QStringLiteral("screen_recording/encoder"),
-     QStringLiteral("h264_hw"),
+     QStringLiteral("h264"),
      ConfigurationValueKind::String,
      std::nullopt,
      {QStringLiteral("h264_hw"), QStringLiteral("h264"), QStringLiteral("h265")}},
@@ -702,6 +712,7 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      {QStringLiteral("dxgi"), QStringLiteral("wgc"), QStringLiteral("gdi")}},
     {QStringLiteral("screen_recording/capture_toolbar_in_recording"), true,
      ConfigurationValueKind::Boolean},
+    {QStringLiteral("screen_recording/auto_hide_toolbar"), false, ConfigurationValueKind::Boolean},
     {QStringLiteral("screen_recording/auto_exit_after_recording_ends"), false,
      ConfigurationValueKind::Boolean},
     {QStringLiteral("screen_recording/notify_after_export_completes"), false,
@@ -944,6 +955,12 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      std::nullopt,
      {},
      2},
+    {QStringLiteral("screenshot_shortcuts/select_next_previously_selected_area"),
+     QJsonArray{QStringLiteral("Shift+R")},
+     ConfigurationValueKind::StringList,
+     std::nullopt,
+     {},
+     2},
     {QStringLiteral("screenshot_shortcuts/toggle_cursor_visibility"),
      QJsonArray{QStringLiteral("`")},
      ConfigurationValueKind::StringList,
@@ -1047,7 +1064,7 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      {},
      2},
     {QStringLiteral("screenshot_shortcuts/copy_to_clipboard"),
-     QJsonArray{QStringLiteral("Ctrl+C")},
+     QJsonArray{QStringLiteral("Ctrl+C"), QStringLiteral("Return")},
      ConfigurationValueKind::StringList,
      std::nullopt,
      {},
@@ -1399,6 +1416,15 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      QStringLiteral("#00000000"), ConfigurationValueKind::String},
     {QStringLiteral("screenshot_ui/show_edit_selection_toolbar"), true,
      ConfigurationValueKind::Boolean},
+    {QStringLiteral("pin_to_screen/text_maximum_width"), 1024, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{100, 2000, 1}},
+    {QStringLiteral("pin_to_screen/text_font_family"), QString(), ConfigurationValueKind::String},
+    {QStringLiteral("pin_to_screen/text_font_size"), 16, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{8, 96, 1}},
+    {QStringLiteral("pin_to_screen/text_color"), QStringLiteral("system"),
+     ConfigurationValueKind::String},
+    {QStringLiteral("pin_to_screen/text_background_color"), QStringLiteral("system"),
+     ConfigurationValueKind::String},
     {QStringLiteral("pin_to_screen/show_border_by_default"), true, ConfigurationValueKind::Boolean},
     {QStringLiteral("pin_to_screen/show_shadow_by_default"), false,
      ConfigurationValueKind::Boolean},
@@ -1459,6 +1485,14 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      {QStringLiteral("default"), QStringLiteral("light"), QStringLiteral("dark"),
       QStringLiteral("snow-default"), QStringLiteral("snow-light"), QStringLiteral("snow-dark")}},
     {QStringLiteral("tray/custom_icon"), QString(), ConfigurationValueKind::String},
+    {QStringLiteral("tray/dark_icon"),
+     QStringLiteral("inherit"),
+     ConfigurationValueKind::String,
+     std::nullopt,
+     {QStringLiteral("inherit"), QStringLiteral("default"), QStringLiteral("light"),
+      QStringLiteral("dark"), QStringLiteral("snow-default"), QStringLiteral("snow-light"),
+      QStringLiteral("snow-dark")}},
+    {QStringLiteral("tray/dark_custom_icon"), QString(), ConfigurationValueKind::String},
     {QStringLiteral("tray/left_click_action"),
      QStringLiteral("screenshot"),
      ConfigurationValueKind::String,
@@ -1503,6 +1537,7 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
       QStringLiteral("quick.open-screen-recording-folder"),
       QStringLiteral("quick.open-capture-history"),
       QStringLiteral("quick.global-canvas"),
+      QStringLiteral("quick.stitch-selected-images"),
       QStringLiteral("quick.translate-selected-text"),
       QStringLiteral("quick.toggle-global-hotkeys"),
       QStringLiteral("quick.toggle-disable-on-focused-fullscreen-window"),
@@ -1510,8 +1545,6 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
       QStringLiteral("tray.show-main-window"),
       QStringLiteral("tray.restart-app"),
       QStringLiteral("tray.exit")}},
-    {QStringLiteral("screenshot_selection/previous_selection"), QJsonValue::Null,
-     ConfigurationValueKind::Structured},
     {QStringLiteral("screenshot_selection/region_type"),
      QStringLiteral("rectangle"),
      ConfigurationValueKind::String,
@@ -1610,6 +1643,51 @@ const QVector<ConfigurationSchemaEntry> kRawEntries = {
      {QStringLiteral("system"), QStringLiteral("snow_shot")}},
     {QStringLiteral("screenshot/save_path_shortcuts"), QJsonArray(),
      ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/direction"),
+     QStringLiteral("vertical"),
+     ConfigurationValueKind::String,
+     std::nullopt,
+     {QStringLiteral("vertical"), QStringLiteral("horizontal"), QStringLiteral("custom")}},
+    {QStringLiteral("collage/rows"), 1, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{1, std::numeric_limits<int>::max(), 1}},
+    {QStringLiteral("collage/columns"), 1, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{1, std::numeric_limits<int>::max(), 1}},
+    {QStringLiteral("collage/custom_grid_initialized"), false, ConfigurationValueKind::Boolean},
+    {QStringLiteral("collage/sizing_mode"),
+     QStringLiteral("uniform"),
+     ConfigurationValueKind::String,
+     std::nullopt,
+     {QStringLiteral("original"), QStringLiteral("uniform")}},
+    {QStringLiteral("collage/border_px"), 0, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{0, std::numeric_limits<int>::max(), 1}},
+    {QStringLiteral("collage/spacing_px"), 0, ConfigurationValueKind::Integer,
+     ConfigurationIntegerRange{0, std::numeric_limits<int>::max(), 1}},
+    {QStringLiteral("collage/background_color"), QStringLiteral("#FFFFFFFF"),
+     ConfigurationValueKind::String},
+    {QStringLiteral("collage/pdf_paper_size"),
+     QStringLiteral("a4"),
+     ConfigurationValueKind::String,
+     std::nullopt,
+     {QStringLiteral("a3"), QStringLiteral("a4"), QStringLiteral("a5"), QStringLiteral("b5"),
+      QStringLiteral("letter"), QStringLiteral("legal"), QStringLiteral("custom"),
+      QStringLiteral("image_size")}},
+    {QStringLiteral("collage/pdf_orientation"),
+     QStringLiteral("portrait"),
+     ConfigurationValueKind::String,
+     std::nullopt,
+     {QStringLiteral("portrait"), QStringLiteral("landscape")}},
+    // Decimal dimensions and margins use key-specific finite-number normalization below.
+    {QStringLiteral("collage/pdf_custom_width_mm"), 210.0, ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/pdf_custom_height_mm"), 297.0, ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/pdf_margin_top_mm"), 10.0, ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/pdf_margin_bottom_mm"), 10.0, ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/pdf_margin_left_mm"), 10.0, ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/pdf_margin_right_mm"), 10.0, ConfigurationValueKind::Structured},
+    {QStringLiteral("collage/pdf_export_mode"),
+     QStringLiteral("combined"),
+     ConfigurationValueKind::String,
+     std::nullopt,
+     {QStringLiteral("combined"), QStringLiteral("per_page")}},
     {QStringLiteral("screenshot/manual_save_format_options"), QJsonObject(),
      ConfigurationValueKind::Structured},
     {QStringLiteral("screenshot/image_format"),
@@ -1907,17 +1985,6 @@ ConfigurationNormalization normalizeAllowedInteger(const QJsonValue& value,
     return {integer, true, false};
 }
 
-ConfigurationNormalization normalizeSelection(const QJsonValue& value) {
-    if (value.isNull()) {
-        return {QJsonValue::Null, true, false};
-    }
-    const PersistedSelectionNormalization normalized = normalizePersistedSelection(value);
-    if (!normalized.valid) {
-        return {};
-    }
-    return {persistedSelectionToJson(normalized.value), true, normalized.changed};
-}
-
 ConfigurationNormalization normalizePresets(const QJsonValue& value) {
     if (!value.isArray()) {
         return {};
@@ -2021,7 +2088,8 @@ ConfigurationNormalization normalizeDrawTemplates(const QJsonValue& value) {
 }
 
 bool isRgbaColorKey(const QString& key) {
-    return key == QStringLiteral("interface/theme_primary_color") ||
+    return key == QStringLiteral("collage/background_color") ||
+           key == QStringLiteral("interface/theme_primary_color") ||
            key == QStringLiteral("screenshot_selection/shadow_color") ||
            key == QStringLiteral("screenshot_ui/selection_border_color") ||
            key == QStringLiteral("screenshot_ui/selection_mask_color") ||
@@ -2544,6 +2612,16 @@ ConfigurationNormalization ConfigurationSchema::normalize(const QString& key,
     if (schemaEntry == nullptr) {
         return {};
     }
+    if (key.startsWith(QStringLiteral("collage/pdf_custom_")) ||
+        key.startsWith(QStringLiteral("collage/pdf_margin_"))) {
+        if (!value.isDouble() || !std::isfinite(value.toDouble()))
+            return {};
+        const bool customDimension = key.startsWith(QStringLiteral("collage/pdf_custom_"));
+        if (customDimension ? value.toDouble() <= 0 || value.toDouble() > 381'000'000
+                            : value.toDouble() < 0)
+            return {};
+        return {value, true, false};
+    }
 #ifdef Q_OS_MACOS
     if (key == u"updates/mode" &&
         (value.toString() == u"download" || value.toString() == u"next_launch")) {
@@ -2580,9 +2658,6 @@ ConfigurationNormalization ConfigurationSchema::normalize(const QString& key,
     }
     if (key == QStringLiteral("interface/language")) {
         return normalizeLanguage(value);
-    }
-    if (key == QStringLiteral("screenshot_selection/previous_selection")) {
-        return normalizeSelection(value);
     }
     if (key == QStringLiteral("screenshot_selection/selection_rect_presets")) {
         return normalizePresets(value);
@@ -2657,6 +2732,16 @@ ConfigurationNormalization ConfigurationSchema::normalize(const QString& key,
     }
     if (isGlobalMouseKey(key)) {
         return normalizeGlobalMouseCombination(value);
+    }
+    if (key == QStringLiteral("pin_to_screen/text_color") ||
+        key == QStringLiteral("pin_to_screen/text_background_color")) {
+        return value == QJsonValue(QStringLiteral("system"))
+                   ? ConfigurationNormalization{value, true, false}
+                   : normalizeRgbaColor(value);
+    }
+    if (key == QStringLiteral("pin_to_screen/text_font_family") &&
+        (!value.isString() || value.toString().size() > 1024)) {
+        return {};
     }
     if (isRgbaColorKey(key)) {
         return normalizeRgbaColor(value);

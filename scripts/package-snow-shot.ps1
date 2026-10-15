@@ -441,7 +441,7 @@ $updaterCargoManifest = Join-Path $repoRoot "snow_shot\rust\snow-shot-updater\Ca
     -QtPrefix $qtPrefix `
     -CargoManifest @((Join-Path $repoRoot "snow_rust_ffi\Cargo.toml"), $ocrCargoManifest,
         $updaterCargoManifest, (Join-Path $repoRoot "snow_shot\rust\snow-shot-mcp\Cargo.toml")) `
-    -CargoOptions @{ (Join-Path $repoRoot "snow_rust_ffi\Cargo.toml") = @('--features', 'selected-text');
+    -CargoOptions @{ (Join-Path $repoRoot "snow_rust_ffi\Cargo.toml") = @('--features', 'selected-text,language-detection');
         # Runtime 1.0.9 ships the raw-pixel worker without convenience dependencies.
         $ocrCargoManifest = @('--no-default-features', '--features',
         'static-onnx-runtime,directml-provider,crash-diagnostics') } `

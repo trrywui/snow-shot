@@ -548,7 +548,67 @@ void supersededGroupActivationCannotFocusTheReopenedDisplay() {
     }
 }
 
+void terminalHideRetiresPresentationBeforeHidingAndAllowsReuse() {
+    for (const bool deferred : {false, true}) {
+        OverlayRevealFixture fixture;
+        fixture.primary.show();
+        fixture.primary.canvas()->setInteractionEnabled(true);
+        const auto generation = fixture.primary.presentationGeneration();
+        const auto nativeId = fixture.primary.internalWinId();
+        require(nativeId != 0, "a visible overlay must have a native surface");
+
+        class InspectHide final : public QObject {
+          public:
+            ScreenshotOverlayWindow* overlay = nullptr;
+            quint64 generation = 0;
+            bool inspected = false;
+
+          protected:
+            bool eventFilter(QObject*, QEvent* event) override {
+                if (event->type() == QEvent::Hide) {
+                    inspected = true;
+                    require(!overlay->isPresentationCurrent(generation) &&
+                                !overlay->updatesEnabled() &&
+                                !overlay->canvas()->updatesEnabled() &&
+                                !overlay->canvas()->interactionEnabled(),
+                            "terminal retirement must block painting and input before hide");
+                }
+                return false;
+            }
+        } inspection;
+        inspection.overlay = &fixture.primary;
+        inspection.generation = generation;
+        fixture.primary.installEventFilter(&inspection);
+
+        if (deferred) {
+            fixture.coordinator.hideOverlayWindowsImmediately(fixture.displays);
+            require(fixture.primary.internalWinId() == nativeId,
+                    "export's early hide must preserve the native surface until maintenance");
+            fixture.coordinator.hideOverlayWindowsImmediately(fixture.displays);
+            fixture.coordinator.hideOverlayWindows(fixture.displays);
+        } else {
+            fixture.primary.releaseNativeSurface();
+        }
+        require(inspection.inspected && fixture.primary.isHidden() &&
+                    fixture.primary.internalWinId() == 0,
+                "completion must hide the retired presentation and destroy its native surface");
+        fixture.primary.releaseNativeSurface();
+        require(fixture.primary.internalWinId() == 0,
+                "repeated completion must not recreate a native surface");
+        fixture.primary.removeEventFilter(&inspection);
+        fixture.primary.restoreNativeSurface();
+        require(fixture.primary.isHidden() && fixture.primary.updatesEnabled() &&
+                    fixture.primary.canvas()->updatesEnabled(),
+                "the next capture must restore painting without revealing the overlay early");
+        fixture.primary.showPreparedFrame();
+        require(fixture.primary.isVisible() &&
+                    fixture.primary.isPresentationCurrent(fixture.primary.presentationGeneration()),
+                "the next capture must own a fresh visible presentation");
+    }
+}
+
 void overlayRevealGenerationAndFocusRegressions() {
+    terminalHideRetiresPresentationBeforeHidingAndAllowsReuse();
     retiredSecondaryRevealCannotShowThePooledOverlay();
     cancellationDuringFirstShowRetiresTheWholeRevealGroup();
     reentrantPublicShowOwnsANewPresentation();

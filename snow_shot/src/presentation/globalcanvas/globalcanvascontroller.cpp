@@ -1,5 +1,6 @@
 #include "snow_shot/presentation/canvashistoryshortcuts.h"
 #include "snow_shot/presentation/globalcanvascontroller.h"
+#include "snow_shot/presentation/crosshaircursor.h"
 #include "globalcanvasplatform.h"
 #include "snow_shot/platform/screenshotnative.h"
 #include "snow_shot/platform/physicalcursor.h"
@@ -24,6 +25,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMouseEvent>
+#include <QTabletEvent>
 #include <QPainter>
 #include <QPointer>
 #include <QResizeEvent>
@@ -79,6 +81,7 @@ class GlobalCanvasController::Session final : public QWidget, public SnowCanvasC
           drawing(std::make_unique<SnowCanvasWidget>(runtime, this)),
           tools(std::make_unique<ScreenshotFloatingToolPaletteWindow>(canvasOptions())),
           shortcuts(this) {
+        configureCanvasCrosshairCursor(*drawing);
 #ifdef Q_OS_MACOS
         setWindowFlag(Qt::NoDropShadowWindowHint);
 #endif
@@ -291,6 +294,22 @@ class GlobalCanvasController::Session final : public QWidget, public SnowCanvasC
         return result;
     }
     bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == drawing.get() &&
+            (event->type() == QEvent::TabletPress || event->type() == QEvent::TabletMove ||
+             event->type() == QEvent::TabletRelease)) {
+            auto* tablet = static_cast<QTabletEvent*>(event);
+            const auto type = event->type() == QEvent::TabletPress     ? QEvent::MouseButtonPress
+                              : event->type() == QEvent::TabletRelease ? QEvent::MouseButtonRelease
+                                                                       : QEvent::MouseMove;
+            QMouseEvent pointer(type, tablet->position(), tablet->globalPosition(),
+                                tablet->button(), tablet->buttons(), tablet->modifiers(),
+                                tablet->pointingDevice());
+            if (eventFilter(watched, &pointer)) {
+                event->accept();
+                return true;
+            }
+            return false;
+        }
         if (watched == drawing.get() && samplingMouseReleasePending &&
             event->type() == QEvent::MouseButtonRelease) {
             samplingMouseReleasePending = false;

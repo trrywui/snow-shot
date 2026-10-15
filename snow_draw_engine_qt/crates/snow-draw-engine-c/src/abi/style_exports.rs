@@ -628,6 +628,10 @@ pub unsafe extern "C" fn snow_viewport_set_shape_style_patch_ex(
             return SnowError::InvalidArgument;
         }
 
+        if !unsafe { raw_c_enum_is_valid(std::ptr::addr_of!((*style).brush_mode)) } {
+            return SnowError::InvalidArgument;
+        }
+
         ffi_status(with_runtime_impl_mut(runtime, |state| {
             let id = viewport_id(viewport)?;
             let result = state

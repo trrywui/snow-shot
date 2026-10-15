@@ -635,34 +635,27 @@ void nativeProbe() {
     const auto style = GetWindowLongPtrW(reinterpret_cast<HWND>(iconWindow->winId()), GWL_EXSTYLE);
     require((style & WS_EX_TOOLWINDOW) && (style & WS_EX_TOPMOST) && !(style & WS_EX_APPWINDOW),
             "native toolbar stays above ordinary windows without a taskbar entry");
+    RECT frame{};
+    MONITORINFOEXW monitor{};
+    monitor.cbSize = sizeof(monitor);
+    require(SUCCEEDED(DwmGetWindowAttribute(backdropHandle, DWMWA_EXTENDED_FRAME_BOUNDS, &frame,
+                                            sizeof(frame))) &&
+                GetMonitorInfoW(MonitorFromWindow(backdropHandle, MONITOR_DEFAULTTONULL),
+                                reinterpret_cast<MONITORINFO*>(&monitor)) != 0 &&
+                qAbs(frame.left - monitor.rcMonitor.left) <= 1 &&
+                qAbs(frame.top - monitor.rcMonitor.top) <= 1 &&
+                qAbs(frame.right - monitor.rcMonitor.right) <= 1 &&
+                qAbs(frame.bottom - monitor.rcMonitor.bottom) <= 1,
+            "own native fullscreen fixture fills the entire monitor");
 #endif
-    if (!snow_shot::platform::focusedFullscreenWindowOnScreen(screen)) {
-#ifdef Q_OS_WIN
-        const auto foreground = GetForegroundWindow();
-        RECT rect{};
-        DwmGetWindowAttribute(foreground, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect));
-        MONITORINFOEXW monitor{};
-        monitor.cbSize = sizeof(monitor);
-        GetMonitorInfoW(MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST),
-                        reinterpret_cast<MONITORINFO*>(&monitor));
-        std::cerr << "Fullscreen probe: foreground backdrop="
-                  << (foreground == reinterpret_cast<HWND>(backdrop.winId()))
-                  << " frame=" << rect.left << ',' << rect.top << ',' << rect.right << ','
-                  << rect.bottom << " monitor=" << monitor.rcMonitor.left << ','
-                  << monitor.rcMonitor.top << ',' << monitor.rcMonitor.right << ','
-                  << monitor.rcMonitor.bottom << " qt=" << screen->name().toStdString()
-                  << " win=" << QString::fromWCharArray(monitor.szDevice).toStdString() << '\n';
-#endif
-    }
-    require(snow_shot::platform::focusedFullscreenWindowOnScreen(screen),
-            "native detector recognizes fullscreen on the toolbar monitor");
+    require(!snow_shot::platform::focusedFullscreenWindowExists(),
+            "native detector ignores own focused fullscreen windows");
     for (auto* other : QGuiApplication::screens())
-        if (other != screen)
-            require(!snow_shot::platform::focusedFullscreenWindowOnScreen(other),
-                    "native fullscreen does not suppress another monitor");
+        require(!snow_shot::platform::focusedFullscreenWindowOnScreen(other),
+                "own native fullscreen does not suppress any monitor");
     stored.setHideInFullscreen(true);
     pump();
-    require(!iconWindow->isVisible(), "fullscreen preference hides the native surface");
+    require(iconWindow->isVisible(), "own fullscreen does not hide the native toolbar surface");
     std::cout << "Native floating toolbar probe passed on " << QGuiApplication::screens().size()
               << " monitor(s).\n";
     stored.setEnabled(false);

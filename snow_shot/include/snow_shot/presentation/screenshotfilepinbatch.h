@@ -53,6 +53,7 @@ class ScreenshotFilePinBatch final : public QObject {
     void submitPendingDecodes(quint64 generation);
     void dispatch(quint64 generation);
 
+    snow_shot::storage::PinnedTextStyle m_textStyle;
     ScreenshotExportJobHandle m_snapshotJob;
     QHash<qsizetype, ScreenshotExportJobHandle> m_decodeJobs;
     quint64 m_generation = 0;

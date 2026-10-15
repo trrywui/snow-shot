@@ -98,6 +98,8 @@ fn start_copy_drag(editor: &mut Editor, document: &DocumentModel, start: Point<f
             .process_input(
                 document,
                 InputEvent::Pointer(PointerEvent {
+                    pressure: None,
+                    timestamp_ms: 0,
                     pointer_id: 1,
                     event_type,
                     device: PointerDevice::Mouse,
@@ -275,6 +277,8 @@ fn speech_bubble_duplicate_preview_matches_measured_source_appearance() {
         .process_input(
             &document,
             InputEvent::Pointer(PointerEvent {
+                pressure: None,
+                timestamp_ms: 0,
                 pointer_id: 1,
                 event_type: PointerEventType::Up,
                 device: PointerDevice::Mouse,

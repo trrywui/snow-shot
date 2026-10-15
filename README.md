@@ -6,11 +6,11 @@
 
 ## 下载和安装
 
-从 [GitHub Releases](https://github.com/trrywui/snow-apps/releases) 下载 DMG，打开后将
+从 [GitHub Releases](https://github.com/trrywui/snow-shot/releases) 下载 DMG，打开后将
 **Snow Shot.app** 拖到“应用程序”。首次启动按提示授予屏幕录制、辅助功能等所需权限。
 
 - 支持 **Intel / x86_64，macOS 14.4 及以上**。
-- 当前版本：**1.0.0+up.1.2.8**；上游基线为 `6ebfb7794`（Snow Apps 1.2.8）。
+- 当前版本：**1.1.0+up.1.3.0**；上游基线为 `8982d6660c03`（Snow Apps 1.3.0）。
 - Bundle ID：`io.github.trrywui.snowshot`。
 - Apple Silicon 不在当前发布包的支持范围内；不声明其他机器已经过交互验证。
 - 使用 ad-hoc 签名，未进行 Apple 公证；重建或升级后可能需要重新授予权限。
@@ -43,7 +43,7 @@
 ## 来源与许可证
 
 原作者：**mg-chao**；本分支兼容修改和维护：**trrywui**，2026 年。
-原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/6ebfb7794)。
+原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/8982d6660c03)。
 
 这是多许可证仓库，范围见 [LICENSE.md](LICENSE.md)：
 

@@ -103,8 +103,17 @@ and the existing objc2 framework bindings (Zlib OR Apache-2.0 OR MIT) for
 Accessibility and pasteboard interoperability. Their resolved notices are
 included in the generated Rust dependency bundle. Apple system frameworks are
 provided by macOS and are not redistributed.
-Full includes these components in its unified Rust FFI archive; Mini's archive
-does not enable the selected-text dependency.
+Translation target switching uses `whatlang` 0.18.0 (MIT) through the repository's
+Apache-2.0 `snow-language-detection-c` bridge. It analyzes the complete input in
+one call and exposes the detected ISO 639-3 language and raw confidence.
+The upstream MIT license and provenance are preserved under
+`licenses/cargo/whatlang-0.18.0/` because the published crate omits its license text.
+The release collector includes its resolved dependency notices.
+macOS installation collects each Rust target's normal and build dependency
+notices using the same target, features, and default-feature policy as compilation.
+Full and Mini collect their own graphs, including the OCR and MCP sidecars.
+Full includes selected-text acquisition and language detection in its unified
+Rust FFI archive; Mini's archive enables neither dependency.
 
 macOS application QoS uses the repository's Apache-2.0 `snow-core` scheduling
 policy and the existing Rayon worker pools (MIT OR Apache-2.0). Native pthread

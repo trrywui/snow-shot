@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use snow_cursor::{CursorShape, CursorShapeCapture, CursorSnapshot};
+use snow_cursor::{CursorShape, CursorSnapshot, WindowsCrosshairNormalizer};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BOX, D3D11_QUERY_DESC, D3D11_QUERY_EVENT, D3D11_TEXTURE2D_DESC, ID3D11Device,
@@ -30,7 +30,7 @@ use crate::monitor::MonitorId;
 use crate::timing::{StageScope, attach_stage_timings, qpc_duration_between, stage_record};
 use crate::timing::{stage_checkpoint, stage_mark, stage_record_since};
 
-use super::cursor::{decode_dxgi_pointer_shape, update_dxgi_pointer_position};
+use super::cursor::{decode_dxgi_pointer_shape, sample_dxgi_cursor, update_dxgi_pointer_position};
 use super::d3d11;
 use super::dirty_rect::{
     self, DirtyCopyStrategy, DirtyCopyThresholds, DirtyRectDenseMergeThresholds,
@@ -1980,6 +1980,7 @@ struct OutputCapturer {
     last_present_time: i64,
     last_pointer_position: Option<DXGI_OUTDUPL_POINTER_POSITION>,
     cached_pointer_shape: Option<CursorShape>,
+    crosshair_normalizer: WindowsCrosshairNormalizer,
     pointer_shape_buffer: Vec<u8>,
     /// Capture intent controls whether recording-oriented buffering
     /// should be enabled.
@@ -2062,6 +2063,7 @@ impl OutputCapturer {
             last_present_time: 0,
             last_pointer_position: None,
             cached_pointer_shape: None,
+            crosshair_normalizer: WindowsCrosshairNormalizer::new(),
             pointer_shape_buffer: Vec::new(),
             capture_mode: CaptureMode::Snapshot,
             output_pixel_format: CapturePixelFormat::Rgba8,
@@ -2189,42 +2191,12 @@ impl OutputCapturer {
     }
 
     fn sample_cursor(&mut self) -> CaptureResult<Option<CursorSnapshot>> {
-        let pointer = match self.last_pointer_position {
-            Some(pointer) => pointer,
-            None => return Ok(None),
-        };
-
-        let shape = match self.cached_pointer_shape.as_ref() {
-            Some(shape) => shape,
-            None => {
-                if pointer.Visible.as_bool() {
-                    return Ok(None);
-                }
-                return Ok(Some(CursorSnapshot {
-                    absolute_x: 0,
-                    absolute_y: 0,
-                    visible: false,
-                    shape: CursorShapeCapture::Unavailable,
-                }));
-            }
-        };
-
-        let absolute_hotspot_x = self
-            .output_desktop_rect
-            .left
-            .saturating_add(pointer.Position.x)
-            .saturating_add(shape.hotspot_x as i32);
-        let absolute_hotspot_y = self
-            .output_desktop_rect
-            .top
-            .saturating_add(pointer.Position.y)
-            .saturating_add(shape.hotspot_y as i32);
-        Ok(Some(CursorSnapshot {
-            absolute_x: absolute_hotspot_x,
-            absolute_y: absolute_hotspot_y,
-            visible: pointer.Visible.as_bool(),
-            shape: CursorShapeCapture::Captured(shape.clone()),
-        }))
+        Ok(sample_dxgi_cursor(
+            self.last_pointer_position,
+            self.cached_pointer_shape.as_ref(),
+            (self.output_desktop_rect.left, self.output_desktop_rect.top),
+            &mut self.crosshair_normalizer,
+        ))
     }
 
     /// Screenshot mode aggressively trims recording-oriented scratch state,

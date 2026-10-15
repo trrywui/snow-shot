@@ -533,11 +533,12 @@ class ScreenshotPendingPinCoordinator final : public QObject {
 };
 
 namespace {
-bool presentPinnedWindowAndSynchronize(ScreenshotPinnedWindowPool* pool,
-                                       ScreenshotPinnedWindow* window,
-                                       const ScreenshotPinnedWindow::Config& requestedConfig,
-                                       const std::function<void()>& showMainWindowRequested,
-                                       std::function<void(bool, QImage)> completion = {}) {
+bool presentPinnedWindowAndSynchronize(
+    ScreenshotPinnedWindowPool* pool, ScreenshotPinnedWindow* window,
+    const ScreenshotPinnedWindow::Config& requestedConfig,
+    const std::function<void()>& showMainWindowRequested,
+    const std::function<void(const ScreenshotPinnedImageSnapshot&)>& imageSplittingRequested,
+    std::function<void(bool, QImage)> completion = {}) {
     ScreenshotPinnedWindow::Config config = requestedConfig;
     if (!config.placement.isValid() && config.screen)
         config.placement =
@@ -549,6 +550,11 @@ bool presentPinnedWindowAndSynchronize(ScreenshotPinnedWindowPool* pool,
     if (showMainWindowRequested) {
         QObject::connect(window, &ScreenshotPinnedWindow::showMainWindowRequested, window,
                          showMainWindowRequested);
+    }
+    QObject::disconnect(window, &ScreenshotPinnedWindow::splitRequested, window, nullptr);
+    if (imageSplittingRequested) {
+        QObject::connect(window, &ScreenshotPinnedWindow::splitRequested, window,
+                         imageSplittingRequested);
     }
     SNOW_SHOT_PIN_PERF_MILESTONE("ui.pinned_window_constructed");
     const QPointer<ScreenshotPinnedWindowPool> guardedPool(pool);
@@ -586,10 +592,13 @@ ScreenshotSelectionExportUiServices::ScreenshotSelectionExportUiServices(
     ScreenshotOcrRecognitionPort* recognition, ScreenshotQrRecognitionPort* qrRecognition,
     SnowShotApiClient* tableRecognition, std::function<void()> showMainWindowRequested,
     std::function<ScreenshotPinnedRecognitionProviders()> recognitionProvider,
-    snow_shot::presentation::PinnedWindowGroupManager* groupManager)
+    snow_shot::presentation::PinnedWindowGroupManager* groupManager,
+    std::function<void(const QVector<ScreenshotPinnedImageSnapshot>&)> imageStitchingRequested,
+    std::function<void(const ScreenshotPinnedImageSnapshot&)> imageSplittingRequested)
     : m_recognition(recognition), m_qrRecognition(qrRecognition),
       m_tableRecognition(tableRecognition),
       m_showMainWindowRequested(std::move(showMainWindowRequested)),
+      m_imageSplittingRequested(std::move(imageSplittingRequested)),
       m_recognitionProvider(std::move(recognitionProvider)), m_groupManager(groupManager),
       m_selectionController(
           std::make_unique<snow_shot::presentation::PinnedWindowSelectionController>(
@@ -597,6 +606,11 @@ ScreenshotSelectionExportUiServices::ScreenshotSelectionExportUiServices(
       m_windowPool(std::make_unique<ScreenshotPinnedWindowPool>()),
       m_pendingPinCoordinator(std::make_unique<ScreenshotPendingPinCoordinator>(
           [this]() { restorePersistedWindows(); })) {
+    if (imageStitchingRequested)
+        QObject::connect(
+            m_selectionController.get(),
+            &snow_shot::presentation::PinnedWindowSelectionController::imageStitchingRequested,
+            m_selectionController.get(), std::move(imageStitchingRequested));
     if (m_groupManager) {
         QObject::connect(
             m_groupManager,
@@ -770,9 +784,9 @@ bool ScreenshotSelectionExportUiServices::presentPinnedArtifact(
         }
     };
     trackSourceWindow(pinnedWindow, config.sourceIdentity);
-    const bool presented = presentPinnedWindowAndSynchronize(m_windowPool.get(), pinnedWindow,
-                                                             config, m_showMainWindowRequested,
-                                                             std::move(synchronizedCompletion));
+    const bool presented = presentPinnedWindowAndSynchronize(
+        m_windowPool.get(), pinnedWindow, config, m_showMainWindowRequested,
+        m_imageSplittingRequested, std::move(synchronizedCompletion));
     if (!presented) {
         artifact->cancel();
         m_pendingPinCoordinator->cancel(config.persistenceId);
@@ -869,9 +883,9 @@ bool ScreenshotSelectionExportUiServices::presentPinnedImageArtifact(
             }
         };
     trackSourceWindow(pinnedWindow, config.sourceIdentity);
-    const bool presented = presentPinnedWindowAndSynchronize(m_windowPool.get(), pinnedWindow,
-                                                             config, m_showMainWindowRequested,
-                                                             std::move(synchronizedCompletion));
+    const bool presented = presentPinnedWindowAndSynchronize(
+        m_windowPool.get(), pinnedWindow, config, m_showMainWindowRequested,
+        m_imageSplittingRequested, std::move(synchronizedCompletion));
     if (!presented) {
         artifact->cancel();
         m_pendingPinCoordinator->cancel(config.persistenceId);
@@ -1080,9 +1094,9 @@ bool ScreenshotSelectionExportUiServices::presentPinnedImageOnCanvas(
         }
     };
     trackSourceWindow(pinnedWindow, config.sourceIdentity);
-    const bool presented = presentPinnedWindowAndSynchronize(m_windowPool.get(), pinnedWindow,
-                                                             config, m_showMainWindowRequested,
-                                                             std::move(synchronizedCompletion));
+    const bool presented = presentPinnedWindowAndSynchronize(
+        m_windowPool.get(), pinnedWindow, config, m_showMainWindowRequested,
+        m_imageSplittingRequested, std::move(synchronizedCompletion));
     if (!presented) {
         artifact->cancel();
         m_pendingPinCoordinator->cancel(config.persistenceId);
@@ -1463,6 +1477,7 @@ bool ScreenshotSelectionExportUiServices::presentRestoredRecord(
         ScreenshotClipboardOriginalContent original;
         original.html = record.originalHtml;
         original.text = record.originalText;
+        original.textStyle = record.textStyle;
         const auto rendered = ScreenshotClipboardContentReader::renderOriginalText(
             original, record.firstCreationTextDpi, QApplication::palette().color(QPalette::Base));
         if (!rendered.has_value() || !rendered->isValid()) {
@@ -1494,7 +1509,7 @@ bool ScreenshotSelectionExportUiServices::presentRestoredRecord(
     m_restoringIds[record.id].window = window;
     trackSourceWindow(window, config.sourceIdentity);
     const bool presented = presentPinnedWindowAndSynchronize(
-        m_windowPool.get(), window, config, m_showMainWindowRequested,
+        m_windowPool.get(), window, config, m_showMainWindowRequested, m_imageSplittingRequested,
         [this, lifetime, id = record.id, generation, windowGuard, repositoryGuard](bool success,
                                                                                    QImage) {
             if (lifetime.isNull())

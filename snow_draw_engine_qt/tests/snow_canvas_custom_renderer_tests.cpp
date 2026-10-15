@@ -3,6 +3,7 @@
 #include "snow_draw_engine_qt/snow_canvas_widget.h"
 #include "snow_canvas_display_item.h"
 #include "snow_canvas_input_adapter.h"
+#include "snow_canvas_cursor_controller.h"
 #include "snow_canvas_render_geometry.h"
 #include "snow_canvas_renderer.h"
 #include "snow_canvas_fill_render.h"
@@ -20,6 +21,7 @@
 #include <QCursor>
 #include <QFontDatabase>
 #include <QImage>
+#include <QEvent>
 #include <QEventLoop>
 #include <QTimer>
 #include <QThread>
@@ -52,6 +54,138 @@ void requireNear(qreal actual, qreal expected, const char* message) {
         std::cerr << message << ": expected " << expected << ", got " << actual << '\n';
         std::exit(1);
     }
+}
+
+QCursor factoryTestCursor(qreal devicePixelRatio, const QColor& color) {
+    const int physicalSize = static_cast<int>(std::ceil(9.0 * devicePixelRatio));
+    QPixmap pixmap(physicalSize, physicalSize);
+    pixmap.setDevicePixelRatio(devicePixelRatio);
+    pixmap.fill(color);
+    return QCursor(pixmap, 4, 4);
+}
+
+class CursorChangeWidget final : public QWidget {
+  public:
+    explicit CursorChangeWidget(QWidget* parent = nullptr) : QWidget(parent) {}
+    int cursorChanges = 0;
+
+  protected:
+    bool event(QEvent* event) override {
+        if (event->type() == QEvent::CursorChange) {
+            ++cursorChanges;
+        }
+        return QWidget::event(event);
+    }
+};
+
+void customCrosshairFactoryPreservesLayersAndLifecycle() {
+    SnowCanvasWidget canvas;
+    require(canvas.setCanvasTool(SnowCanvasTool::Shape), "activate the default crosshair tool");
+    require(canvas.cursor().shape() == Qt::CrossCursor,
+            "standalone canvases must retain the platform crosshair");
+
+    int factoryCalls = 0;
+    canvas.setCrosshairCursorFactory([&](qreal dpr) {
+        ++factoryCalls;
+        requireNear(dpr, canvas.devicePixelRatioF(), "factory must receive the canvas scale");
+        return factoryTestCursor(dpr, Qt::white);
+    });
+    const QCursor crosshair = canvas.cursor();
+    require(factoryCalls == 1 && crosshair.shape() == Qt::BitmapCursor &&
+                crosshair.hotSpot() == QPoint(4, 4),
+            "installing a factory must immediately replace an active engine crosshair");
+
+    canvas.setCursorForLayer(SnowCanvasCursorLayer::Host, QCursor(Qt::CrossCursor));
+    canvas.setCursorForLayer(SnowCanvasCursorLayer::CanvasTool, QCursor(Qt::IBeamCursor));
+    require(canvas.cursor() == crosshair && factoryCalls == 1,
+            "host crosshairs must override tool updates using the cached custom cursor");
+    canvas.clearCursorForLayer(SnowCanvasCursorLayer::Host);
+    require(canvas.cursor().shape() == Qt::IBeamCursor && factoryCalls == 1,
+            "clearing the host layer must restore the tool cursor without consulting the factory");
+    canvas.setCursorForLayer(SnowCanvasCursorLayer::Host, QCursor(Qt::ArrowCursor));
+    canvas.setCursorForLayer(SnowCanvasCursorLayer::CanvasTool, QCursor(Qt::CrossCursor));
+    require(canvas.cursor().shape() == Qt::ArrowCursor && factoryCalls == 1,
+            "non-crosshair host cursors must retain priority and their platform shape");
+    canvas.clearCursorForLayer(SnowCanvasCursorLayer::Host);
+    require(canvas.cursor() == crosshair && factoryCalls == 1,
+            "revealing a tool crosshair must reuse the same custom cursor");
+
+    int replacementCalls = 0;
+    canvas.setCrosshairCursorFactory([&](qreal dpr) {
+        ++replacementCalls;
+        return factoryTestCursor(dpr, Qt::black);
+    });
+    require(replacementCalls == 1 && canvas.cursor().shape() == Qt::BitmapCursor &&
+                canvas.cursor().pixmap().toImage().pixelColor(0, 0) == QColor(Qt::black),
+            "replacing the factory must invalidate the old pixels and refresh immediately");
+    canvas.setCrosshairCursorFactory({});
+    require(canvas.cursor().shape() == Qt::CrossCursor,
+            "clearing the factory must restore the semantic platform crosshair");
+}
+
+void customCrosshairFactoryRefreshesHostDisplayScaleWithoutCursorChurn() {
+    QWidget parent;
+    parent.setCursor(Qt::IBeamCursor);
+    CursorChangeWidget widget(&parent);
+    require(widget.cursor().shape() == Qt::IBeamCursor && !widget.testAttribute(Qt::WA_SetCursor),
+            "the child fixture must initially inherit its parent's non-arrow cursor");
+    SnowCanvasCursorController controller(widget);
+    int factoryCalls = 0;
+    qreal lastScale = 0.0;
+    controller.setCrosshairCursorFactory([&](qreal dpr) {
+        ++factoryCalls;
+        lastScale = dpr;
+        return factoryTestCursor(dpr, Qt::white);
+    });
+    require(factoryCalls == 0, "installing a factory without a crosshair must remain lazy");
+    controller.setCursor(SnowCanvasCursorLayer::Host, QCursor(Qt::CrossCursor));
+    const QCursor initial = widget.cursor();
+    const int initialChanges = widget.cursorChanges;
+    controller.setCursor(SnowCanvasCursorLayer::Host, QCursor(Qt::CrossCursor));
+    controller.setCursor(SnowCanvasCursorLayer::CanvasTool, QCursor(Qt::ArrowCursor));
+    controller.refreshDevicePixelRatio(widget.devicePixelRatioF());
+    require(factoryCalls == 1 && widget.cursor() == initial &&
+                widget.cursorChanges == initialChanges,
+            "repeated layer and scale updates must not recreate or reapply the custom cursor");
+
+    for (const qreal dpr : {1.0, 1.5, 2.0}) {
+        const int previousCalls = factoryCalls;
+        const int expectedCalls = previousCalls + (lastScale != dpr ? 1 : 0);
+        controller.refreshDevicePixelRatio(dpr);
+        require(factoryCalls == expectedCalls && lastScale == dpr,
+                "a host-only crosshair must regenerate at the new display scale");
+        requireNear(widget.cursor().pixmap().devicePixelRatio(), dpr,
+                    "custom crosshair pixels must retain the new scale");
+        const int physicalSize = static_cast<int>(std::ceil(9.0 * dpr));
+        require(widget.cursor().pixmap().size() == QSize(physicalSize, physicalSize) &&
+                    widget.cursor().hotSpot() == QPoint(4, 4),
+                "DPI refresh must update physical dimensions and preserve the logical hotspot");
+        const int changes = widget.cursorChanges;
+        controller.refreshDevicePixelRatio(dpr);
+        require(factoryCalls == expectedCalls && widget.cursorChanges == changes,
+                "refreshing an unchanged DPI must not switch native cursor sprites");
+    }
+
+    controller.clearCursor(SnowCanvasCursorLayer::Host);
+    require(widget.cursor().shape() == Qt::ArrowCursor,
+            "clearing a scaled host crosshair must restore its non-crosshair tool cursor");
+    const int previousCalls = factoryCalls;
+    controller.refreshDevicePixelRatio(2.0);
+    require(factoryCalls == previousCalls && widget.cursor().shape() == Qt::ArrowCursor,
+            "DPI refresh must preserve non-crosshair cursors without consulting the factory");
+    controller.clearCursor(SnowCanvasCursorLayer::CanvasTool);
+    // QWidget::unsetCursor clears WA_SetCursor only for children; top-level windows retain it.
+    require(widget.cursor().shape() == Qt::IBeamCursor && !widget.testAttribute(Qt::WA_SetCursor),
+            "clearing both layers must release the child's cursor and restore inheritance");
+    parent.setCursor(Qt::WaitCursor);
+    require(widget.cursor().shape() == Qt::WaitCursor,
+            "a released child must follow later changes to its parent's cursor");
+    controller.setEngineCursor(SNOW_CURSOR_STYLE_CROSSHAIR);
+    controller.refreshDevicePixelRatio(2.0);
+    require(widget.cursor().shape() == Qt::BitmapCursor,
+            "engine crosshairs must still use the custom factory during DPI refresh");
+    requireNear(widget.cursor().pixmap().devicePixelRatio(), 2.0,
+                "engine crosshair refresh must use the requested display scale");
 }
 
 class RecordingRenderer final : public SnowCanvasCustomRenderer {
@@ -1414,6 +1548,11 @@ void rotationHandleCursorMatchesTheReferencePlatformBehavior() {
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+    if (application.arguments().contains(QStringLiteral("--crosshair-factory-only"))) {
+        customCrosshairFactoryPreservesLayersAndLifecycle();
+        customCrosshairFactoryRefreshesHostDisplayScaleWithoutCursorChurn();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--background-coverage-only"))) {
         opaqueCustomBackgroundSkipsOnlyRedundantCanvasClearing();
         return 0;
@@ -1456,6 +1595,8 @@ int main(int argc, char** argv) {
     brushEraserCreationStylesPreserveInteractionAndPeers();
     backgroundEraserGesturesRestorePixelsAndHistory();
     strokeCursorsUseNativeBitmapsAndRefreshWithStyle();
+    customCrosshairFactoryPreservesLayersAndLifecycle();
+    customCrosshairFactoryRefreshesHostDisplayScaleWithoutCursorChurn();
     filterCreationStylesPreserveWidgetInteraction();
     filterCreationStylesPreservePeerTextDraft();
     rotationHandleCursorMatchesTheReferencePlatformBehavior();

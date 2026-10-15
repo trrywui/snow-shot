@@ -33,10 +33,12 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
+#include <QEvent>
 #include <QDir>
 #include <QDebug>
 #include <QFileInfo>
 #include <QMimeData>
+#include <QPalette>
 #include <QTimer>
 #include <QUrl>
 #include <QUuid>
@@ -55,6 +57,7 @@ std::optional<SkinSurface> skinSurfaceForFilePath(SettingsFilePathBinding bindin
     case SettingsFilePathBinding::TrayMenuSkinPath:
         return SkinSurface::TrayMenu;
     case SettingsFilePathBinding::TrayCustomIcon:
+    case SettingsFilePathBinding::TrayDarkCustomIcon:
         return std::nullopt;
     }
     return std::nullopt;
@@ -272,14 +275,7 @@ BuiltInSettingsBackend::BuiltInSettingsBackend(
     if (m_mouseManager)
         connect(m_mouseManager, &GlobalMouseManager::permissionStateChanged, this,
                 &SettingsBackend::globalMousePermissionChanged);
-    auto& themeManager = styles::ThemeManager::instance();
-    connect(&themeManager, &styles::ThemeManager::themeModeChanged, this,
-            [this](styles::ThemeMode) { emit synchronized(); });
-
-    connect(&themeManager, &styles::ThemeManager::appFontFamilyChanged, this,
-            [this](const QString&) { emit synchronized(); });
-    connect(&themeManager, &styles::ThemeManager::appFontSizePercentageChanged, this,
-            [this](int) { emit synchronized(); });
+    observeAppearanceChanges();
 
     auto& languageManager = LanguageManager::instance();
     connect(&languageManager, &LanguageManager::languageChanged, this,
@@ -322,6 +318,26 @@ BuiltInSettingsBackend::BuiltInSettingsBackend(
                 emit synchronized();
             });
     connectSkinControllerIfNeeded();
+}
+
+void BuiltInSettingsBackend::observeAppearanceChanges() {
+    auto& themeManager = styles::ThemeManager::instance();
+    connect(&themeManager, &styles::ThemeManager::themeModeChanged, this,
+            &SettingsBackend::synchronized);
+    connect(&themeManager, &styles::ThemeManager::appFontFamilyChanged, this,
+            &SettingsBackend::synchronized);
+    connect(&themeManager, &styles::ThemeManager::appFontSizePercentageChanged, this,
+            &SettingsBackend::synchronized);
+    qApp->installEventFilter(this);
+}
+
+bool BuiltInSettingsBackend::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == qApp && event->type() == QEvent::ApplicationPaletteChange) {
+        // FollowSystem changes the resolved palette without changing the selected theme mode.
+        // The runtime session coalesces notifications before reading the final palette.
+        emit synchronized();
+    }
+    return SettingsBackend::eventFilter(watched, event);
 }
 
 platform::windows::AdministratorResult BuiltInSettingsBackend::applyStartupSettings(bool enabled,
@@ -423,7 +439,8 @@ QVariant BuiltInSettingsBackend::selectValue(SettingsSelectBinding binding) cons
                           ? translation::defaultTranslationTargetLanguage(
                                 LanguageManager::instance().currentLocale())
                           : config.targetLanguage,
-                      config.modelId, config.secondaryTargetLanguage};
+                      config.modelId, config.secondaryTargetLanguage,
+                      config.languageDetectionConfidenceThreshold};
         if (binding == SettingsSelectBinding::TranslationSourceLanguage)
             return preferences.sourceLanguage;
         if (binding == SettingsSelectBinding::TranslationPrimaryTargetLanguage)
@@ -447,6 +464,8 @@ QVariant BuiltInSettingsBackend::selectValue(SettingsSelectBinding binding) cons
 #else
         return {};
 #endif
+    case SettingsSelectBinding::PinTextFont:
+        return storage::PinToScreenSettings().textFontFamily();
     case SettingsSelectBinding::AppFont:
         return styles::ThemeManager::instance().appFontFamily();
     case SettingsSelectBinding::Theme:
@@ -594,9 +613,10 @@ BuiltInSettingsBackend::dynamicSelectOptions(SettingsSelectBinding binding) cons
         return result;
     }
 #endif
-    if (binding == SettingsSelectBinding::AppFont) {
+    if (binding == SettingsSelectBinding::AppFont ||
+        binding == SettingsSelectBinding::PinTextFont) {
         QStringList families = applicationFontFamilies();
-        const QString saved = styles::ThemeManager::instance().appFontFamily();
+        const QString saved = selectValue(binding).toString();
         if (!saved.isEmpty() && !families.contains(saved)) {
             families.append(saved);
             families.sort(Qt::CaseInsensitive);
@@ -666,6 +686,8 @@ bool BuiltInSettingsBackend::applySelectValue(SettingsSelectBinding binding,
 #else
         return false;
 #endif
+    case SettingsSelectBinding::PinTextFont:
+        return storage::PinToScreenSettings().setTextFontFamily(value.toString());
     case SettingsSelectBinding::AppFont:
         return styles::ThemeManager::instance().setAppFontFamily(value.toString());
     case SettingsSelectBinding::Theme: {
@@ -950,6 +972,8 @@ bool BuiltInSettingsBackend::switchValue(SettingsSwitchBinding binding) const {
         return storage::RecordingSettings().loopAnimatedImages();
     case SettingsSwitchBinding::ScreenRecordingCaptureToolbar:
         return storage::RecordingSettings().captureToolbarInRecording();
+    case SettingsSwitchBinding::ScreenRecordingAutoHideToolbar:
+        return storage::RecordingSettings().autoHideToolbar();
     case SettingsSwitchBinding::ScreenRecordingAutoExitAfterRecordingEnds:
         return storage::RecordingSettings().autoExitAfterRecordingEnds();
     case SettingsSwitchBinding::ScreenRecordingNotifyAfterExportCompletes:
@@ -1207,6 +1231,9 @@ bool BuiltInSettingsBackend::applySwitchValue(SettingsSwitchBinding binding, boo
     if (binding == SettingsSwitchBinding::ScreenRecordingCaptureToolbar) {
         return storage::RecordingSettings().setCaptureToolbarInRecording(value);
     }
+    if (binding == SettingsSwitchBinding::ScreenRecordingAutoHideToolbar) {
+        return storage::RecordingSettings().setAutoHideToolbar(value);
+    }
     if (binding == SettingsSwitchBinding::ScreenRecordingAutoExitAfterRecordingEnds) {
         return storage::RecordingSettings().setAutoExitAfterRecordingEnds(value);
     }
@@ -1300,6 +1327,7 @@ bool BuiltInSettingsBackend::applySwitchValue(SettingsSwitchBinding binding, boo
     case SettingsSwitchBinding::SeparateRecordingAudioTracks:
     case SettingsSwitchBinding::LoopAnimatedImages:
     case SettingsSwitchBinding::ScreenRecordingCaptureToolbar:
+    case SettingsSwitchBinding::ScreenRecordingAutoHideToolbar:
     case SettingsSwitchBinding::ScreenRecordingAutoExitAfterRecordingEnds:
     case SettingsSwitchBinding::ScreenRecordingNotifyAfterExportCompletes:
     case SettingsSwitchBinding::ScreenRecordingDeleteFilesOnRecordingClose:
@@ -1318,6 +1346,10 @@ int BuiltInSettingsBackend::integerValue(SettingsIntegerBinding binding) const {
     const storage::CaptureHistoryPolicy policy =
         storage::ApplicationStorage::instance().captureHistoryPolicy();
     switch (binding) {
+    case SettingsIntegerBinding::PinTextMaximumWidth:
+        return storage::PinToScreenSettings().textMaximumWidth();
+    case SettingsIntegerBinding::PinTextFontSize:
+        return storage::PinToScreenSettings().textFontSize();
     case SettingsIntegerBinding::HistoryRetentionDays:
         return policy.retentionDays;
     case SettingsIntegerBinding::PinnedHistoryRetentionDays:
@@ -1332,6 +1364,16 @@ int BuiltInSettingsBackend::integerValue(SettingsIntegerBinding binding) const {
         return storage::ApplicationStorage::instance().pinnedWindowPolicy().maxDiskMiB;
     case SettingsIntegerBinding::ScreenshotDelaySeconds:
         return storage::ScreenshotSettings().delaySeconds();
+    case SettingsIntegerBinding::TranslationLanguageDetectionConfidenceThreshold:
+#if SNOW_SHOT_ENABLE_TEXT_TRANSLATION
+        return m_translationService != nullptr
+                   ? m_translationService->preferences().languageDetectionConfidenceThreshold
+                   : storage::ScreenshotTranslationSettings()
+                         .configuration()
+                         .languageDetectionConfidenceThreshold;
+#else
+        return 0;
+#endif
     }
     return 0;
 }
@@ -1339,6 +1381,32 @@ int BuiltInSettingsBackend::integerValue(SettingsIntegerBinding binding) const {
 bool BuiltInSettingsBackend::applyIntegerValue(SettingsIntegerBinding binding, int value) {
     auto policy = storage::ApplicationStorage::instance().captureHistoryPolicy();
     switch (binding) {
+    case SettingsIntegerBinding::PinTextMaximumWidth:
+    case SettingsIntegerBinding::PinTextFontSize: {
+        const auto* field = builtInSettingsRegistry().fieldForInteger(binding);
+        const auto* schema =
+            field ? storage::ConfigurationSchema::entry(field->configurationKey) : nullptr;
+        if (!schema || !schema->integerRange || value < schema->integerRange->minimum ||
+            value > schema->integerRange->maximum)
+            return false;
+        const storage::PinToScreenSettings settings;
+        return binding == SettingsIntegerBinding::PinTextMaximumWidth
+                   ? settings.setTextMaximumWidth(value)
+                   : settings.setTextFontSize(value);
+    }
+    case SettingsIntegerBinding::TranslationLanguageDetectionConfidenceThreshold:
+#if SNOW_SHOT_ENABLE_TEXT_TRANSLATION
+        if (m_translationService != nullptr) {
+            auto preferences = m_translationService->preferences();
+            preferences.languageDetectionConfidenceThreshold = value;
+            return m_translationService->savePreferences(preferences);
+        }
+        return storage::ApplicationStorage::instance().configuration().setValue(
+            QStringLiteral("screenshot_translation/language_detection_confidence_threshold"),
+            value);
+#else
+        return false;
+#endif
     case SettingsIntegerBinding::HistoryRetentionDays:
         policy.retentionDays = value;
         break;
@@ -1488,6 +1556,14 @@ bool BuiltInSettingsBackend::applyColorPaletteValue(SettingsColorPaletteBinding 
 QColor BuiltInSettingsBackend::colorValue(SettingsColorBinding binding) const {
     const storage::ScreenshotUiSettings screenshot;
     switch (binding) {
+    case SettingsColorBinding::PinTextColor: {
+        const QColor color = storage::PinToScreenSettings().textColor();
+        return color.isValid() ? color : QApplication::palette().color(QPalette::Text);
+    }
+    case SettingsColorBinding::PinTextBackgroundColor: {
+        const QColor color = storage::PinToScreenSettings().textBackgroundColor();
+        return color.isValid() ? color : QApplication::palette().color(QPalette::Base);
+    }
     case SettingsColorBinding::ThemePrimaryColor:
         return storage::InterfaceSettings().themePrimaryColor();
     case SettingsColorBinding::SelectionBorderColor:
@@ -1521,6 +1597,10 @@ QColor BuiltInSettingsBackend::colorValue(SettingsColorBinding binding) const {
 bool BuiltInSettingsBackend::applyColorValue(SettingsColorBinding binding, const QColor& value) {
     const storage::ScreenshotUiSettings screenshot;
     switch (binding) {
+    case SettingsColorBinding::PinTextColor:
+        return storage::PinToScreenSettings().setTextColor(value);
+    case SettingsColorBinding::PinTextBackgroundColor:
+        return storage::PinToScreenSettings().setTextBackgroundColor(value);
     case SettingsColorBinding::ThemePrimaryColor:
         return styles::ThemeManager::instance().setThemePrimaryColor(value);
     case SettingsColorBinding::SelectionBorderColor:
@@ -1555,6 +1635,8 @@ QVariant BuiltInSettingsBackend::radioValue(SettingsRadioBinding binding) const 
     switch (binding) {
     case SettingsRadioBinding::TrayIcon:
         return storage::TraySettings().icon();
+    case SettingsRadioBinding::TrayDarkIcon:
+        return storage::TraySettings().darkIcon();
     }
     return {};
 }
@@ -1563,6 +1645,8 @@ bool BuiltInSettingsBackend::applyRadioValue(SettingsRadioBinding binding, const
     switch (binding) {
     case SettingsRadioBinding::TrayIcon:
         return storage::TraySettings().setIcon(value.toString());
+    case SettingsRadioBinding::TrayDarkIcon:
+        return storage::TraySettings().setDarkIcon(value.toString());
     }
     return false;
 }
@@ -1577,6 +1661,8 @@ QString BuiltInSettingsBackend::filePathValue(SettingsFilePathBinding binding) c
         return storage::InterfaceSettings().trayMenuSkinPath();
     case SettingsFilePathBinding::TrayCustomIcon:
         return storage::TraySettings().customIcon();
+    case SettingsFilePathBinding::TrayDarkCustomIcon:
+        return storage::TraySettings().darkCustomIcon();
     }
     return {};
 }
@@ -1599,6 +1685,8 @@ bool BuiltInSettingsBackend::applyFilePathValue(SettingsFilePathBinding binding,
         break;
     case SettingsFilePathBinding::TrayCustomIcon:
         return storage::TraySettings().setCustomIcon(value);
+    case SettingsFilePathBinding::TrayDarkCustomIcon:
+        return storage::TraySettings().setDarkCustomIcon(value);
     }
     if (accepted && changed && receiver && !value.isEmpty()) {
         // An explicit file edit validates even while rendering is disabled.
@@ -2338,6 +2426,8 @@ bool BuiltInSettingsBackend::resetSection(SettingsSectionReset reset) {
                       QStringLiteral("global_shortcuts/open_capture_history"));
         resetShortcut(GlobalShortcutAction::GlobalCanvas,
                       QStringLiteral("global_shortcuts/global_canvas"));
+        resetShortcut(GlobalShortcutAction::StitchSelectedImages,
+                      QStringLiteral("global_shortcuts/stitch_selected_images"));
         resetShortcut(GlobalShortcutAction::TranslateSelectedText,
                       QStringLiteral("global_shortcuts/translate_selected_text"));
         resetShortcut(GlobalShortcutAction::ToggleGlobalHotkeys,
@@ -2563,6 +2653,9 @@ bool BuiltInSettingsBackend::resetSection(SettingsSectionReset reset) {
              storage::ConfigurationSchema::defaultValue(
                  QStringLiteral("drawing/always_show_first_toolbar_group_button"))},
         });
+    case SettingsSectionReset::PinTextStyle:
+        return storage::ApplicationStorage::instance().configuration().setValues(
+            sectionDefaults(reset));
     case SettingsSectionReset::PinToScreen:
         return storage::ApplicationStorage::instance().configuration().setValues({
             {QStringLiteral("pin_to_screen/show_border_by_default"),
@@ -2635,6 +2728,9 @@ bool BuiltInSettingsBackend::resetSection(SettingsSectionReset reset) {
             {QStringLiteral("screenshot_translation/secondary_target_language"),
              storage::ConfigurationSchema::defaultValue(
                  QStringLiteral("screenshot_translation/secondary_target_language"))},
+            {QStringLiteral("screenshot_translation/language_detection_confidence_threshold"),
+             storage::ConfigurationSchema::defaultValue(
+                 QStringLiteral("screenshot_translation/language_detection_confidence_threshold"))},
             {QStringLiteral("screenshot_translation/model"),
              storage::ConfigurationSchema::defaultValue(
                  QStringLiteral("screenshot_translation/model"))},
@@ -2671,6 +2767,10 @@ bool BuiltInSettingsBackend::resetSection(SettingsSectionReset reset) {
              storage::ConfigurationSchema::defaultValue(QStringLiteral("tray/icon"))},
             {QStringLiteral("tray/custom_icon"),
              storage::ConfigurationSchema::defaultValue(QStringLiteral("tray/custom_icon"))},
+            {QStringLiteral("tray/dark_icon"),
+             storage::ConfigurationSchema::defaultValue(QStringLiteral("tray/dark_icon"))},
+            {QStringLiteral("tray/dark_custom_icon"),
+             storage::ConfigurationSchema::defaultValue(QStringLiteral("tray/dark_custom_icon"))},
             {QStringLiteral("tray/left_click_action"),
              storage::ConfigurationSchema::defaultValue(QStringLiteral("tray/left_click_action"))},
             {QStringLiteral("tray/middle_click_action"),
@@ -2754,6 +2854,9 @@ bool BuiltInSettingsBackend::resetSection(SettingsSectionReset reset) {
             {QStringLiteral("screen_recording/mouse_highlight_color"),
              storage::ConfigurationSchema::defaultValue(
                  QStringLiteral("screen_recording/mouse_highlight_color"))},
+            {QStringLiteral("screen_recording/mouse_highlight_radius"),
+             storage::ConfigurationSchema::defaultValue(
+                 QStringLiteral("screen_recording/mouse_highlight_radius"))},
             {QStringLiteral("screen_recording/show_cursor"),
              storage::ConfigurationSchema::defaultValue(
                  QStringLiteral("screen_recording/show_cursor"))},
@@ -2778,6 +2881,9 @@ bool BuiltInSettingsBackend::resetSection(SettingsSectionReset reset) {
         });
     case SettingsSectionReset::ScreenRecordingInteraction:
         return storage::ApplicationStorage::instance().configuration().setValues({
+            {QStringLiteral("screen_recording/auto_hide_toolbar"),
+             storage::ConfigurationSchema::defaultValue(
+                 QStringLiteral("screen_recording/auto_hide_toolbar"))},
             {QStringLiteral("screen_recording/auto_exit_after_recording_ends"),
              storage::ConfigurationSchema::defaultValue(
                  QStringLiteral("screen_recording/auto_exit_after_recording_ends"))},

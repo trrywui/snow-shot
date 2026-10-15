@@ -279,6 +279,7 @@ struct ScreenRecordingController::Impl {
         mouseHighlightEnabled = settings.mouseHighlightEnabled();
         recordMouseClicks = settings.recordMouseClicks();
         mouseHighlightColor = settings.mouseHighlightColor();
+        mouseHighlightRadius = settings.mouseHighlightRadius();
         showCursor = settings.showCursor();
         showKeyboard = settings.showKeyboard();
         startDelaySeconds = settings.startDelaySeconds();
@@ -493,6 +494,12 @@ struct ScreenRecordingController::Impl {
         toolbarWindow = uiSession->toolbar.get();
         // Keep the toolbar above the area even when drawing or resizing activates the area.
         toolbarWindow->setTransientOwnerWindow(areaWindow);
+        toolbarWindow->setAutoHideControlOwner(areaWindow);
+        toolbarWindow->setAutoHideControlShowGuard(
+            [this](QWidget* surface) { return guardToolbarSurface(surface); });
+        QObject::connect(toolbarWindow, &ScreenRecordingToolbarWindow::autoHideControlRequested,
+                         uiSession->connections.get(),
+                         [this](QWidget*) { toolbarExclusions.retry(); });
         areaWindow->setAttribute(Qt::WA_DeleteOnClose, false);
         toolbarWindow->setAttribute(Qt::WA_DeleteOnClose, false);
         areaWindow->setRecordingRegion(region);
@@ -526,7 +533,7 @@ struct ScreenRecordingController::Impl {
 
     bool isOpen() const {
         return areaWindow != nullptr && toolbarWindow != nullptr &&
-               (areaWindow->isVisible() || toolbarWindow->isVisible());
+               (areaWindow->isVisible() || toolbarWindow->recordingUiPresented());
     }
 
     template <typename T> void setOption(T& option, const T& value) {
@@ -555,8 +562,10 @@ struct ScreenRecordingController::Impl {
                     auto* modal = snow_shot::presentation::createScreenRecordingSettingsDialog(
                         areaWindow, uiSession);
                     uiSession->settingsModal = modal;
+                    toolbarWindow->setAutoHideBlocked(modal, true);
                     QObject::connect(modal, &adqt::widgets::AdModal::finished,
-                                     uiSession->connections.get(), [this] {
+                                     uiSession->connections.get(), [this, modal] {
+                                         toolbarWindow->setAutoHideBlocked(modal, false);
                                          uiSession->settingsModal = nullptr;
                                          syncPreview();
                                      });
@@ -758,6 +767,12 @@ struct ScreenRecordingController::Impl {
                              snow_shot::storage::RecordingSettings().setMouseHighlightColor(value);
                              syncPreview();
                          });
+        QObject::connect(palette, &ScreenshotToolPalette::recordingMouseHighlightRadiusChanged,
+                         uiSession->connections.get(), [this](int value) {
+                             setOption(mouseHighlightRadius, value);
+                             snow_shot::storage::RecordingSettings().setMouseHighlightRadius(value);
+                             syncPreview();
+                         });
         QObject::connect(palette, &ScreenshotToolPalette::recordingCursorVisibleChanged,
                          uiSession->connections.get(), [this](bool visible) {
                              setOption(showCursor, visible);
@@ -922,6 +937,7 @@ struct ScreenRecordingController::Impl {
             mouseHighlightEnabled = settings.mouseHighlightEnabled();
             recordMouseClicks = settings.recordMouseClicks();
             mouseHighlightColor = settings.mouseHighlightColor();
+            mouseHighlightRadius = settings.mouseHighlightRadius();
             showCursor = settings.showCursor();
             showKeyboard = settings.showKeyboard();
             startDelaySeconds = settings.startDelaySeconds();
@@ -1109,6 +1125,7 @@ struct ScreenRecordingController::Impl {
                         : SNOW_CAPTURE_RECORDING_AUDIO_MIXED),
                 systemAudioGainDb,
                 microphoneGainDb,
+                static_cast<uint32_t>(mouseHighlightRadius),
             };
             sessionLoopAnimatedImages = config.loop_animated_images != 0;
             const QString baseName =
@@ -1252,6 +1269,8 @@ struct ScreenRecordingController::Impl {
         durationTimer.start();
         if (toolbarSurfaceGuard)
             toolbarSurfaceGuard->refresh();
+        if (toolbarWindow)
+            toolbarWindow->refreshAutoHideControl();
         report(QStringLiteral("recording.started"));
     }
 
@@ -1567,8 +1586,11 @@ struct ScreenRecordingController::Impl {
             trimSession = nullptr;
         }
         stopAudioMeter();
-        if (toolbarWindow)
+        if (toolbarWindow) {
+            toolbarWindow->dismissAutoHide();
+            toolbarWindow->setAutoHideControlShowGuard({});
             toolbarWindow->palette()->closeRecordingAudioGainPopovers();
+        }
         cancelPendingStart();
         if (uiSession == nullptr) {
             restoreToolbarCaptureVisibility();
@@ -1599,10 +1621,19 @@ struct ScreenRecordingController::Impl {
     }
 
     bool excludeToolbarFromCapture() {
+        // Reveal an already-collapsed control before changing capture policy.
+        // Restoration also refreshes pending transitions, so inhibit auto-hide
+        // until both retained windows have their new exclusion policy applied.
+        QObject policyTransition;
+        if (toolbarWindow)
+            toolbarWindow->setAutoHideBlocked(&policyTransition, true);
         restoreToolbarCaptureVisibility();
         toolbarPopupsExcluded = true;
         const bool excluded = captureExclusion.exclude(toolbarWindow);
         if (toolbarWindow) {
+            // Create the retained native surface before collecting the capture
+            // configuration, even when auto-hide is currently disabled.
+            static_cast<void>(captureExclusion.exclude(toolbarWindow->autoHideControlWindow()));
             toolbarSurfaceGuard = std::make_unique<adqt::widgets::AdPopupSurfaceGuard>(
                 toolbarWindow, [this](QWidget* surface) { return guardToolbarSurface(surface); });
             QObject::connect(toolbarSurfaceGuard.get(),
@@ -1621,6 +1652,8 @@ struct ScreenRecordingController::Impl {
         toolbarExclusions = {};
         captureExclusion.restore();
         toolbarSurfaceGuard.reset();
+        if (toolbarWindow)
+            toolbarWindow->refreshAutoHideControl();
     }
 
     QJsonObject currentAutomationOptions() const {
@@ -1647,6 +1680,7 @@ struct ScreenRecordingController::Impl {
             {QStringLiteral("mouse_trail"), mouseTrailColor.name(QColor::HexArgb)},
             {QStringLiteral("mouse_click"), mouseClickColor.name(QColor::HexArgb)},
             {QStringLiteral("mouse_highlight_color"), mouseHighlightColor.name(QColor::HexArgb)},
+            {QStringLiteral("mouse_highlight_radius"), mouseHighlightRadius},
             {QStringLiteral("keyboard_background"), keyboardBackgroundColor.name(QColor::HexArgb)},
             {QStringLiteral("keyboard_foreground"), keyboardForegroundColor.name(QColor::HexArgb)}};
     }
@@ -1881,6 +1915,8 @@ struct ScreenRecordingController::Impl {
         // failed request was in flight. Unchanged failed snapshots stay blocked.
         if (toolbarSurfaceGuard)
             toolbarSurfaceGuard->refresh();
+        if (toolbarWindow)
+            toolbarWindow->refreshAutoHideControl();
 #endif
     }
 
@@ -1963,7 +1999,7 @@ struct ScreenRecordingController::Impl {
             mouseTrailColor, mouseClickColor, showKeyboard, mouseTrailDurationMs,
             keyboardBackgroundColor, keyboardForegroundColor, keyboardSize,
             mouseHighlightEnabled && showCursor ? mouseHighlightColor : QColor(0, 0, 0, 0),
-            recordMouseClicks);
+            recordMouseClicks, mouseHighlightRadius);
         uiSession->preview->setEligible(true);
     }
 
@@ -2002,6 +2038,7 @@ struct ScreenRecordingController::Impl {
             palette->setRecordingMouseHighlightEnabled(mouseHighlightEnabled);
             palette->setRecordingRecordMouseClicks(recordMouseClicks);
             palette->setRecordingMouseHighlightColor(mouseHighlightColor);
+            palette->setRecordingMouseHighlightRadius(mouseHighlightRadius);
             palette->setRecordingStartDelaySeconds(startDelaySeconds);
             palette->setRecordingCursorVisible(showCursor);
             palette->setRecordingKeyboardVisible(showKeyboard);
@@ -2115,6 +2152,7 @@ struct ScreenRecordingController::Impl {
     bool mouseHighlightEnabled = false;
     bool recordMouseClicks = false;
     QColor mouseHighlightColor{255, 255, 0, 128};
+    int mouseHighlightRadius = 41;
     bool showCursor = true;
     bool showKeyboard = false;
     DirectRecordingSettings sessionOutputSettings;
@@ -2306,7 +2344,8 @@ bool ScreenRecordingController::startAutomation(const QRect& region, const QJson
         {QStringLiteral("quality"), {0, 100}},
         {QStringLiteral("animated_frame_rate"), {1, 24}},
         {QStringLiteral("mouse_trail_duration_ms"), {100, 2000}},
-        {QStringLiteral("keyboard_size"), {32, 128}}};
+        {QStringLiteral("keyboard_size"), {32, 128}},
+        {QStringLiteral("mouse_highlight_radius"), {8, 128}}};
     for (auto it = options.begin(); it != options.end(); ++it) {
         if (enums.contains(it.key())) {
             if (!it->isString() || !enums.value(it.key()).contains(it->toString()))
@@ -2378,6 +2417,8 @@ bool ScreenRecordingController::startAutomation(const QRect& region, const QJson
     s.mouseTrailColor = color("mouse_trail", settings.mouseTrailColor());
     s.mouseClickColor = color("mouse_click", settings.mouseClickColor());
     s.mouseHighlightColor = color("mouse_highlight_color", settings.mouseHighlightColor());
+    s.mouseHighlightRadius = options.value(QStringLiteral("mouse_highlight_radius"))
+                                 .toInt(settings.mouseHighlightRadius());
     s.keyboardBackgroundColor = color("keyboard_background", settings.keyboardBackgroundColor());
     s.keyboardForegroundColor = color("keyboard_foreground", settings.keyboardForegroundColor());
     if (!s.allowRecording(false))

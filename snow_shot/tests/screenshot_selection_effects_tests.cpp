@@ -5,6 +5,7 @@
 #include "snow_shot/presentation/screenshotselectioneditworkflow.h"
 #include "snow_shot/presentation/screenshotselectionmodel.h"
 #include "snow_shot/presentation/screenshotselectionsettingsstore.h"
+#include "snow_shot/storage/capturehistoryrepository.h"
 #include "snow_shot/storage/applicationstorage.h"
 
 #include <QCoreApplication>
@@ -87,7 +88,7 @@ void selectionEffectsPersistAcrossRestarts() {
             "toolbar edits must persist both effects without exporting a screenshot");
     require(settings.aspectRatioLocked(),
             "the toolbar aspect-ratio toggle must persist without exporting a screenshot");
-    require(!settings.hasPreviousSelectionParams(),
+    require(storage.captureHistory().records().isEmpty(),
             "editing effects must not create a previous selection rectangle");
 
     // Shutdown flushes the debounced writes, just as a normal application exit does.
@@ -126,7 +127,7 @@ void selectionEffectsPersistAcrossRestarts() {
             "confirmed resize parameters must persist the shadow color without exporting");
     require(settings.cornerRadius() == 32 && settings.shadowWidth() == 16,
             "confirmed resize parameters must update the persistent effects");
-    require(!settings.hasPreviousSelectionParams(),
+    require(storage.captureHistory().records().isEmpty(),
             "persisting the shadow color must not require a previous screenshot");
 
     storage.shutdown();
@@ -314,7 +315,7 @@ void selectionAspectRatioWorkflowPersistsOnlyUserPreferences() {
     require(storage.initialize(options).success, "aspect ratio preferences must reopen");
     require(settings.aspectRatioPreset() == Preset::Portrait2x3 && settings.aspectRatioLocked(),
             "a chosen preset and its lock must survive storage restart before export");
-    require(!settings.hasPreviousSelectionParams(),
+    require(storage.captureHistory().records().isEmpty(),
             "aspect ratio choices must not create a previous exported selection");
 
     workflow.openSelectionResizeModalFromToolbar();

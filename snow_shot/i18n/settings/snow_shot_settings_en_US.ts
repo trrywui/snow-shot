@@ -1361,6 +1361,10 @@
             <translation>Auto start at boot</translation>
         </message>
         <message>
+            <source>Auto-hide toolbar</source>
+            <translation>Auto-hide toolbar</translation>
+        </message>
+        <message>
             <source>Auto-recognize QR Code</source>
             <translation>Auto-recognize QR Code</translation>
         </message>
@@ -1407,6 +1411,10 @@
         <message>
             <source>Background Fill</source>
             <translation>Background Fill</translation>
+        </message>
+        <message>
+            <source>Background color</source>
+            <translation>Background color</translation>
         </message>
         <message>
             <source>Background image</source>
@@ -1601,6 +1609,10 @@
             <translation>Choose the action for middle-clicking while moving or annotating in a screenshot</translation>
         </message>
         <message>
+            <source>Choose the bundled icon used in dark theme, or reuse the regular icon settings</source>
+            <translation>Choose the bundled icon used in dark theme, or reuse the regular icon settings</translation>
+        </message>
+        <message>
             <source>Choose the bundled icon used in the system tray</source>
             <translation>Choose the bundled icon used in the system tray</translation>
         </message>
@@ -1615,6 +1627,14 @@
         <message>
             <source>Choose the compression effort used for image output and history results</source>
             <translation>Choose the compression effort used for image output and history results</translation>
+        </message>
+        <message>
+            <source>Choose the default font for newly pinned text</source>
+            <translation>Choose the default font for newly pinned text</translation>
+        </message>
+        <message>
+            <source>Choose the default font size for newly pinned text</source>
+            <translation>Choose the default font size for newly pinned text</translation>
         </message>
         <message>
             <source>Choose the dialog used for manual image saves</source>
@@ -2009,6 +2029,14 @@
             <translation>Dark</translation>
         </message>
         <message>
+            <source>Dark theme custom icon</source>
+            <translation>Dark theme custom icon</translation>
+        </message>
+        <message>
+            <source>Dark theme icon</source>
+            <translation>Dark theme icon</translation>
+        </message>
+        <message>
             <source>Data storage</source>
             <translation>Data storage</translation>
         </message>
@@ -2035,6 +2063,22 @@
         <message>
             <source>Default Punctuation</source>
             <translation>Default Punctuation</translation>
+        </message>
+        <message>
+            <source>Default text color</source>
+            <translation>Default text color</translation>
+        </message>
+        <message>
+            <source>Default text font</source>
+            <translation>Default text font</translation>
+        </message>
+        <message>
+            <source>Default text font size</source>
+            <translation>Default text font size</translation>
+        </message>
+        <message>
+            <source>Defaults for newly pinned text; source formatting is preserved</source>
+            <translation>Defaults for newly pinned text; source formatting is preserved</translation>
         </message>
         <message>
             <source>Delay %1s to execute</source>
@@ -2231,6 +2275,10 @@
         <message>
             <source>Enter an HTTP or HTTPS address. Changes apply immediately. Clear to use the default server.</source>
             <translation>Enter an HTTP or HTTPS address. Changes apply immediately. Clear to use the default server.</translation>
+        </message>
+        <message>
+            <source>Enter or browse to a PNG or ICO file for dark theme; invalid files use the selected bundled icon</source>
+            <translation>Enter or browse to a PNG or ICO file for dark theme; invalid files use the selected bundled icon</translation>
         </message>
         <message>
             <source>Enter or browse to a PNG or ICO file; invalid files use the selected bundled icon</source>
@@ -2449,6 +2497,10 @@
             <translation>Hide or show all windows in the current group</translation>
         </message>
         <message>
+            <source>Hide the toolbar near the left or right screen edge. Hover over the edge control to show it again.</source>
+            <translation>Hide the toolbar near the left or right screen edge. Hover over the edge control to show it again.</translation>
+        </message>
+        <message>
             <source>Hide to Top</source>
             <translation>Hide to Top</translation>
         </message>
@@ -2633,6 +2685,10 @@
             <translation>Language</translation>
         </message>
         <message>
+            <source>Language Detection Confidence Threshold</source>
+            <translation>Language Detection Confidence Threshold</translation>
+        </message>
+        <message>
             <source>Language, startup and updates</source>
             <translation>Language, startup and updates</translation>
         </message>
@@ -2675,6 +2731,10 @@
         <message>
             <source>Limit long side (faster)</source>
             <translation>Limit long side (faster)</translation>
+        </message>
+        <message>
+            <source>Limit the width of pinned text, including padding</source>
+            <translation>Limit the width of pinned text, including padding</translation>
         </message>
         <message>
             <source>Line</source>
@@ -2769,6 +2829,10 @@
             <translation>Maximum entries</translation>
         </message>
         <message>
+            <source>Maximum text width</source>
+            <translation>Maximum text width</translation>
+        </message>
+        <message>
             <source>Medium</source>
             <translation>Medium</translation>
         </message>
@@ -2803,6 +2867,10 @@
         <message>
             <source>Middle mouse button action</source>
             <translation>Middle mouse button action</translation>
+        </message>
+        <message>
+            <source>Minimum confidence required to switch to the secondary target language</source>
+            <translation>Minimum confidence required to switch to the secondary target language</translation>
         </message>
         <message>
             <source>Model Hot Start</source>
@@ -2877,6 +2945,10 @@
             <translation>Next screenshot history</translation>
         </message>
         <message>
+            <source>Next selection area</source>
+            <translation>Next selection area</translation>
+        </message>
+        <message>
             <source>Next selection type</source>
             <translation>Next selection type</translation>
         </message>
@@ -2923,6 +2995,10 @@
         <message>
             <source>Open</source>
             <translation>Open</translation>
+        </message>
+        <message>
+            <source>Open Image Stitching with selected image files, or an empty window if no images are selected</source>
+            <translation>Open Image Stitching with selected image files, or an empty window if no images are selected</translation>
         </message>
         <message>
             <source>Open Login Items Settings</source>
@@ -3173,6 +3249,10 @@
             <translation>Previous screenshot history</translation>
         </message>
         <message>
+            <source>Previous selection area</source>
+            <translation>Previous selection area</translation>
+        </message>
+        <message>
             <source>Previous selection type</source>
             <translation>Previous selection type</translation>
         </message>
@@ -3187,10 +3267,6 @@
         <message>
             <source>Process priority</source>
             <translation>Process priority</translation>
-        </message>
-        <message>
-            <source>Prompt-capable models use this language when the input matches the primary target language</source>
-            <translation>Prompt-capable models use this language when the input matches the primary target language</translation>
         </message>
         <message>
             <source>Proxy</source>
@@ -3621,12 +3697,12 @@
             <translation>Select child elements within a window while taking a screenshot</translation>
         </message>
         <message>
-            <source>Select image save directory</source>
-            <translation>Select image save directory</translation>
+            <source>Select dark theme tray icon</source>
+            <translation>Select dark theme tray icon</translation>
         </message>
         <message>
-            <source>Select previously selected area</source>
-            <translation>Select previously selected area</translation>
+            <source>Select image save directory</source>
+            <translation>Select image save directory</translation>
         </message>
         <message>
             <source>Select scenarios</source>
@@ -4077,6 +4153,10 @@
             <translation>Startup &amp; updates</translation>
         </message>
         <message>
+            <source>Stitch Selected Images</source>
+            <translation>Stitch Selected Images</translation>
+        </message>
+        <message>
             <source>Storage and privacy</source>
             <translation>Storage and privacy</translation>
         </message>
@@ -4143,6 +4223,10 @@
         <message>
             <source>Text Detection Processing</source>
             <translation>Text Detection Processing</translation>
+        </message>
+        <message>
+            <source>Text Style</source>
+            <translation>Text Style</translation>
         </message>
         <message>
             <source>Text background</source>
@@ -4381,8 +4465,24 @@
             <translation>Use global mouse gestures, select individual window elements, and translate selected text.</translation>
         </message>
         <message>
+            <source>Use regular icon settings</source>
+            <translation>Use regular icon settings</translation>
+        </message>
+        <message>
             <source>Use system proxy</source>
             <translation>Use system proxy</translation>
+        </message>
+        <message>
+            <source>Use the theme background until customized. Reset Text Style to restore it.</source>
+            <translation>Use the theme background until customized. Reset Text Style to restore it.</translation>
+        </message>
+        <message>
+            <source>Use the theme text color until customized. Reset Text Style to restore it.</source>
+            <translation>Use the theme text color until customized. Reset Text Style to restore it.</translation>
+        </message>
+        <message>
+            <source>Use this language when local language detection matches the primary target language at the configured confidence</source>
+            <translation>Use this language when local language detection matches the primary target language at the configured confidence</translation>
         </message>
         <message>
             <source>User initiated</source>
@@ -4483,6 +4583,10 @@
         <message>
             <source>Zip archives (*.zip);;All files (*.*)</source>
             <translation>Zip archives (*.zip);;All files (*.*)</translation>
+        </message>
+        <message>
+            <source>px</source>
+            <translation>px</translation>
         </message>
     </context>
     <context>

@@ -349,6 +349,8 @@ mod tests {
 
     fn pointer_down_at(position: Point<f64>) -> InputEvent {
         InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type: PointerEventType::Down,
             device: PointerDevice::Mouse,
@@ -361,6 +363,8 @@ mod tests {
 
     fn pointer_hover_at(position: Point<f64>) -> InputEvent {
         InputEvent::Pointer(PointerEvent {
+            pressure: None,
+            timestamp_ms: 0,
             pointer_id: 1,
             event_type: PointerEventType::Move,
             device: PointerDevice::Mouse,
@@ -646,6 +650,7 @@ mod tests {
             vec![snow_draw_engine_core::PathSegmentMode::Curve],
             false,
             snow_draw_engine_document::FreeDrawStyle {
+                brush_mode: Default::default(),
                 stroke: ColorRgba8::default(),
                 stroke_width: 2.0,
                 stroke_style: snow_draw_engine_document::StrokeStyle::Solid,
@@ -687,6 +692,7 @@ mod tests {
             vec![snow_draw_engine_core::PathSegmentMode::Curve],
             false,
             snow_draw_engine_document::FreeDrawStyle {
+                brush_mode: Default::default(),
                 stroke: ColorRgba8::default(),
                 stroke_width: 2.0,
                 stroke_style: snow_draw_engine_document::StrokeStyle::Solid,

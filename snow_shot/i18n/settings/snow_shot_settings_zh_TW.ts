@@ -1361,6 +1361,10 @@
             <translation>開機時自動啟動</translation>
         </message>
         <message>
+            <source>Auto-hide toolbar</source>
+            <translation>自動隱藏工具列</translation>
+        </message>
+        <message>
             <source>Auto-recognize QR Code</source>
             <translation>自動辨識 QR Code</translation>
         </message>
@@ -1407,6 +1411,10 @@
         <message>
             <source>Background Fill</source>
             <translation>背景填充</translation>
+        </message>
+        <message>
+            <source>Background color</source>
+            <translation>背景顏色</translation>
         </message>
         <message>
             <source>Background image</source>
@@ -1601,6 +1609,10 @@
             <translation>選擇在截圖中移動或標註時按一下滑鼠中鍵所執行的動作</translation>
         </message>
         <message>
+            <source>Choose the bundled icon used in dark theme, or reuse the regular icon settings</source>
+            <translation>選擇深色主題使用的內建圖示，或沿用一般圖示設定</translation>
+        </message>
+        <message>
             <source>Choose the bundled icon used in the system tray</source>
             <translation>選擇系統匣使用的內建圖示</translation>
         </message>
@@ -1615,6 +1627,14 @@
         <message>
             <source>Choose the compression effort used for image output and history results</source>
             <translation>選擇影像輸出和歷史記錄結果影像的壓縮等級</translation>
+        </message>
+        <message>
+            <source>Choose the default font for newly pinned text</source>
+            <translation>選擇新貼圖文字的預設字型</translation>
+        </message>
+        <message>
+            <source>Choose the default font size for newly pinned text</source>
+            <translation>選擇新貼圖文字的預設字型大小</translation>
         </message>
         <message>
             <source>Choose the dialog used for manual image saves</source>
@@ -2009,6 +2029,14 @@
             <translation>深色</translation>
         </message>
         <message>
+            <source>Dark theme custom icon</source>
+            <translation>深色主題自訂圖示</translation>
+        </message>
+        <message>
+            <source>Dark theme icon</source>
+            <translation>深色主題圖示</translation>
+        </message>
+        <message>
             <source>Data storage</source>
             <translation>資料儲存</translation>
         </message>
@@ -2035,6 +2063,22 @@
         <message>
             <source>Default Punctuation</source>
             <translation>預設標點</translation>
+        </message>
+        <message>
+            <source>Default text color</source>
+            <translation>預設文字顏色</translation>
+        </message>
+        <message>
+            <source>Default text font</source>
+            <translation>預設文字字型</translation>
+        </message>
+        <message>
+            <source>Default text font size</source>
+            <translation>預設文字字型大小</translation>
+        </message>
+        <message>
+            <source>Defaults for newly pinned text; source formatting is preserved</source>
+            <translation>設定新貼圖文字的預設樣式，並保留來源格式</translation>
         </message>
         <message>
             <source>Delay %1s to execute</source>
@@ -2231,6 +2275,10 @@
         <message>
             <source>Enter an HTTP or HTTPS address. Changes apply immediately. Clear to use the default server.</source>
             <translation>輸入 HTTP 或 HTTPS 位址。變更立即生效。清空可使用預設伺服器。</translation>
+        </message>
+        <message>
+            <source>Enter or browse to a PNG or ICO file for dark theme; invalid files use the selected bundled icon</source>
+            <translation>輸入或瀏覽選擇深色主題使用的 PNG 或 ICO 檔案；無效檔案將使用所選內建圖示</translation>
         </message>
         <message>
             <source>Enter or browse to a PNG or ICO file; invalid files use the selected bundled icon</source>
@@ -2449,6 +2497,10 @@
             <translation>隱藏或顯示目前群組中的所有視窗</translation>
         </message>
         <message>
+            <source>Hide the toolbar near the left or right screen edge. Hover over the edge control to show it again.</source>
+            <translation>工具列靠近螢幕左邊緣或右邊緣時自動隱藏。將滑鼠停留在邊緣控制項上可再次顯示工具列。</translation>
+        </message>
+        <message>
             <source>Hide to Top</source>
             <translation>頂部隱藏</translation>
         </message>
@@ -2633,6 +2685,10 @@
             <translation>語言</translation>
         </message>
         <message>
+            <source>Language Detection Confidence Threshold</source>
+            <translation>語言偵測信心度門檻</translation>
+        </message>
+        <message>
             <source>Language, startup and updates</source>
             <translation>語言、啟動與更新</translation>
         </message>
@@ -2675,6 +2731,10 @@
         <message>
             <source>Limit long side (faster)</source>
             <translation>限制長邊（更快）</translation>
+        </message>
+        <message>
+            <source>Limit the width of pinned text, including padding</source>
+            <translation>限制貼圖文字的寬度，包括內距</translation>
         </message>
         <message>
             <source>Line</source>
@@ -2769,6 +2829,10 @@
             <translation>最大項目數</translation>
         </message>
         <message>
+            <source>Maximum text width</source>
+            <translation>最大文字寬度</translation>
+        </message>
+        <message>
             <source>Medium</source>
             <translation>中等</translation>
         </message>
@@ -2803,6 +2867,10 @@
         <message>
             <source>Middle mouse button action</source>
             <translation>滑鼠中鍵動作</translation>
+        </message>
+        <message>
+            <source>Minimum confidence required to switch to the secondary target language</source>
+            <translation>切換至次目標語言所需的最低信心度</translation>
         </message>
         <message>
             <source>Model Hot Start</source>
@@ -2877,6 +2945,10 @@
             <translation>下一筆截圖歷史</translation>
         </message>
         <message>
+            <source>Next selection area</source>
+            <translation>下一個選取區域</translation>
+        </message>
+        <message>
             <source>Next selection type</source>
             <translation>下一種選取區域類型</translation>
         </message>
@@ -2923,6 +2995,10 @@
         <message>
             <source>Open</source>
             <translation>開啟</translation>
+        </message>
+        <message>
+            <source>Open Image Stitching with selected image files, or an empty window if no images are selected</source>
+            <translation>使用選取的圖片檔案開啟圖片拼接；未選取圖片時開啟空白視窗</translation>
         </message>
         <message>
             <source>Open Login Items Settings</source>
@@ -3173,6 +3249,10 @@
             <translation>上一筆截圖歷史</translation>
         </message>
         <message>
+            <source>Previous selection area</source>
+            <translation>上一個選取區域</translation>
+        </message>
+        <message>
             <source>Previous selection type</source>
             <translation>上一種選取區域類型</translation>
         </message>
@@ -3187,10 +3267,6 @@
         <message>
             <source>Process priority</source>
             <translation>處理程序優先順序</translation>
-        </message>
-        <message>
-            <source>Prompt-capable models use this language when the input matches the primary target language</source>
-            <translation>支援提示詞的模型會在輸入語言與主要目標語言相同時使用此語言</translation>
         </message>
         <message>
             <source>Proxy</source>
@@ -3621,12 +3697,12 @@
             <translation>擷取螢幕畫面時選取視窗中的子元素</translation>
         </message>
         <message>
-            <source>Select image save directory</source>
-            <translation>選擇影像儲存目錄</translation>
+            <source>Select dark theme tray icon</source>
+            <translation>選擇深色主題系統匣圖示</translation>
         </message>
         <message>
-            <source>Select previously selected area</source>
-            <translation>選取先前選取的區域</translation>
+            <source>Select image save directory</source>
+            <translation>選擇影像儲存目錄</translation>
         </message>
         <message>
             <source>Select scenarios</source>
@@ -4077,6 +4153,10 @@
             <translation>啟動與更新</translation>
         </message>
         <message>
+            <source>Stitch Selected Images</source>
+            <translation>拼接選取的圖片</translation>
+        </message>
+        <message>
             <source>Storage and privacy</source>
             <translation>儲存與隱私</translation>
         </message>
@@ -4143,6 +4223,10 @@
         <message>
             <source>Text Detection Processing</source>
             <translation>文字偵測處理</translation>
+        </message>
+        <message>
+            <source>Text Style</source>
+            <translation>文字樣式</translation>
         </message>
         <message>
             <source>Text background</source>
@@ -4381,8 +4465,24 @@
             <translation>使用全域滑鼠手勢、選取視窗內的個別元素，以及翻譯選取的文字。</translation>
         </message>
         <message>
+            <source>Use regular icon settings</source>
+            <translation>沿用一般圖示設定</translation>
+        </message>
+        <message>
             <source>Use system proxy</source>
             <translation>使用系統代理</translation>
+        </message>
+        <message>
+            <source>Use the theme background until customized. Reset Text Style to restore it.</source>
+            <translation>未自訂時使用佈景主題背景顏色。重設文字樣式可還原佈景主題顏色。</translation>
+        </message>
+        <message>
+            <source>Use the theme text color until customized. Reset Text Style to restore it.</source>
+            <translation>未自訂時使用佈景主題文字顏色。重設文字樣式可還原佈景主題顏色。</translation>
+        </message>
+        <message>
+            <source>Use this language when local language detection matches the primary target language at the configured confidence</source>
+            <translation>當本機語言偵測結果與主目標語言相符且達到設定的信心度時，使用此語言</translation>
         </message>
         <message>
             <source>User initiated</source>
@@ -4483,6 +4583,10 @@
         <message>
             <source>Zip archives (*.zip);;All files (*.*)</source>
             <translation>Zip 壓縮檔 (*.zip);;所有檔案 (*.*)</translation>
+        </message>
+        <message>
+            <source>px</source>
+            <translation>像素</translation>
         </message>
     </context>
     <context>

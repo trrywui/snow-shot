@@ -49,7 +49,9 @@ bool validShapeStyleEnums(const SnowCanvasShapeStyle& style) {
            enumInRange(style.highlightShape, SnowCanvasHighlightShape::Rectangle,
                        SnowCanvasHighlightShape::Ellipse) &&
            enumInRange(style.shape, SnowCanvasRectangleShape::Rectangle,
-                       SnowCanvasRectangleShape::Diamond);
+                       SnowCanvasRectangleShape::Diamond) &&
+           enumInRange(style.brushMode, SnowCanvasBrushMode::Regular,
+                       SnowCanvasBrushMode::PressureSensitive);
 }
 
 } // namespace
@@ -487,6 +489,9 @@ SnowCanvasShapeStyle toCanvasShapeStyle(const SnowShapeStyle& style) {
         style.shape == SNOW_RECTANGLE_SHAPE_ELLIPSE   ? SnowCanvasRectangleShape::Ellipse
         : style.shape == SNOW_RECTANGLE_SHAPE_DIAMOND ? SnowCanvasRectangleShape::Diamond
                                                       : SnowCanvasRectangleShape::Rectangle,
+        style.brush_mode == SNOW_BRUSH_MODE_PRESSURE_SENSITIVE
+            ? SnowCanvasBrushMode::PressureSensitive
+            : SnowCanvasBrushMode::Regular,
     };
 }
 
@@ -511,6 +516,9 @@ SnowShapeStyle toEngineShapeStyle(const SnowCanvasShapeStyle& style) {
         style.shape == SnowCanvasRectangleShape::Ellipse   ? SNOW_RECTANGLE_SHAPE_ELLIPSE
         : style.shape == SnowCanvasRectangleShape::Diamond ? SNOW_RECTANGLE_SHAPE_DIAMOND
                                                            : SNOW_RECTANGLE_SHAPE_RECTANGLE;
+    engineStyle.brush_mode = style.brushMode == SnowCanvasBrushMode::PressureSensitive
+                                 ? SNOW_BRUSH_MODE_PRESSURE_SENSITIVE
+                                 : SNOW_BRUSH_MODE_REGULAR;
     return engineStyle;
 }
 

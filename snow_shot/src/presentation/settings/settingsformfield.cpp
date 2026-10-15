@@ -47,7 +47,7 @@ struct SettingsFormField::Impl {
                                              session.requestSelectOptions(binding);
                                          });
                     }
-                    if (payload.binding == SettingsSelectBinding::AppFont) {
+                    if (payload.source == SettingsSelectSource::FontFamilies) {
                         field->setChoiceUpdater(
                             [this](const auto& choices) { updateFontModel(choices); });
                         QObject::connect(handle.editor, &adqt::widgets::AdSelect::popupOpening, &q,
@@ -287,7 +287,7 @@ struct SettingsFormField::Impl {
         QVector<fields::Choice> choices;
         for (const auto& option : definition.options)
             choices.push_back({option.value, option.label});
-        const bool font = definition.binding == SettingsSelectBinding::AppFont;
+        const bool font = definition.source == SettingsSelectSource::FontFamilies;
         if (!font || fontOptionsLoaded) {
             for (const auto& option : session.dynamicSelectOptions(definition.binding))
                 choices.push_back({option.value, {}, option.label});
@@ -364,7 +364,7 @@ struct SettingsFormField::Impl {
         if (!hasState || lastDraft != state.draftValue) {
             if (const auto* select =
                     std::get_if<SettingsSelectDefinition>(&descriptor.definition->payload);
-                select != nullptr && select->binding == SettingsSelectBinding::AppFont)
+                select != nullptr && select->source == SettingsSelectSource::FontFamilies)
                 syncChoices();
             field->syncValue(state.draftValue);
             lastDraft = state.draftValue;

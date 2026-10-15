@@ -138,7 +138,10 @@ enum class SnowCanvasSerialNumberType : quint32 {
     Circle = 4,
 };
 
+enum class SnowCanvasBrushMode { Regular, PressureSensitive };
+
 enum SnowCanvasShapeStyleMixedFlag : quint32 {
+    SnowCanvasShapeStyleMixedBrushMode = 1u << 14,
     SnowCanvasShapeStyleMixedFill = 1u << 0,
     SnowCanvasShapeStyleMixedFillStyle = 1u << 1,
     SnowCanvasShapeStyleMixedStroke = 1u << 2,
@@ -174,6 +177,7 @@ enum class SnowCanvasSelectionAlignment {
 };
 
 enum SnowCanvasShapeStyleProperty : quint32 {
+    SnowCanvasShapeStylePropertyBrushMode = 1u << 14,
     SnowCanvasShapeStylePropertyFillColor = 1u << 0,
     SnowCanvasShapeStylePropertyFillStyle = 1u << 1,
     SnowCanvasShapeStylePropertyStrokeColor = 1u << 2,
@@ -443,6 +447,7 @@ struct SnowCanvasShapeStyle {
     double opacity = 1.0;
     SnowCanvasHighlightShape highlightShape = SnowCanvasHighlightShape::Rectangle;
     SnowCanvasRectangleShape shape = SnowCanvasRectangleShape::Rectangle;
+    SnowCanvasBrushMode brushMode = SnowCanvasBrushMode::Regular;
 };
 
 struct SnowCanvasMagnifierStyle {
@@ -479,7 +484,8 @@ inline bool operator==(const SnowCanvasShapeStyle& lhs, const SnowCanvasShapeSty
            snowCanvasExactDoubleEqual(lhs.arrowRatio, rhs.arrowRatio) &&
            lhs.arrowShaftType == rhs.arrowShaftType &&
            snowCanvasExactDoubleEqual(lhs.opacity, rhs.opacity) &&
-           lhs.highlightShape == rhs.highlightShape && lhs.shape == rhs.shape;
+           lhs.highlightShape == rhs.highlightShape && lhs.shape == rhs.shape &&
+           lhs.brushMode == rhs.brushMode;
 }
 
 inline bool operator!=(const SnowCanvasShapeStyle& lhs, const SnowCanvasShapeStyle& rhs) {

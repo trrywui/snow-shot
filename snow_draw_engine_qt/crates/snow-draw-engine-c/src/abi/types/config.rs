@@ -231,6 +231,15 @@ pub const SNOW_DISTANCE_STYLE_MIXED_ENDPOINT_SCALE: u32 =
 pub const SNOW_DISTANCE_STYLE_MIXED_ENDPOINT_STYLE: u32 =
     SNOW_DISTANCE_STYLE_PROPERTY_ENDPOINT_STYLE;
 
+snow_c_enum! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum SnowBrushMode {
+        #[default]
+        Regular = 0,
+        PressureSensitive = 1,
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SnowShapeStyle {
@@ -248,6 +257,7 @@ pub struct SnowShapeStyle {
     pub opacity: f64,
     pub highlight_shape: SnowHighlightShape,
     pub shape: SnowRectangleShape,
+    pub brush_mode: SnowBrushMode,
 }
 
 #[repr(C)]
@@ -659,6 +669,7 @@ impl Default for SnowShapeStyle {
             opacity: 1.0,
             highlight_shape: SnowHighlightShape::Rectangle,
             shape: SnowRectangleShape::Rectangle,
+            brush_mode: SnowBrushMode::Regular,
         }
     }
 }

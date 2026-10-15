@@ -19,6 +19,7 @@ mod document_ops;
 mod draw_template;
 mod edit_workflow;
 mod eraser_workflow;
+mod free_draw_pressure;
 mod free_draw_workflow;
 mod geometry;
 mod input;
@@ -68,6 +69,7 @@ pub use api::{
     TEXT_STYLE_MIXED_STROKE_WIDTH, TEXT_STYLE_MIXED_VERTICAL_ALIGN,
     selection_box_visible_for_members,
 };
+pub use api::{SHAPE_STYLE_MIXED_BRUSH_MODE, SHAPE_STYLE_PROPERTY_BRUSH_MODE};
 pub use defaults::{EditorStyleDefaults, editor_style_defaults};
 pub use draw_template::DrawTemplate;
 pub use session::{

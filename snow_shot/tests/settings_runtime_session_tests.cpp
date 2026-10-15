@@ -218,6 +218,8 @@ class FakeSettingsBackend final : public settings::SettingsBackend {
             return m_traySkinPath;
         case settings::SettingsFilePathBinding::TrayCustomIcon:
             return m_trayIconPath;
+        case settings::SettingsFilePathBinding::TrayDarkCustomIcon:
+            return m_trayDarkIconPath;
         }
         return {};
     }
@@ -237,6 +239,9 @@ class FakeSettingsBackend final : public settings::SettingsBackend {
         case settings::SettingsFilePathBinding::TrayCustomIcon:
             fieldId = QStringLiteral("interface.tray.custom-icon");
             break;
+        case settings::SettingsFilePathBinding::TrayDarkCustomIcon:
+            fieldId = QStringLiteral("interface.tray.dark-custom-icon");
+            break;
         }
         return applyField(fieldId, value, [this, binding](const QVariant& next) {
             switch (binding) {
@@ -251,6 +256,9 @@ class FakeSettingsBackend final : public settings::SettingsBackend {
                 break;
             case settings::SettingsFilePathBinding::TrayCustomIcon:
                 m_trayIconPath = next.toString();
+                break;
+            case settings::SettingsFilePathBinding::TrayDarkCustomIcon:
+                m_trayDarkIconPath = next.toString();
                 break;
             }
         });
@@ -268,7 +276,8 @@ class FakeSettingsBackend final : public settings::SettingsBackend {
     void reloadFilePathValue(settings::SettingsFilePathBinding binding) override {
         if (binding == settings::SettingsFilePathBinding::SkinPath)
             ++skinReloadCount;
-        else if (binding != settings::SettingsFilePathBinding::TrayCustomIcon)
+        else if (binding != settings::SettingsFilePathBinding::TrayCustomIcon &&
+                 binding != settings::SettingsFilePathBinding::TrayDarkCustomIcon)
             ++surfaceSkinReloadCounts[static_cast<int>(binding)];
     }
 
@@ -578,6 +587,7 @@ class FakeSettingsBackend final : public settings::SettingsBackend {
     QString m_toolbarSkinPath;
     QString m_traySkinPath;
     QString m_trayIconPath;
+    QString m_trayDarkIconPath;
     bool m_trayEnabled = true;
     bool m_keepPermanently = false;
     bool m_translationPageEnabled = false;
@@ -1724,6 +1734,17 @@ void skinPathReloadAndStatusAreIndependentOfPersistence() {
                 backend.skinReloadCount == 2 && session.filePathStatus(tray).isEmpty() &&
                 !session.filePathStatusError(tray),
             "other file path settings must retain no-op behavior without skin status or reload");
+    constexpr auto darkTray = settings::SettingsFilePathBinding::TrayDarkCustomIcon;
+    const QString darkPath = QStringLiteral("/icons/dark-tray.png");
+    require(session.applyFilePathValue(darkTray, darkPath) &&
+                session.applyFilePathValue(darkTray, darkPath) &&
+                backend.applyCount(QStringLiteral("interface.tray.dark-custom-icon")) == 1 &&
+                session.filePathValue(darkTray) == darkPath &&
+                session.filePathValue(tray) == QStringLiteral("/icons/tray.png") &&
+                backend.surfaceSkinReloadCounts.isEmpty() &&
+                session.filePathStatus(darkTray).isEmpty() &&
+                !session.filePathStatusError(darkTray),
+            "dark tray paths must commit independently and retain icon no-op behavior");
 }
 
 void surfaceSkinPathsRemainIndependent() {

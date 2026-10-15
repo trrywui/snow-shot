@@ -644,6 +644,10 @@
             <translation>Image</translation>
         </message>
         <message>
+            <source>Image Splitting</source>
+            <translation>Image Splitting</translation>
+        </message>
+        <message>
             <source>Integers</source>
             <translation>Integers</translation>
         </message>
@@ -788,6 +792,10 @@
             <translation>Mouse highlight preview</translation>
         </message>
         <message>
+            <source>Mouse highlight radius</source>
+            <translation>Mouse highlight radius</translation>
+        </message>
+        <message>
             <source>Mouse trail color</source>
             <translation>Mouse trail color</translation>
         </message>
@@ -900,6 +908,10 @@
             <translation>Post-processing effects</translation>
         </message>
         <message>
+            <source>Pressure-sensitive brush</source>
+            <translation>Pressure-sensitive brush</translation>
+        </message>
+        <message>
             <source>Print</source>
             <translation>Print</translation>
         </message>
@@ -982,6 +994,10 @@
         <message>
             <source>Redo</source>
             <translation>Redo</translation>
+        </message>
+        <message>
+            <source>Regular brush</source>
+            <translation>Regular brush</translation>
         </message>
         <message>
             <source>Reset</source>

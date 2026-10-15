@@ -607,8 +607,7 @@ QString ScreenshotOcrController::sourceTextDraft() const {
     return m_session->sourceTextDraft();
 }
 
-std::optional<ScreenshotRecognitionFileSnapshot>
-ScreenshotOcrController::fileExportSnapshot() const {
+std::optional<ScreenshotRecognitionFileSnapshot> ScreenshotOcrController::fileExportSnapshot() {
     return m_session->fileExportSnapshot();
 }
 
