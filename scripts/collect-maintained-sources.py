@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -10,6 +11,7 @@ import shutil
 import ssl
 import subprocess
 import tarfile
+import tomllib
 import urllib.request
 
 REPO = Path(__file__).resolve().parents[1]
@@ -138,8 +140,43 @@ def prepare():
         ['git', '-C', str(ROOT / 'vcpkg'), 'diff', '--binary', 'HEAD']))
 
 
+
+def cargo_git_sources():
+    locked = {}
+    for name in ('snow-crates', 'snow_rust_ffi'):
+        data = tomllib.loads((REPO / name / 'Cargo.lock').read_text())
+        for package in data.get('package', []):
+            source = package.get('source', '')
+            if source.startswith('git+'):
+                locked.setdefault(source, set()).add(package['name'] + '-' + package['version'])
+    if not locked:
+        return []
+    checkouts = ROOT / 'cargo/git/checkouts'
+    revisions = {}
+    for candidate in sorted(checkouts.glob('*/*')):
+        if not candidate.is_dir() or not (candidate / '.git').exists():
+            continue
+        revision = subprocess.check_output(
+            ['git', '-C', str(candidate), 'rev-parse', 'HEAD'], text=True).strip()
+        revisions.setdefault(revision, candidate.relative_to(checkouts).as_posix())
+    records = []
+    for source, packages in sorted(locked.items()):
+        revision = source.rsplit('#', 1)[-1]
+        if not re.fullmatch(r'[0-9a-f]{40}', revision) or revision not in revisions:
+            raise ValueError(f'Missing locked Cargo Git source: {source}')
+        records.append({'source': source, 'revision': revision, 'packages': sorted(packages),
+                        'checkout': revisions[revision]})
+    return records
+
+
+def without_git_metadata(member):
+    # Cargo Git sources need their working tree, never a local Git database/config.
+    return None if '.git' in Path(member.name).parts else member
+
+
 def archive(output):
     manifest = json.loads((SOURCES / 'manifest.json').read_text())
+    git_sources = cargo_git_sources()
     if output.exists() or output.with_suffix(output.suffix + '.part').exists():
         raise ValueError('Refusing to overwrite a source release')
     temporary = output.with_suffix(output.suffix + '.part')
@@ -157,6 +194,14 @@ def archive(output):
         for directory in (ROOT / 'cargo/registry/src').iterdir():
             if directory.is_dir():
                 bundle.add(directory, arcname='cargo/' + directory.name)
+        for record in git_sources:
+            bundle.add(ROOT / 'cargo/git/checkouts' / record['checkout'],
+                       arcname='cargo-git/' + record['checkout'], filter=without_git_metadata)
+        provenance = (json.dumps(git_sources, indent=2) + '\n').encode()
+        entry = tarfile.TarInfo('cargo-git-sources.json')
+        entry.size = len(provenance)
+        entry.mode = 0o644
+        bundle.addfile(entry, io.BytesIO(provenance))
         for directory in (ROOT / 'installed', ROOT / 'qt-deps'):
             for path in directory.glob('*/share/*/vcpkg.spdx.json'):
                 bundle.add(path, arcname='inventories/' + path.relative_to(ROOT).as_posix())

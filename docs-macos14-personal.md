@@ -121,7 +121,7 @@ bash scripts/macos14-personal.sh clean --all
 本机构建并手动发布 GitHub Release，提供 DMG、SHA256、说明和对应源码材料。
 使用 `bash scripts/macos14-personal.sh sources` 在隔离环境中收集并打包依赖源码，
 按实际依赖库存中的校验和验证；同版本源码包已存在时拒绝覆盖。
-源码材料包括 Qt 原始源码包、Rust crate 源码、原生依赖源码、vcpkg 配方及其本地补丁和来源清单。
+源码材料包括 Qt 原始源码包、Rust registry 与锁定 Git crate 源码、原生依赖源码、vcpkg 配方及其本地补丁和来源清单。
 本项目源码以发布标签的 Git 源码包提供；组合使用这两个源码包及构建说明。
 上游发布流程位于 `.github/upstream-workflows/`，不会自动执行。
 同步上游后重新检查 API 判断、JPEG ABI、依赖最低版本、Bundle ID、更新策略及相关功能。
