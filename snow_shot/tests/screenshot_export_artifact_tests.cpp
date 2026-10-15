@@ -54,6 +54,12 @@ struct ScreenshotClipboardPayloadTestAccess {
 #endif
 
 namespace {
+ScreenshotExportArtifact::PngCachePolicy pngCachePolicy(qsizetype maximumBytes) {
+    ScreenshotExportArtifact::PngCachePolicy policy;
+    policy.maximumBytes = maximumBytes;
+    return policy;
+}
+
 void require(bool condition, const char* message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -685,7 +691,7 @@ void clipboardFilesUseTemporaryStorageAndKeepExportOptions() {
                                   ScreenshotImageFileFormat::Bmp, ScreenshotImageFileFormat::Pdf}) {
             auto artifact = std::make_unique<ScreenshotExportArtifact>(
                 ScreenshotExportSource::fromImage(image), ScreenshotCompressionLevel::Low,
-                ScreenshotExportArtifact::PngCachePolicy{streaming ? 1 : 64 * 1024 * 1024, {}});
+                pngCachePolicy(streaming ? 1 : 64 * 1024 * 1024));
             const ScreenshotImageEncodingOptions encoding{35, ScreenshotCompressionLevel::High};
             const QString filename = QStringLiteral("clipboard_{yyyy}-{MM}-{dd}_{HH}-{mm}-{ss}");
             std::unique_ptr<QMimeData> mime;
@@ -1695,10 +1701,9 @@ void pngCacheBudgetEvictsLeastRecentlyUsedResults() {
                   ScreenshotImageEncodingOptions{100, ScreenshotCompressionLevel::Medium})
                   .compression_level);
     const auto high = snow_shot::image_codec::encodePng(rows, 9);
-    ScreenshotExportArtifact artifact(ScreenshotExportSource::fromImage(image),
-                                      ScreenshotCompressionLevel::Low,
-                                      ScreenshotExportArtifact::PngCachePolicy{
-                                          low.size() + qMax(medium.size(), high.size()), {}});
+    ScreenshotExportArtifact artifact(
+        ScreenshotExportSource::fromImage(image), ScreenshotCompressionLevel::Low,
+        pngCachePolicy(low.size() + qMax(medium.size(), high.size())));
     QObject receiver;
     auto request = [&](ScreenshotCompressionLevel level) {
         QByteArray result;
@@ -1806,7 +1811,7 @@ void fileOutputsStreamBeyondCacheBudget() {
     for (auto compression : {ScreenshotCompressionLevel::Low, ScreenshotCompressionLevel::Medium,
                              ScreenshotCompressionLevel::High}) {
         ScreenshotExportArtifact artifact(ScreenshotExportSource::fromImage(image), compression,
-                                          ScreenshotExportArtifact::PngCachePolicy{1, {}});
+                                          pngCachePolicy(1));
         int callbacks = 0;
         QString automaticPath;
         const QString manualPath = directory.filePath(QStringLiteral("manual.png"));
@@ -1845,8 +1850,7 @@ void fileOutputsStreamBeyondCacheBudget() {
 
 void oversizedPngStillFansOutWithoutRetention() {
     ScreenshotExportArtifact artifact(ScreenshotExportSource::fromImage(testImage()),
-                                      ScreenshotCompressionLevel::Low,
-                                      ScreenshotExportArtifact::PngCachePolicy{1, {}});
+                                      ScreenshotCompressionLevel::Low, pngCachePolicy(1));
     QObject receiver;
     int callbacks = 0;
     QByteArray first;
