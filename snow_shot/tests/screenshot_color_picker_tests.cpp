@@ -1,4 +1,5 @@
 #include "snow_shot/presentation/screenshotcolorpickerwindow.h"
+#include "snow_shot/presentation/styles/thememanager.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/settingsadapters.h"
 
@@ -11,9 +12,11 @@
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
+#include <QGraphicsOpacityEffect>
 #include <QTemporaryDir>
 #include <QWindow>
 #include <QTranslator>
+#include <QtMath>
 
 #ifdef Q_OS_MACOS
 #include "../src/presentation/pinned/pinnedwindowplatform.h"
@@ -21,6 +24,7 @@
 #endif
 
 #include <cstdlib>
+#include <cmath>
 #include <iostream>
 
 namespace storage = snow_shot::storage;
@@ -39,6 +43,61 @@ void sampleRed(ScreenshotColorPickerWindow& picker) {
     picker.setCaptureImage(image, image.rect());
     picker.updatePicker(QPoint(8, 8), QPointF(8, 8), 0.0);
     require(picker.hasCurrentColor(), "picker must sample the capture image");
+}
+
+void decorationCacheSurvivesMotionAndTracksTheme() {
+    namespace styles = snow_shot::presentation::styles;
+    auto& theme = styles::ThemeManager::instance();
+    const auto originalMode = theme.themeMode();
+    theme.setThemeAppearance(styles::ThemeAppearance::Light);
+    ScreenshotColorPickerWindow picker;
+    QImage image(64, 64, QImage::Format_RGB32);
+    image.fill(Qt::red);
+    picker.setCaptureImage(image, image.rect());
+    picker.updatePicker(QPoint(20, 20), QPointF(20, 20), 1.0);
+    const QImage first = picker.grab().toImage();
+    const auto initialBuilds = picker.workCounters().decorationBuilds;
+    require(initialBuilds == 1, "first paint must prepare one decoration image");
+    const auto backgroundPixel = [&picker](const QImage& frame) {
+        const qreal dpr = frame.devicePixelRatio();
+        return frame.pixelColor(qFloor(picker.width() / 2.0 * dpr), qFloor(12 * dpr));
+    };
+    const QColor lightBackground = backgroundPixel(first);
+    for (int offset = 1; offset <= 8; ++offset) {
+        picker.updatePicker(QPoint(20 + offset, 20), QPointF(20 + offset, 20), 1.0);
+        const QImage moved = picker.grab().toImage();
+        require(backgroundPixel(moved) == lightBackground &&
+                    picker.workCounters().decorationBuilds == initialBuilds,
+                "pointer motion must update content without rebuilding fixed decoration");
+    }
+    require(picker.currentPositionText().contains(QStringLiteral("28")),
+            "cached decoration must not freeze the coordinate readout");
+    image.fill(Qt::blue);
+    picker.setCaptureImage(image, image.rect());
+    picker.updatePicker(QPoint(28, 20), QPointF(28, 20), 1.0);
+    static_cast<void>(picker.grab());
+    require(picker.currentColorText() == QStringLiteral("#0000FF") &&
+                picker.workCounters().decorationBuilds == initialBuilds,
+            "new capture pixels must update without rebuilding fixed decoration");
+
+    theme.setThemeAppearance(styles::ThemeAppearance::Dark);
+    const QImage dark = picker.grab().toImage();
+    require(backgroundPixel(dark) != lightBackground &&
+                picker.workCounters().decorationBuilds == initialBuilds + 1,
+            "theme changes must replace the cached panel background");
+    picker.resetForNewCapture();
+    picker.setCaptureImage(image, image.rect());
+    picker.updatePicker(QPoint(28, 20), QPointF(28, 20), 1.0);
+    static_cast<void>(picker.grab());
+    require(picker.workCounters().decorationBuilds == initialBuilds + 1,
+            "a new screenshot must reuse decoration at the same theme and scale");
+    picker.setFixedSize(picker.size() + QSize(12, 8));
+    const QImage resized = picker.grab().toImage();
+    require(picker.workCounters().decorationBuilds == initialBuilds + 2 &&
+                backgroundPixel(resized) == backgroundPixel(dark) &&
+                qAlpha(resized.pixel(0, 0)) == 0,
+            "resizing must rebuild decoration while preserving its theme and transparent margin");
+    theme.setThemeMode(originalMode);
 }
 
 class PickerUnitTranslator final : public QTranslator {
@@ -503,6 +562,29 @@ void pickerPreparationPreservesCanvasInputSurfaces() {
                     "the picker must retain its separate visible surface and stacking owner");
             requireNonNativeCanvases();
             requireImmediatePresentation(picker);
+            const auto surface = picker.internalWinId();
+            for (qreal opacity : {0.83, 0.5, 1.0}) {
+                picker.updatePicker(QPoint(100, 100), QPointF(100, 100), opacity);
+                QApplication::processEvents();
+                require(picker.isVisible() && picker.internalWinId() == surface &&
+                            picker.windowHandle()->transientParent() == owner->windowHandle(),
+                        "opacity changes must preserve the magnifier surface and owner");
+#ifdef Q_OS_MACOS
+                if (QGuiApplication::platformName() == QStringLiteral("cocoa")) {
+                    require(picker.graphicsEffect() == nullptr,
+                            "Cocoa magnifier opacity must not allocate a QWidget effect layer");
+                    NSWindow* native = reinterpret_cast<NSView*>(picker.internalWinId()).window;
+                    require(native != nil && std::abs(native.alphaValue - opacity) < 0.005,
+                            "native opacity must retain the requested drag transparency");
+                } else
+#endif
+                {
+                    const auto* effect =
+                        qobject_cast<QGraphicsOpacityEffect*>(picker.graphicsEffect());
+                    require(effect != nullptr && std::abs(effect->opacity() - opacity) < 0.0001,
+                            "the raster fallback must retain the requested drag transparency");
+                }
+            }
             picker.updatePicker(QPoint(100, 100), QPointF(100, 100), 0.0);
             require(!picker.isVisible(), "zero opacity must immediately hide the magnifier");
             requireImmediatePresentation(picker);
@@ -532,6 +614,7 @@ int main(int argc, char** argv) {
     application.setFont(QFont(QFontDatabase::applicationFontFamilies(fontId).first()));
 #endif
     cursorPatchSamplingIsReversibleAndDoesNotModifyTheDesktop();
+    decorationCacheSurvivesMotionAndTracksTheme();
     positionTextTracksFontAndLanguage();
     selectionUnitPersistsAndCoordinatesDoNotResample();
     coordinateModePersistsAndRefreshesWithoutResampling();

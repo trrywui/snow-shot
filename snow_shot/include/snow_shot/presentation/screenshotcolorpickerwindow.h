@@ -13,6 +13,7 @@
 
 class QGraphicsOpacityEffect;
 class QPaintEvent;
+class QPainter;
 
 class ScreenshotColorPickerWindow final : public QWidget {
   public:
@@ -41,6 +42,7 @@ class ScreenshotColorPickerWindow final : public QWidget {
         quint64 previews = 0;
         quint64 moves = 0;
         quint64 ownerChanges = 0;
+        quint64 decorationBuilds = 0;
     };
     [[nodiscard]] WorkCounters workCounters() const {
         return m_workCounters;
@@ -68,6 +70,8 @@ class ScreenshotColorPickerWindow final : public QWidget {
 
     [[nodiscard]] bool updatePreview(const QPoint& physicalPoint);
     [[nodiscard]] bool updatePosition(const QPointF& overlayLocalPosition);
+    [[nodiscard]] bool setPickerOpacity(qreal opacity);
+    void paintDecoration(QPainter& painter);
     QString formatColor(const QColor& color) const;
     QRectF panelRect() const;
     QRectF previewRect() const;
@@ -79,6 +83,9 @@ class ScreenshotColorPickerWindow final : public QWidget {
     QRect m_cursorPixelRect;
     QRect m_physicalRect;
     QImage m_previewImage;
+    QImage m_decorationCache;
+    QSize m_decorationSize;
+    QColor m_decorationBackground;
     QPoint m_currentPhysicalPoint;
     ScreenshotCoordinateDisplayValues m_displayValues;
     mutable std::optional<QString> m_positionText;
@@ -87,6 +94,7 @@ class ScreenshotColorPickerWindow final : public QWidget {
     QColor m_panelTextColor;
     QColor m_centerGuideLineColor = QColor(0, 0, 0, 0);
     QGraphicsOpacityEffect* m_opacityEffect = nullptr;
+    qreal m_pickerOpacity = 0.0;
     ColorFormat m_colorFormat = ColorFormat::Hex;
     bool m_relativeCoordinates = false;
     bool m_hasCurrentColor = false;
