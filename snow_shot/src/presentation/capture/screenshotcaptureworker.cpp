@@ -285,9 +285,7 @@ bool ScreenshotCaptureWorker::ensureSession(const QVector<std::uint32_t>& exclud
     config.capture_backend = backend;
     config.exclusions.windows = excludedWindowIds.constData();
     config.exclusions.window_count = static_cast<size_t>(excludedWindowIds.size());
-#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
-    // Opaque BGRA frames map directly to Qt's RGB32 raster path without a
-    // channel conversion or alpha blend on every overlay repaint.
+#if defined(Q_OS_WIN) || defined(_WIN32)
     config.pixel_format = SNOW_CAPTURE_PIXEL_FORMAT_BGRA8;
 #endif
     m_session = snow_capture_desktop_session_create(&config);

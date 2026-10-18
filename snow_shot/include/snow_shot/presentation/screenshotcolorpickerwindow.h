@@ -70,7 +70,6 @@ class ScreenshotColorPickerWindow final : public QWidget {
 
     [[nodiscard]] bool updatePreview(const QPoint& physicalPoint);
     [[nodiscard]] bool updatePosition(const QPointF& overlayLocalPosition);
-    [[nodiscard]] bool setPickerOpacity(qreal opacity);
     void paintDecoration(QPainter& painter);
     QString formatColor(const QColor& color) const;
     QRectF panelRect() const;
@@ -94,7 +93,6 @@ class ScreenshotColorPickerWindow final : public QWidget {
     QColor m_panelTextColor;
     QColor m_centerGuideLineColor = QColor(0, 0, 0, 0);
     QGraphicsOpacityEffect* m_opacityEffect = nullptr;
-    qreal m_pickerOpacity = 0.0;
     ColorFormat m_colorFormat = ColorFormat::Hex;
     bool m_relativeCoordinates = false;
     bool m_hasCurrentColor = false;

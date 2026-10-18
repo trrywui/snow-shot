@@ -149,28 +149,6 @@ void invalidLayoutDoesNotAcquireFrames() {
     require(capture(worker).succeeded, "valid layout must recover on the next invocation");
 }
 
-void desktopFramesUseNativeRasterFormat() {
-    ScreenshotCaptureResult result;
-    {
-        ScreenshotCaptureWorker worker;
-        result = capture(worker);
-    }
-    require(result.succeeded && result.displays.size() == 1,
-            "desktop capture must deliver one display");
-    const QImage image = result.displays.front().image;
-#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
-    require(image.format() == QImage::Format_RGB32 && !image.hasAlphaChannel() &&
-                image.pixelColor(0, 0) == QColor(30, 20, 10),
-            "opaque desktop BGRA pixels must reach Qt's native raster path with correct colors");
-#else
-    require(image.format() == QImage::Format_RGBA8888 &&
-                image.pixelColor(0, 0) == QColor(10, 20, 30),
-            "other desktop capture platforms must preserve their RGBA layout");
-#endif
-    require(image.constBits()[0] == 10 && image.pixelColor(0, 0).alpha() == 255,
-            "native raster images must retain their frame lease after session shutdown");
-}
-
 void requireBackend(ScreenshotCaptureWorker& worker, uint8_t expected) {
     const auto result = capture(worker);
     require(result.succeeded && result.displays.size() == 1, "capture did not return a display");
@@ -603,7 +581,6 @@ int main(int argc, char** argv) {
                                           temporary.filePath(QStringLiteral("data")), 60000}));
     recaptureExclusionsReplaceSessionAndDoNotLeak();
     invalidLayoutDoesNotAcquireFrames();
-    desktopFramesUseNativeRasterFormat();
     changedModeReplacesPrewarmedSession();
     allModeTransitionsApplyWithoutRestart();
     colorRestorationAppliesAcrossBackendChanges();

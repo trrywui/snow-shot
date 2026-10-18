@@ -29,6 +29,19 @@
 #include <utility>
 
 namespace {
+int configuredPresentationRateLimit() {
+#ifdef Q_OS_MACOS
+    // Default to the validated low-CPU cadence; allow process-local diagnostic overrides.
+    bool valid = false;
+    const int rate = qEnvironmentVariableIntValue("SNOW_SHOT_CAPTURE_PRESENTATION_FPS", &valid);
+    if (valid && (rate == 0 || rate == 30 || rate == 45 || rate == 60))
+        return rate;
+    return 30;
+#else
+    return 0;
+#endif
+}
+
 struct PresentationLifecycle {
     ScreenshotSessionState sessionState = ScreenshotSessionState::IdleCold;
     ScreenshotStartupContext::Phase startupPhase = ScreenshotStartupContext::Phase::Inactive;
@@ -121,6 +134,7 @@ struct ScreenshotPresentationServices::State {
     QElapsedTimer clock;
     std::unique_ptr<ScreenshotPresentationFrameScheduler> scheduler;
     ScreenshotPresentationFrameClock frameClock;
+    const int presentationRateLimit = configuredPresentationRateLimit();
     ScreenshotToolbarPresentationState toolbar;
     PresentationLifecycle lifecycle;
     ScreenshotSelectionVisualState visual;
@@ -444,7 +458,11 @@ void ScreenshotPresentationServices::scheduleFrame() {
         if (display)
             screen = display->screen;
     }
-    const qreal rate = screen ? screen->refreshRate() : 60.0;
+    qreal rate = screen ? screen->refreshRate() : 60.0;
+    if (m_state->presentationRateLimit > 0) {
+        const qreal validRate = std::isfinite(rate) && rate > 1.0 ? rate : 60.0;
+        rate = std::min(validRate, static_cast<qreal>(m_state->presentationRateLimit));
+    }
     m_state->frameClock.setRefreshRate(rate, m_state->lastFrameNs);
     m_state->scheduler->setDeadline(m_state->frameClock.nextFrameNanoseconds());
 }

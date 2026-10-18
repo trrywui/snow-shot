@@ -11,7 +11,9 @@
 #include <QEventLoop>
 #include <QPointer>
 #include <QTimer>
+#include <QChronoTimer>
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 
@@ -112,6 +114,75 @@ void repeatedSelectionLeavesThePresentedUiIdle() {
     require(fixture.displayedSelection() == initial,
             "repeated selections must preserve the displayed rectangle");
 }
+
+#ifdef Q_OS_MACOS
+void presentationCadenceCoalescesFramesAndCommitsReleaseImmediately() {
+    constexpr auto variable = "SNOW_SHOT_CAPTURE_PRESENTATION_FPS";
+    const bool wasSet = qEnvironmentVariableIsSet(variable);
+    const QByteArray previous = qgetenv(variable);
+    for (const QByteArray& setting :
+         {QByteArray(), QByteArray("30"), QByteArray("45"), QByteArray("60"), QByteArray("0"),
+          QByteArray("bad"), QByteArray("120"), QByteArray("-30")}) {
+        if (setting.isNull())
+            qunsetenv(variable);
+        else
+            qputenv(variable, setting);
+        Fixture fixture(QSize(320, 240), false, true,
+                        ScreenshotPresentationFrameScheduler::Backend::QtTimer);
+        fixture.interaction.confirmSelection();
+        require(fixture.interaction.enterSelectionDrag(ScreenshotSelectionDragMode::All),
+                "cadence verification needs an active move gesture");
+        fixture.services->updateOverlayState();
+        fixture.resetCounters();
+        const QRectF initial = fixture.displayedSelection();
+        QRectF latest;
+        for (int step = 1; step <= 12; ++step) {
+            latest = initial.translated(step, step);
+            fixture.selection.setDraggedSelectionRect(latest, ScreenshotSelectionDragMode::All);
+            fixture.services->requestSelectionDragPresentation();
+        }
+        const auto& scheduler = fixture.services->frameSchedulerForTesting();
+        auto* timer = qobject_cast<QChronoTimer*>(scheduler.wakeupObject());
+        const qreal screenRate = fixture.overlay.screen()->refreshRate();
+        const qreal validRate = std::isfinite(screenRate) && screenRate > 1 ? screenRate : 60;
+        const qreal expectedRate = setting == "0"    ? validRate
+                                   : setting == "45" ? std::min(validRate, 45.0)
+                                   : setting == "60" ? std::min(validRate, 60.0)
+                                                     : std::min(validRate, 30.0);
+        const qint64 periodNs = qRound64(1000000000.0 / expectedRate);
+        require(timer && timer->interval().count() == periodNs,
+                "default and overridden cadence must cap presentation at the display rate");
+        require(fixture.selection.normalizedSelection() == latest &&
+                    fixture.displayedSelection() == initial && fixture.stateNotifications == 0,
+                "input must update the model immediately while presentation retains one frame");
+        PresentationTimerObserver observer;
+        fixture.nowNanoseconds += periodNs - 1;
+        require(observer.waitForNextTimeout() && fixture.displayedSelection() == initial,
+                "a presentation wake must not publish before its cadence deadline");
+        ++fixture.nowNanoseconds;
+        require(observer.waitForNextTimeout() && fixture.displayedSelection() == latest &&
+                    fixture.stateNotifications == 1 && !scheduler.active(),
+                "the deadline must present only the latest geometry and then become idle");
+        const QRectF released = latest.translated(2, 3);
+        fixture.selection.setDraggedSelectionRect(released, ScreenshotSelectionDragMode::All);
+        fixture.services->requestSelectionDragPresentation();
+        fixture.interaction.finishDrag();
+        fixture.services->updateOverlayState();
+        require(fixture.displayedSelection() == released && !scheduler.active(),
+                "release must immediately commit final geometry even before the next deadline");
+
+        fixture.requestPointer(QPointF(15, 20));
+        fixture.services->resetPresentation();
+        fixture.nowNanoseconds += periodNs * 2;
+        fixture.processEvents();
+        require(!scheduler.active(), "ending capture must cancel a deferred presentation frame");
+    }
+    if (wasSet)
+        qputenv(variable, previous);
+    else
+        qunsetenv(variable);
+}
+#endif
 
 void multipleRequestsCommitOnlyTheirLatestSelection() {
     Fixture fixture(QSize(1200, 800), false);
@@ -1766,6 +1837,11 @@ int main(int argc, char* argv[]) {
         nativeToolbarRaiseAllowsPresenterDeletion();
         return 0;
     }
+#ifdef Q_OS_MACOS
+    presentationCadenceCoalescesFramesAndCommitsReleaseImmediately();
+    // The remaining tests exercise display-rate scheduling independently of the macOS cap.
+    qputenv("SNOW_SHOT_CAPTURE_PRESENTATION_FPS", "0");
+#endif
     deferredToolbarRaiseEndsWithItsPresenter();
     nativeToolbarRaiseAllowsPresenterDeletion();
     repeatedSelectionLeavesThePresentedUiIdle();

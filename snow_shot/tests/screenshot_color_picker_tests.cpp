@@ -24,7 +24,6 @@
 #endif
 
 #include <cstdlib>
-#include <cmath>
 #include <iostream>
 
 namespace storage = snow_shot::storage;
@@ -51,6 +50,8 @@ void decorationCacheSurvivesMotionAndTracksTheme() {
     const auto originalMode = theme.themeMode();
     theme.setThemeAppearance(styles::ThemeAppearance::Light);
     ScreenshotColorPickerWindow picker;
+    require(qobject_cast<QGraphicsOpacityEffect*>(picker.graphicsEffect()) != nullptr,
+            "the cache-only candidate must retain the existing opacity effect");
     QImage image(64, 64, QImage::Format_RGB32);
     image.fill(Qt::red);
     picker.setCaptureImage(image, image.rect());
@@ -79,7 +80,6 @@ void decorationCacheSurvivesMotionAndTracksTheme() {
     require(picker.currentColorText() == QStringLiteral("#0000FF") &&
                 picker.workCounters().decorationBuilds == initialBuilds,
             "new capture pixels must update without rebuilding fixed decoration");
-
     theme.setThemeAppearance(styles::ThemeAppearance::Dark);
     const QImage dark = picker.grab().toImage();
     require(backgroundPixel(dark) != lightBackground &&
@@ -562,29 +562,6 @@ void pickerPreparationPreservesCanvasInputSurfaces() {
                     "the picker must retain its separate visible surface and stacking owner");
             requireNonNativeCanvases();
             requireImmediatePresentation(picker);
-            const auto surface = picker.internalWinId();
-            for (qreal opacity : {0.83, 0.5, 1.0}) {
-                picker.updatePicker(QPoint(100, 100), QPointF(100, 100), opacity);
-                QApplication::processEvents();
-                require(picker.isVisible() && picker.internalWinId() == surface &&
-                            picker.windowHandle()->transientParent() == owner->windowHandle(),
-                        "opacity changes must preserve the magnifier surface and owner");
-#ifdef Q_OS_MACOS
-                if (QGuiApplication::platformName() == QStringLiteral("cocoa")) {
-                    require(picker.graphicsEffect() == nullptr,
-                            "Cocoa magnifier opacity must not allocate a QWidget effect layer");
-                    NSWindow* native = reinterpret_cast<NSView*>(picker.internalWinId()).window;
-                    require(native != nil && std::abs(native.alphaValue - opacity) < 0.005,
-                            "native opacity must retain the requested drag transparency");
-                } else
-#endif
-                {
-                    const auto* effect =
-                        qobject_cast<QGraphicsOpacityEffect*>(picker.graphicsEffect());
-                    require(effect != nullptr && std::abs(effect->opacity() - opacity) < 0.0001,
-                            "the raster fallback must retain the requested drag transparency");
-                }
-            }
             picker.updatePicker(QPoint(100, 100), QPointF(100, 100), 0.0);
             require(!picker.isVisible(), "zero opacity must immediately hide the magnifier");
             requireImmediatePresentation(picker);
@@ -604,6 +581,7 @@ int main(int argc, char** argv) {
     }
     QApplication application(argc, argv);
     if (application.arguments().contains(QStringLiteral("--magnifier-animation-only"))) {
+        decorationCacheSurvivesMotionAndTracksTheme();
         pickerPreparationPreservesCanvasInputSurfaces();
         return 0;
     }

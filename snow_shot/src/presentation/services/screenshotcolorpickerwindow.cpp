@@ -12,7 +12,6 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QGraphicsOpacityEffect>
-#include <QGuiApplication>
 #include <QEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -224,18 +223,9 @@ ScreenshotColorPickerWindow::ScreenshotColorPickerWindow(QWidget* parent)
     connect(&themeManager, &snow_shot::presentation::styles::ThemeManager::themeChanged, this,
             applyTheme);
 
-#ifdef Q_OS_MACOS
-    if (QGuiApplication::platformName() == QStringLiteral("cocoa")) {
-        // This is an independent native window. Let Cocoa composite its opacity
-        // instead of rerendering a QWidget effect pixmap for every pointer frame.
-        setWindowOpacity(0.0);
-    } else
-#endif
-    {
-        m_opacityEffect = new QGraphicsOpacityEffect(this);
-        m_opacityEffect->setOpacity(0.0);
-        setGraphicsEffect(m_opacityEffect);
-    }
+    m_opacityEffect = new QGraphicsOpacityEffect(this);
+    m_opacityEffect->setOpacity(0.0);
+    setGraphicsEffect(m_opacityEffect);
     hide();
 }
 
@@ -372,29 +362,22 @@ void ScreenshotColorPickerWindow::updatePicker(
     }
     const bool coordinatesChanged = previousPositionText != currentPositionText();
     static_cast<void>(updatePosition(overlayLocalPosition));
-    const bool opacityChanged = setPickerOpacity(opacity);
+    bool opacityChanged = false;
+    if (m_opacityEffect != nullptr) {
+        opacityChanged = std::abs(m_opacityEffect->opacity() - opacity) > 0.0001;
+        if (opacityChanged) {
+            m_opacityEffect->setOpacity(opacity);
+        }
+    }
 
     const bool wasVisible = isVisible();
     if (!wasVisible) {
         show();
         raise();
     }
-    if (previewChanged || coordinatesChanged || (opacityChanged && m_opacityEffect != nullptr)) {
+    if (previewChanged || opacityChanged || coordinatesChanged) {
         update();
     }
-}
-
-bool ScreenshotColorPickerWindow::setPickerOpacity(qreal opacity) {
-    if (std::abs(m_pickerOpacity - opacity) <= 0.0001) {
-        return false;
-    }
-    m_pickerOpacity = opacity;
-    if (m_opacityEffect != nullptr) {
-        m_opacityEffect->setOpacity(opacity);
-    } else {
-        setWindowOpacity(opacity);
-    }
-    return true;
 }
 
 QString ScreenshotColorPickerWindow::currentPositionText() const {
@@ -410,7 +393,9 @@ QString ScreenshotColorPickerWindow::currentPositionText() const {
 }
 
 void ScreenshotColorPickerWindow::hidePicker() {
-    static_cast<void>(setPickerOpacity(0.0));
+    if (m_opacityEffect != nullptr && m_opacityEffect->opacity() != 0.0) {
+        m_opacityEffect->setOpacity(0.0);
+    }
     if (!isHidden())
         hide();
 }
