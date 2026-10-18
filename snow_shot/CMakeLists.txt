@@ -4281,6 +4281,8 @@ if(SNOW_SHOT_BUILD_TESTS)
         src/presentation/styles/themecolorscheme.cpp
     )
     snow_shot_link_macos_window_platform(snow-shot-screenshot-color-picker-tests)
+    target_compile_definitions(snow-shot-screenshot-color-picker-tests PRIVATE
+        SNOW_SHOT_BENCH_INTERNALS=1)
     target_include_directories(snow-shot-screenshot-color-picker-tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
     )

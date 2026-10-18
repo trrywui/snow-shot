@@ -17,9 +17,11 @@
 #include <QPainterPath>
 #include <QWindow>
 #include <QtGlobal>
+#include <QtMath>
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 constexpr int kPreviewScale = 12;
@@ -41,6 +43,24 @@ constexpr int kCursorGap = 16;
 const QColor kFallbackPanelBackground(255, 255, 255);
 const QColor kFallbackPanelTextColor(38, 38, 38);
 const QColor kShadowColor(0, 0, 0, 28);
+
+void paintPanelDecoration(QPainter& painter, const QRectF& panel, const QColor& background) {
+    for (int step = kShadowBlurRadius; step >= 1; --step) {
+        const qreal progress = static_cast<qreal>(kShadowBlurRadius - step + 1) /
+                               static_cast<qreal>(kShadowBlurRadius);
+        QColor shadow = kShadowColor;
+        shadow.setAlphaF(static_cast<float>(std::clamp<qreal>(
+            static_cast<qreal>(kShadowColor.alpha()) / 255.0 * std::pow(progress, 1.45), 0.0,
+            1.0)));
+        painter.setPen(QPen(shadow, 1.0));
+        painter.setBrush(Qt::NoBrush);
+        const QRectF shadowRect = panel.adjusted(-step, -step, step, step);
+        painter.drawRoundedRect(shadowRect, kPanelRadius + step, kPanelRadius + step);
+    }
+    QPainterPath panelPath;
+    panelPath.addRoundedRect(panel, kPanelRadius, kPanelRadius);
+    painter.fillPath(panelPath, background);
+}
 
 Qt::WindowFlags colorPickerWindowFlags() {
     // The panel paints its own shadow. Cocoa otherwise builds a native shadow from
@@ -466,29 +486,42 @@ void ScreenshotColorPickerWindow::changeEvent(QEvent* event) {
     }
 }
 
+void ScreenshotColorPickerWindow::paintDecoration(QPainter& painter) {
+    const qreal dpr = painter.device()->devicePixelRatioF();
+    if (!m_decorationCache.isNull() && m_decorationSize == size() &&
+        qFuzzyCompare(m_decorationCache.devicePixelRatio(), dpr) &&
+        m_decorationBackground == m_panelBackground) {
+        painter.drawImage(QPointF(), m_decorationCache);
+        return;
+    }
+
+    QImage decoration(QSize(qCeil(width() * dpr), qCeil(height() * dpr)),
+                      QImage::Format_ARGB32_Premultiplied);
+    if (decoration.isNull()) {
+        paintPanelDecoration(painter, panelRect(), m_panelBackground);
+        return;
+    }
+    decoration.setDevicePixelRatio(dpr);
+    decoration.fill(Qt::transparent);
+    QPainter decorationPainter(&decoration);
+    decorationPainter.setRenderHint(QPainter::Antialiasing, true);
+    paintPanelDecoration(decorationPainter, panelRect(), m_panelBackground);
+    decorationPainter.end();
+    m_decorationCache = std::move(decoration);
+    m_decorationSize = size();
+    m_decorationBackground = m_panelBackground;
+#if defined(SNOW_SHOT_BENCH_INTERNALS)
+    ++m_workCounters.decorationBuilds;
+#endif
+    painter.drawImage(QPointF(), m_decorationCache);
+}
+
 void ScreenshotColorPickerWindow::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-
-    const QRectF panel = panelRect();
-    for (int step = kShadowBlurRadius; step >= 1; --step) {
-        const qreal progress = static_cast<qreal>(kShadowBlurRadius - step + 1) /
-                               static_cast<qreal>(kShadowBlurRadius);
-        QColor shadow = kShadowColor;
-        shadow.setAlphaF(static_cast<float>(std::clamp<qreal>(
-            static_cast<qreal>(kShadowColor.alpha()) / 255.0 * std::pow(progress, 1.45), 0.0,
-            1.0)));
-        painter.setPen(QPen(shadow, 1.0));
-        painter.setBrush(Qt::NoBrush);
-        const QRectF shadowRect = panel.adjusted(-step, -step, step, step);
-        painter.drawRoundedRect(shadowRect, kPanelRadius + step, kPanelRadius + step);
-    }
-
-    QPainterPath panelPath;
-    panelPath.addRoundedRect(panel, kPanelRadius, kPanelRadius);
-    painter.fillPath(panelPath, m_panelBackground);
+    paintDecoration(painter);
 
     const QRectF preview = previewRect();
     const QPainterPath previewPath = topRoundedRectPath(preview, kPanelRadius);
