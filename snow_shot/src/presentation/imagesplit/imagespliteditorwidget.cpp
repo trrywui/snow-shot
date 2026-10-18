@@ -95,6 +95,10 @@ QString canvasText(const char* source) {
     QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Reload"),
     QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "%1 × %2 px"),
     QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Total: %1 images"),
+    QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Select an image to split"),
+    QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Drag an image file here, or choose Select Image"),
+    QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Select Image"),
+    QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Drop one image to split"),
     QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Drop one image to replace the current image"),
     QT_TRANSLATE_NOOP("ImageSplitEditorWidget", "Drop one image file at a time."),
 };
@@ -833,6 +837,8 @@ struct ImageSplitEditorWidget::Impl {
     AdInputNumber* rows = nullptr;
     AdInputNumber* columns = nullptr;
     AdInputNumber* size = nullptr;
+    ImageDropSurface* emptyState = nullptr;
+    AdButton* emptySelect = nullptr;
     ImageDropSurface* dropHint = nullptr;
     QWidget* description = nullptr;
     QLabel* dimensions = nullptr;
@@ -859,7 +865,9 @@ struct ImageSplitEditorWidget::Impl {
         return !busy() && dropActions.testFlag(Qt::CopyAction) && !droppedPaths(mime).isEmpty();
     }
     void positionDropHint() {
-        dropHint->setGeometry(canvas->geometry());
+        const auto* target = document->image().isNull() ? static_cast<QWidget*>(emptyState)
+                                                        : static_cast<QWidget*>(canvas);
+        dropHint->setGeometry(target->geometry());
         dropHint->raise();
     }
     QString sizeKey() const {
@@ -953,6 +961,8 @@ struct ImageSplitEditorWidget::Impl {
         actions[1]->setEnabled(available && document->canRedo());
         actions[2]->setEnabled(!document->image().isNull());
         actions[3]->setEnabled(!busy());
+        emptySelect->setEnabled(!busy());
+        emptySelect->setBusy(loading);
         form->setEnabled(!busy());
         const auto displayedDirection = direction->currentValue() == QStringLiteral("horizontal")
                                             ? ImageSplitDirection::Horizontal
@@ -1019,9 +1029,19 @@ struct ImageSplitEditorWidget::Impl {
     void refresh() {
         if (!(document->settings() == lastSettings) || document->image().cacheKey() != imageKey)
             sync();
+        const bool empty = document->image().isNull();
+        canvas->setVisible(!empty);
+        emptyState->setVisible(empty);
+        // Restore the canvas geometry before callers fit or retain its viewport.
+        owner->layout()->activate();
+        positionDropHint();
+        dropHint->title->setText(editorText(empty ? "Drop one image to split"
+                                                  : "Drop one image to replace the current image"));
+        dropHint->setAccessibleName(dropHint->title->text());
         const auto layout = document->layout();
         dimensions->setText(
             editorText("%1 × %2 px").arg(layout.size.width()).arg(layout.size.height()));
+        dimensions->setVisible(!empty);
         total->setText(editorText("Total: %1 images").arg(layout.outputCount()));
         validate();
         updateActions();
@@ -1075,6 +1095,7 @@ struct ImageSplitEditorWidget::Impl {
         palette.setColor(QPalette::Disabled, QPalette::WindowText, theme.colorTextDisabled);
         for (auto* label : {dimensions, total})
             label->setPalette(palette);
+        emptyState->refreshTheme();
         dropHint->refreshTheme();
         owner->update();
     }
@@ -1109,6 +1130,20 @@ ImageSplitEditorWidget::ImageSplitEditorWidget(ImageSplitDocument* document, QWi
             toolbar->addSeparator();
         d.actions[i] = toolbar->addAction(refs[i], names[i]);
     }
+    d.emptyState = new ImageDropSurface(false, this);
+    d.emptyState->setObjectName(QStringLiteral("imageSplitEmptyState"));
+    d.emptyState->title->setObjectName(QStringLiteral("imageSplitEmptyPrompt"));
+    d.emptyState->description->setObjectName(QStringLiteral("imageSplitEmptyDescription"));
+    d.emptySelect = new AdButton(d.emptyState);
+    d.emptySelect->setObjectName(QStringLiteral("imageSplitEmptySelectImage"));
+    d.emptySelect->setIconRef(icons::Plus());
+    d.emptySelect->setButtonStyle(AdButton::ButtonStyle::Solid);
+    d.emptySelect->setAccentRole(AdButton::AccentRole::Primary);
+    d.emptySelect->setFocusPolicy(Qt::StrongFocus);
+    auto* emptyLayout = static_cast<QVBoxLayout*>(d.emptyState->layout());
+    emptyLayout->insertSpacing(emptyLayout->count() - 1, 8);
+    emptyLayout->insertWidget(emptyLayout->count() - 1, d.emptySelect, 0, Qt::AlignHCenter);
+    outer->addWidget(d.emptyState, 1);
     auto* scroll = new AdScrollArea(this);
     scroll->setObjectName(QStringLiteral("imageSplitSettingsScroll"));
     scroll->setFixedWidth(340);
@@ -1246,6 +1281,7 @@ ImageSplitEditorWidget::ImageSplitEditorWidget(ImageSplitDocument* document, QWi
     connect(d.actions[1], &AdButton::clicked, document, &ImageSplitDocument::redo);
     connect(d.actions[2], &AdButton::clicked, d.canvas, &ImageSplitPreviewCanvas::fitToCanvas);
     connect(d.actions[3], &AdButton::clicked, this, &ImageSplitEditorWidget::reloadRequested);
+    connect(d.emptySelect, &AdButton::clicked, this, &ImageSplitEditorWidget::reloadRequested);
     connect(document, &ImageSplitDocument::changed, &d.callbackContext,
             [this] { m_impl->refresh(); });
     connect(document, &ImageSplitDocument::historyChanged, &d.callbackContext,
@@ -1346,9 +1382,14 @@ void ImageSplitEditorWidget::retranslateUi() {
         d.actions[i]->setToolTip(label);
         d.actions[i]->setAccessibleName(label);
     }
-    d.dropHint->title->setText(editorText("Drop one image to replace the current image"));
+    d.emptyState->title->setText(editorText("Select an image to split"));
+    d.emptyState->description->setText(
+        editorText("Drag an image file here, or choose Select Image"));
+    d.emptyState->setAccessibleName(d.emptyState->title->text());
+    d.emptyState->setAccessibleDescription(d.emptyState->description->text());
+    d.emptySelect->setText(editorText("Select Image"));
+    d.emptySelect->setAccessibleName(d.emptySelect->text());
     d.dropHint->description->setText(editorText("Drop one image file at a time."));
-    d.dropHint->setAccessibleName(d.dropHint->title->text());
     d.dropHint->setAccessibleDescription(d.dropHint->description->text());
     d.canvas->retranslateUi();
     d.refresh();

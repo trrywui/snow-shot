@@ -77,6 +77,12 @@ class ScreenshotInteractionState final {
     const std::optional<EffectGesture>& effectGesture() const {
         return m_effectGesture;
     }
+    bool selectionBackgroundPreviewVisible() const {
+        return m_selectionBackgroundPreviewVisible;
+    }
+    void setSelectionBackgroundPreviewVisible(bool visible) {
+        m_selectionBackgroundPreviewVisible = visible;
+    }
     ScreenshotSelectionEffectHandle hoveredEffectHandle() const {
         return m_hoveredEffectHandle;
     }
@@ -135,6 +141,7 @@ class ScreenshotInteractionState final {
   private:
     void resetEffectEditors();
     std::optional<EffectGesture> m_effectGesture;
+    bool m_selectionBackgroundPreviewVisible = false;
     ScreenshotSelectionEffectHandle m_hoveredEffectHandle = ScreenshotSelectionEffectHandle::None;
     bool m_effectEditorsSuppressed = false;
     ScreenshotActiveTool m_activeTool = ScreenshotActiveTool::Move;

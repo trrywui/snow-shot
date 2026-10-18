@@ -642,11 +642,17 @@ int main(int argc, char* argv[]) {
 #ifdef Q_OS_WIN
     QString shellRegistrationError;
     const snow_shot::platform::windows::ShellContextMenuRegistration shellRegistration;
-    if (!shellRegistration.setEnabled(snow_shot::storage::ApplicationStorage::instance()
-                                              .configuration()
-                                              .value(QStringLiteral("system/context_menu_mode"))
-                                              .toString() == QStringLiteral("image_files"),
-                                      &shellRegistrationError)) {
+    const auto contextMenuShortcuts = snow_shot::shortcuts::shortcutBindingsFromJson(
+        snow_shot::storage::ApplicationStorage::instance().configuration().value(
+            QStringLiteral("context_menu_shortcuts/edit_with_snow_shot")),
+        false);
+    if (!shellRegistration.setEnabled(
+            snow_shot::storage::ApplicationStorage::instance()
+                    .configuration()
+                    .value(QStringLiteral("system/context_menu_mode"))
+                    .toString() == QStringLiteral("image_files"),
+            contextMenuShortcuts.isEmpty() ? QString() : contextMenuShortcuts.first().portableText,
+            &shellRegistrationError)) {
         snow_shot::app::reportStartupRegistrationFailure(shellRegistrationError);
     }
 #endif

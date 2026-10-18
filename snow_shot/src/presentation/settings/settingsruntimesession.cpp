@@ -1603,6 +1603,18 @@ bool SettingsRuntimeSession::applyLocalShortcuts(SettingsLocalShortcutScope scop
                                                  const QString& shortcutId,
                                                  const shortcuts::ShortcutBindingList& shortcuts) {
     const auto* descriptor = descriptorForLocal(scope, shortcutId);
+    if (descriptor != nullptr && scope == SettingsLocalShortcutScope::WindowsContextMenu) {
+        if (shortcuts.size() > 1)
+            return false;
+        shortcuts::ShortcutBindingList canonical;
+        for (const auto& shortcut : shortcuts) {
+            const auto validation = m_backend.validateLocalShortcut(scope, shortcutId, shortcut);
+            if (!validation.supported)
+                return false;
+            canonical.push_back(validation.binding);
+        }
+        return submitDraft(descriptor->id, shortcutListVariant(canonical));
+    }
     return descriptor != nullptr && submitDraft(descriptor->id, shortcutListVariant(shortcuts));
 }
 

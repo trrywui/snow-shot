@@ -263,6 +263,7 @@ struct ScreenshotOverlayShortcutController::Impl {
             QStringLiteral("switch_selection_between_window_and_window_sub_element"),
             QStringLiteral("previous_screenshot_history"),
             QStringLiteral("next_screenshot_history"),
+            QStringLiteral("duplicate_latest_region"),
             QStringLiteral("select_previously_selected_area"),
             QStringLiteral("select_next_previously_selected_area"),
             QStringLiteral("recapture"),
@@ -296,6 +297,8 @@ struct ScreenshotOverlayShortcutController::Impl {
             binding.priority = ShortcutManager::StandardPriority::ScreenshotShortcut;
             binding.autoRepeat = actionId.startsWith(QStringLiteral("move_cursor_"));
             binding.canActivate = [this, actionId](const auto&) {
+                if (actionId == QStringLiteral("duplicate_latest_region"))
+                    return inputHandler.canDuplicateLatestRegion();
                 if (inputHandler.effectDragActive() &&
                     actionId != QStringLiteral("cancel_screenshot"))
                     return false;
@@ -346,8 +349,9 @@ struct ScreenshotOverlayShortcutController::Impl {
                 }
                 if (actionId == QStringLiteral("select_previously_selected_area") ||
                     actionId == QStringLiteral("select_next_previously_selected_area")) {
-                    return interaction.moveToolActive() && !interaction.dragging() &&
-                           !interaction.scrollingCapture() && actions.localShortcutInputAllowed();
+                    return !inputHandler.multiRegionEditing() && interaction.moveToolActive() &&
+                           !interaction.dragging() && !interaction.scrollingCapture() &&
+                           actions.localShortcutInputAllowed();
                 }
                 if (actionId == QStringLiteral("toggle_cursor_visibility")) {
                     return !inputHandler.externalDragActive() && !interaction.dragging() &&
@@ -376,6 +380,8 @@ struct ScreenshotOverlayShortcutController::Impl {
             binding.activate = [this, actionId](const auto& context) {
                 if (actionId != QStringLiteral("cancel_screenshot") && !inputHandler.acceptInput())
                     return false;
+                if (actionId == QStringLiteral("duplicate_latest_region"))
+                    return inputHandler.duplicateLatestRegion();
                 if (actionId == QStringLiteral("selection_aspect_ratio_snap")) {
                     return inputHandler.activateSelectionAspectRatioSnapShortcut();
                 }
@@ -453,6 +459,15 @@ struct ScreenshotOverlayShortcutController::Impl {
                 binding.release = [this](const auto&) {
                     return inputHandler.releaseMoveEntireSelectionShortcut();
                 };
+                auto regionBinding = binding;
+                regionBinding.id += QStringLiteral(".region_snap");
+                regionBinding.allowedAdditionalModifiers = Qt::ShiftModifier | Qt::ControlModifier;
+                regionBinding.canActivate = [this,
+                                             eligible = binding.canActivate](const auto& context) {
+                    return inputHandler.multiRegionEditing() &&
+                           !inputHandler.externalDragActive() && eligible(context);
+                };
+                regionMoveBinding = shortcutManager.addBinding(&q, std::move(regionBinding));
             } else if (actionId == QStringLiteral("keep_selection_width_and_height_consistent")) {
                 binding.cancel = [this] { inputHandler.cancelKeepSelectionAspectRatioShortcut(); };
                 binding.release = [this](const auto&) {
@@ -498,6 +513,9 @@ struct ScreenshotOverlayShortcutController::Impl {
 
     void reloadConfiguredShortcuts() {
         const snow_shot::storage::ScreenshotShortcutSettings screenshotSettings;
+        static_cast<void>(shortcutManager.setShortcuts(
+            regionMoveBinding,
+            screenshotSettings.shortcuts(QStringLiteral("move_entire_selection"))));
         for (auto binding = screenshotBindings.cbegin(); binding != screenshotBindings.cend();
              ++binding) {
             static_cast<void>(shortcutManager.setShortcuts(
@@ -527,6 +545,7 @@ struct ScreenshotOverlayShortcutController::Impl {
     QMap<QString, BindingHandle> screenshotBindings;
     QMap<QString, BindingHandle> externalBindings;
     QMap<QString, BindingHandle> drawingBindings;
+    BindingHandle regionMoveBinding = 0;
 };
 
 ScreenshotOverlayShortcutController::ScreenshotOverlayShortcutController(

@@ -551,6 +551,10 @@
             <translation>清空全部影像？</translation>
         </message>
         <message>
+            <source>Clipboard image</source>
+            <translation>剪貼簿影像</translation>
+        </message>
+        <message>
             <source>Collage</source>
             <translation>圖片拼接</translation>
         </message>
@@ -860,12 +864,20 @@ Files:
             <translation>欄數</translation>
         </message>
         <message>
+            <source>Drag an image file here, or choose Select Image</source>
+            <translation>將圖像檔案拖曳至此處，或點選「選擇圖像」</translation>
+        </message>
+        <message>
             <source>Drop one image file at a time.</source>
             <translation>請一次拖入一個圖像檔案。</translation>
         </message>
         <message>
             <source>Drop one image to replace the current image</source>
             <translation>拖入一張圖像以取代目前圖像</translation>
+        </message>
+        <message>
+            <source>Drop one image to split</source>
+            <translation>拖入一張圖像進行分割</translation>
         </message>
         <message>
             <source>Enter a positive integer.</source>
@@ -922,6 +934,14 @@ Files:
         <message>
             <source>Rows</source>
             <translation>列數</translation>
+        </message>
+        <message>
+            <source>Select Image</source>
+            <translation>選擇圖像</translation>
+        </message>
+        <message>
+            <source>Select an image to split</source>
+            <translation>選擇要分割的圖像</translation>
         </message>
         <message>
             <source>Split direction</source>
@@ -1001,8 +1021,16 @@ Files:
     <context>
         <name>ImageSplitWindow</name>
         <message>
+            <source>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again.</source>
+            <translation>請在「系統設定 &gt; 隱私權與安全性 &gt; 自動化」中允許 Snow Shot 存取 Finder，然後再試一次。</translation>
+        </message>
+        <message>
             <source>Cancel</source>
             <translation>取消</translation>
+        </message>
+        <message>
+            <source>Could not read the selected image files. Please try again.</source>
+            <translation>無法讀取選取的圖片檔案，請再試一次。</translation>
         </message>
         <message>
             <source>Discard</source>
@@ -1073,6 +1101,14 @@ Files:
             <translation>選擇圖像</translation>
         </message>
         <message>
+            <source>The file manager is unavailable. Open it and try again.</source>
+            <translation>檔案管理員無法使用，請開啟後再試一次。</translation>
+        </message>
+        <message>
+            <source>The file manager took too long to return the selected files. Please try again.</source>
+            <translation>檔案管理員傳回選取檔案的時間過長，請再試一次。</translation>
+        </message>
+        <message>
             <source>The image and current split edits will be discarded.</source>
             <translation>圖像與目前的分割編輯將被捨棄。</translation>
         </message>
@@ -1087,6 +1123,45 @@ Files:
         <message>
             <source>The images could not be exported. Try again.</source>
             <translation>無法匯出圖像，請再試一次。</translation>
+        </message>
+    </context>
+    <context>
+        <name>PinnedColorSwatch</name>
+        <message>
+            <source>Color:</source>
+            <translation>顏色：</translation>
+        </message>
+        <message>
+            <source>Copy HEX color</source>
+            <translation>複製 HEX 色彩值</translation>
+        </message>
+        <message>
+            <source>Copy HSL color</source>
+            <translation>複製 HSL 色彩值</translation>
+        </message>
+        <message>
+            <source>Copy RGB color</source>
+            <translation>複製 RGB 色彩值</translation>
+        </message>
+        <message>
+            <source>HEX:</source>
+            <translation>HEX:</translation>
+        </message>
+        <message>
+            <source>HSL:</source>
+            <translation>HSL:</translation>
+        </message>
+        <message>
+            <source>HSLA:</source>
+            <translation>HSLA:</translation>
+        </message>
+        <message>
+            <source>RGB:</source>
+            <translation>RGB:</translation>
+        </message>
+        <message>
+            <source>RGBA:</source>
+            <translation>RGBA:</translation>
         </message>
     </context>
     <context>
@@ -1564,6 +1639,10 @@ Files:
         <message>
             <source>Group: Default</source>
             <translation>群組：預設</translation>
+        </message>
+        <message>
+            <source>Hide All Windows to Top</source>
+            <translation>所有視窗頂部隱藏</translation>
         </message>
         <message>
             <source>Hide other windows</source>

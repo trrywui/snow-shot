@@ -38,6 +38,7 @@ void ScreenshotToolPaletteStyleState::reset(const SnowCanvasStyleDefaults& defau
         defaults.arrow.endArrowhead,   defaults.arrow.strokeStyle, defaults.arrow.arrowType,
         defaults.arrow.arrowShaftType, defaults.arrow.arrowRatio,
     };
+    m_creationArrowStyle.strokeRenderingStyle = defaults.arrow.strokeRenderingStyle;
     m_arrowStyle = m_creationArrowStyle;
     creationDistanceStyle = defaults.distance;
     distanceStyle = defaults.distance;
@@ -155,6 +156,7 @@ SnowCanvasShapeStyle ScreenshotToolPaletteRectangleStyleModel::rectangleStyle() 
     style.strokeWidth = m_strokeWidth;
     style.stroke = m_strokeColor;
     style.strokeStyle = m_strokeStyle;
+    style.strokeRenderingStyle = m_strokeRenderingStyle;
     style.fill = m_fillColor;
     style.fillStyle = m_fillStyle;
     style.arrowType = m_arrowType;
@@ -171,6 +173,7 @@ void ScreenshotToolPaletteRectangleStyleModel::setRectangleStyle(
     m_strokeWidth = clampedStrokeWidth(style.strokeWidth);
     m_strokeColor = style.stroke;
     m_strokeStyle = style.strokeStyle;
+    m_strokeRenderingStyle = style.strokeRenderingStyle;
     m_fillColor = style.fill;
     m_fillStyle = style.fillStyle;
     m_arrowType = style.arrowType;
@@ -208,6 +211,11 @@ const QColor& ScreenshotToolPaletteRectangleStyleModel::strokeColor() const {
 
 SnowCanvasStrokeStyle ScreenshotToolPaletteRectangleStyleModel::strokeStyle() const {
     return m_strokeStyle;
+}
+
+SnowCanvasStrokeRenderingStyle
+ScreenshotToolPaletteRectangleStyleModel::strokeRenderingStyle() const {
+    return m_strokeRenderingStyle;
 }
 
 const QColor& ScreenshotToolPaletteRectangleStyleModel::fillColor() const {
@@ -304,6 +312,15 @@ bool ScreenshotToolPaletteRectangleStyleModel::setStrokeStyle(SnowCanvasStrokeSt
     }
 
     m_strokeStyle = strokeStyle;
+    return true;
+}
+
+bool ScreenshotToolPaletteRectangleStyleModel::setStrokeRenderingStyle(
+    SnowCanvasStrokeRenderingStyle style) {
+    if (m_strokeRenderingStyle == style) {
+        return false;
+    }
+    m_strokeRenderingStyle = style;
     return true;
 }
 

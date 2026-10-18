@@ -79,7 +79,8 @@ export CLANG_MODULE_CACHE_PATH="$personal_root/cache/clang-modules"
 export PYTHONPYCACHEPREFIX="$personal_root/cache/pycache"
 export LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
 export SNOW_SHOT_PERSONAL_DATA_DIR="$personal_root/user-data"
-export PATH="$personal_root/host/venv/bin:$personal_root/host/bin:$personal_root/rustup/toolchains/1.97.1-x86_64-apple-darwin/bin:$PATH"
+personal_rustup_bin="$(dirname "$(command -v rustup)")"
+export PATH="$personal_root/host/venv/bin:$personal_root/host/bin:$personal_rustup_bin:$PATH"
 mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
 
 personal_python_certificates() {
@@ -108,8 +109,18 @@ personal_bootstrap() {
     personal_python_certificates
     if [[ ! -x "$personal_root/rustup/toolchains/1.97.1-x86_64-apple-darwin/bin/rustc" ]]; then
         command -v rustup >/dev/null
-        rustup toolchain install 1.97.1 --profile minimal --component rustfmt \
+        rustup toolchain install 1.97.1 --no-self-update --profile minimal --component rustfmt \
             --component clippy --target x86_64-apple-darwin
+    fi
+    local ocr_toolchain
+    ocr_toolchain="$(python3 - "$personal_repo/snow-crates/crates/simd-paddle-ocr-rs/rust-toolchain.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as source:
+    print(tomllib.load(source)['toolchain']['channel'])
+PY
+)"
+    if [[ ! -x "$personal_root/rustup/toolchains/$ocr_toolchain-x86_64-apple-darwin/bin/rustc" ]]; then
+        rustup toolchain install "$ocr_toolchain" --no-self-update --profile minimal --target x86_64-apple-darwin
     fi
     if [[ ! -x "$personal_root/host/bin/pkgconf" ]]; then
         personal_fetch https://distfiles.ariadne.space/pkgconf/pkgconf-2.5.1.tar.xz \
@@ -204,6 +215,7 @@ personal_configure() {
         -DSNOW_MACOS_CODESIGN_IDENTITY=- -DSNOW_SHOT_ENABLE_MCP=OFF \
         -DSNOW_APPS_ENABLE_RELEASE_OPTIMIZATION=ON -DSNOW_APPS_ENABLE_RELEASE_SIZE_OPTIMIZATION=ON \
         -DSNOW_RUST_TARGET=x86_64-apple-darwin -DSNOW_RUST_CARGO_TARGET_DIR="$directory/cargo" \
+        -DCARGO_EXECUTABLE="$(command -v cargo)" -DRUSTC_EXECUTABLE="$(command -v rustc)" \
         -DSNOW_MACOS_OCR_CACHE="$personal_root/cache/ocr" -DSNOW_IMAGE_PROFILE=redistributable \
         -DSNOW_SHOT_QR_MODELS_CACHE="$personal_root/cache/qr-models-wechat" \
         -DPython3_EXECUTABLE="$(command -v python3)")

@@ -1,8 +1,14 @@
 #include "snow_canvas_pressure_brush_fixture.h"
 #include "snow_canvas_pressure_mask_atlas.h"
+#include "snow_draw_engine_qt/snow_canvas_runtime.h"
+#include "snow_draw_engine_qt/snow_canvas_widget.h"
 
-#include <QGuiApplication>
+#include <QApplication>
 #include <QTransform>
+
+#include <limits>
+#include <memory>
+#include <thread>
 
 namespace {
 using namespace pressure_brush_fixture;
@@ -44,6 +50,94 @@ QImage paintMask(const Engine& engine, const QColor& color, bool cached, qreal d
     mask::draw(painter, engine.item(), color, options);
     painter.end();
     return image;
+}
+
+QByteArray pressureDocumentSession() {
+    Engine engine;
+    engine.begin(spiralPoint(0));
+    append(engine, 1, 256);
+    engine.finish();
+    std::size_t size = 0;
+    require(snow_runtime_serialize_document_session(engine.runtime.get(), nullptr, 0, &size) ==
+                    SNOW_OK &&
+                size > 0 && size <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+            "measure a pressure document session for lifecycle cleanup");
+    QByteArray payload(static_cast<int>(size), Qt::Uninitialized);
+    require(snow_runtime_serialize_document_session(engine.runtime.get(),
+                                                    reinterpret_cast<std::uint8_t*>(payload.data()),
+                                                    size, &size) == SNOW_OK,
+            "serialize a pressure document session for lifecycle cleanup");
+    return payload;
+}
+
+QImage exportPressureDocument(SnowCanvasRuntime& runtime) {
+    const auto image = runtime.renderToImage(QRectF(0, 0, 320, 256), QSize(640, 512), {});
+    const auto retained = mask::diagnosticsForCurrentThread();
+    require(!image.isNull() && retained.retainedBytes > 0 && retained.entries > 0,
+            "exporting a pressure document retains mask coverage on its rendering thread");
+    return image;
+}
+
+void requireEmptyPressureCache(const char* message) {
+    const auto retained = mask::diagnosticsForCurrentThread();
+    require(retained.retainedBytes == 0 && retained.entries == 0, message);
+}
+
+void documentCleanupReleasesPressureMasksWithAttachedCanvas() {
+    const auto payload = pressureDocumentSession();
+    SnowCanvasRuntime runtime;
+    SnowCanvasWidget canvas(runtime);
+    canvas.resize(320, 256);
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        require(runtime.restoreDocumentSession(payload), "restore a pressure canvas document");
+        exportPressureDocument(runtime);
+        require(runtime.clearDocumentPreservingViewports(), "clear a pressure canvas document");
+        requireEmptyPressureCache("document cleanup releases pressure masks with a live canvas");
+        require(!runtime.hasDocumentContent() && canvas.setViewportCamera(160, 128, 1),
+                "pressure cleanup preserves the empty document's canvas viewport");
+    }
+}
+
+void exportRuntimeCleanupReleasesPressureMasksOnPersistentWorker() {
+    const auto payload = pressureDocumentSession();
+    enum class Cleanup { ClearRenderState, ClearDocument, Reset, DestroyAsync, DestroyOwner };
+    std::thread worker([&] {
+        for (const auto cleanup : {Cleanup::ClearRenderState, Cleanup::ClearDocument,
+                                   Cleanup::Reset, Cleanup::DestroyAsync, Cleanup::DestroyOwner}) {
+            auto runtime = std::make_unique<SnowCanvasRuntime>();
+            require(runtime->restoreDocumentSession(payload),
+                    "restore a pressure export document without canvas clients");
+            const auto expected = exportPressureDocument(*runtime);
+            switch (cleanup) {
+            case Cleanup::ClearRenderState:
+                runtime->clearRenderState();
+                break;
+            case Cleanup::ClearDocument:
+                require(runtime->clearDocumentPreservingViewports(),
+                        "clear a pressure export document without canvas clients");
+                break;
+            case Cleanup::Reset:
+                require(runtime->reset(), "reset a pressure export runtime");
+                break;
+            case Cleanup::DestroyAsync:
+                runtime->destroyAsync();
+                break;
+            case Cleanup::DestroyOwner:
+                runtime.reset();
+                break;
+            }
+            requireEmptyPressureCache(
+                "export runtime cleanup releases pressure masks before its worker exits");
+            if (cleanup == Cleanup::ClearRenderState) {
+                require(runtime->hasDocumentContent() &&
+                            exportPressureDocument(*runtime) == expected,
+                        "releasing pressure caches preserves the document and export pixels");
+            }
+            runtime.reset();
+            requireEmptyPressureCache("export runtime destruction releases rebuilt pressure masks");
+        }
+    });
+    worker.join();
 }
 
 void cachedAndFreshMasksMatchAcrossClipsColorsAndTransforms() {
@@ -316,7 +410,9 @@ void defaultClipKeepsNativeDeviceEdgesUnderFractionalCameras() {
 } // namespace
 
 int main(int argc, char** argv) {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
+    documentCleanupReleasesPressureMasksWithAttachedCanvas();
+    exportRuntimeCleanupReleasesPressureMasksOnPersistentWorker();
     cachedAndFreshMasksMatchAcrossClipsColorsAndTransforms();
     mutableTailsDoNotReuseStaleUnionTiles();
     cacheBudgetAndCleanupBoundRetainedMaskStorage();

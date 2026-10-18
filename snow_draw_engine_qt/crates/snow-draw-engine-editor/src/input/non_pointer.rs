@@ -193,7 +193,8 @@ impl Editor {
         &mut self,
         _document: &DocumentModel,
     ) -> Result<InteractionOutput, ErrorCode> {
-        let had_interaction = !matches!(&self.state.interaction, InteractionState::Idle);
+        let had_interaction = !matches!(&self.state.interaction, InteractionState::Idle)
+            || self.state.shape_text_drag.is_some();
         self.cancel_interaction();
         self.clear_stroke_cursor_state();
         self.set_hovered_element(None);

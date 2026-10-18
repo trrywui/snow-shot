@@ -26,6 +26,7 @@
 #include <QPainter>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QToolButton>
 #include <atomic>
 #include <algorithm>
 #include <cstdlib>
@@ -75,6 +76,38 @@ adqt::widgets::AdMessageHandle* statusMessage(ImageSplitWindow& window) {
             return handle;
     }
     return nullptr;
+}
+
+void windowPinStartsEnabledAndPreservesEdits() {
+    ImageSplitWindow window;
+    window.presentImage(image());
+    loaded(window);
+    require(window.document()->createLine(true, 200), "create a split before toggling the pin");
+    flush();
+    auto* surface = window.editor()->window();
+    auto* pin = surface->findChild<QToolButton*>(QStringLiteral("ad-modal-always-on-top"));
+    require(pin && pin->isVisible() && pin->isChecked() && window.modal()->windowAlwaysOnTop() &&
+                surface->windowFlags().testFlag(Qt::WindowStaysOnTopHint),
+            "splitting opens pinned with a checked title-bar pin button");
+    const auto pinPosition = pin->mapTo(surface, QPoint());
+    require(pinPosition.x() > surface->width() / 2 &&
+                pinPosition.y() < window.editor()->mapTo(surface, QPoint()).y(),
+            "splitting pin is in the top-right window header");
+    const auto geometry = surface->geometry();
+    const auto state = window.document()->state();
+    for (const bool pinned : {false, true}) {
+        pin->click();
+        window.modal()->present();
+        flush();
+        require(pin->isChecked() == pinned && window.modal()->windowAlwaysOnTop() == pinned &&
+                    surface->windowFlags().testFlag(Qt::WindowStaysOnTopHint) == pinned,
+                "splitting pin toggles always-on-top and survives repeated presentation");
+        require(window.modal()->isOpen() && surface->isVisible() &&
+                    window.editor()->window() == surface && surface->geometry() == geometry &&
+                    window.document()->state() == state && window.document()->canUndo(),
+                "toggling splitting pin preserves the visible window, geometry, and edits");
+    }
+    window.shutdown();
 }
 
 void replacementAndCancellation() {
@@ -162,6 +195,163 @@ void independentHistoryAndSourceWindows() {
     coordinator.shutdown();
     flush();
     require(coordinator.windows().isEmpty(), "coordinator closes all owned windows on shutdown");
+}
+
+class SplitSelectedFilesBackend final : public snow_shot::platform::SelectedFileBackend {
+  public:
+    snow_shot::platform::SelectedFileResult result;
+    std::function<void(const std::function<bool()>&)> onRead;
+    mutable std::atomic_int calls = 0;
+
+    snow_shot::platform::SelectedFileTarget captureTarget() const override {
+        require(QThread::currentThread() == qApp->thread(), "capture selected files on GUI thread");
+        return {11, 22, 33, 44, true};
+    }
+    snow_shot::platform::SelectedFileResult
+    selectedFiles(const snow_shot::platform::SelectedFileTarget& target,
+                  const std::function<bool()>& cancelled) const override {
+        require(QThread::currentThread() != qApp->thread() && target.window == 11 &&
+                    target.view == 22 && target.tab == 33 && target.processId == 44 &&
+                    target.desktop,
+                "read the captured selection on a worker without recapturing focus");
+        ++calls;
+        if (onRead)
+            onRead(cancelled);
+        return result;
+    }
+};
+
+void selectedFilesOpenIndependentWindows() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "selected-image fixture directory exists");
+    const auto first = directory.filePath(QStringLiteral("first.png"));
+    const auto second = directory.filePath(QStringLiteral("second.PNG"));
+    const auto broken = directory.filePath(QStringLiteral("broken.png"));
+    const auto text = directory.filePath(QStringLiteral("notes.txt"));
+    const auto folder = directory.filePath(QStringLiteral("folder.png"));
+    require(image({120, 90}).save(first) && image({60, 80}, Qt::green).save(second) &&
+                QDir().mkpath(folder),
+            "write selected images and a directory with an image extension");
+    for (const auto& path : {broken, text}) {
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly) && file.write("not an image") > 0,
+                "write corrupt-image and non-image fixtures");
+    }
+    auto backend = std::make_shared<SplitSelectedFilesBackend>();
+    backend->result.paths = {first, text, folder, first, second, broken};
+    std::atomic_bool entered = false;
+    std::atomic_bool release = false;
+    backend->onRead = [&](const auto& cancelled) {
+        entered = true;
+        while (!release && !cancelled())
+            QThread::msleep(1);
+    };
+    ImageSplitWindowCoordinator coordinator;
+    coordinator.presentSelectedFiles(backend, backend->captureTarget());
+    require(coordinator.windows().size() == 1 && coordinator.windows()[0]->modal()->isOpen() &&
+                coordinator.windows()[0]->loading(),
+            "the split window opens immediately while selected files are queried");
+    waitUntil([&] { return entered.load(); }, "selected-file query starts in background");
+    release = true;
+    waitUntil([&] { return coordinator.windows().size() == 3; },
+              "each selected image receives its own split window in selection order");
+    auto windows = coordinator.windows();
+    loaded(*windows[0]);
+    loaded(*windows[1]);
+    waitUntil([&] { return !windows[2]->loading(); }, "corrupt image load completes");
+    require(
+        backend->calls == 1 && windows[0]->imageName() == QStringLiteral("first") &&
+            windows[1]->imageName() == QStringLiteral("second") &&
+            windows[0]->document()->image().size() == QSize(120, 90) &&
+            windows[1]->document()->image().size() == QSize(60, 80) &&
+            windows[2]->document()->image().isNull() && !windows[2]->lastError().isEmpty(),
+        "duplicates and non-images are ignored and a corrupt image leaves a recoverable window");
+    require(windows[0]->document()->createLine(true, 25) && !windows[1]->document()->canUndo(),
+            "selected images keep independent split edits");
+    coordinator.shutdown();
+    flush();
+}
+
+void emptyAndFailedSelectionsRemainUsable() {
+    using Error = snow_shot::platform::SelectedFileError;
+    auto& languages = LanguageManager::instance();
+    languages.initialize();
+    require(languages.setLanguage(QStringLiteral("en_US")), "start selection tests in English");
+    for (const auto error : {Error::None, Error::PermissionDenied, Error::Timeout,
+                             Error::Unavailable, Error::QueryFailed}) {
+        auto backend = std::make_shared<SplitSelectedFilesBackend>();
+        backend->result.error = error;
+        ImageSplitWindowServices services;
+        services.readFile = [](const QString&, const auto&) -> std::optional<QImage> {
+            return image({40, 30});
+        };
+        ImageSplitWindowCoordinator coordinator(nullptr, services);
+        coordinator.presentSelectedFiles(backend, backend->captureTarget());
+        auto* window = coordinator.windows().first();
+        waitUntil([&] { return !window->loading(); }, "empty or failed selection finishes");
+        require(coordinator.windows().size() == 1 && window->modal()->isOpen() &&
+                    window->document()->image().isNull() &&
+                    window->lastError().isEmpty() == (error == Error::None),
+                "empty selection opens a clean window and query failures report an error");
+        if (error == Error::QueryFailed) {
+            const auto english = window->lastError();
+            for (const auto* locale : {"zh_CN", "zh_TW"}) {
+                require(languages.setLanguage(QString::fromLatin1(locale)),
+                        "switch selected-file error language");
+                flush();
+                require(window->lastError() != english &&
+                            window->lastError() ==
+                                QCoreApplication::translate(
+                                    "ImageSplitWindow",
+                                    "Could not read the selected image files. Please try again."),
+                        "selected-file errors follow runtime language changes");
+            }
+            require(languages.setLanguage(QStringLiteral("en_US")), "restore English");
+        }
+        window->replaceFile(QStringLiteral("replacement.png"));
+        loaded(*window);
+        require(window->lastError().isEmpty(), "empty or failed selection allows manual loading");
+        coordinator.shutdown();
+        flush();
+    }
+    ImageSplitWindowCoordinator coordinator;
+    auto backend = std::make_shared<SplitSelectedFilesBackend>();
+    coordinator.presentSelectedFiles(backend, {});
+    require(backend->calls == 0 && coordinator.windows().size() == 1 &&
+                !coordinator.windows()[0]->loading() &&
+                coordinator.windows()[0]->lastError().isEmpty(),
+            "an unavailable selection target opens an empty window without querying");
+    coordinator.shutdown();
+    flush();
+}
+
+void selectedFileQueriesCancelWithWindowLifecycle() {
+    for (const bool shutdown : {false, true}) {
+        auto backend = std::make_shared<SplitSelectedFilesBackend>();
+        std::atomic_bool entered = false;
+        std::atomic_bool cancelled = false;
+        backend->onRead = [&](const auto& isCancelled) {
+            entered = true;
+            while (!isCancelled())
+                QThread::msleep(1);
+            cancelled = true;
+        };
+        ImageSplitWindowCoordinator coordinator;
+        coordinator.presentSelectedFiles(backend, backend->captureTarget());
+        waitUntil([&] { return entered.load(); }, "cancellable selection query starts");
+        if (shutdown)
+            coordinator.shutdown();
+        else
+            coordinator.windows().first()->requestClose();
+        waitUntil([&] { return cancelled.load() && coordinator.windows().isEmpty(); },
+                  "closing or shutting down cancels the selection query and prevents late windows");
+        if (shutdown) {
+            coordinator.presentSelectedFiles(backend, backend->captureTarget());
+            require(coordinator.windows().isEmpty() && backend->calls == 1,
+                    "shutdown rejects new selected-image requests");
+        }
+        flush();
+    }
 }
 
 void savedPinsOpenIndependentSplitWindows(const QString& directory, bool styledText) {
@@ -813,15 +1003,34 @@ int main(int argc, char** argv) {
     styles::ThemeManager::instance().initialize(application);
     const auto arguments = application.arguments();
     const auto preview = arguments.indexOf(QStringLiteral("--preview"));
-    if (preview >= 0) {
+    if (arguments.contains(QStringLiteral("--selected-files-only"))) {
+        selectedFilesOpenIndependentWindows();
+        emptyAndFailedSelectionsRemainUsable();
+        selectedFileQueriesCancelWithWindowLifecycle();
+    } else if (arguments.contains(QStringLiteral("--import-sources-only"))) {
+        replacementAndCancellation();
+        independentHistoryAndSourceWindows();
+        savedPinsOpenIndependentSplitWindows(directory.path(), false);
+        savedPinsOpenIndependentSplitWindows(directory.path(), true);
+        nativeHistoryPixelsAreShared();
+        realAnimatedFilesKeepTheirInitialCanvas(directory.path());
+        admissionAndLateCallbacks();
+        shutdownDuringWorkers();
+        canceledCloseResumesReplacement();
+        loadingErrorsFollowLanguageAcrossQueuedCompletion();
+    } else if (preview >= 0) {
         require(preview + 1 < arguments.size(), "preview requires output path");
         renderPreview(arguments[preview + 1], arguments.contains(QStringLiteral("--dark")),
                       arguments.contains(QStringLiteral("--dpr2"))     ? 2
                       : arguments.contains(QStringLiteral("--dpr1.5")) ? 1.5
                                                                        : 1);
     } else {
+        windowPinStartsEnabledAndPreservesEdits();
         replacementAndCancellation();
         independentHistoryAndSourceWindows();
+        selectedFilesOpenIndependentWindows();
+        emptyAndFailedSelectionsRemainUsable();
+        selectedFileQueriesCancelWithWindowLifecycle();
         savedPinsOpenIndependentSplitWindows(directory.path(), false);
         savedPinsOpenIndependentSplitWindows(directory.path(), true);
         nativeHistoryPixelsAreShared();

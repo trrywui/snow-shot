@@ -143,11 +143,14 @@ class TranslationJob final : public QObject {
     TranslationJob(TranslationService& service, const QStringList& texts, QObject* owner);
     void prepare();
     void pump();
+    void publishState();
     void fail(const QString& error);
     void invalidateModel(const QString& id);
     QPointer<TranslationService> m_service;
     QPointer<SnowShotApiClient> m_client;
     QVector<Unit> m_units;
+    // Unit positions remain public; only exact duplicate input shares a provider request.
+    QVector<QVector<int>> m_unitGroups;
     TranslationPreferences m_preferences;
     std::optional<DetectedTranslationLanguage> m_detectedLanguage;
     QString m_effectiveTargetLanguage;

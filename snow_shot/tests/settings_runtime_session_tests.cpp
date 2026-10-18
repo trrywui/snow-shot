@@ -48,6 +48,8 @@ QString globalMouseFieldId(settings::SettingsGlobalMouseAction action) {
         return QStringLiteral("global-mouse.screenshot-fixed");
     case settings::SettingsGlobalMouseAction::ScreenshotOcr:
         return QStringLiteral("global-mouse.screenshot-ocr");
+    case settings::SettingsGlobalMouseAction::ScreenshotOcrCopy:
+        return QStringLiteral("global-mouse.screenshot-ocr-copy");
     case settings::SettingsGlobalMouseAction::ScreenshotTranslation:
         return QStringLiteral("global-mouse.screenshot-translation");
     case settings::SettingsGlobalMouseAction::ScreenshotSave:
@@ -1465,15 +1467,17 @@ void auxiliaryIntegerValuesRemainReactiveWithoutSyntheticFields() {
 void globalMouseCombinationsUseTypedStateAndRejectDuplicates() {
     using Action = settings::SettingsGlobalMouseAction;
     using Combination = settings::SettingsGlobalMouseCombination;
-    const Action actions[]{Action::ScreenshotCopy,      Action::ScreenshotFixed,
-                           Action::ScreenshotOcr,       Action::ScreenshotTranslation,
-                           Action::ScreenshotQuickSave, Action::ScreenshotSave};
+    const Action actions[]{Action::ScreenshotCopy,        Action::ScreenshotFixed,
+                           Action::ScreenshotOcr,         Action::ScreenshotOcrCopy,
+                           Action::ScreenshotTranslation, Action::ScreenshotQuickSave,
+                           Action::ScreenshotSave};
     const Combination combinations[]{
         {{snow_shot::presentation::globalMouseActivationKeys().at(0)}, QStringLiteral("left_drag")},
         {{snow_shot::presentation::globalMouseActivationKeys().at(1)},
          QStringLiteral("right_drag")},
         {{snow_shot::presentation::globalMouseActivationKeys().at(2)},
          QStringLiteral("wheel_drag")},
+        {{QStringLiteral("shift")}, QStringLiteral("right_drag")},
         {{QStringLiteral("shift")}, QStringLiteral("side_button_1_drag")},
         {{snow_shot::presentation::globalMouseActivationKeys().at(0)},
          QStringLiteral("side_button_2_drag")},

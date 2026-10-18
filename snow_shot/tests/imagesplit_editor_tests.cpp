@@ -106,6 +106,141 @@ void show(ImageSplitEditorWidget& editor) {
     pump();
 }
 
+void emptyImageShowsUploadSurface() {
+    ImageSplitDocument document;
+    ImageSplitEditorWidget editor(&document);
+    show(editor);
+    auto* empty = child<QWidget>(editor, "imageSplitEmptyState");
+    auto* title = child<QLabel>(editor, "imageSplitEmptyPrompt");
+    auto* description = child<QLabel>(editor, "imageSplitEmptyDescription");
+    auto* select = child<AdButton>(editor, "imageSplitEmptySelectImage");
+    auto* hint = child<QWidget>(editor, "imageSplitDropHint");
+    const auto requireEmpty = [&] {
+        require(empty->isVisible() && !editor.canvas()->isVisible() &&
+                    !child<QWidget>(editor, "imageSplitCanvasToolbar")->isVisible() &&
+                    child<QLabel>(editor, "imageSplitDimensions")->isHidden() &&
+                    empty->isAncestorOf(select) && empty->isAncestorOf(title) &&
+                    title->wordWrap() && description->wordWrap() &&
+                    title->geometry().bottom() < description->geometry().top() &&
+                    description->geometry().bottom() < select->geometry().top() &&
+                    empty->rect().contains(select->geometry()),
+                "the upload guidance and action must replace the empty preview and toolbar");
+    };
+    requireEmpty();
+    require(select->buttonStyle() == AdButton::ButtonStyle::Solid &&
+                select->accentRole() == AdButton::AccentRole::Primary &&
+                select->iconRef().isValid() && select->focusPolicy() == Qt::StrongFocus &&
+                !editor.configurationValid(),
+            "the empty upload action must match the merge window's primary add action");
+    int selections = 0;
+    QObject::connect(&editor, &ImageSplitEditorWidget::reloadRequested, &editor,
+                     [&] { ++selections; });
+    click(select);
+    select->setFocus(Qt::TabFocusReason);
+    require(select->hasFocus(), "the empty action must accept keyboard focus");
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+    QKeyEvent release(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier);
+    QApplication::sendEvent(select, &press);
+    QApplication::sendEvent(select, &release);
+    require(selections == 2, "mouse and keyboard activation must request image selection");
+    editor.setLoading(true);
+    require(!select->isEnabled() && select->busy(), "image loading must busy the empty action");
+    requireEmpty();
+    editor.setLoading(false);
+    editor.setExportBusy(true);
+    require(!select->isEnabled(), "export must block empty-state image selection");
+    editor.setExportBusy(false);
+    require(select->isEnabled() && !select->busy(),
+            "the empty action must recover after busy work");
+
+    QMimeData files;
+    const auto path = QStringLiteral("C:/split.png");
+    files.setUrls({QUrl::fromLocalFile(path)});
+    QStringList received;
+    QObject::connect(&editor, &ImageSplitEditorWidget::imageFilesDropped, &editor,
+                     [&](const QStringList& paths) { received = paths; });
+    QDragEnterEvent enter(QRectF(empty->rect()).center(), Qt::CopyAction, &files, Qt::LeftButton,
+                          Qt::NoModifier);
+    QApplication::sendEvent(empty, &enter);
+    require(enter.isAccepted() && hint->isVisible() && hint->geometry() == empty->geometry(),
+            "dragging onto the empty upload surface must highlight its full preview area");
+    editor.resize(900, 600);
+    pump();
+    require(hint->geometry() == empty->geometry(), "empty drag feedback must follow resizing");
+    QDropEvent drop({100, 100}, Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&editor, &drop);
+    require(drop.isAccepted() && hint->isHidden() && received == QStringList{path},
+            "an empty-state drop must request import and clear the highlight");
+    document.setImage(image({800, 600}));
+    const auto initialZoom = editor.canvas()->zoom();
+    const auto initialOffset = editor.canvas()->offset();
+    pump();
+    require(editor.canvas()->zoom() == initialZoom && editor.canvas()->offset() == initialOffset,
+            "restoring the preview must settle its layout before exposing the fitted viewport");
+    const auto bounds = QRectF(editor.canvas()->offset(),
+                               QSizeF(document.image().size()) * editor.canvas()->zoom());
+    require(empty->isHidden() && editor.canvas()->isVisible() &&
+                child<QWidget>(editor, "imageSplitCanvasToolbar")->isVisible() &&
+                canvasViewport(*editor.canvas(), document).adjusted(-1, -1, 1, 1).contains(bounds),
+            "loading the first image must restore its fitted preview and toolbar");
+    document.setImage({});
+    pump();
+    requireEmpty();
+    require(select->isEnabled(), "returning to an empty image must restore image selection");
+
+    auto& themes = adqt::theme::ThemeManager::instance();
+    const auto original = themes.config();
+    for (const auto theme : {adqt::theme::ThemeScheme::Light, adqt::theme::ThemeScheme::Dark}) {
+        themes.setPreset(theme);
+        pump();
+        const auto tokens = themes.resolveTheme(empty);
+        require(title->font().pixelSize() == qRound(tokens.fontSizeLG) &&
+                    description->font().pixelSize() == qRound(tokens.fontSize) &&
+                    title->palette().color(QPalette::WindowText) == tokens.colorText &&
+                    description->palette().color(QPalette::WindowText) == tokens.colorTextSecondary,
+                "the empty panel must use the shared upload typography in both themes");
+        const auto directory = qEnvironmentVariable("SNOW_TEST_IMAGE_SPLIT_EMPTY_ARTIFACT_DIR");
+        if (!directory.isEmpty()) {
+            require(QDir().mkpath(directory), "create the empty-state inspection directory");
+            editor.setAutoFillBackground(true);
+            auto palette = editor.palette();
+            palette.setColor(QPalette::Window, tokens.colorBgElevated);
+            editor.setPalette(palette);
+            const auto filename = theme == adqt::theme::ThemeScheme::Light
+                                      ? QStringLiteral("light.png")
+                                      : QStringLiteral("dark.png");
+            require(editor.grab().save(QDir(directory).filePath(filename)),
+                    "save the empty-state inspection image");
+        }
+    }
+    themes.setConfig(original);
+    for (const auto* locale : {"en_US", "zh_CN", "zh_TW"}) {
+        QTranslator translator;
+        require(translator.load(
+                    QStringLiteral(":/i18n/snow_shot_%1.qm").arg(QString::fromLatin1(locale))),
+                "empty-state translations must be available in every language");
+        QApplication::installTranslator(&translator);
+        QEvent language(QEvent::LanguageChange);
+        QApplication::sendEvent(&editor, &language);
+        require(title->text() == QCoreApplication::translate("ImageSplitEditorWidget",
+                                                             "Select an image to split") &&
+                    description->text() == QCoreApplication::translate(
+                                               "ImageSplitEditorWidget",
+                                               "Drag an image file here, or choose Select Image") &&
+                    select->text() ==
+                        QCoreApplication::translate("ImageSplitEditorWidget", "Select Image") &&
+                    select->accessibleName() == select->text() &&
+                    empty->accessibleName() == title->text() &&
+                    empty->accessibleDescription() == description->text() &&
+                    (QByteArray(locale) == "en_US" ||
+                     title->text() != QStringLiteral("Select an image to split")),
+                "runtime language changes must translate the entire empty upload surface");
+        requireEmpty();
+        QApplication::removeTranslator(&translator);
+        QApplication::sendEvent(&editor, &language);
+    }
+}
+
 class CanvasPaintObserver final : public QObject {
   public:
     int paints = 0;
@@ -1884,6 +2019,11 @@ int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication application(argc, argv);
     try {
+        if (application.arguments().contains(QStringLiteral("--empty-state-only"))) {
+            emptyImageShowsUploadSurface();
+            std::cout << "Image split empty state tests passed\n";
+            return 0;
+        }
         if (application.arguments().contains(QStringLiteral("--teardown-only"))) {
             focusedDraftTeardown();
             focusedDraftsAreDiscardedOnDestruction();
@@ -1910,6 +2050,7 @@ int main(int argc, char** argv) {
         }
         focusedDraftTeardown();
         focusedDraftsAreDiscardedOnDestruction();
+        emptyImageShowsUploadSurface();
         unchangedHoverDoesNotRepaint();
         overlayDamageMatchesFreshRendering();
         defaultsConditionalControlsAndActions();

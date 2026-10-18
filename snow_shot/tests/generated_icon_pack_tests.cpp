@@ -97,8 +97,8 @@ void everySnowShotEntryRenders() {
     const auto registered = icons::registerWith(renderer);
     require(registered.ok(), "Snow Shot pack registration should succeed");
     const adqt::icons::IconPack* staticPack = icons::pack().staticPack();
-    require(staticPack != nullptr && staticPack->entryCount == 185,
-            "Snow Shot pack should contain all 185 project-owned assets");
+    require(staticPack != nullptr && staticPack->entryCount == 191,
+            "Snow Shot pack should contain all 191 project-owned assets");
 
     adqt::icons::IconRenderRequest request;
     request.logicalSize = QSize(32, 32);
@@ -711,11 +711,45 @@ void numericFormatIconsRenderAtToolbarSizes() {
         require(preview.save(path), "save numeric icon inspection sheet");
 }
 
+void borderFillIconMatchesToolbarGeometry() {
+    namespace icons = snow_shot::presentation::icons::custom;
+    QImage preview(480, 144, QImage::Format_ARGB32_Premultiplied);
+    QPainter painter(&preview);
+    for (int row = 0; row < 2; ++row) {
+        const QColor foreground(row ? "#f0f0f0" : "#595959");
+        painter.fillRect(0, row * 72, 480, 72, QColor(row ? "#141414" : "#ffffff"));
+        int column = 0;
+        for (int size : {16, 20, 32}) {
+            for (double dpr : {1.0, 1.25, 2.0}) {
+                const auto ref =
+                    icons::outlined::FillBorder(adqt::icons::IconColors::primary(foreground));
+                const auto pixmap = render(ref, QSize(size, size), dpr);
+                const auto image = pixmap.toImage();
+                require(!pixmap.isNull() && opaquePixelCount(image, image.rect()) > 0,
+                        "Border icon paints at toolbar sizes and fractional DPI");
+                require(image.pixelColor(image.width() / 2, image.height() / 2).alpha() == 0,
+                        "Border icon has an empty center");
+                const QRect bounds = alphaBounds(image);
+                require(qAbs(bounds.width() - bounds.height()) <= 1,
+                        "Border uses a balanced square silhouette");
+                painter.drawPixmap(12 + column++ * 52, row * 72 + (72 - size) / 2, pixmap);
+            }
+        }
+    }
+    painter.end();
+    if (const auto path = qEnvironmentVariable("SNOW_BORDER_FILL_ICON_PREVIEW"); !path.isEmpty())
+        require(preview.save(path), "save Border icon inspection sheet");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
     try {
+        borderFillIconMatchesToolbarGeometry();
+        if (application.arguments().contains(QStringLiteral("--border-fill-only"))) {
+            return 0;
+        }
         imageSplittingIconFollowsAntDesign();
         if (application.arguments().contains(QStringLiteral("--image-splitting-only"))) {
             everySnowShotEntryRenders();

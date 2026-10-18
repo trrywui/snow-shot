@@ -120,6 +120,10 @@
             <translation>阿拉伯數字</translation>
         </message>
         <message>
+            <source>Architect</source>
+            <translation>建築師</translation>
+        </message>
+        <message>
             <source>Arrow</source>
             <translation>箭頭</translation>
         </message>
@@ -144,6 +148,10 @@
             <translation>箭頭筆畫寬度 %1</translation>
         </message>
         <message>
+            <source>Artist</source>
+            <translation>藝術家</translation>
+        </message>
+        <message>
             <source>Auto Filter</source>
             <translation>自動濾鏡</translation>
         </message>
@@ -154,6 +162,10 @@
         <message>
             <source>Auto-scroll interval (scroll to adjust; click to reset to 200 ms)</source>
             <translation>自動捲動間隔（滾輪調整；按一下重設為 200 ms）</translation>
+        </message>
+        <message>
+            <source>Available for multi-region selections</source>
+            <translation>僅適用於多區域選取範圍</translation>
         </message>
         <message>
             <source>Avatar</source>
@@ -170,6 +182,10 @@
         <message>
             <source>Bold</source>
             <translation>粗體</translation>
+        </message>
+        <message>
+            <source>Border</source>
+            <translation>邊框</translation>
         </message>
         <message>
             <source>Brightness</source>
@@ -204,6 +220,10 @@
             <translation>捲動截圖時擷取介面</translation>
         </message>
         <message>
+            <source>Cartoonist</source>
+            <translation>漫畫家</translation>
+        </message>
+        <message>
             <source>Center horizontally</source>
             <translation>水平置中</translation>
         </message>
@@ -226,6 +246,10 @@
         <message>
             <source>Close recording</source>
             <translation>關閉錄製</translation>
+        </message>
+        <message>
+            <source>Compact layout</source>
+            <translation>緊湊配置</translation>
         </message>
         <message>
             <source>Confirm edit</source>
@@ -684,6 +708,18 @@
             <translation>LaTeX 專用模型</translation>
         </message>
         <message>
+            <source>Layout compaction disabled</source>
+            <translation>已停用緊湊配置</translation>
+        </message>
+        <message>
+            <source>Layout compaction enabled</source>
+            <translation>已啟用緊湊配置</translation>
+        </message>
+        <message>
+            <source>Layout spacing (scroll to adjust; click to reset to 0)</source>
+            <translation>配置間距（捲動調整；點擊重設為 0）</translation>
+        </message>
+        <message>
             <source>Leader line</source>
             <translation>引導線</translation>
         </message>
@@ -1038,6 +1074,14 @@
         <message>
             <source>Selected model (%1)</source>
             <translation>已選模型（%1）</translation>
+        </message>
+        <message>
+            <source>Selection background opacity</source>
+            <translation>選取範圍背景不透明度</translation>
+        </message>
+        <message>
+            <source>Selection background opacity (scroll to adjust; click to reset to 0%)</source>
+            <translation>選取範圍背景不透明度（捲動調整；點擊重設為 0%）</translation>
         </message>
         <message>
             <source>Send backward</source>

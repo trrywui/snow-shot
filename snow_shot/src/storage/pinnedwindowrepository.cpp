@@ -391,6 +391,7 @@ bool samePayload(const StoredRecord& stored, const PinnedWindowRecord& incoming,
                  const PayloadSignature& incomingSignature) {
     return stored.signature == incomingSignature &&
            stored.record.sourceKind == incoming.sourceKind &&
+           stored.record.textFormat == incoming.textFormat &&
            stored.record.originalFilePath == incoming.originalFilePath &&
            stored.record.originalFileName == incoming.originalFileName &&
            stored.record.textStyle == incoming.textStyle;
@@ -399,6 +400,7 @@ bool samePayload(const StoredRecord& stored, const PinnedWindowRecord& incoming,
 bool samePreviewSource(const StoredRecord& stored, const PinnedWindowRecord& incoming,
                        const PayloadSignature& incomingSignature) {
     return stored.record.sourceKind == incoming.sourceKind &&
+           stored.record.textFormat == incoming.textFormat &&
            stored.record.originalFilePath == incoming.originalFilePath &&
            stored.record.originalFileName == incoming.originalFileName &&
            stored.record.firstCreationTextDpi == incoming.firstCreationTextDpi &&
@@ -585,6 +587,9 @@ QJsonValue textStyleToJson(const std::optional<PinnedTextStyle>& style) {
         {QStringLiteral("maximum_width"), style->maximumWidth},
         {QStringLiteral("font_family"), style->fontFamily},
         {QStringLiteral("font_size"), style->fontSize},
+        {QStringLiteral("color_swatch"), style->colorSwatch},
+        {QStringLiteral("color_swatch_width"), style->colorSwatchSize.width()},
+        {QStringLiteral("color_swatch_height"), style->colorSwatchSize.height()},
         {QStringLiteral("text_color"), colorToRgbaString(style->textColor)},
         {QStringLiteral("background_color"), colorToRgbaString(style->backgroundColor)}};
 }
@@ -601,6 +606,18 @@ bool textStyleFromJson(const QJsonValue& value, std::optional<PinnedTextStyle>* 
     style.maximumWidth = object.value(QStringLiteral("maximum_width")).toInt(-1);
     style.fontFamily = object.value(QStringLiteral("font_family")).toString();
     style.fontSize = object.value(QStringLiteral("font_size")).toInt(-1);
+    const auto swatch = object.value(QStringLiteral("color_swatch"));
+    if (!swatch.isUndefined() && !swatch.isBool())
+        return false;
+    style.colorSwatch = swatch.toBool(false);
+    if (style.colorSwatch) {
+        const auto width = object.value(QStringLiteral("color_swatch_width"));
+        const auto height = object.value(QStringLiteral("color_swatch_height"));
+        style.colorSwatchSize = QSize(width.toInt(-1), height.toInt(-1));
+        if (width.toDouble(-1) != style.colorSwatchSize.width() ||
+            height.toDouble(-1) != style.colorSwatchSize.height())
+            return false;
+    }
     style.textColor = colorFromRgbaString(object.value(QStringLiteral("text_color")).toString());
     style.backgroundColor =
         colorFromRgbaString(object.value(QStringLiteral("background_color")).toString());
@@ -638,6 +655,9 @@ QJsonObject recordToJson(const PinnedWindowRecord& record, const QJsonObject& pa
         {QStringLiteral("screen_dpi"), record.screenDpi},
         {QStringLiteral("first_creation_text_dpi"), record.firstCreationTextDpi},
         {QStringLiteral("text_style"), textStyleToJson(record.textStyle)},
+        {QStringLiteral("text_format"), record.textFormat == PinnedTextFormat::Markdown
+                                            ? QStringLiteral("markdown")
+                                            : QStringLiteral("plain_text")},
         {QStringLiteral("scale_percent"), record.scalePercent},
         {QStringLiteral("opacity_percent"), record.opacityPercent},
         {QStringLiteral("click_through_opacity_percent"), record.clickThroughOpacityPercent},
@@ -1075,6 +1095,14 @@ bool parseRecord(const QJsonObject& object, const QString& root, PinnedWindowRec
         return false;
     }
     PinnedWindowRecord record;
+    const auto textFormat = object.value(QStringLiteral("text_format"));
+    if (!textFormat.isUndefined() && !textFormat.isString())
+        return false;
+    const auto formatName = textFormat.toString(QStringLiteral("plain_text"));
+    if (formatName == QStringLiteral("markdown"))
+        record.textFormat = PinnedTextFormat::Markdown;
+    else if (formatName != QStringLiteral("plain_text"))
+        return false;
     record.id = object.value(QStringLiteral("id")).toString();
     record.groupId = object.value(QStringLiteral("group_id")).toString();
     if (!textStyleFromJson(object.value(QStringLiteral("text_style")), &record.textStyle))
@@ -1810,6 +1838,7 @@ PinnedWindowRepository::loadPreviewSource(const QString& id,
         stored.record.originalFileName = source.originalFileName;
         stored.record.createdUtc = source.createdUtc;
         stored.record.textStyle = source.textStyle;
+        stored.record.textFormat = source.textFormat;
         if (source.sourceKind == PinnedWindowSourceKind::ClipboardText) {
             stored.record.originalHtml = source.originalHtml;
             stored.record.originalText = source.originalText;
@@ -1859,16 +1888,22 @@ PinnedWindowRepository::loadPreviewSource(const QString& id,
                                      stored.record.firstCreationTextDpi,
                                      std::move(stored.record.originalFileName),
                                      stored.record.createdUtc,
-                                     stored.record.textStyle};
+                                     stored.record.textStyle,
+                                     stored.record.textFormat};
 }
 
-std::optional<quint64> PinnedWindowRepository::previewSourceRevision(const QString& id) const {
+std::optional<quint64> PinnedWindowRepository::previewSourceRevision(const QString& id,
+                                                                     bool* colorSwatch) const {
+    if (colorSwatch)
+        *colorSwatch = false;
     std::lock_guard access(m_accessMutex);
     if (m_impl == nullptr || !safeId(id)) {
         return std::nullopt;
     }
     std::lock_guard locker(m_impl->mutex);
     const auto found = m_impl->records.constFind(id);
+    if (colorSwatch && found != m_impl->records.cend())
+        *colorSwatch = found->record.textStyle && found->record.textStyle->colorSwatch;
     return found == m_impl->records.cend() ? std::nullopt
                                            : std::optional<quint64>(found->previewSourceRevision);
 }
@@ -2300,6 +2335,7 @@ StorageResult PinnedWindowRepository::createImpl(PinnedWindowRecord record,
         return StorageResult::failure(QStringLiteral("Pinned-window source is invalid"));
     }
     if ((record.textStyle && !record.textStyle->isValid()) ||
+        !isValidPinnedTextFormat(record.textFormat) ||
         record.originalHtml.toUtf8().size() > kMaximumPayloadBytes ||
         record.originalText.toUtf8().size() > kMaximumPayloadBytes ||
         record.resultStyle.size() > kMaximumPayloadBytes ||
@@ -2389,6 +2425,7 @@ StorageResult PinnedWindowRepository::createImpl(PinnedWindowRecord record,
          (!safeFileName(record.originalFileName) ||
           (!record.animationSource && !QFileInfo(record.originalFilePath).isFile()))) ||
         (record.textStyle && !record.textStyle->isValid()) ||
+        !isValidPinnedTextFormat(record.textFormat) ||
         record.originalHtml.toUtf8().size() > kMaximumPayloadBytes ||
         record.originalText.toUtf8().size() > kMaximumPayloadBytes ||
         record.resultStyle.size() > kMaximumPayloadBytes ||
@@ -2484,6 +2521,7 @@ StorageResult PinnedWindowRepository::updateState(PinnedWindowRecord record) {
     record.originalHtml = existing->record.originalHtml;
     record.originalText = existing->record.originalText;
     record.textStyle = existing->record.textStyle;
+    record.textFormat = existing->record.textFormat;
     if (!record.checkerboardEnabled) {
         record.checkerboardEnabled = existing->record.checkerboardEnabled;
     }
@@ -2590,6 +2628,7 @@ StorageResult PinnedWindowRepository::upsertImpl(PinnedWindowRecord record, bool
         return StorageResult::failure(QStringLiteral("Pinned-window source file is invalid"));
     }
     if ((record.textStyle && !record.textStyle->isValid()) ||
+        !isValidPinnedTextFormat(record.textFormat) ||
         record.originalHtml.toUtf8().size() > kMaximumPayloadBytes ||
         record.originalText.toUtf8().size() > kMaximumPayloadBytes ||
         record.resultStyle.size() > kMaximumPayloadBytes ||

@@ -3,6 +3,7 @@
 #define SNOW_SHOT_PRESENTATION_IMAGESPLITWINDOW_H
 
 #include "snow_shot/presentation/imagesplitdocument.h"
+#include "snow_shot/platform/selectedfiles.h"
 #include "snow_shot/presentation/screenshotexportartifact.h"
 #include "snow_shot/storage/capturehistorytypes.h"
 
@@ -58,6 +59,7 @@ class ImageSplitWindow final : public QObject {
     void reload();
     void replaceFile(const QString& path);
     void dropFiles(const QStringList& paths);
+    void paste();
     void saveAll();
     void requestClose();
     void shutdown();
@@ -75,6 +77,7 @@ class ImageSplitWindow final : public QObject {
     void exportFinished(const ImageSplitExportResult& result);
 
   private:
+    friend class ImageSplitWindowCoordinator;
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
@@ -88,6 +91,8 @@ class ImageSplitWindowCoordinator final : public QObject {
     void presentHistory(const storage::CaptureHistoryRecord& record);
     void presentPinnedRecord(const QString& recordId);
     void presentSource(ImageSplitSource source);
+    void presentSelectedFiles(std::shared_ptr<platform::SelectedFileBackend> backend,
+                              platform::SelectedFileTarget target);
     void shutdown();
     [[nodiscard]] QVector<ImageSplitWindow*> windows() const;
 

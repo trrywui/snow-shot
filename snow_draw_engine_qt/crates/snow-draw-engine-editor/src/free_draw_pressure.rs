@@ -1,4 +1,4 @@
-use snow_draw_engine_core::{Point, PressureKnot};
+use snow_draw_engine_core::{Point, PressureKnot, pressure_radius};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Sample {
@@ -27,7 +27,6 @@ impl PressureCapture {
         pressure: Option<f64>,
         timestamp: u64,
         width: f64,
-        zoom: f64,
         sample_spacing: f64,
     ) -> Self {
         let pressure = pressure
@@ -44,18 +43,16 @@ impl PressureCapture {
             last_point: point,
             last_timestamp: timestamp,
             pressure,
-            simulation_scale: (width * 4.25).max(8.0 / zoom.max(1e-6)),
+            // perfect-freehand normalizes motion by its size before pressure easing.
+            // Recover that size from Snow's nominal radius. Excalidraw's 4.25 factor
+            // converts its UI width; Snow already stores the rendered width in pixels.
+            simulation_scale: (pressure_radius(width, 0.5) / std::f64::consts::FRAC_1_SQRT_2)
+                .max(1e-6),
             sample_spacing,
             next_sample_distance: sample_spacing,
         }
     }
-    pub fn observe(
-        &mut self,
-        point: Point<f64>,
-        pressure: Option<f64>,
-        timestamp: u64,
-        _zoom: f64,
-    ) -> bool {
+    pub fn observe(&mut self, point: Point<f64>, pressure: Option<f64>, timestamp: u64) -> bool {
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
         }
@@ -291,12 +288,36 @@ impl PressureCapture {
 mod tests {
     use super::*;
     use snow_draw_engine_core::pressure_at;
+
+    #[test]
+    fn pressure_mouse_speed_varies_rendered_width_at_every_brush_size() {
+        for width in [2.0, 4.0, 8.0, 16.0, 72.0] {
+            for zoom in [0.25, 1.0, 4.0] {
+                let simulated_radius = |step: f64| {
+                    let mut capture =
+                        PressureCapture::new(Point::default(), None, 100, width, 0.75 / zoom);
+                    for i in 1..=64 {
+                        capture.observe(Point::new(step * i as f64, 0.0), None, 100 + i * 16);
+                    }
+                    let profile = capture.profile(0.0, capture.distance);
+                    pressure_radius(width, pressure_at(&profile, 0.75))
+                };
+                let slow = simulated_radius(width / 8.0);
+                let fast = simulated_radius(width);
+                assert!(
+                    slow > fast * 2.0 && fast < (width * 0.5) * 0.75,
+                    "width {width}, zoom {zoom}: slow radius {slow}, fast radius {fast}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn pressure_native_sub_spacing_motion_retains_pressure_peak() {
-        let mut capture = PressureCapture::new(Point::default(), Some(0.1), 1, 72.0, 1.0, 0.75);
-        capture.observe(Point::new(0.1, 0.0), Some(0.95), 9, 1.0);
-        capture.observe(Point::new(0.2, 0.0), Some(0.1), 17, 1.0);
-        capture.observe(Point::new(10.0, 0.0), Some(0.1), 25, 1.0);
+        let mut capture = PressureCapture::new(Point::default(), Some(0.1), 1, 72.0, 0.75);
+        capture.observe(Point::new(0.1, 0.0), Some(0.95), 9);
+        capture.observe(Point::new(0.2, 0.0), Some(0.1), 17);
+        capture.observe(Point::new(10.0, 0.0), Some(0.1), 25);
         let profile = capture.profile(0.0, 10.0);
         assert!(profile.iter().any(|knot| knot.pressure == 0.95));
     }
@@ -304,13 +325,12 @@ mod tests {
     #[test]
     fn pressure_mouse_recurrence_is_independent_of_event_density() {
         fn profile(subdivisions: usize) -> Vec<PressureKnot> {
-            let mut capture = PressureCapture::new(Point::default(), None, 100, 12.0, 1.0, 0.75);
+            let mut capture = PressureCapture::new(Point::default(), None, 100, 12.0, 0.75);
             for i in 1..=subdivisions {
                 capture.observe(
                     Point::new(160.0 * i as f64 / subdivisions as f64, 0.0),
                     None,
                     100 + 320 * i as u64 / subdivisions as u64,
-                    1.0,
                 );
             }
             capture.profile(0.0, 160.0)
@@ -331,26 +351,20 @@ mod tests {
     }
     #[test]
     fn pressure_missing_or_nonincreasing_timestamps_preserve_mouse_pressure() {
-        let mut capture = PressureCapture::new(Point::default(), None, 100, 12.0, 1.0, 0.75);
+        let mut capture = PressureCapture::new(Point::default(), None, 100, 12.0, 0.75);
         for timestamp in [0, 90, 100] {
-            capture.observe(
-                Point::new(capture.distance + 10.0, 0.0),
-                None,
-                timestamp,
-                1.0,
-            );
+            capture.observe(Point::new(capture.distance + 10.0, 0.0), None, timestamp);
             assert_eq!(capture.pressure, 0.5);
         }
     }
     #[test]
     fn pressure_stationary_holds_keep_peak_and_bounded_memory() {
-        let mut capture = PressureCapture::new(Point::default(), Some(0.2), 100, 12.0, 1.0, 0.75);
+        let mut capture = PressureCapture::new(Point::default(), Some(0.2), 100, 12.0, 0.75);
         for i in 0..10000 {
             capture.observe(
                 Point::default(),
                 Some(if i % 2 == 0 { 0.9 } else { 0.3 }),
                 101 + i,
-                1.0,
             );
             assert!(capture.samples.len() <= 3);
         }

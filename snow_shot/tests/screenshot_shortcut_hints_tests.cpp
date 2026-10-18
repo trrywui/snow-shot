@@ -482,6 +482,132 @@ void emptyContextsUseHiddenMode() {
             "non-editing drawing contexts should not leave stale tool hints visible");
 }
 
+void multiRegionHintsExposeMovementWithoutResizeControls() {
+    ScreenshotShortcutHintContext context;
+    context.captureMode = ScreenshotCaptureMode::MovingSelection;
+    context.multiRegionEditing = true;
+    require(
+        screenshotShortcutHintLines(context) ==
+            withDefaultCursorHints({
+                shortcutLine(QStringLiteral("Move entire selection"), {QStringLiteral("Space")}),
+                shortcutLine(QStringLiteral("Copy color"), {QStringLiteral("C")}),
+                shortcutLine(QStringLiteral("Toggle Global/Relative Coordinates"),
+                             {QStringLiteral("Shift+P")}),
+                shortcutLine(QStringLiteral("Toggle cursor visibility"), {QStringLiteral("`")}),
+                modifierLine(QStringLiteral("Switch color format"), Qt::ShiftModifier),
+                shortcutLine(QStringLiteral("Switch screenshot history"),
+                             {QStringLiteral(","), QStringLiteral(".")}),
+                shortcutLine(QStringLiteral("Duplicate latest region"), {QStringLiteral("R")}),
+            }),
+        "settled multi-region hints must show whole-selection movement without resize controls");
+
+    context.multiRegionEditing = false;
+    require(screenshotShortcutHintLines(context) ==
+                screenshotShortcutHintLines(ScreenshotShortcutHintMode::Selection),
+            "replacing the multi-region selection must restore single-selection hints");
+}
+
+void regionOperationHintsMatchAvailableInputs() {
+    ScreenshotShortcutHintContext context;
+    context.multiRegionEditing = true;
+    context.regionOperationActive = true;
+    for (const auto mode :
+         {ScreenshotCaptureMode::ManualSelecting, ScreenshotCaptureMode::IntelligentSelecting}) {
+        context.captureMode = mode;
+        QStringList expected = withDefaultCursorHints({});
+        if (mode == ScreenshotCaptureMode::IntelligentSelecting) {
+            expected.push_back(QStringLiteral("Switch element level: mouse wheel"));
+        }
+        expected.push_back(modifierLine(QStringLiteral("Switch color format"), Qt::ShiftModifier));
+        expected.push_back(
+            shortcutLine(QStringLiteral("Duplicate latest region"), {QStringLiteral("R")}));
+        require(screenshotShortcutHintLines(context) == expected,
+                "region operations must omit shortcuts blocked by the input controller");
+        context.smartSelectionEnabled = false;
+        require(screenshotShortcutHintLines(context) == expected,
+                "region operations never advertise the blocked window/sub-element shortcut");
+        context.smartSelectionEnabled = true;
+    }
+
+    context.captureMode = ScreenshotCaptureMode::ManualSelecting;
+    context.regionConstructionActive = true;
+    const QStringList constructionHints = withDefaultCursorHints(
+        {modifierLine(QStringLiteral("Switch color format"), Qt::ShiftModifier)});
+    require(screenshotShortcutHintLines(context) == constructionHints,
+            "custom region construction must hide duplication until the draft is finished");
+    context.multiRegionEditing = false;
+    context.regionOperationActive = false;
+    require(screenshotShortcutHintLines(context) == constructionHints,
+            "standalone custom region construction shares the same blocked configured commands");
+}
+
+void multiRegionHintsRespectConfiguredAndDisabledShortcuts() {
+    ScreenshotShortcutHintContext context;
+    context.captureMode = ScreenshotCaptureMode::ManualSelecting;
+    context.multiRegionEditing = true;
+    context.regionOperationActive = true;
+    context.configuredShortcuts = snow_shot::shortcuts::ShortcutBindingMap{
+        {QStringLiteral("move_cursor_up"), shortcutBindings({QStringLiteral("Alt+I")})},
+        {QStringLiteral("move_cursor_down"), {}},
+        {QStringLiteral("move_cursor_left"), {}},
+        {QStringLiteral("move_cursor_right"), {}},
+        {QStringLiteral("duplicate_latest_region"), shortcutBindings({QStringLiteral("K")})},
+        {QStringLiteral("move_entire_selection"), shortcutBindings({QStringLiteral("Alt+M")})},
+        {QStringLiteral("copy_color"), shortcutBindings({QStringLiteral("Alt+C")})},
+        {QStringLiteral("selection_aspect_ratio_snap"), shortcutBindings({QStringLiteral("G")})},
+    };
+    require(screenshotShortcutHintLines(context) ==
+                QStringList{
+                    shortcutLine(QStringLiteral("Move cursor up"), {QStringLiteral("Alt+I")}),
+                    modifierLine(QStringLiteral("Switch color format"), Qt::ShiftModifier),
+                    shortcutLine(QStringLiteral("Duplicate latest region"), {QStringLiteral("K")}),
+                },
+            "multi-region hints must follow remapping and disabled bindings without reviving "
+            "blocked actions");
+    context.configuredShortcuts->insert(QStringLiteral("duplicate_latest_region"), {});
+    require(screenshotShortcutHintRows(context).size() == 2,
+            "disabling duplication must remove its region-operation hint");
+    context.regionOperationActive = false;
+    for (const auto mode :
+         {ScreenshotCaptureMode::ManualSelecting, ScreenshotCaptureMode::MovingSelection}) {
+        context.captureMode = mode;
+        require(screenshotShortcutHintLines(context).contains(shortcutLine(
+                    QStringLiteral("Move entire selection"), {QStringLiteral("Alt+M")})),
+                "settled multi-region hints must show the configured whole-selection shortcut");
+    }
+    context.configuredShortcuts->insert(QStringLiteral("move_entire_selection"), {});
+    const auto rows = screenshotShortcutHintRows(context);
+    require(std::none_of(rows.cbegin(), rows.cend(),
+                         [](const auto& row) {
+                             return row.label == QStringLiteral("Move entire selection");
+                         }),
+            "disabling whole-selection movement must remove its multi-region hint");
+}
+
+void duplicateHintFollowsEditingContextAndConfiguration() {
+    ScreenshotShortcutHintContext context;
+    context.captureMode = ScreenshotCaptureMode::MovingSelection;
+    const auto hasDuplicate = [](const auto& rows) {
+        return std::any_of(rows.begin(), rows.end(), [](const auto& row) {
+            return row.label == QStringLiteral("Duplicate latest region");
+        });
+    };
+    require(!hasDuplicate(screenshotShortcutHintRows(context)),
+            "single selection has no copy hint");
+    context.multiRegionEditing = true;
+    auto rows = screenshotShortcutHintRows(context);
+    require(hasDuplicate(rows) && rows.last().shortcut == shortcutDisplay({QStringLiteral("R")}),
+            "multi-region editing advertises the configured duplicate command");
+    context.configuredShortcuts = snow_shot::shortcuts::ShortcutBindingMap{
+        {QStringLiteral("duplicate_latest_region"), {QStringLiteral("K")}}};
+    rows = screenshotShortcutHintRows(context);
+    require(rows.last().shortcut == shortcutDisplay({QStringLiteral("K")}),
+            "duplicate hint follows remapping");
+    context.configuredShortcuts->insert(QStringLiteral("duplicate_latest_region"), {});
+    require(!hasDuplicate(screenshotShortcutHintRows(context)),
+            "disabled duplicate hides its hint");
+}
+
 void hintAreaHidesForSelectionOverlapOrCursorHover() {
     const QRectF hintArea(16.0, 300.0, 240.0, 180.0);
     require(!screenshotShortcutHintAreaIsObscured(hintArea, QRectF(300.0, 100.0, 200.0, 150.0),
@@ -511,5 +637,9 @@ int main(int argc, char** argv) {
     disabledSmartSelectionHidesTheTargetSwitchHint();
     emptyContextsUseHiddenMode();
     hintAreaHidesForSelectionOverlapOrCursorHover();
+    multiRegionHintsExposeMovementWithoutResizeControls();
+    regionOperationHintsMatchAvailableInputs();
+    multiRegionHintsRespectConfiguredAndDisabledShortcuts();
+    duplicateHintFollowsEditingContextAndConfiguration();
     return 0;
 }

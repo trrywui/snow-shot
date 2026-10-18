@@ -131,6 +131,30 @@ void orderingAndUniqueDirectories() {
         exportSplitImages(image, horizontal, temporary.path(), QStringLiteral("horizontal")));
 }
 
+void exportNamesPreserveSplitPolicy() {
+    QTemporaryDir temporary;
+    require(temporary.isValid(), "filename fixture directory exists");
+    const QImage image = fixture();
+    const auto layout = calculateImageSplitLayout(image.size(), {});
+    const QString c1 = QString(QChar(0x7f)) + QChar(0x81);
+    struct NameCase {
+        QString input;
+        QString expected;
+    };
+    const NameCase cases[] = {
+        {QStringLiteral("  path/part.name<>:\"\\|?*") + QChar(1) + QStringLiteral(". "),
+         QStringLiteral("path_part.name_________")},
+        {QStringLiteral("control") + c1, QStringLiteral("control") + c1},
+        {QStringLiteral("  ...  "), QStringLiteral("Screenshot")},
+    };
+    for (const auto& entry : cases) {
+        const auto result = exportSplitImages(image, layout, temporary.path(), entry.input);
+        require(result.succeeded() && QFileInfo(result.directory).fileName() ==
+                                          QStringLiteral("Split Images_%1").arg(entry.expected),
+                "split exports keep complete stems, C1 characters, and their existing fallback");
+    }
+}
+
 void failureAndCancellation() {
     QTemporaryDir temporary;
     require(temporary.isValid(), "failure temporary directory exists");
@@ -430,6 +454,8 @@ int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
         orderingAndUniqueDirectories();
+        exportNamesPreserveSplitPolicy();
+        std::cout << "Image split filename policy tests passed\n";
         failureAndCancellation();
         concurrentDirectoryCreationAndNormalization();
         boundedNativeFormatAndColorConversion();

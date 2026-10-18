@@ -81,6 +81,7 @@ enum class SettingsSelectBinding {
     ScreenRecordingApiMode,
     WindowElementApi,
     ScreenshotToolbarSize,
+    SelectionTransitionAnimation,
     OcrFillStyle,
     OcrDefaultFormatting,
     OcrDefaultPunctuation,
@@ -131,10 +132,8 @@ enum class SettingsSwitchBinding {
     HistoryKeepPermanently,
     PinnedHistoryKeepPermanently,
     SmartSelection,
-    DirectMlAcceleration,
     OcrResidentProcess,
     OcrModelHotStart,
-    SelectionTransitionAnimation,
     ScreenshotAreaTypeHint,
     ShowGuidesByDefault,
     ShowEditSelectionToolbar,
@@ -157,6 +156,7 @@ enum class SettingsSwitchBinding {
     PinShowWindowButtons,
     PinShowBorderByDefault,
     PinShowShadowByDefault,
+    PinExitAnnotationModeBeforeClosing,
     PinConfirmBeforeClosingWindow,
     PinConfirmBeforeDestroyingWindow,
     OriginalImageTranslation,
@@ -222,6 +222,8 @@ enum class SettingsSliderBinding {
     SkinOpacity,
     SkinBlurLevel,
     SkinMaskOpacity,
+    PinMouseWheelOpacityStep,
+    PinMouseWheelZoomStep,
 };
 
 struct SettingsSliderDefinition {
@@ -339,12 +341,14 @@ enum class SettingsLocalShortcutScope {
     Drawing,
     PinToScreen,
     ScreenRecording,
+    WindowsContextMenu,
 };
 
 struct SettingsLocalShortcutDefinition {
     QString shortcutId;
     std::function<adqt::icons::IconRef()> iconFactory;
     SettingsLocalShortcutScope scope = SettingsLocalShortcutScope::Drawing;
+    int maximumShortcutCount = 2;
 };
 
 enum class SettingsActionBinding {
@@ -525,6 +529,7 @@ enum class SettingsSectionReset {
     ScreenshotActionToolbar,
     ScreenRecordingActionToolbar,
     ScreenRecordingInteraction,
+    WindowsContextMenuShortcuts,
 };
 
 enum class SettingsSectionItemLayout {

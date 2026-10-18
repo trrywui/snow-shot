@@ -10,7 +10,7 @@
 **Snow Shot.app** 拖到“应用程序”。首次启动按提示授予屏幕录制、辅助功能等所需权限。
 
 - 支持 **Intel / x86_64，macOS 14.4 及以上**。
-- 当前版本：**1.1.0+up.1.3.0**；上游基线为 `8982d6660c03`（Snow Apps 1.3.0）。
+- 当前版本：**1.1.2+up.1.3.2**；上游基线为 `59782f9bb2ef`（Snow Apps 1.3.2）。
 - Bundle ID：`io.github.trrywui.snowshot`。
 - Apple Silicon 不在当前发布包的支持范围内；不声明其他机器已经过交互验证。
 - 使用 ad-hoc 签名，未进行 Apple 公证；重建或升级后可能需要重新授予权限。
@@ -26,6 +26,7 @@
 - 保留手动 OCR、二维码识别，默认关闭自动贴图 OCR 和截图自动二维码识别，可在设置中开启。
 - 开机启动恢复上游默认值，可在设置中关闭；是否允许注册取决于安装位置、签名和系统批准。
 - 本地 MCP 桥接未编入此发布配置。
+- 保留 macOS 截图交互 30 Hz 上限及放大镜装饰缓存。
 - macOS 14 不调用 macOS 15 新增的鼠标点击圆圈设置；HDR 仍受系统和硬件限制。
 
 兼容处理没有增加后台轮询、常驻兼容进程或截图转换缓冲区。
@@ -41,10 +42,21 @@
 
 上游自动化流程存档在 `.github/upstream-workflows/`，不会向原作者发布渠道推送；当前本机构建、手动发布。
 
+## OCR 子模块
+
+OCR 使用上游锁定提交的独立子模块，克隆后先初始化：
+
+```sh
+git submodule update --init --recursive
+```
+
+子模块保留自己的锁文件和 nightly Rust 工具链，构建命令需在其目录执行。
+参见 [OCR 子模块](snow-crates/crates/simd-paddle-ocr-rs/README.md)。
+
 ## 来源与许可证
 
 原作者：**mg-chao**；本分支兼容修改和维护：**trrywui**，2026 年。
-原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/8982d6660c03)。
+原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/59782f9bb2ef)。
 
 这是多许可证仓库，范围见 [LICENSE.md](LICENSE.md)：
 
@@ -52,7 +64,9 @@
 | --- | --- |
 | Snow Shot、Snow Image、Snow Image Viewer、原始仓库构建编排 | GPL-3.0-or-later |
 | Ant Design Qt、Rust crates、绘图引擎、Rust FFI | Apache-2.0 |
+| simd-paddle-ocr-rs 子模块 | Apache-2.0 |
 
 第三方材料继续遵循各自许可证，参见 [Snow Shot 第三方声明](snow_shot/THIRD_PARTY_NOTICES.md)
 和 [Ant Design Qt 第三方声明](ant_design_qt/THIRD_PARTY_NOTICES.md)。
-发布包保留许可证和版权声明，Release 提供与安装包对应的源码材料。
+发布包保留许可证和版权声明，项目源码可从 Release 标签获取。
+上游贡献流程参见 [贡献指南](CONTRIBUTING.md)。

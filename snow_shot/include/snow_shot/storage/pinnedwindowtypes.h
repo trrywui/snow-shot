@@ -76,6 +76,7 @@ struct PinnedWindowRecord final {
     QString originalFileName;
     QString originalHtml;
     QString originalText;
+    PinnedTextFormat textFormat = PinnedTextFormat::PlainText;
     std::optional<PinnedTextStyle> textStyle;
     double firstCreationTextDpi = 1.0;
     QRectF canvasSourceRect;

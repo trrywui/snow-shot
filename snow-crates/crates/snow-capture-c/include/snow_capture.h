@@ -325,6 +325,31 @@ typedef struct SnowCaptureScreenshotRequest {
     uint8_t reserved[32];
 } SnowCaptureScreenshotRequest;
 
+/* Target-only transaction: opens and captures exactly one monitor or one window.
+ * Unlike desktop capture, a window result contains no display frames; a monitor
+ * result contains exactly one. Existing result/geometry/lease APIs apply.
+ * Exactly one of screenshot.focused_window and monitor_utf8 must select a target.
+ * Monitor identity accepts device name, stable ID, or macOS display:<native ID>.
+ * Cursor/color/cancellation flags retain desktop semantics; REFRESH_LAYOUT is invalid.
+ * Run on a worker thread. Request, string and token remain live until return. */
+#define SNOW_CAPTURE_TARGET_SCREENSHOT_REQUEST_VERSION 1u
+typedef struct SnowCaptureTargetScreenshotRequest {
+    uint32_t version;
+    uint32_t struct_size;
+    SnowCaptureScreenshotRequest screenshot;
+    const char* monitor_utf8;
+    uint8_t pixel_format;
+    uint8_t reserved[7];
+    /* Optional thread-safe callback before native/CPU raster preparation. Invoked
+     * synchronously on capture/native workers, which are joined before return.
+     * Rejection is sticky for this transaction, including backend fallback.
+     * Context must remain live until return; callbacks must not unwind. */
+    void* admission_context;
+    uint8_t (*admit_raster)(void* context, uint32_t width, uint32_t height);
+} SnowCaptureTargetScreenshotRequest;
+SnowCaptureScreenshotResult*
+snow_capture_target_screenshot(const SnowCaptureTargetScreenshotRequest* request);
+
 SnowCaptureDesktopSession*
 snow_capture_desktop_session_create(const SnowCaptureDesktopSessionConfig* config);
 void snow_capture_desktop_session_destroy(SnowCaptureDesktopSession* session);

@@ -51,6 +51,9 @@ impl Editor {
         document: &DocumentModel,
         event: PointerEvent,
     ) -> Result<InteractionOutput, ErrorCode> {
+        if let Some(output) = self.process_shape_text_pointer(document, event)? {
+            return Ok(output);
+        }
         if let Some(output) = self.process_speech_bubble_pointer(document, event)? {
             return Ok(output);
         }

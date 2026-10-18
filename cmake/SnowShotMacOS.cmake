@@ -118,19 +118,6 @@ if(SNOW_SHOT_RELEASE_STATIC)
         COMPONENT SnowShot FILES_MATCHING PATTERN "copyright")
 endif()
 
-# Dynamic development builds load ONNX Runtime with dlopen. Production builds
-# link it into the helper and therefore stage no runtime dylib.
-if(NOT SNOW_SHOT_OCR_STATIC_ONNXRUNTIME)
-    add_custom_command(TARGET snow_shot POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:onnxruntime::onnxruntime>"
-            "$<TARGET_FILE_DIR:snow_shot>/libonnxruntime.dylib"
-        VERBATIM)
-    install(FILES "$<TARGET_FILE:onnxruntime::onnxruntime>"
-        DESTINATION "snow_shot.app/Contents/MacOS" RENAME libonnxruntime.dylib
-        COMPONENT SnowShot)
-endif()
-
 # Keep the crash collector inside the app, beside the main executable and worker.
 set(_snow_handler_zlib "")
 if(NOT SNOW_SHOT_RELEASE_STATIC)
@@ -179,11 +166,8 @@ if(CMAKE_OSX_ARCHITECTURES MATCHES "^(arm64|x86_64)$" AND TARGET snow_ocr_proces
     set(SNOW_MACOS_OCR_ASSETS_ENABLED ON)
     set(_snow_macos_ocr_runtime_arguments)
     set(SNOW_MACOS_OCR_CACHE "${CMAKE_SOURCE_DIR}/artifacts" CACHE PATH "OCR model download cache")
-    if(SNOW_SHOT_OCR_STATIC_ONNXRUNTIME)
-        list(APPEND _snow_macos_ocr_runtime_arguments --static-runtime)
-    else()
-        list(APPEND _snow_macos_ocr_runtime_arguments
-            --library "$<TARGET_FILE:onnxruntime::onnxruntime>")
+    if(NOT SNOW_SHOT_RELEASE_STATIC)
+        list(APPEND _snow_macos_ocr_runtime_arguments --library-dir "${SNOW_FFMPEG_ROOT}/lib")
     endif()
     foreach(_host IN ITEMS snow_shot snow-shot-ocr-recognition-service-tests)
         if(TARGET ${_host})
@@ -197,7 +181,7 @@ if(CMAKE_OSX_ARCHITECTURES MATCHES "^(arm64|x86_64)$" AND TARGET snow_ocr_proces
                     --runtime-dir "$<TARGET_FILE_DIR:${_host}>"
                     --worker "$<TARGET_FILE:snow_ocr_process>"
                     ${_snow_macos_ocr_runtime_arguments}
-                DEPENDS snow_ocr_process onnxruntime::onnxruntime
+                DEPENDS snow_ocr_process
                     "${SNOW_MACOS_OCR_TOOL}" "${SNOW_MACOS_OCR_MANIFEST}"
                 VERBATIM)
             add_dependencies(${_host} ${_host}-ocr-assets)

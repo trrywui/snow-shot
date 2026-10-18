@@ -52,6 +52,7 @@ void startAutomaticPinSave(std::shared_ptr<ScreenshotExportArtifact> artifact,
                 callback(std::move(result));
             }
         };
+    artifact->setWindowNames(request->windowNames);
     if (!artifact->requestAutomaticSaveToConfiguredDirectory(
             request->receiver, std::move(request->configuredSaveDirectory), request->format,
             std::move(request->filenameFormat), request->encoding, completion, request->pdf,
@@ -716,8 +717,8 @@ bool ScreenshotSelectionExportUiServices::presentPinnedArtifact(
     // The worker loader returns a fully composited result image. Keep the live
     // renderer neutral so the result style is not applied twice after loading.
     config.resultStyle = ScreenshotResultStyle{};
-    config.borderAppearance =
-        screenshotSelectionBorderAppearance(request.selection.size(), request.resultStyle);
+    config.borderAppearance = screenshotSelectionBorderAppearance(
+        request.selection.size(), request.resultStyle, request.layoutCompaction);
     config.checkerboardEnabled = screenshotSelectionNeedsCheckerboard(config.borderAppearance);
     config.initialWindowSize = request.initialWindowSize;
     config.screen = request.screen;
@@ -728,9 +729,11 @@ bool ScreenshotSelectionExportUiServices::presentPinnedArtifact(
     config.recognitionProvider = m_recognitionProvider;
     // The pinned image retains the source canvas coordinates, including shadow padding.
     // Cached OCR quads must stay in that same space to align with the image.
-    config.recognitionResults = request.recognitionResults;
-    config.recognitionVisible = request.recognitionVisible;
-    config.translationVisible = request.translationVisible;
+    const bool layoutChanged = request.layoutPlan && request.layoutPlan->changed;
+    config.recognitionResults =
+        layoutChanged ? ScreenshotRecognitionResults{} : request.recognitionResults;
+    config.recognitionVisible = !layoutChanged && request.recognitionVisible;
+    config.translationVisible = !layoutChanged && request.translationVisible;
     config.formattedTextDocument.reset();
     config.formattedPlainText.clear();
     applyPinRuntimeSettings(&config);
@@ -961,8 +964,8 @@ bool ScreenshotSelectionExportUiServices::presentCompositedSelectionImage(
         request.surfaceCanvasRect.size() != QSizeF(request.initialWindowSize)) {
         return false;
     }
-    const auto appearance =
-        screenshotSelectionBorderAppearance(request.selection.size(), request.resultStyle);
+    const auto appearance = screenshotSelectionBorderAppearance(
+        request.selection.size(), request.resultStyle, request.layoutCompaction);
     return presentPinnedImageOnCanvas(
         image, request.screen.data(), request.geometry.nativeGeometry, request.initialWindowSize,
         request.surfaceCanvasRect, {}, {}, 1.0, {}, {}, std::move(completion), appearance,
@@ -1478,8 +1481,10 @@ bool ScreenshotSelectionExportUiServices::presentRestoredRecord(
         original.html = record.originalHtml;
         original.text = record.originalText;
         original.textStyle = record.textStyle;
+        original.textFormat = record.textFormat;
         const auto rendered = ScreenshotClipboardContentReader::renderOriginalText(
-            original, record.firstCreationTextDpi, QApplication::palette().color(QPalette::Base));
+            original, record.firstCreationTextDpi, QApplication::palette().color(QPalette::Base),
+            {}, capturePinnedColorSwatchStyle());
         if (!rendered.has_value() || !rendered->isValid()) {
             return false;
         }

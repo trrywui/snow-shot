@@ -37,6 +37,10 @@ Recording crop speed control uses FFmpeg's libavfilter audio buffer and tempo
 filters for streaming pitch-preserving audio. These components are covered by
 the existing FFmpeg license notices in the generated vcpkg dependency bundle.
 
+Recording GIF exports use the Rust `gif` and `weezl` crates (MIT OR Apache-2.0)
+for palette-indexed frame encoding and LZW compression. Their license texts are
+included in the generated Rust dependency notice bundle.
+
 Parallel screenshot stitching uses Rayon (Apache-2.0 OR MIT). Its license
 texts and resolved dependencies are included in the generated Rust dependency
 notice bundle.
@@ -45,22 +49,13 @@ Animated pinned images use giflib (MIT) for GIF decoding, libwebp (BSD-3-Clause)
 for WebP decoding, and libpng (Libpng) with zlib-ng (Zlib) for PNG/APNG frames.
 Their resolved copyright notices are included in the generated vcpkg license bundle.
 
-The OCR worker uses `ort` and `ort-sys` 2.0.0-rc.13 (MIT OR Apache-2.0), pinned to
-revision `90018ee581fb1bb1baf8e82eba8e679728ff27dc` of
-https://github.com/mg-chao/ort with a native diagnostic-decoding and logger-category
-fix. Cargo retrieves their source and original license files from that fork.
-The release collector includes the selected Rust FFI and static OCR-worker
-dependency graphs, including these Git dependencies.
-
-The Windows asset manifest pins immutable OCR runtime 1.0.9. This raw-pixel
-worker enables static ONNX Runtime, DirectML, and crash diagnostics. Its notice
-collection follows that dependency closure; RapidOCR's CLI, encoded-image
-decoding, HTTP/TLS model downloads, and YAML features are disabled.
-
-RapidOCR's optional HTTP features use Reqwest with Rustls (Apache-2.0 OR ISC OR
-MIT). They require Rustls 0.23.45 or a compatible newer release to address
-GHSA-2mjx-qc3c-rqvc. Builds enabling those features include Rustls and its
-resolved dependency licenses in the generated notice bundle.
+The OCR worker uses the Apache-2.0 `simd-paddle-ocr-rs` Git submodule for
+CPU inference. It includes adaptations of Sdcb.SimdPaddleOCR (Apache-2.0),
+.NET runtime reading-order sorting (MIT), and AMD win-libm exponential
+approximation (MIT). The generated bundle includes the submodule's LICENSE,
+NOTICE, and both component notices from its `licenses/` directory, along with
+its resolved dependencies. The worker is built using the submodule's pinned
+nightly toolchain. Runtime 1.1.0 has no external inference libraries.
 
 The GPL-3.0-only `snow-shot-updater` sidecar is implemented in Rust and is
 distributed as part of Snow Shot. Its resolved normal and build dependency
@@ -68,13 +63,10 @@ graph—including Tokio, Reqwest with native platform TLS, Serde, RSA/SHA-256,
 SemVer, ZIP/Deflate, and Microsoft windows-rs—is collected into the same
 versioned notice bundle from its independently locked Cargo package.
 
-The optional PP-OCRv4 and PP-OCRv5 detector/recognizer models and dictionaries
-are redistributed from RapidAI/RapidOCR's ModelScope release `v3.9.2`, whose
-model card declares Apache License 2.0:
-https://www.modelscope.cn/models/RapidAI/RapidOCR/files?Revision=v3.9.2.
-Snow Shot downloads the matching mobile/server bundles from
-https://www.modelscope.cn/models/mgchao/SnowShotOCR and pins their sizes and
-SHA-256 hashes in `packaging/snow-shot-ocr-asset-manifest.json`.
+The three PP-OCRv6 model bundles and dictionaries retain their existing
+PaddleOCR Apache-2.0 licensing. Snow Shot uses the unchanged Tiny, Small, and
+Medium files from https://www.modelscope.cn/models/mgchao/SnowShotOCR, with
+sizes and SHA-256 hashes pinned in `packaging/snow-shot-ocr-asset-manifest.json`.
 
 Local crash diagnostics on Windows and macOS use Crashpad (Apache-2.0), pinned by the vcpkg baseline
 and the repository's Crashpad overlay. The client, helper, Chromium base code,

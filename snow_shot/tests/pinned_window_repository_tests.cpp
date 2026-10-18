@@ -163,6 +163,128 @@ void pinnedTextStyleMetadataRoundTrips() {
             "records without style metadata keep legacy rendering semantics");
 }
 
+void pinnedColorSwatchMetadataRoundTrips() {
+    QTemporaryDir directory;
+    auto record = recordWithId(QUuid::createUuid().toString(QUuid::WithoutBraces), {});
+    record.sourceKind = storage::PinnedWindowSourceKind::ClipboardText;
+    record.originalText = QStringLiteral("#7DD35380");
+    record.initialWindowSize = QSize(342, 210);
+    record.nativeGeometry = QRect(0, 0, 342, 210);
+    record.canvasSourceRect = QRectF(0, 0, 342, 210);
+    record.contentCanvasRect = record.canvasSourceRect;
+    record.surfaceCanvasRect = record.canvasSourceRect;
+    storage::PinnedTextStyle style;
+    style.fontFamily = QStringLiteral("Arial");
+    style.fontSize = 16;
+    style.maximumWidth = 342;
+    style.colorSwatch = true;
+    record.textStyle = style;
+    {
+        storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+        require(repository.upsert(record).success && repository.flush().success, "save color card");
+    }
+    {
+        storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+        const auto restored = repository.loadRecord(record.id);
+        const auto preview = repository.loadPreviewSource(record.id);
+        require(restored && restored->textStyle == style && preview && preview->textStyle == style,
+                "color card layout survives repository and preview round trips");
+        record.textStyle->colorSwatchSize = QSize(470, 288);
+        record.textStyle->maximumWidth = 470;
+        record.initialWindowSize = QSize(470, 288);
+        record.nativeGeometry = QRect(0, 0, 470, 288);
+        record.canvasSourceRect = QRectF(record.nativeGeometry);
+        record.contentCanvasRect = record.canvasSourceRect;
+        record.surfaceCanvasRect = record.canvasSourceRect;
+        require(repository.upsert(record).success && repository.flush().success,
+                "save earlier swatch layout");
+    }
+    {
+        storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+        const auto restored = repository.loadRecord(record.id);
+        require(restored && restored->textStyle &&
+                    restored->textStyle->colorSwatchSize == QSize(470, 288),
+                "earlier swatch layout remains readable");
+    }
+    QFile file(directory.filePath(QStringLiteral("pinned_windows_v2/index.json")));
+    require(file.open(QIODevice::ReadOnly), "read color manifest");
+    auto root = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    auto records = root.value(QStringLiteral("records")).toArray();
+    auto legacy = records.at(0).toObject();
+    auto legacyStyle = legacy.value(QStringLiteral("text_style")).toObject();
+    legacyStyle.remove(QStringLiteral("color_swatch"));
+    legacyStyle.remove(QStringLiteral("color_swatch_width"));
+    legacyStyle.remove(QStringLiteral("color_swatch_height"));
+    legacy.insert(QStringLiteral("text_style"), legacyStyle);
+    records.replace(0, legacy);
+    root.insert(QStringLiteral("records"), records);
+    require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "write legacy color text");
+    file.write(QJsonDocument(root).toJson());
+    file.close();
+    storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+    const auto restored = repository.loadRecord(record.id);
+    require(restored && restored->textStyle && !restored->textStyle->colorSwatch &&
+                restored->originalText == record.originalText,
+            "existing color-shaped text pins keep ordinary presentation");
+}
+
+void markdownFormatMetadataRoundTrips() {
+    QTemporaryDir directory;
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    auto record = recordWithId(id, {});
+    record.sourceKind = storage::PinnedWindowSourceKind::ClipboardText;
+    record.originalText = QStringLiteral("# Saved Markdown\n\n**body**");
+    record.initialWindowSize = QSize(320, 100);
+    {
+        storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+        require(repository.upsert(record).success && repository.flush().success,
+                "save an initially plain text source");
+        const auto revision = repository.previewSourceRevision(id);
+        record.textFormat = storage::PinnedTextFormat::Markdown;
+        require(repository.upsert(record).success && repository.flush().success &&
+                    repository.previewSourceRevision(id) != revision,
+                "changing only text format invalidates the preview source");
+        const auto markdownRevision = repository.previewSourceRevision(id);
+        auto state = *repository.loadRecord(id);
+        state.textFormat = storage::PinnedTextFormat::PlainText;
+        state.opacityPercent = 75;
+        require(repository.updateState(state).success && repository.flush().success &&
+                    repository.loadRecord(id)->textFormat == storage::PinnedTextFormat::Markdown &&
+                    repository.previewSourceRevision(id) == markdownRevision,
+                "state-only updates preserve Markdown format and preview revision");
+    }
+    {
+        storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+        const auto restored = repository.loadRecord(id);
+        const auto preview = repository.loadPreviewSource(id);
+        require(restored && preview && restored->originalText == record.originalText &&
+                    preview->originalText == record.originalText &&
+                    restored->textFormat == storage::PinnedTextFormat::Markdown &&
+                    preview->textFormat == storage::PinnedTextFormat::Markdown,
+                "Markdown source and format survive disk reload and source-only previews");
+    }
+    QFile manifest(directory.filePath(QStringLiteral("pinned_windows_v2/index.json")));
+    require(manifest.open(QIODevice::ReadOnly), "read Markdown manifest");
+    auto root = QJsonDocument::fromJson(manifest.readAll()).object();
+    manifest.close();
+    auto records = root.value(QStringLiteral("records")).toArray();
+    auto legacy = records.first().toObject();
+    legacy.remove(QStringLiteral("text_format"));
+    records.replace(0, legacy);
+    root.insert(QStringLiteral("records"), records);
+    require(manifest.open(QIODevice::WriteOnly | QIODevice::Truncate),
+            "write legacy text manifest");
+    const auto bytes = QJsonDocument(root).toJson();
+    require(manifest.write(bytes) == bytes.size(), "write legacy source format fixture");
+    manifest.close();
+    storage::PinnedWindowRepository repository(directory.path(), true, 30000);
+    const auto restored = repository.loadRecord(id);
+    require(restored && restored->textFormat == storage::PinnedTextFormat::PlainText &&
+                restored->originalText == record.originalText,
+            "missing format metadata keeps existing plain-text behavior");
+}
+
 QString payloadFilePath(const QString& root, const QString& id) {
     return QDir(root).filePath(QStringLiteral("pinned_windows_v2/pins/%1/source.png").arg(id));
 }
@@ -2853,11 +2975,17 @@ int main(int argc, char* argv[]) {
         batchGroupAssignmentPreflightsAndNotifiesOnce();
         return 0;
     }
+    if (application.arguments().contains(QStringLiteral("--color-swatch-only"))) {
+        pinnedColorSwatchMetadataRoundTrips();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--text-style-only"))) {
         pinnedTextStyleMetadataRoundTrips();
+        markdownFormatMetadataRoundTrips();
         return 0;
     }
     pinnedTextStyleMetadataRoundTrips();
+    markdownFormatMetadataRoundTrips();
     payloadReadsKeepTheirRevisionWithoutBlockingMetadata();
     recordDeletionDoesNotInvalidateAdmittedPayloadRead();
     retentionWorkDoesNotBlockLifecycleUpdates();

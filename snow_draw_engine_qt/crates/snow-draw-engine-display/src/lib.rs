@@ -1,6 +1,6 @@
 use snow_draw_engine_core::{
-    Camera, ColorRgba8, CornerRadii, PathGeometry, Point, SnapGuideAxis, SnapGuideKind,
-    SurfaceSize,
+    Camera, ColorRgba8, CornerRadii, PathGeometry, Point, SnapConfig, SnapGuide, SnapGuideAxis,
+    SnapGuideKind, SurfaceSize,
     arrow::{ArrowPathCommand, ArrowType, Arrowhead, StrokeStyle},
 };
 use std::sync::Arc;
@@ -160,6 +160,7 @@ pub enum DisplayBlendMode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RectangleDisplayItem {
     pub id: DisplayItemId,
+    pub bound_text_id: Option<DisplayItemId>,
     pub center_x: f64,
     pub center_y: f64,
     pub width: f64,
@@ -170,6 +171,8 @@ pub struct RectangleDisplayItem {
     pub stroke: ColorRgba8,
     pub stroke_width: f64,
     pub stroke_style: StrokeStyle,
+    pub stroke_rendering_style: snow_draw_engine_core::arrow::StrokeRenderingStyle,
+    pub stroke_rendering_seed: u32,
     pub corner_radii: CornerRadii,
     pub opacity: f64,
     pub shape: DisplayRectangleShape,
@@ -407,6 +410,7 @@ pub struct ArrowheadDisplayPrimitive {
     pub points: Vec<[f64; 2]>,
     pub center: [f64; 2],
     pub diameter: f64,
+    pub roughness_cap: Option<f64>,
     pub fill_mode: ArrowheadDisplayFillMode,
     pub dash_mode: ArrowheadDisplayDashMode,
 }
@@ -432,6 +436,8 @@ pub struct ArrowDisplayItem {
     pub stroke: ColorRgba8,
     pub stroke_width: f64,
     pub stroke_style: StrokeStyle,
+    pub stroke_rendering_style: snow_draw_engine_core::arrow::StrokeRenderingStyle,
+    pub stroke_rendering_seed: u32,
     pub fill: ColorRgba8,
     pub fill_style: DisplayFillStyle,
     pub arrowhead_primitives: Vec<ArrowheadDisplayPrimitive>,
@@ -462,6 +468,13 @@ pub enum DisplayFillStyle {
     CrossLine,
     #[default]
     Solid,
+    Border = 3,
+}
+
+impl DisplayFillStyle {
+    pub fn is_visible(self, color: ColorRgba8) -> bool {
+        self != Self::Border && color.a != 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -521,6 +534,8 @@ pub struct SerialNumberDisplayItem {
     pub font_family: Option<String>,
     pub stroke_width: f64,
     pub stroke_style: StrokeStyle,
+    pub stroke_rendering_style: snow_draw_engine_core::arrow::StrokeRenderingStyle,
+    pub stroke_rendering_seed: u32,
     pub corner_radii: CornerRadii,
     pub opacity: f64,
     pub bound_text_id: Option<DisplayItemId>,
@@ -546,6 +561,8 @@ pub struct SerialNumberConnectorDisplayItem {
 impl Default for ArrowDisplayItem {
     fn default() -> Self {
         Self {
+            stroke_rendering_seed: 0,
+            stroke_rendering_style: Default::default(),
             brush_mode: Default::default(),
             pressure_geometry: None,
             bound_text_id: None,
@@ -576,7 +593,10 @@ impl Default for ArrowDisplayItem {
 impl Default for RectangleDisplayItem {
     fn default() -> Self {
         Self {
+            stroke_rendering_seed: 0,
+            stroke_rendering_style: Default::default(),
             id: DisplayItemId::default(),
+            bound_text_id: None,
             center_x: 0.0,
             center_y: 0.0,
             width: 0.0,
@@ -643,6 +663,8 @@ impl Default for SerialNumberDisplayItem {
             font_family: None,
             stroke_width: 0.0,
             stroke_style: StrokeStyle::Solid,
+            stroke_rendering_style: Default::default(),
+            stroke_rendering_seed: 0,
             corner_radii: CornerRadii::default(),
             opacity: 1.0,
             bound_text_id: None,
@@ -691,6 +713,7 @@ pub enum UiShapeKind {
     SpeechBubbleAddTailHandle,
     SpeechBubbleTailBaseHandle,
     SpeechBubbleTailTipHandle,
+    ShapeTextHandle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -773,6 +796,35 @@ pub struct SnapGuideDisplayItem {
     pub marker_size: f64,
     pub gap_dash_length: f64,
     pub gap_dash_gap: f64,
+}
+
+impl SnapGuideDisplayItem {
+    pub fn from_guide(guide: &SnapGuide, config: SnapConfig) -> Self {
+        let mut markers = [Point::default(), Point::default()];
+        let marker_count = guide.markers.len().min(markers.len());
+        for (index, marker) in guide.markers.iter().take(marker_count).enumerate() {
+            markers[index] = *marker;
+        }
+
+        Self {
+            kind: guide.kind,
+            axis: guide.axis,
+            start: guide.start,
+            end: guide.end,
+            marker_count: marker_count as u8,
+            markers,
+            label: if config.show_gap_size {
+                guide.label
+            } else {
+                None
+            },
+            color: config.line_color,
+            line_width: config.line_width,
+            marker_size: config.marker_size,
+            gap_dash_length: config.gap_dash_length,
+            gap_dash_gap: config.gap_dash_gap,
+        }
+    }
 }
 
 impl Default for SnapGuideDisplayItem {

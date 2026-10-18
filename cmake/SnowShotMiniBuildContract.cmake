@@ -35,8 +35,7 @@ if(WIN32)
     # Windows Mini acquires its trusted text OCR worker on demand. macOS Mini
     # bundles the local worker but acquires every selected model on demand.
     list(APPEND SNOW_SHOT_MINI_EXCLUDED_TARGETS
-        snow_ocr_process snow_ocr_process_build snow_ocr_diagnostics_bridge
-        onnxruntime::onnxruntime)
+        snow_ocr_process snow_ocr_process_build snow_ocr_diagnostics_bridge)
 endif()
 
 function(snow_shot_mini_filter_sources output)

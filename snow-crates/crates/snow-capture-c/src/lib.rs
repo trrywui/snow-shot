@@ -2,7 +2,9 @@
 
 mod desktop_layout;
 mod frame_geometry;
+mod target_screenshot;
 pub use desktop_layout::*;
+pub use target_screenshot::{SnowCaptureTargetScreenshotRequest, snow_capture_target_screenshot};
 
 use snow_capture::exclusions::SnowCaptureExclusions;
 use std::cell::RefCell;

@@ -891,6 +891,7 @@ bool ScreenshotOverlayWindow::event(QEvent* event) {
     }
     if (event != nullptr &&
         (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate)) {
+        m_eventSink.clearOverlaySnapping();
         m_eventSink.cancelEffectDrag();
         m_eventSink.leaveEffectEditors();
     }
@@ -1175,12 +1176,15 @@ bool ScreenshotOverlayWindow::handleCanvasEvent(QEvent* event) {
     if (event == nullptr) {
         return false;
     }
+    if (event->type() == QEvent::FocusOut)
+        m_eventSink.clearOverlaySnapping();
 
     const bool tablet = event->type() == QEvent::TabletPress ||
                         event->type() == QEvent::TabletMove ||
                         event->type() == QEvent::TabletRelease;
-    if ((tablet || event->type() == QEvent::KeyPress || event->type() == QEvent::MouseButtonPress ||
-         event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonRelease ||
+    if ((tablet || event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease ||
+         event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseMove ||
+         event->type() == QEvent::MouseButtonRelease ||
          event->type() == QEvent::MouseButtonDblClick || event->type() == QEvent::Wheel) &&
         !m_eventSink.acceptOverlayInput(event == m_forwardedCanvasInputEvent
                                             ? m_forwardedCanvasInputGenuine
@@ -1218,6 +1222,14 @@ bool ScreenshotOverlayWindow::handleCanvasEvent(QEvent* event) {
         if (!m_eventSink.presentOverlayPointer(this, position))
             m_screenshotRenderer->setGuideCursorPosition(position);
     }
+    if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Control && !key->isAutoRepeat()) {
+            auto modifiers = key->modifiers();
+            modifiers.setFlag(Qt::ControlModifier, event->type() == QEvent::KeyPress);
+            m_eventSink.updateOverlayModifiers(modifiers, true);
+        }
+    }
     if (event->type() == QEvent::KeyPress) {
         return handleCanvasKeyPress(static_cast<QKeyEvent*>(event));
     }
@@ -1251,6 +1263,7 @@ bool ScreenshotOverlayWindow::handleCanvasMouseEvent(QMouseEvent* event) {
     if (event == nullptr) {
         return false;
     }
+    m_eventSink.updateOverlayModifiers(event->modifiers(), false);
 
     if (event->type() == QEvent::MouseButtonDblClick && event->button() == Qt::LeftButton &&
         m_eventSink.handleEffectDoubleClick(this, event->position())) {

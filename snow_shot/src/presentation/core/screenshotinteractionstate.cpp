@@ -32,6 +32,7 @@ bool ScreenshotInteractionState::cancelEffectDrag() {
 }
 
 void ScreenshotInteractionState::resetEffectEditors() {
+    m_selectionBackgroundPreviewVisible = false;
     static_cast<void>(cancelEffectDrag());
     m_hoveredEffectHandle = ScreenshotSelectionEffectHandle::None;
 }

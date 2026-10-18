@@ -34,6 +34,7 @@ struct ScreenshotSelectionEditUiActions {
         openResizeModal;
     std::function<void()> hideColorPicker;
     std::function<void(bool)> setColorPickerSuppressed;
+    std::function<void()> requestSelectionEffectPresentation;
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTSELECTIONEDITWORKFLOWPORTS_H

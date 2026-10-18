@@ -1,4 +1,5 @@
 #include "snow_shot/presentation/screenshotrecognitionfileexport.h"
+#include "snow_shot/storage/exportfilename.h"
 
 #include <QAbstractButton>
 #include <QCoreApplication>
@@ -508,10 +509,18 @@ ScreenshotRecognitionFileExport::quickSave(const ScreenshotRecognitionFileSnapsh
                 message(QT_TRANSLATE_NOOP("ScreenshotRecognitionFileExport",
                                           "The output directory could not be created"))};
     for (int suffix = 0; suffix < 1000000; ++suffix) {
-        const QString candidateBase =
-            suffix == 0 ? baseName : QStringLiteral("%1_%2").arg(baseName).arg(suffix);
-        const QString path =
-            QDir(target).filePath(candidateBase + QLatin1Char('.') + extension(snapshot.kind));
+        const QString ending = (suffix == 0 ? QString() : QStringLiteral("_%1").arg(suffix)) +
+                               QLatin1Char('.') + extension(snapshot.kind);
+        // A Markdown companion has a longer extension than its primary file. Reserve enough
+        // space for every output so the pair always shares the same bounded stem.
+        QString longestEnding = ending;
+        for (const QString& output : outputPaths(ending, snapshot.kind)) {
+            if (output.toUtf8().size() > longestEnding.toUtf8().size())
+                longestEnding = output;
+        }
+        QString stem = snow_shot::storage::composeExportFileName(baseName, longestEnding);
+        stem.chop(longestEnding.size());
+        const QString path = QDir(target).filePath(stem + ending);
         if (existingPaths(outputPaths(path, snapshot.kind)).isEmpty()) {
             const auto result = saveToPath(snapshot, path);
             if (result.error != message(QT_TRANSLATE_NOOP("ScreenshotRecognitionFileExport",

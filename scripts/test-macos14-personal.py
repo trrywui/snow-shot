@@ -66,6 +66,9 @@ class PersonalWorkflow(unittest.TestCase):
         for name, body in {
             'uname': 'if [ "$1" = -s ]; then echo Darwin; else echo x86_64; fi',
             'xcode-select': 'echo /fake/Xcode',
+            'rustup': ':',
+            'cargo': ':',
+            'rustc': ':',
             'cmake': 'printf "%s\\n" "$@" > "$SNOW_CONFIGURE_LOG"\n'
                      'printf "%s\\n" "$CARGO_HOME" "$RUSTUP_HOME" "$RUSTUP_TOOLCHAIN" "$TMPDIR" '
                      '> "$SNOW_ENVIRONMENT_LOG"',
@@ -85,6 +88,8 @@ class PersonalWorkflow(unittest.TestCase):
                          '-DSNOW_SHOT_ENABLE_MCP=OFF', '-DSNOW_APPS_BUILD_SNOW_SHOT_MINI=OFF',
                          '-DSNOW_APPS_BUILD_TESTS=OFF', '-DSNOW_APPS_QT_STATIC=ON'):
             self.assertIn(expected, args)
+        self.assertIn(f'-DCARGO_EXECUTABLE={tools}/cargo', args)
+        self.assertIn(f'-DRUSTC_EXECUTABLE={tools}/rustc', args)
         tests_result = self.command('configure-tests', env=env)
         self.assertEqual(tests_result.returncode, 0, tests_result.stderr)
         test_args = log.read_text().splitlines()

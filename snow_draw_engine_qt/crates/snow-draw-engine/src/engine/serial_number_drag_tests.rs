@@ -1582,6 +1582,7 @@ fn serial_connector_tracks_ink_committed_with_edited_label() {
         has_text: true,
         font_size: committed.font_size,
         fill: committed.fill,
+        fill_style: committed.fill_style,
         stroke: committed.stroke,
         stroke_width: committed.stroke_width,
     };

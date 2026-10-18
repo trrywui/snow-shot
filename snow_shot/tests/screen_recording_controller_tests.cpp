@@ -40,6 +40,7 @@
 #include "physical_key_test_support.h"
 #include "snow_capture.h"
 #include "snow_shot/platform/windowcaptureexclusion.h"
+#include "snow_shot/platform/screenshotwindownames.h"
 #include "snow_recording.h"
 #include "widgets/button.h"
 #include "../src/presentation/recording/recordingaudiogainpopover.h"
@@ -55,6 +56,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#ifdef Q_OS_WIN
+#include "toolbar_capture_exclusion_native_tests.h"
+#endif
 #include <QElapsedTimer>
 #include <QThread>
 #include <QMouseEvent>
@@ -189,6 +193,12 @@ std::atomic<bool> sessionDestroyEntered = false;
 std::shared_future<void> sessionCreateGate;
 std::atomic<bool> sessionCreateEntered = false;
 bool recordingFileFixture = false;
+int windowNameLookups = 0;
+QPointF windowNameLookupPoint;
+snow_shot::storage::ScreenshotWindowNameFields windowNameLookupFields;
+std::vector<std::uintptr_t> windowNameLookupExclusions;
+snow_shot::storage::ScreenshotWindowNames desktopWindowNames;
+QString recordingOutputPath;
 std::shared_future<void> clipDestroyGate;
 std::atomic<bool> clipDestroyEntered = false;
 void require(bool condition, const char* message) {
@@ -2672,6 +2682,21 @@ int nativeEffectsPreviewCapture() {
 #endif
 } // namespace
 
+namespace snow_shot::platform {
+storage::ScreenshotWindowNames
+screenshotWindowNamesAtPoint(const QPointF& point, std::span<const std::uintptr_t> excludedWindows,
+                             storage::ScreenshotWindowNameFields fields) {
+    require(QThread::currentThread() == qApp->thread(),
+            "recording names must be resolved on the GUI thread");
+    ++windowNameLookups;
+    windowNameLookupPoint = point;
+    windowNameLookupFields = fields;
+    windowNameLookupExclusions.assign(excludedWindows.begin(), excludedWindows.end());
+    return {fields.applicationName ? desktopWindowNames.applicationName : QString(),
+            fields.windowName ? desktopWindowNames.windowName : QString()};
+}
+} // namespace snow_shot::platform
+
 extern "C" {
 SnowRecordingResult
 snow_recording_session_create_direct(const SnowCaptureDirectRecordingConfig* config,
@@ -2686,6 +2711,7 @@ snow_recording_session_create_direct(const SnowCaptureDirectRecordingConfig* con
         gate.wait();
     }
     lastDirectConfig = *config;
+    recordingOutputPath = QString::fromUtf8(config->output_file_utf8);
     liveSystemGain = config->system_audio_gain_db;
     liveMicrophoneGain = config->microphone_gain_db;
     recordingStopRequested = false;
@@ -4451,21 +4477,34 @@ void recordingExportNamingTests(const QString& directory) {
     };
     const snow_shot::storage::RecordingSettings settings;
     const QString previousFilenameFormat = settings.videoFilenameFormat();
+    const QString previousDirectory = settings.videoSaveDirectory();
     const QByteArray previousSourcePath = renderSourcePath;
     const auto restoreFilenameFormat = qScopeGuard([&] {
         require(settings.setVideoFilenameFormat(previousFilenameFormat),
                 "restore video filename format");
+        require(settings.setVideoSaveDirectory(previousDirectory), "restore video directory");
+        desktopWindowNames = {};
         renderSourcePath = previousSourcePath;
     });
     for (const QString& format : {QStringLiteral("mp4"), QStringLiteral("gif"),
                                   QStringLiteral("webp"), QStringLiteral("apng")}) {
         for (bool deferred : {false, true}) {
             const QString mode = deferred ? QStringLiteral("deferred") : QStringLiteral("realtime");
-            require(settings.setVideoFilenameFormat(
-                        QStringLiteral("Video_{'clip.name'}_%1_%2").arg(mode, format)),
-                    "configure a video filename with a deterministic date-time placeholder");
+            desktopWindowNames = {QStringLiteral("Browser/Docs"), QStringLiteral("{YYYY}: A/B")};
+            const QString directoryTemplate =
+                QDir(directory).filePath(QStringLiteral("{AN}/{WN}/%1/%2").arg(mode, format));
+            const QString expandedDirectory = QDir(directory).filePath(
+                QStringLiteral("Browser_Docs/{YYYY}_ A_B/%1/%2").arg(mode, format));
+            require(
+                settings.setVideoSaveDirectory(directoryTemplate) &&
+                    settings.setVideoFilenameFormat(
+                        QStringLiteral("Video_{'clip.name'}_{AN}_{WN}_%1_%2").arg(mode, format)) &&
+                    QDir().mkpath(expandedDirectory),
+                "configure recording directory and filename variables with collision fixtures");
             const QString basePath =
-                QDir(directory).filePath(QStringLiteral("Video_clip.name_%1_%2").arg(mode, format));
+                QDir(expandedDirectory)
+                    .filePath(QStringLiteral("Video_clip.name_Browser_Docs_{YYYY}_ A_B_%1_%2")
+                                  .arg(mode, format));
             const auto path = [&](int suffix) {
                 return basePath + (suffix ? QStringLiteral("_%1").arg(suffix) : QString()) +
                        QStringLiteral(".") + format;
@@ -4482,12 +4521,57 @@ void recordingExportNamingTests(const QString& directory) {
             }
             ScreenRecordingController controller(testEffectsSource);
             QString error;
+            const int beforeLookups = windowNameLookups;
             require(controller.startAutomation(QRect(80, 80, 320, 240),
                                                {{QStringLiteral("post_processing"), deferred},
-                                                {QStringLiteral("format"), format}},
+                                                {QStringLiteral("format"), format},
+                                                {QStringLiteral("capture_toolbar"), !deferred},
+                                                {QStringLiteral("start_delay_seconds"), 0}},
                                                &error),
                     "start export naming fixture");
+            auto* toolbar = qobject_cast<ScreenRecordingToolbarWindow*>(palette()->window());
+            require(toolbar != nullptr, "recording naming fixture has a toolbar");
+            auto* edge = toolbar->autoHideControlWindow();
+            QWidget popup(toolbar, Qt::Tool);
+            popup.show();
+            popup.windowHandle()->setTransientParent(toolbar->windowHandle());
+            QWidget unrelated(nullptr, Qt::Tool);
+            unrelated.show();
+            const auto nativeId = [](QWidget* widget) -> std::optional<std::uintptr_t> {
+#ifdef Q_OS_MACOS
+                return snow_shot::platform::captureWindowId(widget);
+#else
+                return static_cast<std::uintptr_t>(widget->internalWinId());
+#endif
+            };
+            std::vector<std::uintptr_t> expectedExclusions;
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                if (qobject_cast<ScreenRecordingAreaWindow*>(widget) || widget == toolbar ||
+                    widget == edge || widget == &popup) {
+                    if (const auto id = nativeId(widget))
+                        expectedExclusions.push_back(*id);
+                }
+            }
             waitForRecording(controller);
+            require(windowNameLookups == beforeLookups + 1 &&
+                        windowNameLookupPoint == QPointF(240, 200) &&
+                        windowNameLookupFields ==
+                            snow_shot::storage::ScreenshotWindowNameFields{true, true} &&
+                        recordingOutputPath == path(2),
+                    "one lookup at the selected region center names both templates before capture");
+            for (const auto id : expectedExclusions)
+                require(std::find(windowNameLookupExclusions.begin(),
+                                  windowNameLookupExclusions.end(),
+                                  id) != windowNameLookupExclusions.end(),
+                        "recording surfaces are ignored even when the toolbar is captured");
+            if (const auto id = nativeId(&unrelated))
+                require(std::find(windowNameLookupExclusions.begin(),
+                                  windowNameLookupExclusions.end(),
+                                  *id) == windowNameLookupExclusions.end(),
+                        "unrelated windows must remain eligible for naming");
+            popup.hide();
+            popup.setParent(nullptr);
+            desktopWindowNames = {QStringLiteral("Other App"), QStringLiteral("Changed title")};
             recordingToolbarButton("Trim Video")->click();
             auto* copy = recordingToolbarButton("Copy recording");
             wait([&] {
@@ -4551,10 +4635,103 @@ void recordingExportNamingTests(const QString& directory) {
                             retained.readAll() == (suffix == 2 ? "original" : "existing"),
                         "cropped exports never replace existing videos or the original");
             }
+            require(windowNameLookups == beforeLookups + 1,
+                    "trimmed Copy and Save retain the names captured at start");
             recordingToolbarButton("Close recording")->click();
             QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         }
     }
+}
+
+void recordingWindowNameFallbackTests(const QString& directory) {
+    const snow_shot::storage::RecordingSettings settings;
+    const QString previousFilename = settings.videoFilenameFormat();
+    const QString previousDirectory = settings.videoSaveDirectory();
+    const auto restore = qScopeGuard([&] {
+        require(settings.setVideoFilenameFormat(previousFilename) &&
+                    settings.setVideoSaveDirectory(previousDirectory),
+                "restore recording naming settings");
+        desktopWindowNames = {};
+    });
+    const QRect region(-501, -301, 321, 241);
+    ScreenRecordingController controller(testEffectsSource);
+    const auto start = [&](const QJsonObject& options,
+                           snow_shot::storage::ScreenshotWindowNameFields expectedFields,
+                           const QString& expectedPath) {
+        const int expectedLookups = expectedFields.any() ? 1 : 0;
+        const int before = windowNameLookups;
+        QString error;
+        require(controller.startAutomation(region, options, &error), "start window naming case");
+        waitForRecording(controller);
+        require(windowNameLookups == before + expectedLookups &&
+                    recordingOutputPath == expectedPath,
+                "window naming must preserve fallbacks, literal output paths and lookup gating");
+        if (expectedLookups)
+            require(windowNameLookupPoint == QPointF(-340.5, -180.5) &&
+                        windowNameLookupFields == expectedFields,
+                    "recording naming preserves its center and requests only required fields");
+        controller.stopRecordingAndCopy();
+        waitForIdle(controller);
+        require(controller.automationState().value(QStringLiteral("path")).toString() ==
+                    expectedPath,
+                "finalized exports retain the destination resolved at capture start");
+        require(controller.controlAutomation(QStringLiteral("close"), {}, &error),
+                "retire the previous automation session before starting another");
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    };
+    const QJsonObject options{{QStringLiteral("post_processing"), false},
+                              {QStringLiteral("format"), QStringLiteral("mp4")},
+                              {QStringLiteral("start_delay_seconds"), 0}};
+    require(settings.setVideoSaveDirectory(directory) &&
+                settings.setVideoFilenameFormat(QStringLiteral("Date_{'only'}_{wn}")),
+            "set a template without exact window variables");
+    start(options, {}, QDir(directory).filePath(QStringLiteral("Date_only_wn.mp4")));
+    require(settings.setVideoFilenameFormat(QStringLiteral("{AN}_{WN}")),
+            "set filename-only window variables");
+    desktopWindowNames = {QStringLiteral("Known/App"), {}};
+    start(options, {true, true}, QDir(directory).filePath(QStringLiteral("Known_App_Unknown.mp4")));
+    require(settings.setVideoFilenameFormat(QStringLiteral("{AN}")),
+            "set application-only filename variables");
+    desktopWindowNames = {QStringLiteral("Known/App"), QStringLiteral("Unused title")};
+    start(options, {true, false}, QDir(directory).filePath(QStringLiteral("Known_App.mp4")));
+    require(settings.setVideoSaveDirectory(QDir(directory).filePath(QStringLiteral("{WN}"))) &&
+                settings.setVideoFilenameFormat(QStringLiteral("Video")),
+            "set title-only directory variables");
+    desktopWindowNames = {QStringLiteral("Unused application"), QStringLiteral("Known/title")};
+    start(options, {false, true},
+          QDir(directory).filePath(QStringLiteral("Known_title/Video.mp4")));
+    require(settings.setVideoSaveDirectory(QDir(directory).filePath(QStringLiteral("{AN}/{WN}"))) &&
+                settings.setVideoFilenameFormat(QStringLiteral("Video")),
+            "set directory-only window variables");
+    desktopWindowNames = {};
+    start(options, {true, true},
+          QDir(directory).filePath(QStringLiteral("Unknown/Unknown/Video.mp4")));
+    const QString literal = QDir(directory).filePath(QStringLiteral("literal_{AN}_{WN}.mp4"));
+    auto explicitPath = options;
+    explicitPath.insert(QStringLiteral("path"), literal);
+    start(explicitPath, {true, true}, literal);
+
+    require(settings.setVideoSaveDirectory(directory) &&
+                settings.setVideoFilenameFormat(QStringLiteral("{AN}_{WN}")),
+            "prepare countdown naming case");
+    auto delayed = options;
+    delayed.insert(QStringLiteral("start_delay_seconds"), 1);
+    desktopWindowNames = {QStringLiteral("Before"), QStringLiteral("Countdown")};
+    const int before = windowNameLookups;
+    QString error;
+    require(controller.startAutomation(region, delayed, &error) && windowNameLookups == before,
+            "countdown must not resolve names before capture starts");
+    desktopWindowNames = {QStringLiteral("After"), QStringLiteral("Countdown")};
+    waitForRecording(controller);
+    require(windowNameLookups == before + 1 &&
+                recordingOutputPath ==
+                    QDir(directory).filePath(QStringLiteral("After_Countdown.mp4")),
+            "new sessions replace old names using the window present after countdown");
+    controller.stopRecordingAndCopy();
+    waitForIdle(controller);
+    require(controller.controlAutomation(QStringLiteral("close"), {}, &error),
+            "close window naming fixture");
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
 
 void recordingTrimmingTests(const QString& directory, bool uiOnly = false) {
@@ -5451,6 +5628,18 @@ int main(int argc, char** argv) {
     require(RecordingSettings().setCaptureToolbarInRecording(true),
             "capture exclusion must be disabled for fake backend");
 #ifdef Q_OS_WIN
+    if (app.arguments().contains(QStringLiteral("--native-capture-exclusion-only")) ||
+        app.arguments().contains(QStringLiteral("--native-capture-exclusion-affinity-only"))) {
+        ScreenRecordingToolbarWindow toolbar;
+        int result = verifyToolbarCaptureExclusionAffinity(*toolbar.autoHideControlWindow(),
+                                                           "recording-edge", false);
+        result |=
+            app.arguments().contains(QStringLiteral("--native-capture-exclusion-affinity-only"))
+                ? verifyToolbarCaptureExclusionAffinity(toolbar, "recording")
+                : verifyToolbarCaptureExclusion(toolbar, "recording");
+        ApplicationStorage::instance().shutdown();
+        return result;
+    }
     if (app.arguments().contains(QStringLiteral("--native-toolbar-display-only")) ||
         app.arguments().contains(QStringLiteral("--native-toolbar-ready-display-only"))) {
         const int result = recordingToolbarAcrossNativeDisplays(
@@ -5505,6 +5694,7 @@ int main(int argc, char** argv) {
     if (app.arguments().contains(QStringLiteral("--export-naming-only"))) {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
         recordingExportNamingTests(temporary.path());
+        recordingWindowNameFallbackTests(temporary.path());
         ApplicationStorage::instance().shutdown();
         return 0;
     }

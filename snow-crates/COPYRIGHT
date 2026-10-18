@@ -9,7 +9,7 @@ The complete Apache License 2.0 terms are in LICENSE. Third-party components
 remain subject to their respective licenses and attribution terms. Nested
 copyright notices take precedence for their stated scope.
 
-The `crates/rapid-ocr-rs/` subtree is:
-Copyright (C) 2026 rapid-ocr-rs Contributors
+The `crates/simd-paddle-ocr-rs/` subtree is:
+Copyright (C) 2026 simd-paddle-ocr-rs Contributors
 
 SPDX-License-Identifier: Apache-2.0

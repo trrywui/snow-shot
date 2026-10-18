@@ -178,9 +178,12 @@ void verifyTraySkinDestruction(snow_shot::presentation::SystemTrayController& co
 
 void verifyConfiguredTrayMenuOptions(snow_shot::presentation::SystemTrayController& controller) {
     using snow_shot::storage::TraySettings;
+    using Action = snow_shot::presentation::GlobalShortcutAction;
     const auto stitchId = QStringLiteral("quick.stitch-selected-images");
-    require(!TraySettings().menuOptions().contains(stitchId),
-            "selected-image stitching starts unchecked in the tray");
+    const auto splitId = QStringLiteral("quick.split-selected-images");
+    require(!TraySettings().menuOptions().contains(stitchId) &&
+                !TraySettings().menuOptions().contains(splitId),
+            "selected-image stitching and splitting start unchecked in the tray");
     auto& appStorage = snow_shot::storage::ApplicationStorage::instance();
     require(snow_shot::storage::ExtendedFeaturesSettings().setTranslationPageEnabled(true),
             "enable all optional tray commands");
@@ -207,24 +210,27 @@ void verifyConfiguredTrayMenuOptions(snow_shot::presentation::SystemTrayControll
     QApplication::processEvents();
     QStringList visible;
     QAction* stitching = nullptr;
+    QAction* splitting = nullptr;
     for (auto* action : menu->actions()) {
         if (!action->isSeparator() && action->isVisible())
             visible.append(action->data().toString());
         if (action->data().toString() == stitchId)
             stitching = action;
+        if (action->data().toString() == splitId)
+            splitting = action;
     }
     require(visible == options, "the tray must display every persisted selection, including Exit");
-    int stitches = 0;
-    QObject::connect(
-        &controller, &snow_shot::presentation::SystemTrayController::quickActionRequested, menu,
-        [&](snow_shot::presentation::GlobalShortcutAction action) {
-            require(action == snow_shot::presentation::GlobalShortcutAction::StitchSelectedImages,
-                    "the stitching tray entry dispatches its own action");
-            ++stitches;
-        });
-    require(stitching && stitching->isVisible(), "selected stitching tray entry is visible");
+    QVector<Action> imageActions;
+    QObject::connect(&controller,
+                     &snow_shot::presentation::SystemTrayController::quickActionRequested, menu,
+                     [&](Action action) { imageActions.append(action); });
+    require(stitching && stitching->isVisible() && splitting && splitting->isVisible(),
+            "selected stitching and splitting tray entries are visible");
     stitching->trigger();
-    require(stitches == 1, "the stitching tray entry activates exactly once");
+    splitting->trigger();
+    require(imageActions ==
+                QVector<Action>{Action::StitchSelectedImages, Action::SplitSelectedImages},
+            "selected-image tray entries dispatch their own action exactly once");
     menu->dismissPopup();
     drainMenus();
     require(!menu, "the configured tray session retires after dismissal");
@@ -1790,10 +1796,12 @@ int main(int argc, char* argv[]) {
           std::pair{QStringLiteral("quick.global-canvas"),
                     snow_shot::presentation::GlobalShortcutAction::GlobalCanvas},
           std::pair{QStringLiteral("quick.stitch-selected-images"),
-                    snow_shot::presentation::GlobalShortcutAction::StitchSelectedImages}}) {
+                    snow_shot::presentation::GlobalShortcutAction::StitchSelectedImages},
+          std::pair{QStringLiteral("quick.split-selected-images"),
+                    snow_shot::presentation::GlobalShortcutAction::SplitSelectedImages}}) {
         auto* optionalAction = actionForId(entry.first);
         require(optionalAction != nullptr && !optionalAction->isVisible(),
-                "management, canvas and stitching tray actions must start hidden");
+                "optional quick actions must start hidden");
         controller.setMenuOptions({entry.first, QStringLiteral("tray.exit")});
         require(optionalAction->isVisible(), "selected optional tray action must be visible");
         const auto previousCount = quickActions.size();

@@ -1,7 +1,7 @@
 # Snow Shot Intel macOS 维护分支
 
-正式名称为 **Snow Shot**，版本 **1.1.0+up.1.3.0**，Bundle ID 为 `io.github.trrywui.snowshot`。
-最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `8982d6660c03`。
+正式名称为 **Snow Shot**，版本 **1.1.2+up.1.3.2**，Bundle ID 为 `io.github.trrywui.snowshot`。
+最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `59782f9bb2ef`。
 
 ## 构建隔离
 
@@ -27,7 +27,8 @@ ThinLTO 链接缓存位于 `cache/thinlto`，供重复链接复用，不进入�
 ## 构建和打包
 
 使用现有 Xcode、Python 3、Git 和 rustup，其他工具由脚本准备在隔离目录。
-已验证工具链为 Xcode 16.2 / SDK 15.2、Rust 1.97.1、Qt 6.12.0、CMake 4.4.4。
+工具链为 Xcode 16.2 / SDK 15.2、Rust 1.97.1、Qt 6.12.0、CMake 4.4.4。
+OCR 单独使用子模块锁定的 nightly Rust；通过 rustup 代理选择，工具链仍安装在隔离目录。
 Xcode 16.2 的 C++20 线程取消使用其自带实验库选项，不替换全局 Xcode。
 
 ```sh
@@ -35,20 +36,21 @@ bash scripts/macos14-personal.sh all
 bash scripts/macos14-personal.sh package
 ```
 
+首次构建及同步上游后先执行 `git submodule update --init --recursive`。
 可单独重试 `bootstrap`、`qt-dependencies`、`qt`、`dependencies`、`configure`、`build`。
 `macos14-personal-jpeg` feature 使 TurboJPEG 与静态 Qt 的 JPEG v8 ABI 一致，不应删除。
 
 ```text
-.tools/macos14-personal/artifacts/1.1.0+up.1.3.0/Snow Shot.app
-.tools/macos14-personal/artifacts/1.1.0+up.1.3.0/snow-shot-1.1.0+up.1.3.0-intel.dmg
-.tools/macos14-personal/artifacts/1.1.0+up.1.3.0/snow-shot-1.1.0+up.1.3.0-intel.dmg.sha256
+.tools/macos14-personal/artifacts/1.1.2+up.1.3.2/Snow Shot.app
+.tools/macos14-personal/artifacts/1.1.2+up.1.3.2/snow-shot-1.1.2+up.1.3.2-intel.dmg
+.tools/macos14-personal/artifacts/1.1.2+up.1.3.2/snow-shot-1.1.2+up.1.3.2-intel.dmg.sha256
 ```
 
 打包保留 OCR 模型、许可证和第三方声明，并验证签名、Mach-O 系统依赖及最低版本。
 不覆盖已有同版本产物；重打包前先移动对应版本目录保存回退材料。
 
 版本唯一配置为 `snow_shot/packaging/macos/maintained-release.json`。
-应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.0`，内部构建号为 `2`。
+应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.2`，内部构建号为 `4`。
 后续发布递增维护版本及构建号，上游版本需与根构建声明一致。
 
 ## 正式运行与开发测试

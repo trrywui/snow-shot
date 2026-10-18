@@ -96,6 +96,24 @@ class RustLicenseCollection(unittest.TestCase):
         self.assertEqual((self.destination / 'shared-1.0.0/LICENSE-MIT').read_text(),
                          'first original notice')
 
+    def test_path_submodule_keeps_component_notices(self):
+        package = self.package('simd-paddle-ocr-rs', 'Apache notice', 'Apache-2.0')
+        package['source'] = None
+        directory = Path(package['manifest_path']).parent
+        (directory / 'NOTICE').write_text('upstream attribution')
+        (directory / 'licenses').mkdir()
+        for name in ('dotnet-runtime-MIT.txt', 'amd-win-libm-MIT.txt'):
+            (directory / 'licenses' / name).write_text('original ' + name)
+        responses = [subprocess.CompletedProcess([], 0, json.dumps({'packages': [package]})),
+                     subprocess.CompletedProcess([], 0, 'simd-paddle-ocr-rs v1.0.0\n')]
+        with patch.object(collector.subprocess, 'run', side_effect=responses):
+            selected = collector.resolved_packages('cargo', directory / 'Cargo.toml',
+                                                  package['name'], 'aarch64-apple-darwin', '', False)
+        self.assertEqual(selected, [package])
+        collector.collect_licenses(selected, self.destination, ROOT / 'licenses', 'worker')
+        self.assertEqual({p.name for p in (self.destination / 'simd-paddle-ocr-rs-1.0.0').iterdir()},
+                         {'LICENSE-MIT', 'NOTICE', 'dotnet-runtime-MIT.txt', 'amd-win-libm-MIT.txt'})
+
     @unittest.skipUnless(os.name == 'posix' and shutil.which('cmake'),
                          'CMake installation fixture requires a POSIX host and CMake')
     def test_cmake_installs_each_editions_built_features_and_propagates_errors(self):

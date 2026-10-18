@@ -7,6 +7,8 @@
 #include "snow_shot/presentation/languagemanager.h"
 #include "snow_shot/presentation/settings/settingsbackend.h"
 #include "snow_shot/presentation/settings/settingsruntimesession.h"
+#include "snow_shot/presentation/settings/settingsformfield.h"
+#include "widgets/modal.h"
 #include "snow_shot/presentation/styles/thememanager.h"
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include "snow_shot/storage/applicationstorage.h"
@@ -29,10 +31,12 @@
 #include <QDir>
 #include <QEvent>
 #include <QFontDatabase>
+#include <QFileDialog>
 #include <QKeyEvent>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QVBoxLayout>
 #include <QMap>
 #include <QProxyStyle>
 #include <QResizeEvent>
@@ -42,6 +46,9 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QTemporaryDir>
+#include <QTimer>
+#include <QToolButton>
+#include <QtTest/QTest>
 #include <QTranslator>
 
 #include <cstdlib>
@@ -571,6 +578,149 @@ class TestTranslator final : public QTranslator {
                    : QString();
     }
 };
+
+void variableDescriptionLinks(const settings::SettingsRegistry& registry,
+                              settings::SettingsRuntimeSession& session) {
+    class HelpTranslator final : public QTranslator {
+      public:
+        bool isEmpty() const override {
+            return false;
+        }
+        QString translate(const char* context, const char* source, const char*,
+                          int) const override {
+            return qstrcmp(context, "SettingsVariableHelp") == 0
+                       ? QStringLiteral("Translated: ") + QString::fromUtf8(source)
+                       : QString();
+        }
+    } translator;
+    QWidget owner;
+    auto* layout = new QVBoxLayout(&owner);
+    owner.resize(880, 760);
+    const QStringList ids{QStringLiteral("screenshot-output.image-save-directory"),
+                          QStringLiteral("screen-recording-output.video-save-directory"),
+                          QStringLiteral("screenshot-output.manual-filename-format"),
+                          QStringLiteral("screenshot-output.auto-filename-format"),
+                          QStringLiteral("screen-recording-output.video-filename-format")};
+    QVector<settings::SettingsFormField*> fields;
+    for (const QString& id : ids) {
+        const auto* descriptor = registry.field(id);
+        require(descriptor != nullptr, "variable-capable settings must be registered");
+        snow_shot::presentation::components::form_fields::Options options;
+        options.parent = &owner;
+        options.presentation =
+            snow_shot::presentation::components::form_fields::Presentation::SettingsRow;
+        auto* field = settings::SettingsFormField::create(*descriptor, session, options);
+        require(field != nullptr && field->controller()->metadata().descriptionAction.isValid(),
+                "all five supported settings must provide a description action");
+        fields.push_back(field);
+        layout->addWidget(field->viewWidget());
+    }
+    owner.show();
+    drainEvents();
+    QTemporaryDir browseDirectory;
+    const QString pathTemplate = browseDirectory.filePath(QStringLiteral("{AN}/{WN}/{'resolved'}"));
+    const QString resolved = browseDirectory.filePath(QStringLiteral("Unknown/Unknown/resolved"));
+    require(browseDirectory.isValid() && QDir().mkpath(resolved), "browse fixture must exist");
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    for (auto* field : {fields.at(0), fields.at(1)}) {
+        auto* path = qobject_cast<DirectoryPathInput*>(field->editor());
+        require(path != nullptr, "image and recording directories must expose path editors");
+        path->setText(pathTemplate);
+        bool inspectedPicker = false;
+        QTimer::singleShot(0, &owner, [&] {
+            for (auto* widget : QApplication::topLevelWidgets()) {
+                if (auto* dialog = qobject_cast<QFileDialog*>(widget)) {
+                    require(dialog->directory().absolutePath() == resolved,
+                            "directory picker resolves window variables without recording context");
+                    inspectedPicker = true;
+                    dialog->reject();
+                }
+            }
+        });
+        path->browseButton()->click();
+        require(inspectedPicker && path->text() == pathTemplate,
+                "canceling the directory picker must preserve the stored template");
+    }
+    for (auto* field : fields) {
+        auto* description =
+            field->viewWidget()->findChild<QLabel*>(QStringLiteral("formFieldDescription"));
+        require(description && description->wordWrap() &&
+                    description->text().endsWith(QStringLiteral("Variable Description</a>")) &&
+                    description->textInteractionFlags().testFlag(Qt::LinksAccessibleByKeyboard) &&
+                    !field->editor()->accessibleDescription().contains(QStringLiteral("<a")),
+                "help must follow the description and remain accessible without exposing markup");
+        description->setFocus(Qt::TabFocusReason);
+        QTest::keyClick(description, Qt::Key_Return);
+        drainEvents();
+        auto* modal = field->viewWidget()->findChild<adqt::widgets::AdModal*>(
+            QStringLiteral("settingsVariableDescriptionModal"));
+        require(modal && modal->isOpen() && modal->centered() &&
+                    modal->standardButtons() == adqt::widgets::AdModal::StandardButton::Ok &&
+                    modal->text().startsWith(QStringLiteral("{YYYY}: Current time")),
+                "keyboard activation must open a centered modal with the variable description and "
+                "one button");
+        require(modal->text().contains(QStringLiteral("{AN}: Application Name")) &&
+                    modal->text().contains(QStringLiteral("{WN}: Window Name")) &&
+                    !modal->text().contains(QStringLiteral("Unknown")),
+                "window variable help must be available for screenshot and recording templates");
+        const QString snapshot = qEnvironmentVariable("SNOW_VARIABLE_HELP_SNAPSHOT");
+        if (field == fields.constFirst() && !snapshot.isEmpty())
+            require(owner.grab().save(snapshot), "help modal snapshot must save");
+        require(QCoreApplication::installTranslator(&translator), "help translator must install");
+        drainEvents();
+        require(
+            modal->windowTitle() == QStringLiteral("Translated: Variable Description") &&
+                modal->text().startsWith(QStringLiteral("Translated: {YYYY}: Current time")) &&
+                description->text().contains(QStringLiteral("Translated: Variable Description")),
+            "open modal and inline link must follow language changes");
+        QCoreApplication::removeTranslator(&translator);
+        drainEvents();
+        modal->acceptButton()->click();
+        drainEvents();
+        require(!field->viewWidget()->findChild<adqt::widgets::AdModal*>(
+                    QStringLiteral("settingsVariableDescriptionModal")),
+                "accepting help must release the modal");
+    }
+    auto* first = fields.constFirst();
+    auto* firstDescription =
+        first->viewWidget()->findChild<QLabel*>(QStringLiteral("formFieldDescription"));
+    firstDescription->setFocus(Qt::TabFocusReason);
+    QTest::keyClick(firstDescription, Qt::Key_Return);
+    drainEvents();
+    auto* modal = first->viewWidget()->findChild<adqt::widgets::AdModal*>(
+        QStringLiteral("settingsVariableDescriptionModal"));
+    require(modal && modal->isOpen(), "help must reopen after dismissal");
+    owner.activateWindow();
+    require(QTest::qWaitForWindowActive(&owner),
+            "help owner must be active for keyboard shortcuts");
+    modal->acceptButton()->setFocus(Qt::TabFocusReason);
+    drainEvents();
+    require(modal->acceptButton()->hasFocus(), "help accept button must receive keyboard focus");
+    QTest::keyClick(modal->acceptButton(), Qt::Key_Escape);
+    drainEvents();
+    require(!first->viewWidget()->findChild<adqt::widgets::AdModal*>(
+                QStringLiteral("settingsVariableDescriptionModal")),
+            "Escape must dismiss help");
+    firstDescription->setFocus(Qt::TabFocusReason);
+    QTest::keyClick(firstDescription, Qt::Key_Return);
+    drainEvents();
+    modal = first->viewWidget()->findChild<adqt::widgets::AdModal*>(
+        QStringLiteral("settingsVariableDescriptionModal"));
+    require(modal && modal->isOpen(), "help must reopen after Escape");
+    modal->closeButton()->click();
+    drainEvents();
+    require(!first->viewWidget()->findChild<adqt::widgets::AdModal*>(
+                QStringLiteral("settingsVariableDescriptionModal")),
+            "close button must dismiss help");
+    owner.resize(560, 760);
+    drainEvents();
+    for (auto* field : fields) {
+        auto* description =
+            field->viewWidget()->findChild<QLabel*>(QStringLiteral("formFieldDescription"));
+        require(description->height() >= description->heightForWidth(description->width()),
+                "wrapped descriptions must receive their required height");
+    }
+}
 
 void deferredStateAndKeyboard(const settings::SettingsRegistry& registry,
                               settings::SettingsRuntimeSession& session) {
@@ -1158,7 +1308,7 @@ class SettingsTestShortcutBackend final : public snow_shot::presentation::Global
     void unregisterShortcut(int) override {}
 };
 
-void stitchSelectedImagesSettings(const settings::SettingsRegistry& registry) {
+void selectedImagesSettings(const settings::SettingsRegistry& registry) {
     using namespace snow_shot::presentation;
     constexpr auto action = GlobalShortcutAction::StitchSelectedImages;
     GlobalShortcutManager shortcuts(std::make_unique<SettingsTestShortcutBackend>(), nullptr,
@@ -1175,29 +1325,43 @@ void stitchSelectedImagesSettings(const settings::SettingsRegistry& registry) {
         QStringLiteral("settings-item-quick-stitch-selected-images"));
     auto* canvas =
         page.findChild<ShortcutKeyRow*>(QStringLiteral("settings-item-quick-global-canvas"));
-    require(stitch && canvas &&
-                stitch->mapTo(&page, QPoint()).y() > canvas->mapTo(&page, QPoint()).y() &&
-                session.shortcutState(action).shortcuts.isEmpty(),
-            "the stitching action materializes below the canvas with no assigned key");
+    auto* split = page.findChild<ShortcutKeyRow*>(
+        QStringLiteral("settings-item-quick-split-selected-images"));
+    require(
+        stitch && canvas && split &&
+            stitch->mapTo(&page, QPoint()).y() > canvas->mapTo(&page, QPoint()).y() &&
+            split->mapTo(&page, QPoint()).y() > stitch->mapTo(&page, QPoint()).y() &&
+            session.shortcutState(action).shortcuts.isEmpty() &&
+            session.shortcutState(GlobalShortcutAction::SplitSelectedImages).shortcuts.isEmpty(),
+        "unassigned stitching and splitting actions materialize in order below the canvas");
     int commands = 0;
+    auto expectedAction = action;
     QObject::connect(&page, &SettingsPageWidget::commandRequested, &page,
                      [&](const settings::SettingsCommand& command) {
                          require(command.kind ==
                                          settings::SettingsCommandKind::ExecuteQuickAction &&
-                                     command.shortcutAction == action,
-                                 "the stitching row dispatches its own action");
+                                     command.shortcutAction == expectedAction,
+                                 "the selected-image row dispatches its own action");
                          ++commands;
                      });
     require(QMetaObject::invokeMethod(stitch, "clicked", Qt::DirectConnection) && commands == 1,
             "the stitching row runs without an assigned key");
+    expectedAction = GlobalShortcutAction::SplitSelectedImages;
+    require(QMetaObject::invokeMethod(split, "clicked", Qt::DirectConnection) && commands == 2,
+            "the splitting row runs without an assigned key");
     const snow_shot::shortcuts::ShortcutBindingList bindings{QStringLiteral("Ctrl+Alt+F8"),
                                                              QStringLiteral("Ctrl+Alt+F9")};
     const snow_shot::storage::ShortcutSettings stored;
     const auto screenshot = stored.screenshot();
+    const snow_shot::shortcuts::ShortcutBindingList splitBindings{QStringLiteral("Ctrl+Alt+F10"),
+                                                                  QStringLiteral("Ctrl+Alt+F11")};
     require(session.applyShortcuts(action, bindings) && stored.stitchSelectedImages() == bindings &&
+                session.applyShortcuts(GlobalShortcutAction::SplitSelectedImages, splitBindings) &&
+                stored.splitSelectedImages() == splitBindings &&
                 session.reset(settings::SettingsSectionReset::OtherShortcuts) &&
-                stored.stitchSelectedImages().isEmpty() && stored.screenshot() == screenshot,
-            "Other reset clears stitching keys and preserves screenshot keys");
+                stored.stitchSelectedImages().isEmpty() && stored.splitSelectedImages().isEmpty() &&
+                stored.screenshot() == screenshot,
+            "Other reset clears stitching and splitting keys and preserves screenshot keys");
     auto& languages = LanguageManager::instance();
     for (const auto* locale : {"zh_CN", "zh_TW"}) {
         require(languages.setLanguage(QString::fromLatin1(locale)),
@@ -1206,8 +1370,11 @@ void stitchSelectedImagesSettings(const settings::SettingsRegistry& registry) {
         drainEvents();
         require(stitch->accessibleName() ==
                         QCoreApplication::translate("SettingsCatalog", "Stitch Selected Images") &&
-                    stitch->accessibleName() != QStringLiteral("Stitch Selected Images"),
-                "the stitching action retranslates in both Chinese catalogs");
+                    stitch->accessibleName() != QStringLiteral("Stitch Selected Images") &&
+                    split->accessibleName() ==
+                        QCoreApplication::translate("SettingsCatalog", "Split Selected Images") &&
+                    split->accessibleName() != QStringLiteral("Split Selected Images"),
+                "both selected-image actions retranslate in both Chinese catalogs");
     }
     require(languages.setLanguage(QStringLiteral("en_US")), "restore settings test language");
 }
@@ -1659,6 +1826,37 @@ void featureLinksAdvancedControlsAndResets(const settings::SettingsRegistry& reg
             "advanced capture reset preserves cursor visibility");
 #endif
 }
+void catalogResetsPreserveOtherSections(settings::SettingsRuntimeSession& session) {
+    using Reset = settings::SettingsSectionReset;
+    using Schema = snow_shot::storage::ConfigurationSchema;
+    auto& configuration = snow_shot::storage::ApplicationStorage::instance().configuration();
+    const QVector<QPair<Reset, QString>> cases{
+        {Reset::ScreenshotOutput, QStringLiteral("screenshot/image_quality")},
+        {Reset::Tray, QStringLiteral("tray/enabled")},
+        {Reset::ScreenRecordingInteraction,
+         QStringLiteral("screen_recording/notify_after_export_completes")},
+        {Reset::ScreenRecordingOutput, QStringLiteral("screen_recording/video_filename_format")},
+        {Reset::Translation, QStringLiteral("screenshot_translation/original_image_translation")},
+    };
+    const QMap<QString, QJsonValue> customized{
+        {cases[0].second, 37},
+        {cases[1].second, !Schema::defaultValue(cases[1].second).toBool()},
+        {cases[2].second, !Schema::defaultValue(cases[2].second).toBool()},
+        {cases[3].second, QStringLiteral("CustomVideo_{YYYY}")},
+        {cases[4].second, !Schema::defaultValue(cases[4].second).toBool()},
+    };
+    for (const auto& [reset, key] : cases) {
+        require(configuration.setValues(customized), "customize independent settings sections");
+        require(configuration.value(key) != Schema::defaultValue(key),
+                "reset fixture must start with a nondefault setting");
+        require(session.reset(reset), "catalog-backed section reset must succeed");
+        for (const auto& [otherReset, otherKey] : cases)
+            require(configuration.value(otherKey) == (otherReset == reset
+                                                          ? Schema::defaultValue(otherKey)
+                                                          : customized.value(otherKey)),
+                    "a section reset restores its defaults and preserves neighboring sections");
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1683,13 +1881,23 @@ int main(int argc, char** argv) {
     settings::BuiltInSettingsBackend backend(shortcuts);
     const auto registry = settings::buildBuiltInSettingsRegistry();
     settings::SettingsRuntimeSession session(registry, backend);
+    if (application.arguments().contains(QStringLiteral("--variable-help-only"))) {
+        variableDescriptionLinks(registry, session);
+        storage.shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--catalog-resets-only"))) {
+        catalogResetsPreserveOtherSections(session);
+        storage.shutdown();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--pinned-text-colors-only"))) {
         pinnedTextColorsFollowApplicationPalette(registry, session);
         storage.shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--stitch-selected-images-only"))) {
-        stitchSelectedImagesSettings(registry);
+        selectedImagesSettings(registry);
         storage.shutdown();
         return 0;
     }
@@ -1735,7 +1943,7 @@ int main(int argc, char** argv) {
     scrollingLoadsSections(registry, session);
     unchangedPresentation(registry, session);
     skinControlsCommitAndRetranslate(registry, session);
-    stitchSelectedImagesSettings(registry);
+    selectedImagesSettings(registry);
     storage.shutdown();
     return 0;
 }

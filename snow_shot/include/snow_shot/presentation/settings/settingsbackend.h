@@ -372,6 +372,8 @@ class BuiltInSettingsBackend final : public SettingsBackend {
   private:
     void observeAppearanceChanges();
     void connectSkinControllerIfNeeded();
+    [[nodiscard]] bool applyContextMenuSettings(const QJsonValue& mode,
+                                                const QJsonValue& shortcuts);
     [[nodiscard]] platform::windows::AdministratorResult applyStartupSettings(bool enabled,
                                                                               bool elevated);
 

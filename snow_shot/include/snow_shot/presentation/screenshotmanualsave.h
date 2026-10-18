@@ -5,6 +5,7 @@
 #include "snow_shot/presentation/screenshotimagefileservice.h"
 #include "snow_shot/presentation/screenshotexportcoordinator.h"
 #include "snow_shot/storage/settingsadapters.h"
+#include "snow_shot/storage/exportfilename.h"
 #include <QDir>
 #include <QPointer>
 
@@ -43,15 +44,18 @@ struct ScreenshotManualSaveDefaults final {
     QString selectedFilter;
 };
 
-[[nodiscard]] inline ScreenshotManualSaveDefaults screenshotManualSaveDefaults() {
+[[nodiscard]] inline ScreenshotManualSaveDefaults
+screenshotManualSaveDefaults(const QDateTime& timestamp = QDateTime::currentDateTime(),
+                             const snow_shot::storage::ScreenshotWindowNames& names = {}) {
     const snow_shot::storage::ScreenshotSettings settings;
     const QString directory = ScreenshotImageFileService::saveDialogDirectory(
-        settings.lastManualSaveDirectory(), settings.imageSaveDirectory());
+        settings.lastManualSaveDirectory(), settings.imageSaveDirectory(), timestamp, names);
     static_cast<void>(QDir().mkpath(directory));
     const auto format = ScreenshotImageFileService::formatForKey(settings.lastManualSaveFormat());
-    return {QDir(directory).filePath(
-                ScreenshotImageFileService::suggestedBaseName(settings.manualSaveFilenameFormat()) +
-                QStringLiteral(".") + ScreenshotImageFileService::extension(format)),
+    return {QDir(directory).filePath(snow_shot::storage::composeExportFileName(
+                ScreenshotImageFileService::suggestedBaseName(settings.manualSaveFilenameFormat(),
+                                                              timestamp, names),
+                QStringLiteral(".") + ScreenshotImageFileService::extension(format))),
             ScreenshotImageFileService::dialogFilter(format)};
 }
 

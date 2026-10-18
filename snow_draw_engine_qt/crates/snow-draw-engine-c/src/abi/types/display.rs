@@ -40,6 +40,7 @@ snow_c_enum! {
         Line = 0,
         CrossLine = 1,
         Solid = 2,
+        Border = 3,
     }
 }
 
@@ -49,6 +50,16 @@ snow_c_enum! {
         Solid = 0,
         Dashed = 1,
         Dotted = 2,
+    }
+}
+
+snow_c_enum! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum SnowStrokeRenderingStyle {
+        #[default]
+        Architect = 0,
+        Artist = 1,
+        Cartoonist = 2,
     }
 }
 
@@ -153,6 +164,8 @@ pub struct SnowSceneDisplayItem {
     pub stroke: SnowColorRgba8,
     pub text_color: SnowColorRgba8,
     pub stroke_width: f64,
+    pub stroke_rendering_style: SnowStrokeRenderingStyle,
+    pub stroke_rendering_seed: u32,
     pub corner_radii: SnowCornerRadii,
     pub arrow_point_count: u32,
     pub arrow_type: SnowArrowType,
@@ -230,6 +243,7 @@ pub enum SnowOverlayRectKind {
     SpeechBubbleAddTailHandle = 17,
     SpeechBubbleTailBaseHandle = 18,
     SpeechBubbleTailTipHandle = 19,
+    ShapeTextHandle = 20,
 }
 
 #[repr(C)]
@@ -264,6 +278,8 @@ pub struct SnowOverlayDisplayItem {
     pub fill: SnowColorRgba8,
     pub stroke: SnowColorRgba8,
     pub stroke_width: f64,
+    pub stroke_rendering_style: SnowStrokeRenderingStyle,
+    pub stroke_rendering_seed: u32,
     pub corner_radii: SnowCornerRadii,
     pub arrow_point_count: u32,
     pub arrow_type: SnowArrowType,
@@ -311,6 +327,9 @@ impl Default for SnowInteractionOutput {
 impl Default for SnowSceneDisplayItem {
     fn default() -> Self {
         Self {
+            stroke_rendering_style: SnowStrokeRenderingStyle::Architect,
+            stroke_rendering_seed: 0,
+
             kind: SnowSceneDisplayItemKind::Unknown,
             blend_mode: SnowBlendMode::Normal,
             element_id: SnowElementId::default(),
@@ -370,6 +389,8 @@ impl Default for SnowSceneDisplayItem {
 impl Default for SnowOverlayDisplayItem {
     fn default() -> Self {
         Self {
+            stroke_rendering_style: SnowStrokeRenderingStyle::Architect,
+            stroke_rendering_seed: 0,
             kind: SnowOverlayDisplayItemKind::DrawRect,
             rect_kind: SnowOverlayRectKind::Unspecified,
             snap_guide_kind: SnowSnapGuideKind::Point,

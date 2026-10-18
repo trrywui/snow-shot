@@ -896,6 +896,8 @@ class HistoryEntryWidget final : public QFrame {
 
         m_deleteConfirmation = new adqt::widgets::AdPopconfirm(this);
         m_deleteConfirmation->setObjectName(QStringLiteral("screenshotHistoryEntryDeleteConfirm"));
+        // More anchors the confirmation; only the Delete action may open it.
+        m_deleteConfirmation->setTriggers({});
         m_deleteConfirmation->setSourceWidget(m_moreButton);
         m_deleteConfirmation->setPlacement(adqt::widgets::AdPopconfirm::Placement::Top);
         m_deleteConfirmation->setPopupLayerMode(

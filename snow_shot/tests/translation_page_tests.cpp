@@ -1019,21 +1019,27 @@ void navigationThemesLanguagesAndGeometry() {
                 child<AdButton>(*page, "translationActions")->click();
                 auto* copyAction = child<QAction>(*page, "translationCopy");
                 auto* copyCloseAction = child<QAction>(*page, "translationCopyAndClose");
+                const auto expectedMenuText = [&](const char* sourceText) {
+                    // Release catalogs strip source-identical English entries.
+                    if (locale == QStringLiteral("en_US"))
+                        return QString::fromUtf8(sourceText);
+                    const QString translated =
+                        translator.translate("TranslationPageWidget", sourceText);
+                    require(!translated.isEmpty(),
+                            "localized menu labels must exist in the catalog");
+                    return translated;
+                };
                 require(copyCloseAction->text() ==
-                            translator.translate("TranslationPageWidget", "Copy and Close (%1)")
-                                .arg(copyCloseShortcut),
+                            expectedMenuText("Copy and Close (%1)").arg(copyCloseShortcut),
                         "floating actions retranslate immediately");
                 copyAction->setText(QStringLiteral("stale copy legend"));
                 copyCloseAction->setText(QStringLiteral("stale copy-and-close legend"));
                 snow_shot::shortcuts::ShortcutDisplayService::instance().refresh();
                 const QString copyShortcut = snow_shot::shortcuts::formatShortcutDisplayText(
                     snow_shot::shortcuts::bindingFromPortableText(QStringLiteral("Ctrl+C")));
-                require(copyAction->text() ==
-                                translator.translate("TranslationPageWidget", "Copy (%1)")
-                                    .arg(copyShortcut) &&
+                require(copyAction->text() == expectedMenuText("Copy (%1)").arg(copyShortcut) &&
                             copyCloseAction->text() ==
-                                translator.translate("TranslationPageWidget", "Copy and Close (%1)")
-                                    .arg(copyCloseShortcut),
+                                expectedMenuText("Copy and Close (%1)").arg(copyCloseShortcut),
                         "a keyboard-layout refresh must update fixed translation shortcuts");
                 for (const bool collapsed : {false, true}) {
                     sidebar->setCollapsed(collapsed);

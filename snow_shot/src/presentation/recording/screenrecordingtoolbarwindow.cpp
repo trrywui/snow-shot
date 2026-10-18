@@ -19,6 +19,9 @@
 #ifdef Q_OS_MACOS
 #include "snow_shot/platform/screenshotnative.h"
 #endif
+#ifdef Q_OS_WIN
+#include "../../platform/windows/captureexclusioncomposition.h"
+#endif
 
 #include <QScreen>
 #include <QGuiApplication>
@@ -51,6 +54,9 @@ class RecordingToolbarEdgeControl final : public QAbstractButton {
         setAttribute(Qt::WA_ShowWithoutActivating);
         setAttribute(Qt::WA_TranslucentBackground);
         setAttribute(Qt::WA_NoSystemBackground);
+#ifdef Q_OS_WIN
+        snow_shot::platform::windows::detail::enableCaptureExclusionCompositionFallback(this);
+#endif
 #ifdef Q_OS_MACOS
         setAttribute(Qt::WA_MacAlwaysShowToolWindow);
         snow_shot::platform::configureScreenRecordingToolbarWindow(this);
@@ -581,6 +587,9 @@ class ScreenRecordingToolbarWindow::AutoHide final : public QObject {
 
 ScreenRecordingToolbarWindow::ScreenRecordingToolbarWindow(QWidget* parent)
     : ScreenshotFloatingToolPaletteWindow(recordingToolbarOptions(), parent) {
+#ifdef Q_OS_WIN
+    snow_shot::platform::windows::detail::enableCaptureExclusionCompositionFallback(this);
+#endif
     snow_shot::presentation::installWindowCloseShortcut(this, [this] { close(); });
     setWindowFlag(Qt::WindowDoesNotAcceptFocus, false);
     setAttribute(Qt::WA_ShowWithoutActivating, false);

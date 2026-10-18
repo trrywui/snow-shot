@@ -39,16 +39,13 @@ add_custom_target(snow_shot_mini-ocr-assets
         --arch "${SNOW_MACOS_OCR_ARCH}"
         --manifest "${SNOW_MACOS_OCR_MANIFEST}"
         --runtime-dir "$<TARGET_FILE_DIR:snow_shot_mini>"
-        --worker "$<TARGET_FILE:snow_ocr_process>" --runtime-only ${_snow_macos_ocr_runtime_arguments}
-    DEPENDS snow_ocr_process onnxruntime::onnxruntime VERBATIM)
+        --worker "$<TARGET_FILE:snow_ocr_process>" --runtime-only
+        ${_snow_macos_ocr_runtime_arguments}
+    DEPENDS snow_ocr_process VERBATIM)
 add_dependencies(snow_shot_mini snow_shot_mini-ocr-assets)
 install(PROGRAMS "$<TARGET_FILE:snow_ocr_process>" DESTINATION "${_mini_bindir}" COMPONENT SnowShotMini)
 install(DIRECTORY "$<TARGET_FILE_DIR:snow_shot_mini>/assets/ocr"
     DESTINATION "${_mini_bindir}/assets" COMPONENT SnowShotMini PATTERN models EXCLUDE)
-if(NOT SNOW_SHOT_OCR_STATIC_ONNXRUNTIME)
-    install(FILES "$<TARGET_FILE:onnxruntime::onnxruntime>" DESTINATION "${_mini_bindir}"
-        RENAME libonnxruntime.dylib COMPONENT SnowShotMini)
-endif()
 if(NOT SNOW_SHOT_QT_STATIC)
     install(FILES "$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>"
         DESTINATION "snow_shot_mini.app/Contents/PlugIns/platforms" COMPONENT SnowShotMini)

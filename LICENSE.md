@@ -17,6 +17,7 @@ that directory tree unless a file or nested directory states otherwise.
 | `snow-crates/` | Apache-2.0 |
 | `snow_draw_engine_qt/` | Apache-2.0 |
 | `snow_rust_ffi/` | Apache-2.0 |
+| `snow-crates/crates/simd-paddle-ocr-rs/` | Apache-2.0 |
 
 Original repository-level orchestration files, including the root build files,
 `.github/`, `docs/`, `scripts/`, and shared `cmake/` modules, are licensed under

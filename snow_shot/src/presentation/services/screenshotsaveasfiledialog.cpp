@@ -6,6 +6,7 @@
 #include "snow_shot/presentation/screenshotexportartifact.h"
 #include "snow_shot/presentation/screenshotsavepreviewcanvas.h"
 #include "snow_shot/storage/settingsadapters.h"
+#include "snow_shot/storage/exportfilename.h"
 #include "screenshotsaveexportpipeline.h"
 #include "widgets/button.h"
 #include "widgets/context_menu.h"
@@ -96,12 +97,13 @@ class SaveContent final : public QWidget {
   public:
     SaveContent(AdModal* modal, std::shared_ptr<ScreenshotExportArtifact> artifact,
                 ScreenshotSaveAsFileDialog::Saved saved)
-        : m_modal(modal), m_artifact(std::move(artifact)), m_saved(std::move(saved)) {
+        : m_modal(modal), m_artifact(std::move(artifact)), m_saved(std::move(saved)),
+          m_windowNames(m_artifact->windowNames()) {
         setObjectName(QStringLiteral("saveDialogContent"));
         m_renderTimer.setSingleShot(true);
         m_renderTimer.setInterval(100);
         connect(&m_renderTimer, &QTimer::timeout, this, [this] { startRender(); });
-        m_state = ScreenshotSaveDialogState::initial({});
+        m_state = ScreenshotSaveDialogState::initial({}, m_timestamp, m_windowNames);
         loadRememberedFormatOptions();
         applyRememberedFormatOptions();
         auto* layout = new QHBoxLayout(this);
@@ -226,7 +228,12 @@ class SaveContent final : public QWidget {
             validateFields();
         });
         connect(m_filename, &AdLineEdit::textChanged, this, [this](const QString& value) {
-            m_state.filename = value;
+            // Generated defaults are already literal stems. Only explicit edits interpret a
+            // recognized image suffix; arbitrary dotted titles and names stay intact.
+            QString stem = value.trimmed();
+            if (ScreenshotImageFileService::formatForPath(stem))
+                stem.chop(QFileInfo(stem).suffix().size() + 1);
+            m_state.filename = std::move(stem);
             if (m_state.output.format == Format::Pdf)
                 changed();
             else
@@ -314,7 +321,6 @@ class SaveContent final : public QWidget {
             return;
         commitDimensionEdit();
         m_state.directory = m_directory->text();
-        m_state.filename = m_filename->text();
         const QString error = m_state.validationError();
         if (!error.isEmpty()) {
             validateFields();
@@ -603,7 +609,11 @@ class SaveContent final : public QWidget {
             }
             m_shortcutsLayout->addWidget(group);
         };
-        add(tr("App directory"), snow_shot::storage::ScreenshotSettings().imageSaveDirectory(), -2);
+        add(tr("App directory"),
+            snow_shot::storage::expandScreenshotExportVariables(
+                snow_shot::storage::ScreenshotSettings().imageSaveDirectory(), m_timestamp,
+                m_windowNames),
+            -2);
         add(tr("Desktop"), QStandardPaths::writableLocation(QStandardPaths::DesktopLocation), -1);
         for (int index = 0; index < m_shortcuts.size(); ++index)
             add(m_shortcuts.at(index).name, m_shortcuts.at(index).path, index);
@@ -1191,6 +1201,8 @@ class SaveContent final : public QWidget {
     AdModal* m_modal;
     std::shared_ptr<ScreenshotExportArtifact> m_artifact;
     ScreenshotSaveAsFileDialog::Saved m_saved;
+    const snow_shot::storage::ScreenshotWindowNames m_windowNames;
+    const QDateTime m_timestamp = QDateTime::currentDateTime();
     ScreenshotSaveDialogState m_state;
     pipeline::Source m_source;
     std::optional<ScreenshotSaveExportOptions> m_requestedOptions;
@@ -1257,19 +1269,23 @@ class SaveContent final : public QWidget {
 };
 } // namespace
 
-ScreenshotSaveDialogState ScreenshotSaveDialogState::initial(QSize size) {
+ScreenshotSaveDialogState
+ScreenshotSaveDialogState::initial(QSize size, const QDateTime& timestamp,
+                                   const snow_shot::storage::ScreenshotWindowNames& names) {
     ScreenshotSaveDialogState result;
     const snow_shot::storage::ScreenshotSettings settings;
     const QFileInfo remembered(settings.lastManualSaveDirectory());
-    const QString configured = settings.imageSaveDirectory().trimmed();
+    const QString configured = snow_shot::storage::expandScreenshotExportVariables(
+        settings.imageSaveDirectory(), timestamp, names);
     if (remembered.isDir() && remembered.isReadable() && remembered.isWritable())
         result.directory = remembered.absoluteFilePath();
     else if (!configured.isEmpty() && QDir::isAbsolutePath(configured))
         result.directory = QDir::cleanPath(configured);
     else
-        result.directory = ScreenshotImageFileService::saveDialogDirectory({}, configured);
-    result.filename =
-        ScreenshotImageFileService::suggestedBaseName(settings.manualSaveFilenameFormat());
+        result.directory = ScreenshotImageFileService::saveDialogDirectory(
+            {}, settings.imageSaveDirectory(), timestamp, names);
+    result.filename = ScreenshotImageFileService::suggestedBaseName(
+        settings.manualSaveFilenameFormat(), timestamp, names);
     result.output.pdfPageSize = screenshot_pdf::pageSizeForKey(settings.pdfPageSize());
     result.sourceSize = size;
     result.output.size = size;
@@ -1325,8 +1341,10 @@ QString ScreenshotSaveDialogState::imageValidationError() const {
     return {};
 }
 QString ScreenshotSaveDialogState::outputPath() const {
-    return ScreenshotImageFileService::normalizedPath(
-        QDir(directory.trimmed()).filePath(filename.trimmed()), output.format);
+    return QDir(directory.trimmed())
+        .filePath(snow_shot::storage::composeExportFileName(
+            filename.trimmed(),
+            QLatin1Char('.') + ScreenshotImageFileService::extension(output.format)));
 }
 bool ScreenshotSaveDialogState::lossless() const {
     return output.quality == 100 && formatSupportsLossless(output.format);

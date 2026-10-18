@@ -28,6 +28,12 @@ class ScreenshotSelectionSettingsStore final {
     [[nodiscard]] QVector<ScreenshotSelectionPreset> presets() const;
     void setPresets(const QVector<ScreenshotSelectionPreset>& presets);
 
+    [[nodiscard]] ScreenshotLayoutCompaction layoutCompaction() const;
+    void setLayoutCompaction(ScreenshotLayoutCompaction options);
+
+    [[nodiscard]] int backgroundOpacityPercent() const;
+    void setBackgroundOpacityPercent(int percent);
+
     void clear();
 };
 

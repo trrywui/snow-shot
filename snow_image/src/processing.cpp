@@ -26,6 +26,15 @@
 #define SNOW_IMAGE_HAS_SSE2 1
 #endif
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <arm64_neon.h>
+#else
+#include <arm_neon.h>
+#endif
+#define SNOW_IMAGE_HAS_NEON 1
+#endif
+
 namespace snow::image {
 namespace {
 
@@ -1832,11 +1841,12 @@ Result<AlphaContent> classify_alpha(ImageView image, std::stop_token stop) {
         }
         const std::byte* row = image.pixels.data() + static_cast<std::size_t>(y) * image.row_stride;
         std::uint32_t scalar_start = 0;
-#if defined(SNOW_IMAGE_HAS_SSE2)
+#if defined(SNOW_IMAGE_HAS_SSE2) || defined(SNOW_IMAGE_HAS_NEON)
         if (format.sample_type == SampleType::unsigned_integer &&
             (sample_bytes == 1 || sample_bytes == 2) && pixel_bytes <= 16 &&
             16 % pixel_bytes == 0) {
             const std::uint32_t pixels_per_vector = static_cast<std::uint32_t>(16 / pixel_bytes);
+#if defined(SNOW_IMAGE_HAS_SSE2)
             unsigned expected_mask = 0;
             for (std::size_t pixel = 0; pixel < 16; pixel += pixel_bytes) {
                 for (std::size_t byte = 0; byte < sample_bytes; ++byte)
@@ -1853,6 +1863,24 @@ Result<AlphaContent> classify_alpha(ImageView image, std::stop_token stop) {
                     return AlphaContent::non_opaque;
                 scalar_start += pixels_per_vector;
             }
+#else
+            std::array<std::uint8_t, 16> ignored_bytes;
+            ignored_bytes.fill(0xFF);
+            for (std::size_t pixel = 0; pixel < 16; pixel += pixel_bytes) {
+                for (std::size_t byte = 0; byte < sample_bytes; ++byte) {
+                    ignored_bytes[pixel + alpha_offset + byte] = 0;
+                }
+            }
+            const uint8x16_t ignored = vld1q_u8(ignored_bytes.data());
+            while (image.width - scalar_start >= pixels_per_vector) {
+                const uint8x16_t samples = vld1q_u8(reinterpret_cast<const std::uint8_t*>(
+                    row + static_cast<std::size_t>(scalar_start) * pixel_bytes));
+                if (vminvq_u8(vorrq_u8(samples, ignored)) != 0xFF) {
+                    return AlphaContent::non_opaque;
+                }
+                scalar_start += pixels_per_vector;
+            }
+#endif
         }
 #endif
         for (std::uint32_t x = scalar_start; x < image.width; ++x) {

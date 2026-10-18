@@ -1,5 +1,6 @@
 execute_process(
-    COMMAND [==[@Python3_EXECUTABLE@]==]
+    COMMAND "${CMAKE_COMMAND}" -E env @SNOW_LICENSE_ENVIRONMENT@
+        [==[@Python3_EXECUTABLE@]==]
         [==[@SNOW_LICENSE_SOURCE_DIR@/collect-rust-licenses.py]==]
         --cargo [==[@CARGO_EXECUTABLE@]==]
         --manifest [==[@SNOW_LICENSE_MANIFEST_DIR@/Cargo.toml]==]

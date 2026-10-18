@@ -2095,6 +2095,14 @@ impl OutputCapturer {
 
     fn open_capture_access(&mut self) -> CaptureResult<IDXGIOutputDuplication> {
         self.reset_capture_access_state();
+        let bounds = unsafe { self.output.GetDesc() }
+            .context("IDXGIOutput::GetDesc failed before admission")
+            .map_err(CaptureError::platform)?
+            .DesktopCoordinates;
+        crate::admit_raster(
+            (bounds.right - bounds.left).max(0) as u32,
+            (bounds.bottom - bounds.top).max(0) as u32,
+        )?;
         let duplication = create_duplication(&self.output, &self.device)?;
         // DXGI always acquires an unrotated surface. Read the actual duplication
         // rotation on every open, including recovery after a display change.

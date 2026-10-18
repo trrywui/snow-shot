@@ -3,6 +3,7 @@
 
 #include "snow_shot/storage/pinnedsourceidentity.h"
 #include "snow_shot/storage/pinnedtextstyle.h"
+#include "snow_shot/presentation/pinnedcolorswatch.h"
 #include "snow_shot/image/screenshotanimationsource.h"
 #include "snow_shot/presentation/screenshotclipboardplacement.h"
 #include "snow_shot/presentation/screenshotclipboardappearance.h"
@@ -36,6 +37,9 @@ struct ScreenshotClipboardOriginalContent final {
     // private copy and rewrites this path to that copy on restore.
     QString localFilePath;
     std::optional<snow_shot::storage::PinnedTextStyle> textStyle;
+
+    snow_shot::storage::PinnedTextFormat textFormat =
+        snow_shot::storage::PinnedTextFormat::PlainText;
 
     [[nodiscard]] bool isEmpty() const {
         return html.isEmpty() && text.isEmpty() && localFilePath.isEmpty();
@@ -97,6 +101,8 @@ struct ScreenshotClipboardNativeDib final {
 
 struct ScreenshotClipboardContentSnapshot final {
     std::optional<snow_shot::storage::PinnedTextStyle> textStyle;
+    // Present only at a pin boundary. Generic image imports do not recognize colors.
+    std::optional<PinnedColorSwatchStyle> colorSwatchStyle;
     QList<ScreenshotClipboardEncodedImage> encodedImages;
     std::optional<ScreenshotClipboardNativeDib> nativeDib;
     QImage detachedImage;
@@ -107,6 +113,9 @@ struct ScreenshotClipboardContentSnapshot final {
     qreal devicePixelRatio = 1.0;
     std::optional<ScreenshotClipboardPlacement> placement = std::nullopt;
     std::optional<ScreenshotClipboardAppearance> appearance = std::nullopt;
+
+    snow_shot::storage::PinnedTextFormat textFormat =
+        snow_shot::storage::PinnedTextFormat::PlainText;
 
     [[nodiscard]] bool isValid() const {
         return !encodedImages.isEmpty() || (nativeDib.has_value() && nativeDib->isValid()) ||
@@ -127,6 +136,8 @@ class ScreenshotClipboardContentReader final {
     [[nodiscard]] static QStringList supportedImageFileExtensions();
     [[nodiscard]] static QStringList supportedFileExtensions();
     [[nodiscard]] static QStringList localFilePaths(const QMimeData* mimeData);
+    // Preserves clipboard order and duplicates; file validation belongs to the import worker.
+    [[nodiscard]] static QStringList localImageFilePaths(const QMimeData* mimeData);
     // File metadata is independent of GUI state and may be captured on a worker.
     [[nodiscard]] static QList<ScreenshotClipboardLocalImage>
     snapshotLocalFiles(const QStringList& paths, CancellationCheck cancelled = {});
@@ -140,6 +151,9 @@ class ScreenshotClipboardContentReader final {
     // MIME data needed by decode(), which is safe to run on an export worker.
     [[nodiscard]] static std::optional<ScreenshotClipboardContentSnapshot>
     snapshot(QClipboard* clipboard, qreal devicePixelRatio, AllocationCheck allocate = {});
+    // Image-only import: never rasterize clipboard text or follow file/HTML fallbacks.
+    [[nodiscard]] static std::optional<ScreenshotClipboardContentSnapshot>
+    snapshotImage(QClipboard* clipboard, qreal devicePixelRatio, AllocationCheck allocate = {});
     [[nodiscard]] static std::optional<ScreenshotClipboardContentSnapshot>
     snapshotMimeData(const QMimeData* mimeData, qreal devicePixelRatio, const QColor& baseColor,
                      AllocationCheck allocate = {});
@@ -163,7 +177,8 @@ class ScreenshotClipboardContentReader final {
     // is the current display DPI.
     [[nodiscard]] static std::optional<ScreenshotClipboardContent>
     renderOriginalText(const ScreenshotClipboardOriginalContent& original, qreal devicePixelRatio,
-                       const QColor& baseColor = {}, AllocationCheck allocate = {});
+                       const QColor& baseColor = {}, AllocationCheck allocate = {},
+                       std::optional<PinnedColorSwatchStyle> colorSwatchStyle = {});
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTCLIPBOARDCONTENT_H

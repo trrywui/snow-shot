@@ -25,6 +25,29 @@ void require(bool condition, const char* message) {
     }
 }
 
+void duplicateShortcutSharesOnlyHistoryContexts(settings::SettingsRuntimeSession& session,
+                                                settings::BuiltInSettingsBackend& backend) {
+    constexpr auto scope = settings::SettingsLocalShortcutScope::Screenshot;
+    const QString id = QStringLiteral("duplicate_latest_region");
+    const shortcuts::ShortcutBindingList defaultKeys{QStringLiteral("R")};
+    require(session.localShortcuts(scope, id) == defaultKeys,
+            "duplicate defaults must coexist with previous selection R");
+    require(session.applyLocalShortcuts(scope, id, {QStringLiteral("Shift+R")}),
+            "duplicate may share the next-selection shortcut");
+    require(
+        !session.validateLocalShortcut(scope, id, QStringLiteral("C")).supported &&
+            !backend.applyLocalShortcuts(scope, id, {QStringLiteral("C")}) &&
+            !storage::setLocalShortcutValuesAtomic({{QStringLiteral("screenshot_shortcuts/") + id,
+                                                     QJsonArray{QStringLiteral("C")}}}) &&
+            session.localShortcuts(scope, id) ==
+                shortcuts::ShortcutBindingList{QStringLiteral("Shift+R")},
+        "overlapping shortcut contexts still reject conflicting keys atomically");
+    require(session.applyLocalShortcuts(scope, id, {}) &&
+                session.reset(settings::SettingsSectionReset::ScreenshotEditorShortcuts) &&
+                session.localShortcuts(scope, id) == defaultKeys,
+            "reset restores contextual R without rejecting previous selection R");
+}
+
 void screenshotSaveHotkeysReset(settings::SettingsRuntimeSession& session) {
     using Action = snow_shot::presentation::GlobalShortcutAction;
     require(
@@ -274,6 +297,7 @@ int main(int argc, char** argv) {
         snow_shot::presentation::GlobalShortcutManager manager;
         settings::BuiltInSettingsBackend backend(manager);
         settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
+        duplicateShortcutSharesOnlyHistoryContexts(session, backend);
         screenshotSaveHotkeysReset(session);
         copyShortcutReset(session);
         printShortcutsReset(session);

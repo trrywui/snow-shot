@@ -97,6 +97,7 @@ class ScreenshotPinnedHideToTopController;
 class ScreenshotPinnedControlsPresence;
 class ScreenshotPinnedNativeGeometryController;
 class QTextDocument;
+class QAbstractButton;
 
 // GUI-thread MIME access. Native snapshots retain platform-specific image formats.
 class ScreenshotPinnedClipboard {
@@ -252,6 +253,7 @@ class ScreenshotPinnedWindow final : public QWidget {
                                    const QSize& transformedPixels, const QRectF& contentRect);
     [[nodiscard]] ScreenshotClipboardOriginalContent automationOriginalContent() const;
     void cancelAutomationRecognition();
+    [[nodiscard]] bool automationWorkflowBusy() const;
 
   public slots:
     void setGroupId(const QString& id);
@@ -271,6 +273,7 @@ class ScreenshotPinnedWindow final : public QWidget {
     static void setRuntimeTrayEnabled(bool enabled);
 
   signals:
+    void automationWorkflowStateChanged() const;
     void showMainWindowRequested();
     void splitRequested(const ScreenshotPinnedImageSnapshot& snapshot);
     void closingForPersistence(const snow_shot::storage::PinnedWindowRecord& snapshot,
@@ -485,6 +488,7 @@ class ScreenshotPinnedWindow final : public QWidget {
     bool finishNativeGeometryInteraction();
     bool reconcilePassiveNativeGeometry();
     bool restoreCommittedNativeGeometry(bool closeOnFailure = true);
+    void hideAllPinnedWindowsToTop();
     void showAllPinnedWindows();
     void hideOtherPinnedWindows();
     void closeOtherPinnedWindows();
@@ -517,6 +521,10 @@ class ScreenshotPinnedWindow final : public QWidget {
     QPointF nativePositionForWindowPosition(const QPointF& position) const;
     QPoint globalPositionForNativePosition(const QPoint& position) const;
     bool isControlsPanelPosition(const QPoint& position) const;
+    void refreshColorSwatch();
+    void updateColorSwatchControls();
+    std::array<QAbstractButton*, 3> m_colorSwatchButtons{};
+    std::array<QRectF, 3> m_colorSwatchCopyRects{};
 
     void reconcilePlatformEnvironment(bool layoutChanged = false);
     bool handleControlledPointer(QObject* watched, QEvent* event);

@@ -38,6 +38,12 @@ release page. The standalone installer races both lists and downloads the chosen
 and checksum, with same-version package fallback. The app does not install macOS
 updates in-app.
 
+Build and package application binaries locally with `scripts/build.ps1`,
+`scripts/stage-snow-shot-release.ps1`, or the macOS build and packaging scripts.
+Pushing a version tag does not start a GitHub Actions build or create a release
+draft. The remaining Actions workflows handle package-manager publication and
+verification.
+
 The local publisher signs and audits all Windows packages, optionally packages a
 macOS DMG and standalone installer, publishes GitHub assets, verifies their bytes,
 then publishes the release. With `-DeployWebsite`, it then runs the separate official
@@ -132,7 +138,7 @@ fallbacks for short and offset names in every requested locale. Numeric timestam
 UTC storage, local conversions, and daylight-saving transitions retain their behavior.
 
 `scripts/qt-toolchain.json` is the version and source-archive SHA256 contract for
-CMake, Windows/macOS provisioning, and release CI. Both source builders verify
+CMake, Windows/macOS provisioning, and local release builds. Both source builders verify
 the archive before extraction. `scripts/build-static-qt.ps1` applies the patch
 idempotently and installs it under the kit's source-license bundle. The build
 stamp fingerprints the feature policy and patch contents. Bootstrap and packaging
@@ -431,8 +437,10 @@ functions rather than the complete interactive Scoop CLI.
 
 ### WinGet
 
-The independent **Snow Shot WinGet** GitHub Actions workflow submits the offline
-Windows x64 installer as `mg-chao.snow-shot` to `microsoft/winget-pkgs`. Stable and
+The independent **Snow Shot WinGet** GitHub Actions workflow submits Full's offline
+Windows x64 and ARM64 installers as `mg-chao.snow-shot` to `microsoft/winget-pkgs`.
+Historical x64-only releases remain supported. Mini is not distributed through WinGet;
+its assets are not required for WinGet generation, validation, or submission. Stable and
 beta releases share this identifier; published betas are eligible even when GitHub
 does not mark them as prereleases. Draft releases are never submitted.
 
@@ -532,6 +540,9 @@ preparation-branch pushes and manual runs also perform a read-only check of the
 submission token's scope and fork access; pull requests skip that credential check.
 Both workflows provision WinGet 1.29.380 from Microsoft's signed release bundle when
 the installed client is older, avoiding the incomplete preinstalled runner bundle.
+On disposable GitHub-hosted Windows runners, provisioning closes applications using
+framework dependencies that need updating, including Windows Widgets. Local provisioning
+does not force application shutdown.
 The default installation fixtures are
 `v1.1.5-beta` and `v1.1.4-beta`; select newer published versions when validating later
 releases. Logs and generated manifests are retained in the
@@ -599,6 +610,10 @@ default; `-Architecture x64` requests Full only.
 ```
 
 `-WhatIf` lists the planned assets without building or publishing.
+When explicitly authorized for a release, `-SkipArm64NativeValidation` records
+byte-bound Windows ARM64 waivers without reporting native probes as passed.
+Windows x64 validation, signatures, inventories, and checksums remain required.
+Direct Gitee retries of such a release also require `--skip-arm64-native-validation`.
 `-AuditOnly` signs and audits without upload. `Verify` downloads published
 GitHub assets and checks the signed Windows packages and any macOS checksum pairs.
 A corrective release uses a higher version; published assets are immutable.
@@ -732,9 +747,9 @@ One-time setup:
    Its branch policy must allow the automation to push to `main`.
 3. Include each supported architecture's matching DMG and `.dmg.sha256`
    assets before publishing the GitHub release: Full uses `macos-arm64` and
-   `macos-x86_64`; Mini supports `macos-arm64` only. macOS packaging/upload
-   remains a separate release operation; the existing Windows CI does not build
-   these assets. Do not mark a beta version stable to enable Homebrew.
+   `macos-x86_64`; Mini supports `macos-arm64` only. Build and package these
+   assets locally on macOS, then upload them through the local publisher.
+   Do not mark a beta version stable to enable Homebrew.
 
 The workflow validates release metadata, source version, checksums, and the current
 tap version, then produces one archive per available macOS product/architecture:

@@ -17,18 +17,21 @@ struct ScreenshotSaveExportOptions {
     int quality = 100;
     ScreenshotCompressionLevel compressionLevel = ScreenshotCompressionLevel::Medium;
     ScreenshotPdfPageSize pdfPageSize = ScreenshotPdfPageSize::PortraitA4;
-    QString pdfTitle;
+    QString pdfTitle{};
     friend bool operator==(const ScreenshotSaveExportOptions&,
                            const ScreenshotSaveExportOptions&) = default;
 };
 
 struct ScreenshotSaveDialogState {
     QString directory;
+    // A literal stem, including any dots. The selected format supplies the extension.
     QString filename;
     QSize sourceSize;
     ScreenshotSaveExportOptions output;
     bool lockAspectRatio = true;
-    [[nodiscard]] static ScreenshotSaveDialogState initial(QSize sourceSize);
+    [[nodiscard]] static ScreenshotSaveDialogState
+    initial(QSize sourceSize, const QDateTime& timestamp = QDateTime::currentDateTime(),
+            const snow_shot::storage::ScreenshotWindowNames& names = {});
     void setDimension(bool width, int value);
     [[nodiscard]] QString imageValidationError() const;
     [[nodiscard]] QString validationError() const;

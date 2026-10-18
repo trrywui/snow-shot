@@ -109,6 +109,8 @@ class ScreenshotRecognitionSessionController final : public QObject {
     ~ScreenshotRecognitionSessionController() override;
 
     void setTarget(ScreenshotRecognitionTarget target);
+    // Updates an existing formatted target's appearance without resetting session state.
+    void refreshFormattedTarget(QImage image, std::shared_ptr<QTextDocument> document);
     void setProviders(ScreenshotOcrRecognitionPort* recognition,
                       ScreenshotQrRecognitionPort* qrRecognition,
                       SnowShotApiClient* tableRecognition);

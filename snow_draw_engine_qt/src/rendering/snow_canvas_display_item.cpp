@@ -1,6 +1,8 @@
 #include "snow_canvas_display_item.h"
 
+#include "snow_canvas_fill_render.h"
 #include "snow_canvas_render_geometry.h"
+#include "snow_canvas_stroke_rendering.h"
 
 #include <QPainterPathStroker>
 #include <QtGlobal>
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <iterator>
 #include <unordered_set>
@@ -28,6 +31,13 @@ void assignBorrowed(std::vector<T>& destination, const T* source, std::uint32_t 
 
 template <typename T> const T* dataOrNull(const std::vector<T>& values) {
     return values.empty() ? nullptr : values.data();
+}
+
+template <typename T>
+bool sameBorrowed(const std::vector<T>& owned, const T* source, std::uint32_t count) {
+    return owned.size() == count &&
+           (count == 0 ||
+            (source != nullptr && std::memcmp(owned.data(), source, sizeof(T) * count) == 0));
 }
 
 QByteArray borrowedBytes(const char* bytes, std::uint32_t length) {
@@ -99,6 +109,39 @@ bool hasUniformRadii(const SnowCornerRadii& radii) {
            fuzzyEqual(radii.top_left, radii.bottom_left);
 }
 
+std::uint64_t pathFingerprint(double startX, double startY, const SnowArrowPathCommand* commands,
+                              std::uint32_t count) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    const auto append = [&](std::uint64_t value) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    };
+    const auto appendDouble = [&](double value) {
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        append(bits);
+    };
+    appendDouble(startX);
+    appendDouble(startY);
+    append(count);
+    for (std::uint32_t i = 0; commands != nullptr && i < count; ++i) {
+        const auto& command = commands[i];
+        append(static_cast<std::uint64_t>(command.kind));
+        appendDouble(command.point.x);
+        appendDouble(command.point.y);
+        if (command.kind == SNOW_ARROW_PATH_COMMAND_QUAD_TO ||
+            command.kind == SNOW_ARROW_PATH_COMMAND_CUBIC_TO) {
+            appendDouble(command.control1.x);
+            appendDouble(command.control1.y);
+        }
+        if (command.kind == SNOW_ARROW_PATH_COMMAND_CUBIC_TO) {
+            appendDouble(command.control2.x);
+            appendDouble(command.control2.y);
+        }
+    }
+    return hash;
+}
+
 void rebuildRectangleGeometry(double width, double height, const SnowCornerRadii& radii,
                               QRectF* localRect, QPainterPath* path, bool* rounded, bool* uniform) {
     *localRect = QRectF(-width / 2.0, -height / 2.0, width, height);
@@ -135,6 +178,8 @@ SnowCanvasSceneItem::SnowCanvasSceneItem(const SnowCanvasSceneItem& other) : Sno
     m_pressureGeometry = other.m_pressureGeometry;
     m_aggregateClosedPath = other.m_aggregateClosedPath;
     m_pathClosed = other.m_pathClosed;
+    m_strokeRenderingGeometry = other.m_strokeRenderingGeometry;
+    m_strokeRenderingGeometryRevision = other.m_strokeRenderingGeometryRevision;
 }
 
 SnowCanvasSceneItem::SnowCanvasSceneItem(SnowCanvasSceneItem&& other) noexcept
@@ -153,6 +198,8 @@ SnowCanvasSceneItem::SnowCanvasSceneItem(SnowCanvasSceneItem&& other) noexcept
       m_pressureGeometry(std::move(other.m_pressureGeometry)),
       m_aggregateClosedPath(std::move(other.m_aggregateClosedPath)),
       m_pathClosed(other.m_pathClosed), m_magnifierGeometry(std::move(other.m_magnifierGeometry)),
+      m_strokeRenderingGeometry(std::move(other.m_strokeRenderingGeometry)),
+      m_strokeRenderingGeometryRevision(other.m_strokeRenderingGeometryRevision),
       m_pendingPenGeometryChunkBuildCount(other.m_pendingPenGeometryChunkBuildCount),
       m_pendingPenGeometryChunkReuseCount(other.m_pendingPenGeometryChunkReuseCount) {
     refreshPointers();
@@ -174,6 +221,8 @@ SnowCanvasSceneItem& SnowCanvasSceneItem::operator=(const SnowCanvasSceneItem& o
         m_pressureGeometry = other.m_pressureGeometry;
         m_aggregateClosedPath = other.m_aggregateClosedPath;
         m_pathClosed = other.m_pathClosed;
+        m_strokeRenderingGeometry = other.m_strokeRenderingGeometry;
+        m_strokeRenderingGeometryRevision = other.m_strokeRenderingGeometryRevision;
     }
     return *this;
 }
@@ -202,6 +251,8 @@ SnowCanvasSceneItem& SnowCanvasSceneItem::operator=(SnowCanvasSceneItem&& other)
     m_pathClosed = other.m_pathClosed;
     m_arrowTextClipCacheValid = false;
     m_magnifierGeometry = std::move(other.m_magnifierGeometry);
+    m_strokeRenderingGeometry = std::move(other.m_strokeRenderingGeometry);
+    m_strokeRenderingGeometryRevision = other.m_strokeRenderingGeometryRevision;
     m_pendingPenGeometryChunkBuildCount = other.m_pendingPenGeometryChunkBuildCount;
     m_pendingPenGeometryChunkReuseCount = other.m_pendingPenGeometryChunkReuseCount;
     refreshPointers();
@@ -233,6 +284,13 @@ void SnowCanvasSceneItem::assign(const SnowSceneDisplayItem& item) {
         (kind == SNOW_SCENE_DISPLAY_ITEM_ARROW || kind == SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE) &&
         item.kind == kind && element_id.index == item.element_id.index &&
         element_id.generation == item.element_id.generation;
+    if (!sameBorrowed(m_arrowPoints, item.arrow_points, item.arrow_point_count) ||
+        !sameBorrowed(m_arrowPathCommands, item.arrow_path_commands,
+                      item.arrow_path_command_count) ||
+        !sameBorrowed(m_arrowheadPrimitives, item.arrowhead_primitives,
+                      item.arrowhead_primitive_count)) {
+        ++m_strokeRenderingGeometryRevision;
+    }
     static_cast<SnowSceneDisplayItem&>(*this) = item;
     if (!preservePenGeometry) {
         assignBorrowed(m_arrowPoints, item.arrow_points, item.arrow_point_count);
@@ -251,9 +309,32 @@ void SnowCanvasSceneItem::assign(const SnowSceneDisplayItem& item) {
     m_fontFamilyUtf8 = borrowedBytes(item.font_family_utf8, item.font_family_utf8_len);
     refreshPointers();
     rebuildLocalRectangleGeometry();
+    if (preservePathGeometry)
+        rebuildAggregateClosedPath(false);
     if (!preservePenGeometry || geometryStyleChanged) {
         rebuildPenFilterGeometry(0);
     }
+}
+
+snow_canvas_stroke_rendering::Cache& SnowCanvasSceneItem::strokeRenderingCache() const {
+    if (!m_strokeRenderingGeometry) {
+        m_strokeRenderingGeometry = std::make_shared<snow_canvas_stroke_rendering::Cache>();
+        snow_canvas_stroke_rendering::recordCacheAllocation(false);
+    } else if (m_strokeRenderingGeometry.use_count() != 1) {
+        m_strokeRenderingGeometry =
+            std::make_shared<snow_canvas_stroke_rendering::Cache>(*m_strokeRenderingGeometry);
+        snow_canvas_stroke_rendering::recordCacheAllocation(true);
+    }
+    return *m_strokeRenderingGeometry;
+}
+
+const snow_canvas_stroke_rendering::Cache*
+SnowCanvasSceneItem::strokeRenderingCacheIfPresent() const {
+    return m_strokeRenderingGeometry.get();
+}
+
+std::uint64_t SnowCanvasSceneItem::strokeRenderingGeometryRevision() const {
+    return m_strokeRenderingGeometryRevision;
 }
 
 SnowCanvasSceneItem::MagnifierGeometryCache& SnowCanvasSceneItem::magnifierGeometryCache() const {
@@ -424,6 +505,8 @@ void SnowCanvasSceneItem::refreshPointers() {
 }
 
 void SnowCanvasSceneItem::setArrowPoints(const SnowArrowPoint* points, std::uint32_t count) {
+    if (!sameBorrowed(m_arrowPoints, points, count))
+        ++m_strokeRenderingGeometryRevision;
     assignBorrowed(m_arrowPoints, points, count);
     m_penGeometryRevision = 0;
     refreshPointers();
@@ -472,6 +555,45 @@ bool SnowCanvasSceneItem::applyPathGeometryPatch(
         return false;
     }
     m_arrowTextClipCacheValid = false;
+    // A repaint-only Rust update may publish a new transport revision with a
+    // full reset of identical path chunks. Retain their paths, spatial index,
+    // cache identities and derived ink instead of rebuilding vector geometry.
+    if (fullReset && rangeCount == 1 && ranges[0].start == 0 &&
+        ranges[0].insert_chunk_offset == 0 && ranges[0].insert_chunk_count == chunkCount &&
+        storage.chunks.size() == chunkCount && (chunkCount == 0 || chunks != nullptr) &&
+        (role != SNOW_PATH_GEOMETRY_ROLE_CENTERLINE || m_pathClosed == closed)) {
+        bool unchanged = true;
+        for (std::uint32_t i = 0; i < chunkCount; ++i) {
+            const auto& source = chunks[i];
+            const auto& owned = storage.chunks[i];
+            if (source.command_offset > commandCount ||
+                source.command_count > commandCount - source.command_offset ||
+                (source.command_count != 0 && commands == nullptr)) {
+                unchanged = false;
+                break;
+            }
+            const auto* chunkCommands =
+                source.command_count == 0 ? nullptr : commands + source.command_offset;
+            const QRectF bounds(QPointF(source.min_x, source.min_y),
+                                QPointF(source.max_x, source.max_y));
+            if (owned.geometryFingerprint != pathFingerprint(source.start_x, source.start_y,
+                                                             chunkCommands, source.command_count) ||
+                owned.canvasBounds != bounds.normalized() ||
+                owned.cumulativeStartLength != source.cumulative_start_length ||
+                owned.commandStart != source.command_start) {
+                unchanged = false;
+                break;
+            }
+        }
+        if (unchanged) {
+            storage.revision = revision;
+            for (std::uint32_t i = 0; i < chunkCount; ++i)
+                storage.chunks[i].stableId = chunks[i].stable_id;
+            if (role == SNOW_PATH_GEOMETRY_ROLE_CENTERLINE)
+                rebuildAggregateClosedPath(false);
+            return true;
+        }
+    }
     if (fullReset) {
         storage = {};
     }
@@ -496,6 +618,10 @@ bool SnowCanvasSceneItem::applyPathGeometryPatch(
             PathChunk chunk;
             chunk.stableId = source.stable_id;
             chunk.cacheId = nextPathChunkCacheId.fetch_add(1, std::memory_order_relaxed);
+            chunk.geometryFingerprint = pathFingerprint(
+                source.start_x, source.start_y,
+                source.command_count == 0 ? nullptr : commands + source.command_offset,
+                source.command_count);
             chunk.commandStart = source.command_start;
             chunk.canvasBounds =
                 QRectF(QPointF(source.min_x, source.min_y), QPointF(source.max_x, source.max_y))
@@ -522,6 +648,7 @@ bool SnowCanvasSceneItem::applyPathGeometryPatch(
     }
     storage.revision = revision;
     if (role == SNOW_PATH_GEOMETRY_ROLE_CENTERLINE) {
+        ++m_strokeRenderingGeometryRevision;
         m_pathClosed = closed;
         rebuildAggregateClosedPath();
     }
@@ -609,11 +736,16 @@ void SnowCanvasSceneItem::queryPressurePathChunks(
     queryPathStorage(m_pressureGeometry, canvasBounds, outChunkIndices);
 }
 
-void SnowCanvasSceneItem::rebuildAggregateClosedPath() {
-    m_aggregateClosedPath = {};
-    if (!m_pathClosed || fill.a == 0) {
+void SnowCanvasSceneItem::rebuildAggregateClosedPath(bool geometryChanged) {
+    // Speech bubbles draw their outline from this path even without a visible fill.
+    if (!m_pathClosed || (kind != SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE &&
+                          !snow_canvas_fill_render::hasVisibleFill(fill, fill_style))) {
+        m_aggregateClosedPath = {};
         return;
     }
+    if (!geometryChanged && !m_aggregateClosedPath.isEmpty())
+        return;
+    m_aggregateClosedPath = {};
     for (const PathChunk& chunk : m_pathGeometry.chunks) {
         m_aggregateClosedPath.connectPath(chunk.canvasPath);
     }
@@ -638,7 +770,8 @@ std::uint64_t SnowCanvasSceneItem::pathGeometryRevision() const {
 bool SnowCanvasSceneItem::needsArrowTextClip(double canvasAntialiasGuard) const {
     if (m_pathGeometry.chunks.empty() || arrow_shaft_type == SNOW_ARROW_SHAFT_TYPE_TAPERED ||
         arrowhead_primitive_count != 0 || arrow_start_head != SNOW_ARROWHEAD_NONE ||
-        arrow_end_head != SNOW_ARROWHEAD_NONE || (m_pathClosed && fill.a != 0) ||
+        arrow_end_head != SNOW_ARROWHEAD_NONE ||
+        (m_pathClosed && snow_canvas_fill_render::hasVisibleFill(fill, fill_style)) ||
         !std::isfinite(canvasAntialiasGuard) || canvasAntialiasGuard < 0.0 ||
         !std::isfinite(stroke_width) || stroke_width <= 0.0) {
         return true;
@@ -758,7 +891,9 @@ SnowCanvasOverlayItem::SnowCanvasOverlayItem(const SnowCanvasOverlayItem& other)
       m_arrowheadPrimitives(other.m_arrowheadPrimitives), m_localRect(other.m_localRect),
       m_localRectanglePath(other.m_localRectanglePath),
       m_hasRoundedCorners(other.m_hasRoundedCorners),
-      m_hasUniformCorners(other.m_hasUniformCorners) {
+      m_hasUniformCorners(other.m_hasUniformCorners),
+      m_strokeRenderingGeometry(other.m_strokeRenderingGeometry),
+      m_strokeRenderingGeometryRevision(other.m_strokeRenderingGeometryRevision) {
     refreshPointers();
 }
 
@@ -769,7 +904,9 @@ SnowCanvasOverlayItem::SnowCanvasOverlayItem(SnowCanvasOverlayItem&& other) noex
       m_arrowheadPrimitives(std::move(other.m_arrowheadPrimitives)), m_localRect(other.m_localRect),
       m_localRectanglePath(std::move(other.m_localRectanglePath)),
       m_hasRoundedCorners(other.m_hasRoundedCorners),
-      m_hasUniformCorners(other.m_hasUniformCorners) {
+      m_hasUniformCorners(other.m_hasUniformCorners),
+      m_strokeRenderingGeometry(std::move(other.m_strokeRenderingGeometry)),
+      m_strokeRenderingGeometryRevision(other.m_strokeRenderingGeometryRevision) {
     refreshPointers();
     other.refreshPointers();
 }
@@ -778,6 +915,8 @@ SnowCanvasOverlayItem& SnowCanvasOverlayItem::operator=(const SnowCanvasOverlayI
     if (this != &other) {
         assign(other);
         viewBounds = other.viewBounds;
+        m_strokeRenderingGeometry = other.m_strokeRenderingGeometry;
+        m_strokeRenderingGeometryRevision = other.m_strokeRenderingGeometryRevision;
     }
     return *this;
 }
@@ -795,6 +934,8 @@ SnowCanvasOverlayItem& SnowCanvasOverlayItem::operator=(SnowCanvasOverlayItem&& 
     m_localRectanglePath = std::move(other.m_localRectanglePath);
     m_hasRoundedCorners = other.m_hasRoundedCorners;
     m_hasUniformCorners = other.m_hasUniformCorners;
+    m_strokeRenderingGeometry = std::move(other.m_strokeRenderingGeometry);
+    m_strokeRenderingGeometryRevision = other.m_strokeRenderingGeometryRevision;
     refreshPointers();
     other.refreshPointers();
     return *this;
@@ -806,6 +947,13 @@ SnowCanvasOverlayItem& SnowCanvasOverlayItem::operator=(const SnowOverlayDisplay
 }
 
 void SnowCanvasOverlayItem::assign(const SnowOverlayDisplayItem& item) {
+    if (!sameBorrowed(m_arrowPoints, item.arrow_points, item.arrow_point_count) ||
+        !sameBorrowed(m_arrowPathCommands, item.arrow_path_commands,
+                      item.arrow_path_command_count) ||
+        !sameBorrowed(m_arrowheadPrimitives, item.arrowhead_primitives,
+                      item.arrowhead_primitive_count)) {
+        ++m_strokeRenderingGeometryRevision;
+    }
     static_cast<SnowOverlayDisplayItem&>(*this) = item;
     assignBorrowed(m_arrowPoints, item.arrow_points, item.arrow_point_count);
     assignBorrowed(m_arrowPathCommands, item.arrow_path_commands, item.arrow_path_command_count);
@@ -840,4 +988,25 @@ bool SnowCanvasOverlayItem::hasRoundedCorners() const {
 }
 bool SnowCanvasOverlayItem::hasUniformCorners() const {
     return m_hasUniformCorners;
+}
+
+snow_canvas_stroke_rendering::Cache& SnowCanvasOverlayItem::strokeRenderingCache() const {
+    if (!m_strokeRenderingGeometry) {
+        m_strokeRenderingGeometry = std::make_shared<snow_canvas_stroke_rendering::Cache>();
+        snow_canvas_stroke_rendering::recordCacheAllocation(false);
+    } else if (m_strokeRenderingGeometry.use_count() != 1) {
+        m_strokeRenderingGeometry =
+            std::make_shared<snow_canvas_stroke_rendering::Cache>(*m_strokeRenderingGeometry);
+        snow_canvas_stroke_rendering::recordCacheAllocation(true);
+    }
+    return *m_strokeRenderingGeometry;
+}
+
+const snow_canvas_stroke_rendering::Cache*
+SnowCanvasOverlayItem::strokeRenderingCacheIfPresent() const {
+    return m_strokeRenderingGeometry.get();
+}
+
+std::uint64_t SnowCanvasOverlayItem::strokeRenderingGeometryRevision() const {
+    return m_strokeRenderingGeometryRevision;
 }

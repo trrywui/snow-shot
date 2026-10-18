@@ -38,6 +38,7 @@ struct ScreenshotAutomaticSaveRequest final {
     ScreenshotPdfOptions pdf;
     QDateTime requestedAt;
     ScreenshotExportCoordinator::Completion completion;
+    snow_shot::storage::ScreenshotWindowNames windowNames{};
 };
 
 namespace snow_shot::presentation {

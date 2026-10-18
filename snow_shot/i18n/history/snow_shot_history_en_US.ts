@@ -551,6 +551,10 @@
             <translation>Clear all images?</translation>
         </message>
         <message>
+            <source>Clipboard image</source>
+            <translation>Clipboard image</translation>
+        </message>
+        <message>
             <source>Collage</source>
             <translation>Collage</translation>
         </message>
@@ -860,12 +864,20 @@ Files:
             <translation>Columns</translation>
         </message>
         <message>
+            <source>Drag an image file here, or choose Select Image</source>
+            <translation>Drag an image file here, or choose Select Image</translation>
+        </message>
+        <message>
             <source>Drop one image file at a time.</source>
             <translation>Drop one image file at a time.</translation>
         </message>
         <message>
             <source>Drop one image to replace the current image</source>
             <translation>Drop one image to replace the current image</translation>
+        </message>
+        <message>
+            <source>Drop one image to split</source>
+            <translation>Drop one image to split</translation>
         </message>
         <message>
             <source>Enter a positive integer.</source>
@@ -922,6 +934,14 @@ Files:
         <message>
             <source>Rows</source>
             <translation>Rows</translation>
+        </message>
+        <message>
+            <source>Select Image</source>
+            <translation>Select Image</translation>
+        </message>
+        <message>
+            <source>Select an image to split</source>
+            <translation>Select an image to split</translation>
         </message>
         <message>
             <source>Split direction</source>
@@ -1001,8 +1021,16 @@ Files:
     <context>
         <name>ImageSplitWindow</name>
         <message>
+            <source>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again.</source>
+            <translation>Allow Snow Shot to access Finder in System Settings &gt; Privacy &amp; Security &gt; Automation, then try again.</translation>
+        </message>
+        <message>
             <source>Cancel</source>
             <translation>Cancel</translation>
+        </message>
+        <message>
+            <source>Could not read the selected image files. Please try again.</source>
+            <translation>Could not read the selected image files. Please try again.</translation>
         </message>
         <message>
             <source>Discard</source>
@@ -1073,6 +1101,14 @@ Files:
             <translation>Select Image</translation>
         </message>
         <message>
+            <source>The file manager is unavailable. Open it and try again.</source>
+            <translation>The file manager is unavailable. Open it and try again.</translation>
+        </message>
+        <message>
+            <source>The file manager took too long to return the selected files. Please try again.</source>
+            <translation>The file manager took too long to return the selected files. Please try again.</translation>
+        </message>
+        <message>
             <source>The image and current split edits will be discarded.</source>
             <translation>The image and current split edits will be discarded.</translation>
         </message>
@@ -1087,6 +1123,45 @@ Files:
         <message>
             <source>The images could not be exported. Try again.</source>
             <translation>The images could not be exported. Try again.</translation>
+        </message>
+    </context>
+    <context>
+        <name>PinnedColorSwatch</name>
+        <message>
+            <source>Color:</source>
+            <translation>Color:</translation>
+        </message>
+        <message>
+            <source>Copy HEX color</source>
+            <translation>Copy HEX color</translation>
+        </message>
+        <message>
+            <source>Copy HSL color</source>
+            <translation>Copy HSL color</translation>
+        </message>
+        <message>
+            <source>Copy RGB color</source>
+            <translation>Copy RGB color</translation>
+        </message>
+        <message>
+            <source>HEX:</source>
+            <translation>HEX:</translation>
+        </message>
+        <message>
+            <source>HSL:</source>
+            <translation>HSL:</translation>
+        </message>
+        <message>
+            <source>HSLA:</source>
+            <translation>HSLA:</translation>
+        </message>
+        <message>
+            <source>RGB:</source>
+            <translation>RGB:</translation>
+        </message>
+        <message>
+            <source>RGBA:</source>
+            <translation>RGBA:</translation>
         </message>
     </context>
     <context>
@@ -1570,6 +1645,10 @@ Files:
         <message>
             <source>Group: Default</source>
             <translation>Group: Default</translation>
+        </message>
+        <message>
+            <source>Hide All Windows to Top</source>
+            <translation>Hide All Windows to Top</translation>
         </message>
         <message>
             <source>Hide other windows</source>

@@ -26,7 +26,6 @@ pub(crate) struct StreamingFreeDrawBuilder {
     filtered_distances: Vec<f64>,
     pressure_capture: crate::free_draw_pressure::PressureCapture,
     filter_origin_distance: f64,
-    zoom: f64,
     defer_preview: bool,
     preview_dirty: bool,
     preview_committed_count: usize,
@@ -71,11 +70,9 @@ impl StreamingFreeDrawBuilder {
                 None,
                 0,
                 stroke_width,
-                zoom,
                 sample_spacing,
             ),
             filter_origin_distance: 0.0,
-            zoom,
             defer_preview: false,
             preview_dirty: false,
             preview_committed_count: 0,
@@ -162,9 +159,7 @@ impl StreamingFreeDrawBuilder {
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
         }
-        let pressure_changed = self
-            .pressure_capture
-            .observe(point, pressure, timestamp, self.zoom);
+        let pressure_changed = self.pressure_capture.observe(point, pressure, timestamp);
         let changed = self.append_position(point, shift);
         if !changed
             && pressure_changed
@@ -851,7 +846,6 @@ impl Editor {
                 event.pressure,
                 event.timestamp_ms,
                 style.stroke_width,
-                state.builder.zoom,
                 state.builder.point_filter.sample_spacing(),
             );
             if style.brush_mode == BrushMode::PressureSensitive {

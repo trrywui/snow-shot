@@ -1,3 +1,4 @@
+#include "snow_shot/platform/screenshotwindownames.h"
 #include "snow_shot/runtime/runtimeactivitytracker.h"
 #include "recordingtrimsession.h"
 #include "snow_shot/platform/applicationqos.h"
@@ -61,6 +62,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QTimer>
+#include <QWindow>
 
 #include <chrono>
 #include <cstdint>
@@ -955,6 +957,7 @@ struct ScreenRecordingController::Impl {
         // Earlier retained sources remain on disk; earlier exports cease being
         // eligible for this recording's Copy action.
         retainedSourcePath.clear();
+        sessionWindowNames = {};
         finalizedOutputPath.clear();
         finalizedDurationMilliseconds = 0;
         automationError.clear();
@@ -1128,10 +1131,14 @@ struct ScreenRecordingController::Impl {
                 static_cast<uint32_t>(mouseHighlightRadius),
             };
             sessionLoopAnimatedImages = config.loop_animated_images != 0;
-            const QString baseName =
-                ScreenshotImageFileService::suggestedBaseName(settings.videoFilenameFormat());
+            const QDateTime outputTimestamp = QDateTime::currentDateTime();
+            sessionWindowNames =
+                exportWindowNames(settings.videoSaveDirectory(), settings.videoFilenameFormat());
+            const QString baseName = snow_shot::storage::expandScreenshotExportVariables(
+                settings.videoFilenameFormat(), outputTimestamp, sessionWindowNames);
             const QStringList directories =
-                snow_shot::presentation::recording::screenRecordingDirectories();
+                snow_shot::presentation::recording::screenRecordingDirectories(outputTimestamp,
+                                                                               sessionWindowNames);
             const QString extension = sessionOutputSettings.extension;
             const bool keyboard = showKeyboard || recordMouseClicks;
             const QString requestedPath =
@@ -1417,7 +1424,7 @@ struct ScreenRecordingController::Impl {
                                                        settings.useHardwareEncoder ? 1u : 0u,
                                                        sessionLoopAnimatedImages ? 1u : 0u};
                 trimSession->open(sourcePath, pendingOutputPath, options, sessionDeferred,
-                                  trimSaveWhenReady);
+                                  trimSaveWhenReady, sessionWindowNames);
             }
             return;
         }
@@ -1524,7 +1531,39 @@ struct ScreenRecordingController::Impl {
     }
 
     void openFolder() {
-        static_cast<void>(snow_shot::presentation::recording::openScreenRecordingFolder());
+        static_cast<void>(
+            snow_shot::presentation::recording::openScreenRecordingFolder(sessionWindowNames));
+    }
+
+    snow_shot::storage::ScreenshotWindowNames exportWindowNames(const QString& directory,
+                                                                const QString& filename) const {
+        const auto fields = snow_shot::storage::screenshotWindowNameFields(directory, filename);
+        if (!fields.any())
+            return {};
+        // Naming ignores recording UI even when those surfaces are included in the video.
+        // Inspect existing identities only; lookup must not materialize hidden controls.
+        QVector<std::uintptr_t> excluded;
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            bool recordingSurface = false;
+            for (QWidget* parent = widget; parent; parent = parent->parentWidget())
+                recordingSurface |= parent == areaWindow || parent == toolbarWindow;
+            for (QWindow* window = widget->windowHandle(); window;
+                 window = window->transientParent())
+                recordingSurface |= (areaWindow && window == areaWindow->windowHandle()) ||
+                                    (toolbarWindow && window == toolbarWindow->windowHandle());
+            if (!recordingSurface || !widget->internalWinId())
+                continue;
+#ifdef Q_OS_MACOS
+            if (const auto id = snow_shot::platform::captureWindowId(widget))
+                excluded.push_back(*id);
+#else
+            excluded.push_back(static_cast<std::uintptr_t>(widget->internalWinId()));
+#endif
+        }
+        // recordingRegion already uses native desktop units on both supported platforms.
+        return snow_shot::platform::screenshotWindowNamesAtPoint(
+            QRectF(recordingRegion).center(),
+            {excluded.constData(), static_cast<size_t>(excluded.size())}, fields);
     }
 
     void discard() {
@@ -2121,6 +2160,7 @@ struct ScreenRecordingController::Impl {
         ScreenshotToolPalette::RecordingSessionStatus::idle();
     qint64 durationMilliseconds = 0;
     QString pendingOutputPath;
+    snow_shot::storage::ScreenshotWindowNames sessionWindowNames;
     bool microphoneEnabled = false;
     bool systemAudioEnabled = true;
     int microphoneGainDb = 0;

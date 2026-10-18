@@ -34,6 +34,7 @@ constexpr std::array ALL_ACTIONS{
     GlobalShortcutAction::ScreenshotDelay,
     GlobalShortcutAction::ScreenshotFixed,
     GlobalShortcutAction::ScreenshotOcr,
+    GlobalShortcutAction::ScreenshotOcrCopy,
     GlobalShortcutAction::ScreenshotTranslation,
     GlobalShortcutAction::ScreenshotCopy,
     GlobalShortcutAction::ScreenshotSave,
@@ -47,6 +48,7 @@ constexpr std::array ALL_ACTIONS{
     GlobalShortcutAction::OpenPinToScreenManagement,
     GlobalShortcutAction::GlobalCanvas,
     GlobalShortcutAction::StitchSelectedImages,
+    GlobalShortcutAction::SplitSelectedImages,
     GlobalShortcutAction::SwitchWindowGroup,
     GlobalShortcutAction::OpenSettings,
     GlobalShortcutAction::PinClipboardContent,
@@ -360,6 +362,7 @@ void hiddenFloatingToolsPreserveGlobalHotkeys() {
         GlobalShortcutAction::ScreenshotDelay,
         GlobalShortcutAction::ScreenshotFixed,
         GlobalShortcutAction::ScreenshotOcr,
+        GlobalShortcutAction::ScreenshotOcrCopy,
 #if SNOW_SHOT_ENABLE_TEXT_TRANSLATION
         GlobalShortcutAction::ScreenshotTranslation,
 #endif
@@ -451,8 +454,7 @@ void globalCanvasShortcutCanBeAssignedAndRestored() {
     require(restored.setShortcuts(action, {}), "clear global canvas hotkey fixture");
 }
 
-void stitchSelectedImagesShortcutsRegisterAndPersist() {
-    constexpr auto action = GlobalShortcutAction::StitchSelectedImages;
+void selectedImagesShortcutsRegisterAndPersist(GlobalShortcutAction action) {
     const shortcuts::ShortcutBindingList bindings{QStringLiteral("Ctrl+Alt+F8"),
                                                   QStringLiteral("Ctrl+Alt+F9")};
     {
@@ -462,17 +464,20 @@ void stitchSelectedImagesShortcutsRegisterAndPersist() {
         manager.initialize();
         require(manager.state(action).status == GlobalShortcutStatus::Unset &&
                     manager.state(action).shortcuts.isEmpty(),
-                "stitch selected images starts without an assigned shortcut");
+                "selected-image actions start without an assigned shortcut");
         clearAll(manager);
         require(manager.setShortcuts(action, bindings) &&
                     manager.state(action).status == GlobalShortcutStatus::Registered &&
                     input->registrations.size() == 2 &&
-                    snow_shot::storage::ShortcutSettings().stitchSelectedImages() == bindings,
-                "both stitch shortcuts register and persist under their own key");
+                    (action == GlobalShortcutAction::SplitSelectedImages
+                         ? snow_shot::storage::ShortcutSettings().splitSelectedImages()
+                         : snow_shot::storage::ShortcutSettings().stitchSelectedImages()) ==
+                        bindings,
+                "both selected-image shortcuts register and persist under their own key");
         int activations = 0;
         QObject::connect(&manager, &GlobalShortcutManager::activated, &manager,
                          [&](GlobalShortcutAction received) {
-                             require(received == action, "stitch bindings dispatch their action");
+                             require(received == action, "image bindings dispatch their action");
                              ++activations;
                          });
         for (const auto& binding : bindings)
@@ -480,23 +485,23 @@ void stitchSelectedImagesShortcutsRegisterAndPersist() {
         require(activations == 2 &&
                     !manager.validateShortcut(GlobalShortcutAction::Screenshot, bindings.first())
                          .supported,
-                "both stitch bindings activate and participate in conflict detection");
+                "both image bindings activate and participate in conflict detection");
         manager.setGlobalHotkeysEnabled(false);
         requireDisabled(manager, action, bindings);
-        require(input->registrations.isEmpty(), "disabling hotkeys releases stitch bindings");
+        require(input->registrations.isEmpty(), "disabling hotkeys releases image bindings");
         manager.setGlobalHotkeysEnabled(true);
         require(manager.state(action).status == GlobalShortcutStatus::Registered,
-                "reenabling hotkeys restores stitch bindings");
+                "reenabling hotkeys restores image bindings");
     }
     auto backend = std::make_unique<FakeBackend>();
     GlobalShortcutManager restored(std::move(backend), nullptr, [] { return false; });
     restored.initialize();
     require(restored.state(action).status == GlobalShortcutStatus::Registered &&
                 restored.state(action).shortcuts == bindings,
-            "stitch shortcuts survive manager recreation");
+            "image shortcuts survive manager recreation");
     require(restored.setShortcuts(action, {}) &&
                 restored.state(action).status == GlobalShortcutStatus::Unset,
-            "stitch shortcuts can be cleared");
+            "image shortcuts can be cleared");
 }
 
 void globalCanvasFullscreenGateTracksSession() {
@@ -1740,7 +1745,8 @@ int main(int argc, char** argv) {
     pinnedManagementShortcutCanBeAssignedAndRestored();
     hideShowAllWindowsShortcutCanBeAssignedAndRestored();
     globalCanvasShortcutCanBeAssignedAndRestored();
-    stitchSelectedImagesShortcutsRegisterAndPersist();
+    selectedImagesShortcutsRegisterAndPersist(GlobalShortcutAction::StitchSelectedImages);
+    selectedImagesShortcutsRegisterAndPersist(GlobalShortcutAction::SplitSelectedImages);
     globalCanvasFullscreenGateTracksSession();
     backendAvailabilityInvalidatesOwnershipAndRecovers();
 #ifdef Q_OS_MACOS

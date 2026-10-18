@@ -200,7 +200,7 @@ fn speech_bubble_requested_radii_survive_tiny_creation_style_and_manual_resize()
 }
 
 #[test]
-fn speech_bubble_template_four_remaps_bound_text_and_accepts_legacy_three_rectangle() {
+fn speech_bubble_template_remaps_bound_text_and_accepts_legacy_three_rectangle() {
     use snow_draw_engine_document::ElementRecord;
     use snow_draw_engine_editor::DrawTemplate;
     let (mut source, viewport, owner) = create(HighlightShape::Diamond, 160.0, 90.0);
@@ -220,7 +220,7 @@ fn speech_bubble_template_four_remaps_bound_text_and_accepts_legacy_three_rectan
     let before = body(&source, owner);
     let template: DrawTemplate =
         serde_json::from_slice(&source.serialize_selected_draw_template().unwrap()).unwrap();
-    assert_eq!(template.schema_version, 4);
+    assert_eq!(template.schema_version, 7);
     assert_eq!(template.elements.len(), 2);
     source
         .insert_draw_template_with_viewport_changes(

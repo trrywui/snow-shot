@@ -1,5 +1,6 @@
 #include "snow_shot/presentation/screenshotcanvascolorsamplerwindow.h"
 #include "snow_shot/presentation/crosshaircursor.h"
+#include "widgets/color_picker.h"
 
 #include "snow_shot/presentation/components/icons/iconrenderutils.h"
 #include "snow_shot/presentation/components/icons/snowshoticons.h"
@@ -273,4 +274,60 @@ void ScreenshotCanvasColorSamplerWindow::updatePosition(const QPoint& globalCurs
     if (pos() != target) {
         move(target);
     }
+}
+
+ScreenshotCanvasColorSamplingSession::ScreenshotCanvasColorSamplingSession(QObject& owner)
+    : m_owner(owner) {}
+
+ScreenshotCanvasColorSamplingSession::~ScreenshotCanvasColorSamplingSession() {
+    end();
+}
+
+void ScreenshotCanvasColorSamplingSession::begin(adqt::widgets::AdColorPicker* picker,
+                                                 std::function<void()> cancel) {
+    end();
+    if (picker == nullptr)
+        return;
+    if (!m_window)
+        m_window = std::make_unique<ScreenshotCanvasColorSamplerWindow>();
+    m_target = picker;
+    m_destroyed = QObject::connect(picker, &QObject::destroyed, &m_owner,
+                                   [cancel = std::move(cancel)] { cancel(); });
+    m_window->beginSampling(picker);
+}
+
+void ScreenshotCanvasColorSamplingSession::end() {
+    m_target.clear();
+    QObject::disconnect(m_destroyed);
+    m_destroyed = {};
+    if (m_window)
+        m_window->endSampling();
+}
+
+bool ScreenshotCanvasColorSamplingSession::active() const {
+    return !m_target.isNull();
+}
+
+void ScreenshotCanvasColorSamplingSession::hidePreview() {
+    if (m_window)
+        m_window->hide();
+}
+
+void ScreenshotCanvasColorSamplingSession::updatePreview(const QImage& preview,
+                                                         const QPoint& globalPosition) {
+    if (active() && m_window && !preview.isNull())
+        m_window->updateSample(preview, globalPosition);
+}
+
+bool ScreenshotCanvasColorSamplingSession::commit(const QImage& preview,
+                                                  const std::function<void()>& cleanup) {
+    const QPointer<adqt::widgets::AdColorPicker> target = m_target;
+    const QColor sampled =
+        preview.isNull() ? QColor() : preview.pixelColor(preview.width() / 2, preview.height() / 2);
+    end();
+    cleanup();
+    if (!target || !sampled.isValid())
+        return false;
+    target->commitValue(adqt::widgets::AdColorValue::solid(sampled));
+    return true;
 }

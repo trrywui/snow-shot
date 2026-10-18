@@ -311,6 +311,8 @@ int32_t snow_recording_region_output_dimensions(int32_t x, int32_t y, uint32_t w
                                                 uint32_t maximum_height, uint32_t format,
                                                 uint32_t* output_width, uint32_t* output_height);
 
+// Compatibility constructor: available when Cargo feature legacy-capture is enabled.
+// Snow Shot disables it; direct/deferred capture and old-bundle readers remain available.
 SnowRecordingSession* snow_recording_session_create(const SnowRecordingConfig* config);
 /* Pure output sizing shared by recording and effects preview. Zero maximums mean uncapped. */
 int32_t snow_recording_output_dimensions(uint32_t width, uint32_t height, uint32_t maximum_width,

@@ -29,6 +29,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QEnterEvent>
+#include <QHoverEvent>
 #include <QJsonDocument>
 #include <QMenu>
 #include <QPointer>
@@ -166,6 +167,46 @@ void verifySettings() {
                     QStringLiteral("floating-toolbar.enabled"),
             "the unified floating toolbar section follows the unified tray section");
 }
+void verifyHoverMovementWithoutEnter() {
+    const storage::FloatingToolbarSettings stored;
+    stored.setHideInFullscreen(false);
+    stored.setToolbarMode(false);
+    stored.setOpacity(50);
+    for (const bool overHandle : {false, true}) {
+        stored.setEnabled(false);
+        FloatingToolbarController controller(nullptr, [](QScreen*) { return false; });
+        stored.setEnabled(true);
+        pump();
+        auto* icon = window("floatingToolbarIconWindow");
+        require(icon && icon->isVisible(), "icon mode must expose its hover surface");
+        QEvent leave(QEvent::Leave);
+        QApplication::sendEvent(icon, &leave);
+        auto* reveal = controller.findChild<QTimer*>(QStringLiteral("floatingToolbarRevealTimer"));
+        require(reveal && !reveal->isActive(), "leaving the icon must cancel pending reveal");
+        QWidget* target =
+            overHandle
+                ? icon->findChild<QAbstractButton*>(QStringLiteral("floatingToolbarSnowflake"))
+                : icon;
+        require(target, "the hover target must exist");
+        const QPoint local = target->rect().center();
+        QHoverEvent move(QEvent::HoverMove, local, target->mapToGlobal(local), QPointF(-1, -1),
+                         Qt::NoModifier);
+        QApplication::sendEvent(target, &move);
+        require(reveal->isActive(), "hover movement without Enter must schedule toolbar reveal");
+        const auto deadline = reveal->id();
+        QApplication::sendEvent(target, &move);
+        require(reveal->id() == deadline,
+                "continued hover movement must preserve the toolbar reveal deadline");
+        require(qAbs(icon->windowOpacity() - 1.0) < 0.005,
+                "hover movement over the surface or handle must restore full opacity");
+        timer(controller, "floatingToolbarRevealTimer");
+        auto* toolbar = window("floatingToolbarWindow");
+        require(toolbar && toolbar->isVisible(), "the hover deadline must reveal the toolbar");
+        stored.setEnabled(false);
+        pump();
+    }
+}
+
 void verifyOpacity() {
     const storage::FloatingToolbarSettings stored;
     stored.setHideInFullscreen(false);
@@ -1558,6 +1599,7 @@ int main(int argc, char** argv) {
         verifySettings();
         verifyFeedbackOwnership();
         verifyOpacity();
+        verifyHoverMovementWithoutEnter();
         verifyPlacement();
         verifyDropIdentity();
         verifyContentDrops();

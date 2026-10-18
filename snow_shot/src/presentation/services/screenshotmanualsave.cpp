@@ -26,7 +26,8 @@ class NativeSaveSession final : public QObject {
           m_pdf{screenshot_pdf::pageSizeForKey(
               snow_shot::storage::ScreenshotSettings().pdfPageSize())} {
         setObjectName(QStringLiteral("screenshotManualSaveSession"));
-        const auto defaults = screenshotManualSaveDefaults();
+        const auto defaults =
+            screenshotManualSaveDefaults(QDateTime::currentDateTime(), m_source->windowNames());
         auto* dialog = new QFileDialog(
             owner, QCoreApplication::translate("ScreenshotSaveAsFileDialog", "Save as file"));
         m_dialog = dialog;

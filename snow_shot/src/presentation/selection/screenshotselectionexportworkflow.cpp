@@ -65,7 +65,8 @@ bool ScreenshotSelectionExportWorkflow::copySelectionToClipboard(ResultValidator
             if (!scheduled) {
                 (*publishCompletion)(false);
             }
-        });
+        },
+        m_context.selection.exportLayoutCompaction());
 }
 
 bool ScreenshotSelectionExportWorkflow::pinSelectionToScreen(ResultValidator validator,
@@ -78,7 +79,9 @@ bool ScreenshotSelectionExportWorkflow::pinSelectionToScreen(ResultValidator val
     }
 
     std::optional<ScreenshotPinnedSelectionRequest> request =
-        m_context.imageComposer.preparePinnedSelection(selection, resultStyle(m_context.selection));
+        m_context.imageComposer.preparePinnedSelection(
+            selection, resultStyle(m_context.selection),
+            m_context.selection.exportLayoutCompaction());
     if (!request.has_value()) {
         return false;
     }

@@ -44,9 +44,11 @@
 #include <QUuid>
 #include <QLabel>
 #include <QLayout>
+#include <QKeyEvent>
 #include <QTemporaryDir>
 #include <QTranslator>
 #include <QTimer>
+#include <QHoverEvent>
 
 #include <algorithm>
 #include <cstdlib>
@@ -1001,7 +1003,7 @@ void moreMenuOffersPinStitchAndDelete() {
         return nullptr;
     };
     auto hover = [](QWidget* widget) {
-        const QPoint local = widget->rect().center();
+        const QPoint local(widget->width() / 2, 0);
         const QPoint global = widget->mapToGlobal(local);
         QCursor::setPos(global);
         QEnterEvent event(local, local, global);
@@ -1065,6 +1067,108 @@ void moreMenuOffersPinStitchAndDelete() {
     require(dataSource.removedIds.size() == 1 &&
                 dataSource.removedIds.front() == QStringLiteral("record-0"),
             "confirming Delete must remove that history entry");
+}
+
+void historyHoverMovementDoesNotRequireSelectionOrEnter() {
+    MutableHistoryDataSource dataSource;
+    dataSource.setRecords(historyRecords(2));
+    ScreenshotHistoryPageWidget page(&dataSource, nullptr);
+    page.resize(900, 720);
+    page.show();
+    page.setActive(true);
+    flushEvents();
+    const QPoint previousCursor = QCursor::pos();
+    const auto restoreCursor = qScopeGuard([previousCursor] { QCursor::setPos(previousCursor); });
+    QCursor::setPos(page.mapToGlobal(QPoint(10, 10)));
+    auto* first = page.findChild<QWidget*>(QStringLiteral("screenshotHistoryEntry-record-0"));
+    auto* selection = first->findChild<adqt::widgets::AdCheckbox*>();
+    for (const bool selected : {false, true, false}) {
+        selection->setChecked(selected);
+        flushEvents();
+        for (int index = 0; index < 2; ++index) {
+            auto* row = page.findChild<QWidget*>(
+                QStringLiteral("screenshotHistoryEntry-record-%1").arg(index));
+            auto* more = row->findChild<adqt::widgets::AdButton*>(
+                QStringLiteral("screenshotHistoryEntryMore"));
+            // The failing native stream contains HoverMove alone, including on
+            // repeated visits to the first row before its selection bar opens.
+            for (int visit = 0; visit < 2; ++visit) {
+                const QPoint local(more->width() / 2, 0);
+                QHoverEvent move(QEvent::HoverMove, local, more->mapToGlobal(local),
+                                 QPointF(local.x(), -1), Qt::NoModifier);
+                QApplication::sendEvent(more, &move);
+                auto* menu = row->findChild<adqt::widgets::AdContextMenu*>(
+                    QStringLiteral("screenshotHistoryEntryMoreMenu"));
+                require(menu && menu->isPopupVisible(), "each row must open More immediately on "
+                                                        "hover movement with or without selection");
+                menu->dismissPopup();
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            }
+        }
+    }
+    require(dataSource.removedIds.isEmpty(), "hovering More must preserve every history entry");
+}
+
+void moreButtonClicksDoNotRequestDeletion() {
+    MutableHistoryDataSource dataSource;
+    dataSource.setRecords(historyRecords(1));
+    int confirmationOpenings = 0;
+    ScreenshotHistoryPageWidget page(&dataSource, nullptr);
+    page.resize(900, 720);
+    page.show();
+    page.setActive(true);
+    flushEvents();
+    auto* more =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistoryEntryMore"));
+    auto* confirmation = page.findChild<adqt::widgets::AdPopconfirm*>(
+        QStringLiteral("screenshotHistoryEntryDeleteConfirm"));
+    require(more && confirmation, "the click regression needs More and its delete confirmation");
+    QObject::connect(confirmation, &adqt::widgets::AdPopconfirm::visibleChanged, &page,
+                     [&](bool visible) {
+                         if (visible)
+                             ++confirmationOpenings;
+                     });
+    const QPoint previousCursor = QCursor::pos();
+    const auto restoreCursor = qScopeGuard([previousCursor] { QCursor::setPos(previousCursor); });
+    const QPoint local = more->rect().center();
+    const QPoint global = more->mapToGlobal(local);
+    QCursor::setPos(global);
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        // QAbstractButton::click() bypasses the popconfirm's input event filter.
+        QMouseEvent press(QEvent::MouseButtonPress, local, global, Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, local, global, Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(more, &press);
+        QApplication::sendEvent(more, &release);
+        flushEvents();
+        require(!confirmation->isVisible() && confirmationOpenings == 0,
+                "clicking More must never open Delete confirmation");
+        QPointer<adqt::widgets::AdContextMenu> menu = page.findChild<adqt::widgets::AdContextMenu*>(
+            QStringLiteral("screenshotHistoryEntryMoreMenu"));
+        require(menu && menu->isPopupVisible(), "clicking More must open the action menu");
+        menu->dismissPopup();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        flushEvents();
+    }
+    for (const Qt::Key key : {Qt::Key_Return, Qt::Key_Space}) {
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+        QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+        QApplication::sendEvent(more, &press);
+        QApplication::sendEvent(more, &release);
+        flushEvents();
+        require(!confirmation->isVisible() && confirmationOpenings == 0,
+                "keyboard activation of More must never open Delete confirmation");
+        auto* menu = page.findChild<adqt::widgets::AdContextMenu*>(
+            QStringLiteral("screenshotHistoryEntryMoreMenu"));
+        require(menu && menu->isPopupVisible() && menu->activeAction(),
+                "keyboard activation must open More with an active action");
+        menu->dismissPopup();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        flushEvents();
+    }
+    require(dataSource.removedIds.isEmpty(), "opening More must preserve its history entry");
 }
 
 void moreMenuRetirementKeepsIdleHistoryUsable() {
@@ -1380,6 +1484,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--context-menu-only"))) {
+        historyHoverMovementDoesNotRequireSelectionOrEnter();
+        moreButtonClicksDoNotRequestDeletion();
         moreMenuOffersPinStitchAndDelete();
         moreMenuRetirementKeepsIdleHistoryUsable();
         storage::ApplicationStorage::instance().shutdown();
@@ -1397,6 +1503,8 @@ int main(int argc, char** argv) {
         QCoreApplication::removeTranslator(&englishTranslator);
         return 0;
     }
+    historyHoverMovementDoesNotRequireSelectionOrEnter();
+    moreButtonClicksDoNotRequestDeletion();
     moreMenuOffersPinStitchAndDelete();
     moreMenuRetirementKeepsIdleHistoryUsable();
     entriesUseBordersAndSupportCrossPageSelection();

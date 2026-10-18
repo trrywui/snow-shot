@@ -465,6 +465,33 @@ class PublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not match published bytes'):
                 publisher.verify_local_release(self.release, assets, *auditors)
 
+    def test_arm64_waiver_requires_opt_in_exact_bytes_and_x64_proof(self):
+        assets, auditors = self.paired_windows_release(('x64', 'arm64'))
+        proofs = []
+        for platform in ('windows-x64', 'windows-arm64'):
+            artifacts = [{'Name': name, 'Bytes': path.stat().st_size, 'Sha256': publisher.sha256(path)}
+                         for name, path in assets.items() if platform in name and name.endswith(('.exe', '.zip'))]
+            proofs.append({'Platform': platform, 'HostPlatform': platform,
+                           'Passed': platform == 'windows-x64', 'Waived': platform == 'windows-arm64',
+                           'Artifacts': artifacts})
+        self.release['nativeValidation'] = proofs
+        invoke = lambda *args: 'a' * 40 if args[0] == 'git' else ''
+        with patch.object(publisher, 'run', side_effect=invoke):
+            with self.assertRaisesRegex(ValueError, 'does not match published bytes'):
+                publisher.verify_local_release(self.release, assets, *auditors)
+            publisher.verify_local_release(self.release, assets, *auditors, require_complete=True,
+                                           skip_arm64_native_validation=True)
+            proofs[1]['Artifacts'][0]['Sha256'] = '0' * 64
+            with self.assertRaisesRegex(ValueError, 'does not match published bytes'):
+                publisher.verify_local_release(self.release, assets, *auditors,
+                                               skip_arm64_native_validation=True)
+            proofs[1]['Artifacts'][0]['Sha256'] = publisher.sha256(assets[proofs[1]['Artifacts'][0]['Name']])
+            proofs[0]['Passed'] = False
+            proofs[0]['Waived'] = True
+            with self.assertRaisesRegex(ValueError, 'does not match published bytes'):
+                publisher.verify_local_release(self.release, assets, *auditors,
+                                               skip_arm64_native_validation=True)
+
     def test_historical_x64_verification_cannot_authorize_new_publication(self):
         assets, auditors = self.paired_windows_release()
         invoke = lambda *args: 'a' * 40 if args[0] == 'git' else ''

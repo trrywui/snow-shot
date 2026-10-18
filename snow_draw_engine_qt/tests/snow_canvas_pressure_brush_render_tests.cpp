@@ -45,6 +45,45 @@ void nominalAndVariableWidthsMatchTheWidthEditor() {
     }
 }
 
+void mouseSpeedProducesObviousWidthVariation() {
+    for (const double width : {4.0, 16.0, 32.0}) {
+        for (const SnowBrushMode mode :
+             {SNOW_BRUSH_MODE_REGULAR, SNOW_BRUSH_MODE_PRESSURE_SENSITIVE}) {
+            Engine engine(mode, width, SNOW_STROKE_STYLE_SOLID, {220, 30, 90, 255}, {1024, 256});
+            const auto mouse = [&](SnowPointerEventType type, double x) {
+                auto event = pointer(type, {x, 100}, 0, engine.timestamp + 8);
+                event.pointer.device = SNOW_POINTER_DEVICE_MOUSE;
+                event.pointer.has_pressure = 0;
+                engine.dispatch(event);
+            };
+            mouse(SNOW_POINTER_EVENT_DOWN, 20);
+            for (int i = 1; i <= 80; ++i)
+                mouse(SNOW_POINTER_EVENT_MOVE, 20 + i * width / 16);
+            for (int i = 1; i <= 48; ++i)
+                mouse(SNOW_POINTER_EVENT_MOVE, 20 + 5 * width + i * width / 2);
+            for (const bool finalize : {false, true}) {
+                if (finalize)
+                    mouse(SNOW_POINTER_EVENT_UP, engine.endpoint.x());
+                engine.sync();
+                for (const qreal dpr : {1.0, 1.5, 2.0}) {
+                    const auto image = render(engine.cache, dpr);
+                    // Measure settled speed plateaus, away from acceleration and endpoint caps.
+                    const double slow = columnCoverage(image, qRound((20 + 3.75 * width) * dpr));
+                    const double fast = columnCoverage(image, qRound((20 + 27 * width) * dpr));
+                    if (mode == SNOW_BRUSH_MODE_PRESSURE_SENSITIVE) {
+                        require(
+                            slow > fast * 2 && fast < width * 0.75,
+                            "mouse speed must visibly thin live and finalized pressure strokes");
+                    } else {
+                        require(std::abs(slow - width) < 0.5 && std::abs(fast - width) < 0.5,
+                                "mouse speed must preserve the regular brush's nominal width");
+                    }
+                }
+            }
+        }
+    }
+}
+
 void stationaryPressurePeakSurvivesPositionSimplification() {
     Engine engine;
     engine.begin({20, 100}, 0.1);
@@ -352,6 +391,7 @@ void warmRenderingAndIncrementalPatchesRetainThePrefix() {
 int main(int argc, char** argv) {
     QGuiApplication application(argc, argv);
     nominalAndVariableWidthsMatchTheWidthEditor();
+    mouseSpeedProducesObviousWidthVariation();
     stationaryPressurePeakSurvivesPositionSimplification();
     stationaryDotsRetainPressurePeaksForEveryPattern();
     batchedShiftStrokeRetainsItsPressureHistory();

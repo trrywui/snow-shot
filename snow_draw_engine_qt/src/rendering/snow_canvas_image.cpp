@@ -14,7 +14,11 @@
 
 #if Q_BYTE_ORDER == Q_LITTLE_ENDIAN
 #if defined(Q_PROCESSOR_ARM_64)
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <arm64_neon.h>
+#else
 #include <arm_neon.h>
+#endif
 #elif defined(Q_PROCESSOR_X86_64)
 #include <emmintrin.h>
 #endif

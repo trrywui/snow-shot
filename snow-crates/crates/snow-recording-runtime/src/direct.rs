@@ -26,6 +26,7 @@ use snow_recording_export::{
 };
 use snow_recording_model::{VideoEncodeConfig, VideoEncodingSpeed};
 
+use crate::RecordingState;
 use crate::adapter::video::resolve_capture_target;
 #[cfg(any(feature = "bench-stage-timing", feature = "bench-compositor-timing"))]
 use crate::bench_timing::StageHistogram;
@@ -43,7 +44,6 @@ use crate::mouse_hook::MouseClickObservation;
 use crate::mouse_hook::MouseHookObserver;
 #[cfg(feature = "bench-synthetic-input")]
 use crate::mouse_hook::ObservedMouseButton;
-use crate::recording::RecordingState;
 use snow_recording_effects::InputEffectsState;
 
 use snow_recording_effects::mouse_effects::{

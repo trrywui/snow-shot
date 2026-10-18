@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QTabletEvent>
 #include <QWheelEvent>
 #include <QWindow>
@@ -32,6 +33,16 @@ class InputSink final : public ScreenshotOverlayEventSink {
     QVector<QPointF> rightClicks;
     QVector<QPointF> doubleClicks;
     int wheels = 0;
+    Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+    int modifierRecomputations = 0;
+    int snapClears = 0;
+    void updateOverlayModifiers(Qt::KeyboardModifiers value, bool recompute) override {
+        modifiers = value;
+        modifierRecomputations += recompute;
+    }
+    void clearOverlaySnapping() override {
+        ++snapClears;
+    }
 
     bool acceptOverlayInput(bool genuine) override {
         if (requireGenuineInput && genuine)
@@ -128,6 +139,8 @@ void runScreenshotOverlayInputTests() {
                     sink.releases.clear();
                     const QPointF end = point - QPointF(20, 20);
                     mouse(QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+                    require(sink.modifiers == Qt::ShiftModifier,
+                            "selection input must retain mouse modifiers");
                     mouse(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
                     mouse(QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
                     require(sink.presses == QVector<QPointF>{point} &&
@@ -181,6 +194,23 @@ void runScreenshotOverlayInputTests() {
             require(sink.presses == QVector<QPointF>{edge} &&
                         sink.releases == QVector<QPointF>{edge},
                     "tablet edge clicks must use the same canvas coordinates as mouse clicks");
+            require(sink.modifiers == Qt::NoModifier,
+                    "tablet modifiers must reach selection input");
+            const int recomputations = sink.modifierRecomputations;
+            QKeyEvent controlPress(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier);
+            QApplication::sendEvent(canvas, &controlPress);
+            require(sink.modifiers.testFlag(Qt::ControlModifier) &&
+                        sink.modifierRecomputations == recomputations + 1,
+                    "Ctrl press requests a drag recomputation");
+            QKeyEvent controlRelease(QEvent::KeyRelease, Qt::Key_Control, Qt::ControlModifier);
+            QApplication::sendEvent(canvas, &controlRelease);
+            require(!sink.modifiers.testFlag(Qt::ControlModifier) &&
+                        sink.modifierRecomputations == recomputations + 2,
+                    "Ctrl release clears the modifier even if Qt includes it in the release mask");
+            const int clears = sink.snapClears;
+            QFocusEvent focusLost(QEvent::FocusOut);
+            QApplication::sendEvent(canvas, &focusLost);
+            require(sink.snapClears > clears, "focus loss must clear transient snap feedback");
 
             sink.selecting = false;
             const int presses = canvas->presses;

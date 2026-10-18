@@ -468,6 +468,27 @@ void ScreenshotRecognitionSessionController::setTarget(ScreenshotRecognitionTarg
     }
 }
 
+void ScreenshotRecognitionSessionController::refreshFormattedTarget(
+    QImage image, std::shared_ptr<QTextDocument> document) {
+    auto it = m_textCache.find(m_target.key);
+    if (!m_target.hasFormattedText() || image.isNull() || !document || it == m_textCache.end() ||
+        !it->formatted)
+        return;
+    m_target.image = std::move(image);
+    m_target.formattedTextDocument = std::move(document);
+    m_target.formattedPlainText = m_target.formattedTextDocument->toPlainText();
+    it->formattedDocument = m_target.formattedTextDocument;
+    if (it->editingSession &&
+        !invokeOwned(it->editingSession, &ScreenshotOcrTextEditingSession::refreshOriginalText,
+                     m_target.formattedPlainText))
+        return;
+    if (m_active && m_mode == Mode::Text && !editing())
+        if (!notify(&ScreenshotRecognitionSessionController::applyFormattedText,
+                    m_target.formattedTextDocument))
+            return;
+    static_cast<void>(updateTextState());
+}
+
 void ScreenshotRecognitionSessionController::seedRecognitionResults(
     ScreenshotRecognitionResults results) {
     sanitizeEditionRecognitionResults(results);

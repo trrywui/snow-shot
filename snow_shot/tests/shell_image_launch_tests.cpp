@@ -1,5 +1,5 @@
 #include "snow_shot/app/shellimagelaunch.h"
-#include "snow_shot/image/supportedimagefiles.h"
+#include "snow_shot/app/supportedpinfiles.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -19,7 +19,11 @@ void launchArguments() {
     using namespace snow_shot::app;
     const QStringList paths{QDir::temp().filePath(QStringLiteral("image one.png")),
                             QDir::temp().filePath(QStringLiteral("图片 two.JPEG")),
-                            QDir::temp().filePath(QStringLiteral("bitmap three.BMP"))};
+                            QDir::temp().filePath(QStringLiteral("bitmap three.BMP")),
+                            QDir::temp().filePath(QStringLiteral("document 四.MD")),
+                            QDir::temp().filePath(QStringLiteral("styles.CSS")),
+                            QDir::temp().filePath(QStringLiteral("page.html")),
+                            QDir::temp().filePath(QStringLiteral("notes.txt"))};
     auto arguments = shellImageLaunchArguments(paths);
     arguments.prepend(QStringLiteral("snow-shot.exe"));
     arguments.append(QStringLiteral("--show-main-window"));
@@ -66,7 +70,13 @@ void imageSuffixes() {
     require(!extensions.contains(QStringLiteral("txt")) &&
                 !extensions.contains(QStringLiteral("html")) &&
                 !extensions.contains(QStringLiteral("htm")),
-            "formatted-text pinning extensions are excluded from the image shell verb");
+            "image-only workflows retain their own extension catalog");
+    const auto pinExtensions = snow_shot::app::supportedPinFileExtensions();
+    for (const auto& format : snow_shot::app::kPinDocumentFileFormats)
+        require(pinExtensions.contains(QLatin1String(format.suffix)) &&
+                    snow_shot::app::pinDocumentFileFormat(
+                        QString::fromLatin1(format.suffix).toUpper()) == format.format,
+                "Explorer launch admission includes every document suffix case-insensitively");
 }
 } // namespace
 

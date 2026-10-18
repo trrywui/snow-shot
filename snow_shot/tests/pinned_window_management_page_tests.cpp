@@ -2,6 +2,7 @@
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include "../../test-support/virtualmemory.h"
 #include "snow_shot/presentation/components/thumbnailcache.h"
+#include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include "snow_shot/presentation/styles/thememanager.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "theme/theme_manager.h"
@@ -1170,6 +1171,92 @@ int main(int argc, char** argv) {
                     page.findChildren<QFrame*>(QStringLiteral("pinnedManagementRecord")).size() ==
                         1,
                 "selected Delete refreshes the page after removing its record");
+    }
+    {
+        ScreenshotClipboardContentSnapshot snapshot;
+        snapshot.text = QStringLiteral("#7DD35380");
+        snapshot.devicePixelRatio = 1.25;
+        snapshot.colorSwatchStyle = capturePinnedColorSwatchStyle();
+        const auto content = ScreenshotClipboardContentReader::decode(snapshot);
+        require(content.has_value(), "prepare swatch preview source");
+        storage::PinnedWindowRecord record;
+        record.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        record.sourceKind = storage::PinnedWindowSourceKind::ClipboardText;
+        record.originalText = snapshot.text;
+        record.textStyle = content->originalContent.textStyle;
+        record.firstCreationTextDpi = snapshot.devicePixelRatio;
+        record.nativeGeometry = QRect(0, 0, 342, 210);
+        record.canvasSourceRect = QRectF(record.nativeGeometry);
+        record.contentCanvasRect = record.canvasSourceRect;
+        record.surfaceCanvasRect = record.canvasSourceRect;
+        record.initialWindowSize = record.nativeGeometry.size();
+        require(repository.upsert(record).success && repository.flush().success,
+                "persist swatch preview source");
+        PinnedWindowManagementPageWidget page;
+        auto* source = page.findChild<PinnedWindowManagementDataSource*>();
+        QImage thumbnail;
+        QImage fullImage;
+        QSize naturalSize;
+        QObject::connect(source, &PinnedWindowManagementDataSource::previewReady, &page,
+                         [&](const QString& id, quint64, const QImage& image, const QSize& size) {
+                             if (id == record.id) {
+                                 thumbnail = image;
+                                 naturalSize = size;
+                             }
+                         });
+        QObject::connect(source, &PinnedWindowManagementDataSource::fullImageReady, &page,
+                         [&](const QString& id, quint64, const QImage& image) {
+                             if (id == record.id)
+                                 fullImage = image;
+                         });
+        const auto waitFor = [&](const auto& ready) {
+            QElapsedTimer timer;
+            timer.start();
+            while (!ready() && timer.elapsed() < 5000) {
+                application.processEvents();
+                QThread::msleep(1);
+            }
+            return ready();
+        };
+        page.resize(980, 900);
+        page.show();
+        require(waitFor([&] { return !thumbnail.isNull(); }) &&
+                    naturalSize == content->image.size() &&
+                    thumbnail.pixelColor(0, 0) == content->image.pixelColor(0, 0),
+                "swatch thumbnails use the shared renderer and preserve fractional DPI");
+        source->requestFullImage(record.id, 1);
+        require(waitFor([&] { return !fullImage.isNull(); }) && fullImage == content->image,
+                "full swatch previews match the pinned raster");
+        auto& theme = adqt::theme::ThemeManager::instance();
+        const auto oldTheme = theme.config();
+        const auto restoreTheme = qScopeGuard([&] { theme.setConfig(oldTheme); });
+        const auto revision = source->previewRevision(record.id);
+        const QColor background = thumbnail.pixelColor(0, 0);
+        theme.setColorScheme(oldTheme.scheme == adqt::theme::ThemeScheme::Dark
+                                 ? adqt::theme::ThemeScheme::Light
+                                 : adqt::theme::ThemeScheme::Dark);
+        require(source->previewRevision(record.id) != revision &&
+                    waitFor([&] { return thumbnail.pixelColor(0, 0) != background; }),
+                "theme changes invalidate cached swatches and refresh visible previews");
+        class SwatchTranslator final : public QTranslator {
+          public:
+            QString translate(const char* context, const char* text, const char*,
+                              int) const override {
+                return QByteArray(context) == "PinnedColorSwatch" && QByteArray(text) == "Color:"
+                           ? QStringLiteral("Colour:")
+                           : QString();
+            }
+        } translator;
+        const QImage beforeLanguage = thumbnail;
+        const auto beforeLanguageRevision = source->previewRevision(record.id);
+        QCoreApplication::installTranslator(&translator);
+        const auto removeTranslator =
+            qScopeGuard([&] { QCoreApplication::removeTranslator(&translator); });
+        QEvent language(QEvent::LanguageChange);
+        QApplication::sendEvent(&page, &language);
+        require(source->previewRevision(record.id) != beforeLanguageRevision &&
+                    waitFor([&] { return thumbnail != beforeLanguage; }),
+                "language changes refresh swatch previews without reusing old cached labels");
     }
     storage::ApplicationStorage::instance().shutdown();
     QTemporaryDir burstDirectory;

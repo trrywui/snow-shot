@@ -245,7 +245,8 @@ void drawContents(QPainter& painter, const SnowSceneDisplayItem& item, const QFo
 
 void drawBackground(QPainter& painter, const SnowSceneDisplayItem& item, const QFont& baseFont,
                     const QRectF& localRect, double zoom) {
-    if (item.fill.a == 0 || item.font_size <= 0.0) {
+    if (!snow_canvas_fill_render::hasVisibleFill(item.fill, item.fill_style) ||
+        item.font_size <= 0.0) {
         return;
     }
 

@@ -225,6 +225,33 @@ void emptyAndFailedPairLeaveNoPartialOutput() {
             "a pair publication failure must preserve prior outputs");
 }
 
+void longQuickSaveNamesPreservePairsAndCollisions() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "long recognition filename directory unavailable");
+    for (const auto kind :
+         {ScreenshotRecognitionFileKind::Markdown, ScreenshotRecognitionFileKind::Html}) {
+        const ScreenshotRecognitionFileSnapshot snapshot{kind, QStringLiteral("source")};
+        const QString base = QString::fromUtf8("文😀").repeated(100);
+        for (int index = 0; index < 2; ++index) {
+            const auto result =
+                ScreenshotRecognitionFileExport::quickSave(snapshot, directory.path(), base);
+            require(result.succeeded(), "long recognition names and their companions must save");
+            if (index != 0)
+                require(QFileInfo(result.path).completeBaseName().endsWith(QStringLiteral("_1")),
+                        "long recognition names must retain the collision index");
+            for (const QString& path :
+                 ScreenshotRecognitionFileExport::outputPaths(result.path, kind)) {
+                const QString name = QFileInfo(path).fileName();
+                require(read(path) == QByteArrayLiteral("source") && name.toUtf8().size() <= 255 &&
+                            QString::fromUtf8(name.toUtf8()) == name,
+                        "recognition pairs must fit the component limit and preserve Unicode");
+            }
+        }
+        require(QDir(directory.path()).removeRecursively() && QDir().mkpath(directory.path()),
+                "reset the recognition pair fixture");
+    }
+}
+
 void manualOverwriteConfirmsAndReplacesBothFiles() {
     QTemporaryDir directory;
     require(directory.isValid(), "overwrite directory unavailable");
@@ -330,6 +357,7 @@ int main(int argc, char** argv) {
         savesQrValuesAsOneTextFile();
         savesLatexAsOneTextFile();
         quickSaveAvoidsEitherPairCollision();
+        longQuickSaveNamesPreservePairsAndCollisions();
         emptyAndFailedPairLeaveNoPartialOutput();
         manualOverwriteConfirmsAndReplacesBothFiles();
         overwriteButtonsFollowSelectedLanguage();

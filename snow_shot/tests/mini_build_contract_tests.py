@@ -71,7 +71,7 @@ target_sources(snow_shot_storage_mini INTERFACE screenshotocrcontroller.h)
                    "snow_shot_latex_renderer", "snow_shot_microtex",
                    "snow_shot_storage", "snow_shot_edition_full"]
         if sys.platform == "win32":
-            targets.extend(("snow_ocr_process", "onnxruntime::onnxruntime"))
+            targets.extend(("snow_ocr_process",))
         for target in targets:
             with self.subTest(target=target):
                 output = self.configure(f'''

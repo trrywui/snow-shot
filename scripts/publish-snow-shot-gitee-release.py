@@ -432,7 +432,8 @@ def prepare_homebrew(release: dict, assets: dict[str, Path], output: Path) -> No
 
 
 def verify_local_release(release: dict, assets: dict[str, Path], auditor: Path,
-                         mini_auditor: Path | None = None, *, require_complete: bool = False) -> None:
+                         mini_auditor: Path | None = None, *, require_complete: bool = False,
+                         skip_arm64_native_validation: bool = False) -> None:
     tag = release["tag"]
     version = tag[1:-len("_snow-shot")]
     paired = any(name.startswith('snow-shot-mini-') or name == 'latest-version-mini.json' for name in assets)
@@ -490,8 +491,10 @@ def verify_local_release(release: dict, assets: dict[str, Path], auditor: Path,
                 suffix = '.exe' if package['kind'] == 'installer' else '-update.zip' if package['kind'] == 'update' else '.zip'
                 name = f"{product}-{version}-{platform}-{package['variant']}{suffix}"
                 matches = [item for proof in proofs
-                           if proof.get('Passed') is True and proof.get('Platform') == platform
-                           and proof.get('HostPlatform') == platform
+                           if proof.get('Platform') == platform
+                           and ((proof.get('Passed') is True and proof.get('HostPlatform') == platform)
+                                or (skip_arm64_native_validation and platform == 'windows-arm64'
+                                    and proof.get('Waived') is True and proof.get('Passed') is False))
                            for item in proof.get('Artifacts', []) if item.get('Name') == name
                            and item.get('Bytes') == package['size'] and item.get('Sha256') == package['sha256']]
                 if not matches:
@@ -601,6 +604,8 @@ if __name__ == "__main__":
     parser.add_argument("--mini-auditor", type=Path)
     parser.add_argument("--check-auth", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--skip-arm64-native-validation", action="store_true",
+                        help="Explicitly accept byte-bound ARM64 waivers; retain x64 validation")
     parser.add_argument("--prepare-homebrew", action="store_true",
                         help="Prepare local distribution archive and manifest without publishing")
     arguments = parser.parse_args()
@@ -613,7 +618,8 @@ if __name__ == "__main__":
             release = json.loads(arguments.manifest.read_text(encoding="utf-8-sig"))
             assets = local_assets(release)
             verify_local_release(release, assets, arguments.auditor, arguments.mini_auditor,
-                                 require_complete=not arguments.verify_only)
+                                 require_complete=not arguments.verify_only,
+                                 skip_arm64_native_validation=arguments.skip_arm64_native_validation)
             if arguments.prepare_homebrew:
                 prepare_homebrew(release, assets, arguments.manifest.parent / "homebrew-local")
                 # Check the Gitee budget before the orchestration publishes GitHub.

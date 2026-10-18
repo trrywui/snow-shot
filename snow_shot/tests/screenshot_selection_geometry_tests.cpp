@@ -1,3 +1,4 @@
+#include "snow_shot/presentation/screenshotexportnaming.h"
 #include "snow_shot/platform/windows/monitorgeometry.h"
 #include "snow_shot/presentation/historypinplacement.h"
 #include "snow_shot/presentation/screenshotdisplaysession.h"
@@ -10,6 +11,7 @@
 #include "snow_shot/storage/capturehistorytypes.h"
 #include "../src/presentation/toolbar/screenshottoolbarplacement.h"
 #include "../src/presentation/capture/scrollingselectionmovement.h"
+#include "../src/platform/screenshotwindownamereader_p.h"
 
 #include <QGuiApplication>
 #include <QRectF>
@@ -33,6 +35,95 @@ void require(bool condition, const char* message) {
         std::cerr << message << '\n';
         std::exit(1);
     }
+}
+
+void exportWindowLookupUsesSelectionCenter() {
+    ScreenshotDisplaySession displays;
+    CapturedDisplayModel display;
+    display.active = true;
+    display.canvasRect = QRect(0, 0, 1600, 1200);
+    display.physicalRect = QRect(-1600, -1200, 1600, 1200);
+    display.logicalRect = QRect(-800, -600, 800, 600);
+    displays.appendDisplay(display);
+    ScreenshotGeometryMapper geometry;
+    const std::uintptr_t excluded[] = {12, 34};
+    int calls = 0;
+    int applicationNameReads = 0;
+    int windowNameReads = 0;
+    QPointF hit;
+    snow_shot::storage::ScreenshotWindowNameFields requestedFields;
+    const snow_shot::storage::ScreenshotWindowNames expected{QStringLiteral("App"),
+                                                             QStringLiteral("Title")};
+    const auto lookup = [&](const QPointF& point, std::span<const std::uintptr_t> ids,
+                            snow_shot::storage::ScreenshotWindowNameFields fields) {
+        ++calls;
+        hit = point;
+        requestedFields = fields;
+        require(ids.size() == 2 && ids[0] == 12 && ids[1] == 34,
+                "native lookup must receive the capture overlay exclusions");
+        return snow_shot::platform::detail::readScreenshotWindowNames(
+            fields,
+            [&] {
+                ++applicationNameReads;
+                return expected.applicationName;
+            },
+            [&] {
+                ++windowNameReads;
+                return expected.windowName;
+            });
+    };
+    const QRect selection(200, 100, 400, 200);
+    require(screenshotWindowNamesForExport({}, QStringLiteral("{YYYY}"), selection, displays,
+                                           geometry, excluded,
+                                           lookup) == snow_shot::storage::ScreenshotWindowNames{} &&
+                calls == 0 && applicationNameReads == 0 && windowNameReads == 0,
+            "ordinary date-only exports must perform no window lookup");
+    const auto names =
+        screenshotWindowNamesForExport(QStringLiteral("/{AN}"), QStringLiteral("{WN}-{AN}"),
+                                       selection, displays, geometry, excluded, lookup);
+    require(names == expected && calls == 1 && hit == QPointF(-1200, -1000) &&
+                requestedFields == snow_shot::storage::ScreenshotWindowNameFields{true, true} &&
+                applicationNameReads == 1 && windowNameReads == 1,
+            "both names must come from one lookup at the selection center in native pixels");
+    displays.displayAt(0).canvasUsesPoints = true;
+    require(screenshotWindowNamesForExport({}, QStringLiteral("{WN}"), selection, displays,
+                                           geometry, excluded, lookup) ==
+                    snow_shot::storage::ScreenshotWindowNames{{}, expected.windowName} &&
+                hit == QPointF(-600, -500) &&
+                requestedFields == snow_shot::storage::ScreenshotWindowNameFields{false, true} &&
+                applicationNameReads == 1 && windowNameReads == 2,
+            "title-only exports must preserve point mapping without reading application metadata");
+    require(
+        screenshotWindowNamesForExport(QStringLiteral("/{AN}/{AN}"), {}, selection, displays,
+                                       geometry, excluded, lookup) ==
+                snow_shot::storage::ScreenshotWindowNames{expected.applicationName, {}} &&
+            requestedFields == snow_shot::storage::ScreenshotWindowNameFields{true, false} &&
+            applicationNameReads == 2 && windowNameReads == 2,
+        "application-only directories must read the application once without reading the title");
+    require(screenshotWindowNamesForExport(QStringLiteral("/{WN}"), QStringLiteral("{WN}-{WN}"),
+                                           selection, displays, geometry, excluded, lookup) ==
+                    snow_shot::storage::ScreenshotWindowNames{{}, expected.windowName} &&
+                applicationNameReads == 2 && windowNameReads == 3,
+            "repeated title variables across both templates must share one title read");
+    const int before = calls;
+    require(screenshotWindowNamesForExport({}, QStringLiteral("{an}-{wn}-{YYYY}"), selection,
+                                           displays, geometry, excluded,
+                                           lookup) == snow_shot::storage::ScreenshotWindowNames{} &&
+                calls == before,
+            "lowercase lookalikes must not request native metadata");
+    require(screenshotWindowNamesForExport({}, QStringLiteral("{AN}"), QRect(2000, 0, 20, 20),
+                                           displays, geometry, excluded,
+                                           lookup) == snow_shot::storage::ScreenshotWindowNames{} &&
+                calls == before,
+            "a selection center outside displays must not select a nearby window");
+    displays.setImageSources({display});
+    require(screenshotWindowNamesForExport({}, QStringLiteral("{AN}"), selection, displays,
+                                           geometry, excluded,
+                                           lookup) == snow_shot::storage::ScreenshotWindowNames{} &&
+                calls == before,
+            "restored history must never query the current desktop");
+    displays.clear();
+    require(names == expected, "export metadata must survive capture teardown");
 }
 
 void requireAspectRatio(const QRectF& selection, const char* message) {
@@ -1565,6 +1656,14 @@ void historyBorderAppearanceDoesNotDependOnPlacement() {
                 appearance->sourceSize == QSize(116, 66) &&
                 appearance->contentRect == QRectF(8, 8, 100, 50),
             "history fallback must retain capture-time appearance and logical-to-raster scale");
+    record.selection.region = QRegion(5000, 5000, 20, 50).united(QRegion(5080, 5000, 20, 50));
+    record.selection.layoutCompaction = {true, 3};
+    const auto compacted = snow_shot::presentation::historySelectionBorderAppearance(record);
+    require(compacted && compacted->sourceSize == QSize(75, 66) &&
+                compacted->contentRect == QRectF(8, 8, 59, 50),
+            "history appearance uses compacted dimensions without altering source selection");
+    record.selection.region.reset();
+    record.selection.layoutCompaction = {};
     record.scrolling = true;
     record.result->imageSize = QSize(232, 1016);
     const auto scrolling = snow_shot::presentation::historySelectionBorderAppearance(record);
@@ -1750,6 +1849,7 @@ void displayOwnerPreservesProbePriority() {
 }
 
 int main() {
+    exportWindowLookupUsesSelectionCenter();
     selectionRevisionTracksGeometryEffectsAndNoOpRestoration();
     selectionRevisionTracksRegionsAndIgnoresPresentationCaches();
     selectionRevisionAssignmentsRemainOwnedByTheDestination();

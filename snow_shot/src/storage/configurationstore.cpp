@@ -1,3 +1,4 @@
+#include "snow_shot/shortcuts/screenshotshortcutcontext.h"
 #include "snow_shot/storage/configurationstore.h"
 #include "snow_shot/clouduploadconfiguration.h"
 #include "snow_shot/app/edition.h"
@@ -118,7 +119,7 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
             defaultedLocalKeys.push_back(entry.key);
         } else {
             auto& assigned = assignedByScope[entry.key.section(u'/', 0, 0)];
-            const QString id = entry.key.section(u'/', 1, 1);
+            const QString id = entry.key.section(u'/', 1);
             for (const auto& binding : bindingsForKey(entry.key)) {
                 assigned.push_back({id, binding});
             }
@@ -126,7 +127,7 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
     }
     for (const QString& key : defaultedLocalKeys) {
         const QString scope = key.section(u'/', 0, 0);
-        const QString id = key.section(u'/', 1, 1);
+        const QString id = key.section(u'/', 1);
         auto& assigned = assignedByScope[scope];
         const auto defaults = bindingsForKey(key);
         shortcuts::ShortcutBindingList retained;
@@ -136,6 +137,9 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
                                 return (scope != QStringLiteral("pin_to_screen_shortcuts") ||
                                         PinToScreenShortcutSettings::actionsMayConflict(
                                             existing.first, id)) &&
+                                       (scope != QStringLiteral("screenshot_shortcuts") ||
+                                        shortcuts::screenshotShortcutActionsMayConflict(
+                                            id, existing.first)) &&
                                        shortcuts::bindingsConflict(existing.second, binding);
                             }))
                 continue;

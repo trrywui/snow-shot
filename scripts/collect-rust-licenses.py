@@ -44,7 +44,7 @@ def resolved_packages(cargo, manifest, package, target, features, no_default_fea
         matches = packages_by_label.get(label, [])
         if len(matches) != 1:
             raise ValueError(f'Missing or ambiguous Cargo package: {label}')
-        if matches[0]['source'] is not None:
+        if matches[0]['source'] is not None or matches[0]['name'] == 'simd-paddle-ocr-rs':
             selected.append(matches[0])
     return selected
 
@@ -55,6 +55,8 @@ def license_files(package, fallback):
                      if path.is_file() and re.fullmatch(
                          r'(LICENSE|LICENCE|COPYING|NOTICE|UNLICENSE)(?:[._-].*)?',
                          path.name, re.IGNORECASE))
+    if package['name'] == 'simd-paddle-ocr-rs':
+        notices.extend(sorted((directory / 'licenses').glob('*.txt')))
     if not notices:
         upstream = fallback / 'cargo' / f"{package['name']}-{package['version']}"
         if upstream.is_dir():

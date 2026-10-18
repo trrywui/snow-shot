@@ -19,17 +19,18 @@ constexpr quint32 kRectangleShapeProperties =
     SnowCanvasShapeStylePropertyFillColor | SnowCanvasShapeStylePropertyFillStyle |
     SnowCanvasShapeStylePropertyStrokeColor | SnowCanvasShapeStylePropertyStrokeWidth |
     SnowCanvasShapeStylePropertyCornerRadius | SnowCanvasShapeStylePropertyStrokeStyle |
-    SnowCanvasShapeStylePropertyShape;
+    SnowCanvasShapeStylePropertyStrokeRenderingStyle | SnowCanvasShapeStylePropertyShape;
 constexpr quint32 kArrowShapeProperties =
     SnowCanvasShapeStylePropertyStrokeColor | SnowCanvasShapeStylePropertyStrokeWidth |
     SnowCanvasShapeStylePropertyStartArrowhead | SnowCanvasShapeStylePropertyEndArrowhead |
     SnowCanvasShapeStylePropertyStrokeStyle | SnowCanvasShapeStylePropertyArrowType |
-    SnowCanvasShapeStylePropertyArrowShaftType | SnowCanvasShapeStylePropertyArrowRatio;
+    SnowCanvasShapeStylePropertyStrokeRenderingStyle | SnowCanvasShapeStylePropertyArrowShaftType |
+    SnowCanvasShapeStylePropertyArrowRatio;
 constexpr quint32 kLineShapeProperties =
     SnowCanvasShapeStylePropertyFillColor | SnowCanvasShapeStylePropertyFillStyle |
     SnowCanvasShapeStylePropertyStrokeColor | SnowCanvasShapeStylePropertyStrokeWidth |
     SnowCanvasShapeStylePropertyStrokeStyle | SnowCanvasShapeStylePropertyArrowType |
-    SnowCanvasShapeStylePropertyOpacity;
+    SnowCanvasShapeStylePropertyStrokeRenderingStyle | SnowCanvasShapeStylePropertyOpacity;
 constexpr quint32 kFreeDrawShapeProperties =
     SnowCanvasShapeStylePropertyFillColor | SnowCanvasShapeStylePropertyFillStyle |
     SnowCanvasShapeStylePropertyStrokeColor | SnowCanvasShapeStylePropertyStrokeWidth |
@@ -48,7 +49,8 @@ constexpr quint32 kSerialNumberAppearanceProperties =
     SnowCanvasSerialNumberStyleMixedFillStyle | SnowCanvasSerialNumberStyleMixedFontSize |
     SnowCanvasSerialNumberStyleMixedFontFamily | SnowCanvasSerialNumberStyleMixedStrokeWidth |
     SnowCanvasSerialNumberStyleMixedStrokeStyle | SnowCanvasSerialNumberStyleMixedOpacity |
-    SnowCanvasSerialNumberStyleMixedType | SnowCanvasSerialNumberStyleMixedNumericType;
+    SnowCanvasSerialNumberStyleMixedType | SnowCanvasSerialNumberStyleMixedNumericType |
+    SnowCanvasSerialNumberStyleMixedStrokeRenderingStyle;
 
 const QString kShapeKey = QStringLiteral("drawing/shape_style");
 const QString kSpeechBubbleKey = QStringLiteral("drawing/speech_bubble_style");
@@ -171,6 +173,7 @@ QJsonObject shapeValue(const SnowCanvasShapeStyle& style) {
     putEnum(&value, QStringLiteral("start_arrowhead"), style.startArrowhead);
     putEnum(&value, QStringLiteral("end_arrowhead"), style.endArrowhead);
     putEnum(&value, QStringLiteral("stroke_style"), style.strokeStyle);
+    putEnum(&value, QStringLiteral("stroke_rendering_style"), style.strokeRenderingStyle);
     putEnum(&value, QStringLiteral("arrow_type"), style.arrowType);
     putEnum(&value, QStringLiteral("arrow_shaft_type"), style.arrowShaftType);
     putDouble(&value, QStringLiteral("arrow_ratio"),
@@ -319,7 +322,7 @@ void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style) {
     style->arrowRatio = 1.0;
     readDouble(object, QStringLiteral("arrow_ratio"), &style->arrowRatio);
     style->arrowRatio = snowCanvasNormalizeArrowRatio(style->arrowRatio);
-    readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Solid),
+    readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Border),
              &style->fillStyle);
     readEnum(object, QStringLiteral("start_arrowhead"),
              static_cast<int>(SnowCanvasArrowhead::IndentedTriangle), &style->startArrowhead);
@@ -327,6 +330,10 @@ void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style) {
              static_cast<int>(SnowCanvasArrowhead::IndentedTriangle), &style->endArrowhead);
     readEnum(object, QStringLiteral("stroke_style"),
              static_cast<int>(SnowCanvasStrokeStyle::Dotted), &style->strokeStyle);
+    style->strokeRenderingStyle = SnowCanvasStrokeRenderingStyle::Architect;
+    readEnum(object, QStringLiteral("stroke_rendering_style"),
+             static_cast<int>(SnowCanvasStrokeRenderingStyle::Cartoonist),
+             &style->strokeRenderingStyle);
     readEnum(object, QStringLiteral("arrow_type"), static_cast<int>(SnowCanvasArrowType::Elbow),
              &style->arrowType);
     readEnum(object, QStringLiteral("arrow_shaft_type"),
@@ -406,7 +413,7 @@ void readTextValue(const QJsonObject& object, SnowCanvasTextStyle* style) {
     readDouble(object, QStringLiteral("font_size"), &style->fontSize);
     if (object.value(QStringLiteral("font_family")).isString())
         style->fontFamily = object.value(QStringLiteral("font_family")).toString();
-    readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Solid),
+    readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Border),
              &style->fillStyle);
     readDouble(object, QStringLiteral("stroke_width"), &style->strokeWidth);
     readCornerRadii(object, &style->cornerRadii);
@@ -429,6 +436,7 @@ QJsonObject serialNumberValue(const SnowCanvasSerialNumberStyle& style) {
     value.insert(QStringLiteral("font_family"), style.fontFamily);
     putDouble(&value, QStringLiteral("stroke_width"), style.strokeWidth);
     putEnum(&value, QStringLiteral("stroke_style"), style.strokeStyle);
+    putEnum(&value, QStringLiteral("stroke_rendering_style"), style.strokeRenderingStyle);
     putDouble(&value, QStringLiteral("opacity"), style.opacity);
     return value;
 }
@@ -445,7 +453,7 @@ void readSerialNumberValue(const QJsonObject& object, SnowCanvasSerialNumberStyl
         style->color = color;
     if (colorValue(object.value(QStringLiteral("fill")), &color))
         style->fill = color;
-    readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Solid),
+    readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Border),
              &style->fillStyle);
     readDouble(object, QStringLiteral("font_size"), &style->fontSize);
     if (object.value(QStringLiteral("font_family")).isString())
@@ -453,6 +461,9 @@ void readSerialNumberValue(const QJsonObject& object, SnowCanvasSerialNumberStyl
     readDouble(object, QStringLiteral("stroke_width"), &style->strokeWidth);
     readEnum(object, QStringLiteral("stroke_style"),
              static_cast<int>(SnowCanvasStrokeStyle::Dotted), &style->strokeStyle);
+    readEnum(object, QStringLiteral("stroke_rendering_style"),
+             static_cast<int>(SnowCanvasStrokeRenderingStyle::Cartoonist),
+             &style->strokeRenderingStyle);
     readDouble(object, QStringLiteral("opacity"), &style->opacity);
 }
 
@@ -691,7 +702,9 @@ void applyScreenshotCanvasToolStyles(SnowCanvasWidget& canvas,
         static_cast<void>(canvas.setCanvasShapeStylePatch(style, properties, kind));
     };
     applyShape(defaults.rectangle, kRectangleShapeProperties, SnowCanvasShapeKind::Rectangle);
-    applyShape(defaults.speechBubble, kRectangleShapeProperties, SnowCanvasShapeKind::SpeechBubble);
+    applyShape(defaults.speechBubble,
+               kRectangleShapeProperties & ~SnowCanvasShapeStylePropertyStrokeRenderingStyle,
+               SnowCanvasShapeKind::SpeechBubble);
     applyShape(defaults.arrow, kArrowShapeProperties, SnowCanvasShapeKind::Arrow);
     static_cast<void>(canvas.setCanvasDistanceStyle(defaults.distance));
     static_cast<void>(canvas.setCanvasAngleStyle(defaults.angle));

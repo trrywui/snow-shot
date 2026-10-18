@@ -187,6 +187,23 @@ impl EditorSession {
         self.editor.serial_number_label_layout_request(document)
     }
 
+    pub fn bound_label_layout_request(
+        &self,
+        document: &DocumentModel,
+    ) -> Option<crate::SerialNumberLabelLayoutRequest> {
+        self.editor.bound_label_layout_request(document)
+    }
+
+    pub fn apply_bound_label_layout(
+        &mut self,
+        document: &DocumentModel,
+        text_id: ElementId,
+        layout: TextLayoutSize,
+    ) -> Result<bool, ErrorCode> {
+        self.editor
+            .apply_bound_label_layout(document, text_id, layout)
+    }
+
     pub fn apply_serial_number_label_layout(
         &mut self,
         document: &DocumentModel,
@@ -266,6 +283,7 @@ impl EditorSession {
 
     pub fn can_begin_arrow_text(&self) -> bool {
         self.editor.speech_bubble_tail_drag.is_none()
+            && self.editor.state.shape_text_drag.is_none()
             && matches!(
                 self.editor.state.interaction,
                 crate::state::InteractionState::Idle
@@ -456,6 +474,7 @@ impl EditorSession {
     pub fn reset_pointer_capture_state(&mut self) {
         self.editor.captured_pointer = None;
         self.editor.speech_bubble_tail_drag = None;
+        self.editor.state.shape_text_drag = None;
         self.editor.pending_capture_release = false;
     }
 

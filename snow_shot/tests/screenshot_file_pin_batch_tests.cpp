@@ -1,3 +1,4 @@
+#include "snow_shot/app/supportedpinfiles.h"
 #include "snow_shot/presentation/screenshotfilepinbatch.h"
 
 #include "snow_shot/platform/selectedfiles.h"
@@ -98,8 +99,9 @@ void textBatchesCaptureOneStyle() {
     require(settings.setTextMaximumWidth(240) && settings.setTextFontSize(20),
             "configure batch style");
     QStringList paths;
-    for (int index = 0; index < 5; ++index) {
-        const auto path = directory.filePath(QStringLiteral("%1.txt").arg(index));
+    for (const auto& document : snow_shot::app::kPinDocumentFileFormats) {
+        const auto path =
+            directory.filePath(QStringLiteral("document.") + QLatin1String(document.suffix));
         QFile file(path);
         require(file.open(QIODevice::WriteOnly) && file.write("Pinned batch text") > 0,
                 "write text file");
@@ -123,7 +125,7 @@ void textBatchesCaptureOneStyle() {
             "change settings while import waits");
     backend->release.release();
     finish(batch);
-    require(presented == 5, "all text files pin using the same captured style");
+    require(presented == paths.size(), "all document files pin using the same captured style");
     storage.shutdown();
 }
 
@@ -667,11 +669,55 @@ void queuedAnimatedShellRequestsRetainSources() {
                 "queued pins own their animation bytes after their source files are removed");
     }
 }
+void mixedDocumentBatchesAndShellQueue() {
+    QTemporaryDir directory;
+    QStringList paths{imageFile(directory, QStringLiteral("image.png"))};
+    for (const auto& document : snow_shot::app::kPinDocumentFileFormats) {
+        const auto path = directory.filePath(QStringLiteral("source.") +
+                                             QString::fromLatin1(document.suffix).toUpper());
+        QFile file(path);
+        const QByteArray source = document.format == snow_shot::app::PinDocumentFormat::Markdown
+                                      ? "**Document**"
+                                      : "Document";
+        require(file.open(QIODevice::WriteOnly) && file.write(source) == source.size(),
+                "write mixed document source");
+        paths.append(path);
+    }
+    QStringList presented;
+    const auto present = [&](ScreenshotClipboardContent content) {
+        const auto index = presented.size();
+        const auto file =
+            ScreenshotClipboardContentReader::snapshotLocalFiles({paths.at(index)}).first();
+        require(content.sourceIdentity == file.sourceIdentity &&
+                    content.isFormattedText() == (index > 0),
+                "mixed batches retain file order, identity and content type");
+        if (index > 0)
+            require(content.plainText == QStringLiteral("Document"),
+                    "document batches render the selected source format");
+        presented.append(paths.at(index));
+        return true;
+    };
+    ScreenshotFilePinBatch batch;
+    auto duplicatePaths = paths;
+    duplicatePaths.append(paths);
+    batch.start(duplicatePaths, present);
+    finish(batch);
+    require(presented == paths, "mixed batches present each distinct file once");
+    presented.clear();
+    ScreenshotFilePinQueue queue;
+    queue.enqueue(
+        paths, [&] { return ScreenshotFilePinQueue::Options{present, {}}; },
+        [](const QString&) { require(false, "supported shell document must open"); });
+    finish(queue);
+    require(presented == paths, "Explorer queues present mixed images and documents in order");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     textBatchesCaptureOneStyle();
+    mixedDocumentBatchesAndShellQueue();
     mixedFilesAndLargeBatches();
     profiledFilesSurviveBatchDecode();
     alphaBmpFilesSurviveBatchDecode();

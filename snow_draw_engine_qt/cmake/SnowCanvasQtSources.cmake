@@ -7,6 +7,8 @@ set(SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS
 )
 
 set(SNOW_CANVAS_QT_SOURCES
+    include/snow_draw_engine_qt/snow_canvas_snapping.h
+    src/rendering/snow_canvas_snapping.cpp
     include/snow_draw_engine_qt/snow_canvas_overlay_style.h
     src/rendering/snow_canvas_path_geometry.cpp
     include/snow_draw_engine_qt/snow_canvas_path_geometry.h
@@ -71,6 +73,8 @@ set(SNOW_CANVAS_QT_SOURCES
     src/rendering/snow_canvas_pen_mask_avx2.cpp
     src/rendering/snow_canvas_pen_mask_avx2.h
     src/rendering/snow_canvas_filter_avx2.cpp
+    src/rendering/snow_canvas_filter_neon.cpp
+    src/rendering/snow_canvas_filter_simd.h
     src/rendering/snow_canvas_filter_avx2.h
     src/rendering/snow_canvas_fill_render.cpp
     src/rendering/snow_canvas_fill_render.h
@@ -78,6 +82,8 @@ set(SNOW_CANVAS_QT_SOURCES
     src/rendering/snow_canvas_render_diagnostics.h
     src/rendering/snow_canvas_render_geometry.cpp
     src/rendering/snow_canvas_render_geometry.h
+    src/rendering/snow_canvas_stroke_rendering.cpp
+    src/rendering/snow_canvas_stroke_rendering.h
     src/rendering/snow_canvas_renderer.cpp
     src/rendering/snow_canvas_render_plan.h
     src/rendering/snow_canvas_renderer.h

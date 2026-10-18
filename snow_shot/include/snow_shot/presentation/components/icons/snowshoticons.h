@@ -115,6 +115,7 @@ BrushPressureSensitive(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef Exit(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef ExportConfiguration(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef ExportSettings(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef FillBorder(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef FillSolid(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef FlipVertical(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef FontSizeLarge(const adqt::icons::IconColors& colors = {});
@@ -130,6 +131,8 @@ BrushPressureSensitive(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef JumpTranslate(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef Keyboard(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef LaserPointer(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef LayoutCompaction(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef LayoutSpacing(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef LineTypeCurved(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef LineTypeStraight(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef LogicalPixels(const adqt::icons::IconColors& colors = {});
@@ -162,12 +165,15 @@ PinToScreenManagement(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingKeyboard(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingMicrophone(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef
+RecordingMicrophoneOff(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef
 RecordingPostProcessing(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingRender(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef
 RecordingRenderSettings(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingReplay(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingResume(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef RecordingSpeakerOff(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingStart(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingStop(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef RecordingTrim(const adqt::icons::IconColors& colors = {});
@@ -195,6 +201,8 @@ ScreenshotRegionReduce(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef ScrollingScreenshot(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef ScrollingVertical(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef Select(const adqt::icons::IconColors& colors = {});
+[[nodiscard]] adqt::icons::IconRef
+SelectionBackgroundOpacity(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef SelectionLockAspect(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef SelectionRadius(const adqt::icons::IconColors& colors = {});
 [[nodiscard]] adqt::icons::IconRef SelectionShadow(const adqt::icons::IconColors& colors = {});

@@ -77,9 +77,9 @@ bool structurallyValidCanvasPayload(const QByteArray& payload) {
 snow_shot::storage::PersistedSelection
 persistedSelection(const ScreenshotSelectionParams& selection) {
     return {
-        selection.selection,   selection.radius,          selection.shadowWidth,
-        selection.shadowColor, selection.lockAspectRatio, selection.lockDragAspectRatio,
-        selection.region,
+        selection.selection,   selection.radius,           selection.shadowWidth,
+        selection.shadowColor, selection.lockAspectRatio,  selection.lockDragAspectRatio,
+        selection.region,      selection.layoutCompaction, selection.backgroundOpacityPercent,
     };
 }
 
@@ -88,6 +88,8 @@ presentationSelection(const snow_shot::storage::PersistedSelection& selection) {
     ScreenshotSelectionParams result;
     result.selection = selection.rectangle;
     result.region = selection.region;
+    result.layoutCompaction = selection.layoutCompaction;
+    result.backgroundOpacityPercent = selection.backgroundOpacityPercent;
     result.radius = selection.cornerRadius;
     result.shadowWidth = selection.shadowWidth;
     result.shadowColor = selection.shadowColor;

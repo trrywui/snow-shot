@@ -5,14 +5,14 @@
 #include "collagetransformedrows_p.h"
 #include "snow_shot/presentation/screenshotpdfexport.h"
 #include "snowimageqtcodec.h"
+#include "snow_shot/storage/exportfilename.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QRegularExpression>
 #include <QSaveFile>
-#include <QTemporaryFile>
+#include <QTemporaryDir>
 
 #include <algorithm>
 #include <cerrno>
@@ -58,25 +58,8 @@ QString preparationError() {
 QString safeImageName(QString label) {
     // Labels can be display names or absolute paths from either supported platform.
     label = label.mid(std::max(label.lastIndexOf(u'/'), label.lastIndexOf(u'\\')) + 1);
-    QString name = QFileInfo(label).completeBaseName();
-    name.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f\\x7f-\\x9f]")),
-                 QStringLiteral("_"));
-    name = name.trimmed();
-    // Leave ample room for the numeric prefix, conflict suffix and extension on both NTFS
-    // and UTF-8 filesystems. Never split a UTF-16 surrogate pair while shortening a name.
-    if (name.size() > 120) {
-        name.truncate(120);
-        if (name.back().isHighSurrogate())
-            name.chop(1);
-    }
-    while (name.toUtf8().size() > 120) {
-        name.chop(1);
-        if (!name.isEmpty() && name.back().isHighSurrogate())
-            name.chop(1);
-    }
-    while (name.endsWith(u'.') || name.endsWith(u' '))
-        name.chop(1);
-    return name.isEmpty() ? QStringLiteral("Image") : name;
+    return storage::sanitizeExportFileName(QFileInfo(label).completeBaseName(), u"Image",
+                                           {storage::ExportFileNameControls::C0AndC1, 120});
 }
 
 struct RowLifetime final {
@@ -218,7 +201,7 @@ Publication publishFile(const QString& source, const QString& target) {
 #endif
 }
 
-QString publishUnique(QTemporaryFile& staging, const QDir& output, const QString& base,
+QString publishUnique(const QString& stagingPath, const QDir& output, const QString& base,
                       const std::function<bool()>& cancelled, QString* error) {
     for (qint64 suffix = 1; suffix <= std::numeric_limits<int>::max(); ++suffix) {
         if (cancelled && cancelled())
@@ -226,11 +209,9 @@ QString publishUnique(QTemporaryFile& staging, const QDir& output, const QString
         const QString name = suffix == 1 ? base + QStringLiteral(".pdf")
                                          : QStringLiteral("%1_%2.pdf").arg(base).arg(suffix);
         const QString path = output.filePath(name);
-        const auto publication = publishFile(staging.fileName(), path);
-        if (publication.success) {
-            staging.setAutoRemove(false);
+        const auto publication = publishFile(stagingPath, path);
+        if (publication.success)
             return path;
-        }
         if (!publication.conflict) {
             if (error)
                 *error = publication.error;
@@ -375,9 +356,16 @@ exportCollagePdf(const QVector<CollageItem>& items, const CollagePdfSettings& se
                     return result;
                 }
             } else {
-                QTemporaryFile file(
-                    directory.filePath(QStringLiteral(".snow-shot-pdf-XXXXXX.tmp")));
-                if (!file.open()) {
+                // QTemporaryFile::close() retains its native handle on Windows and blocks
+                // publishFile's rename. A regular QFile releases that handle; the private
+                // directory owns cleanup and keeps staging on the destination filesystem.
+                QTemporaryDir staging(directory.filePath(QStringLiteral(".snow-shot-pdf-XXXXXX")));
+                if (!staging.isValid()) {
+                    setError(result, "The PDF could not be saved: %1", {staging.errorString()});
+                    return result;
+                }
+                QFile file(staging.filePath(QStringLiteral("document.pdf")));
+                if (!file.open(QIODevice::WriteOnly)) {
                     setError(result, "The PDF could not be saved: %1", {file.errorString()});
                     return result;
                 }
@@ -391,7 +379,6 @@ exportCollagePdf(const QVector<CollageItem>& items, const CollagePdfSettings& se
                     setError(result, "The PDF could not be saved: %1", {publication.error});
                     return result;
                 }
-                file.setAutoRemove(false);
             }
             result.paths.append(path);
             for (qsizetype index = 0; index < items.size(); ++index)
@@ -409,9 +396,13 @@ exportCollagePdf(const QVector<CollageItem>& items, const CollagePdfSettings& se
                     stop();
                     return result;
                 }
-                QTemporaryFile file(
-                    directory.filePath(QStringLiteral(".snow-shot-pdf-XXXXXX.tmp")));
-                if (!file.open()) {
+                QTemporaryDir staging(directory.filePath(QStringLiteral(".snow-shot-pdf-XXXXXX")));
+                if (!staging.isValid()) {
+                    failure(staging.errorString());
+                    return result;
+                }
+                QFile file(staging.filePath(QStringLiteral("document.pdf")));
+                if (!file.open(QIODevice::WriteOnly)) {
                     failure(file.errorString());
                     return result;
                 }
@@ -424,7 +415,8 @@ exportCollagePdf(const QVector<CollageItem>& items, const CollagePdfSettings& se
                 const QString base = QStringLiteral("%1_%2")
                                          .arg(index + 1, digits, 10, u'0')
                                          .arg(safeImageName(items[index].label));
-                const QString path = publishUnique(file, directory, base, cancelled, &error);
+                const QString path =
+                    publishUnique(file.fileName(), directory, base, cancelled, &error);
                 if (path.isEmpty()) {
                     failure(error);
                     return result;

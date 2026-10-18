@@ -9,6 +9,7 @@
 #include <QEventLoop>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -29,6 +30,7 @@
 
 #include <memory>
 
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 
@@ -41,6 +43,10 @@ class SnowShotApiClientTestAccess {
     static void timeout(SnowShotApiClient& client, int milliseconds) {
         client.m_tableTimeoutMs = milliseconds;
         client.m_latexTimeoutMs = milliseconds;
+    }
+    static void extractionTimeouts(SnowShotApiClient& client, int table, int latex) {
+        client.m_tableTimeoutMs = table;
+        client.m_latexTimeoutMs = latex;
     }
     static qsizetype customQueued(const SnowShotApiClient& client) {
         return client.m_customChatQueue.size();
@@ -438,11 +444,53 @@ void latexPreparationIsAsynchronousAndLifetimeSafe() {
             "table preserves multipart WebP contract and completes once");
 }
 
+void dedicatedExtractionDeadlinesStayIndependent() {
+    SnowShotApiClient client(QStringLiteral("http://127.0.0.1:1"));
+    QSemaphore entered, release;
+    SnowShotApiClientTestAccess::prepare(client, [&](const QImage&) {
+        entered.release();
+        release.acquire();
+        return QByteArray{};
+    });
+    SnowShotApiClientTestAccess::extractionTimeouts(client, 1, 65000);
+    QImage image(16, 16, QImage::Format_RGBA8888);
+    image.fill(Qt::white);
+    int tables = 0, formulas = 0;
+    QString tableError, formulaError;
+    require(client.extractTable(image, &client,
+                                [&](SnowShotTableResult result) {
+                                    ++tables;
+                                    tableError = result.error;
+                                }) != 0,
+            "independent table deadline fixture starts");
+    require(client.extractLatex(image, &client,
+                                [&](SnowShotLatexResult result) {
+                                    ++formulas;
+                                    formulaError = result.error;
+                                }) != 0,
+            "independent formula deadline fixture starts");
+    require(entered.tryAcquire(1, 5000), "extraction preparation enters the blocked fixture");
+    translation_tests::waitUntil([&] { return tables == 1; }, "the short table deadline expires");
+    require(formulas == 0 && tableError == QStringLiteral("Table recognition request timed out"),
+            "one extraction timeout preserves the other request and its feature-specific error");
+    release.release(2);
+    require(QThreadPool::globalInstance()->waitForDone(5000), "both extraction encoders settle");
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    require(tables == 1 && formulas == 1 &&
+                formulaError == QStringLiteral("LaTeX recognition failed") &&
+                SnowShotApiClientTestAccess::requests(client) == 0,
+            "late table preparation is discarded while the formula retains its own completion");
+}
+
 void failedRequestsIdentifyTheirKindWithoutContent() {
     QTemporaryDir temporary;
     require(temporary.isValid(), "network diagnostics need isolated storage");
     snow_shot::diagnostics::DiagnosticsOptions options;
-    options.directories = {temporary.path()};
+    // macOS exposes its temporary directory through /var -> /private/var. Diagnostics
+    // deliberately rejects symbolic-link ancestors, so supply the real isolated path.
+    const QString diagnosticsRoot = QFileInfo(temporary.path()).canonicalFilePath();
+    require(!diagnosticsRoot.isEmpty(), "network diagnostics need a canonical isolated directory");
+    options.directories = {diagnosticsRoot};
     options.enableCrashCapture = false;
     options.mirrorToConsole = false;
     options.installMessageHandler = false;
@@ -1960,6 +2008,140 @@ QByteArray contentFrame(const QString& text, bool crlf = false) {
     return frame;
 }
 
+// Finish HTTP before queued parser batches run, independently of local socket timing.
+class FinishedChatBurstReply final : public QNetworkReply {
+  public:
+    FinishedChatBurstReply(QNetworkAccessManager* manager, const QNetworkRequest& request,
+                           QByteArray body)
+        : QNetworkReply(manager), m_body(std::move(body)) {
+        setRequest(request);
+        setUrl(request.url());
+        setOperation(QNetworkAccessManager::PostOperation);
+        setAttribute(QNetworkRequest::HttpStatusCodeAttribute, 200);
+        setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("text/event-stream"));
+        open(QIODevice::ReadOnly | QIODevice::Unbuffered);
+        QTimer::singleShot(0, this, [this] {
+            const QPointer<FinishedChatBurstReply> lifetime(this);
+            emit readyRead();
+            if (!lifetime)
+                return;
+            setFinished(true);
+            emit finished();
+        });
+    }
+
+    void abort() override {
+        if (isFinished())
+            return;
+        setFinished(true);
+        setError(QNetworkReply::OperationCanceledError, QStringLiteral("cancelled"));
+        emit finished();
+    }
+
+    qint64 bytesAvailable() const override {
+        return static_cast<qint64>(m_body.size()) - m_position + QNetworkReply::bytesAvailable();
+    }
+
+  protected:
+    qint64 readData(char* output, qint64 maximum) override {
+        const qint64 count = qMin(maximum, static_cast<qint64>(m_body.size()) - m_position);
+        if (count <= 0)
+            return -1;
+        std::memcpy(output, m_body.constData() + m_position, static_cast<std::size_t>(count));
+        m_position += count;
+        return count;
+    }
+
+  private:
+    QByteArray m_body;
+    qint64 m_position = 0;
+};
+
+class FinishedChatBurstManager final : public QNetworkAccessManager {
+  public:
+    explicit FinishedChatBurstManager(QObject* parent) : QNetworkAccessManager(parent) {}
+    QByteArray body;
+    QPointer<QNetworkReply> reply;
+    std::function<void()> transportFinished;
+
+  protected:
+    QNetworkReply* createRequest(Operation, const QNetworkRequest& request, QIODevice*) override {
+        reply = new FinishedChatBurstReply(this, request, body);
+        connect(reply, &QNetworkReply::finished, this, [this] {
+            if (transportFinished)
+                transportFinished();
+        });
+        return reply;
+    }
+};
+
+void finishedChatStreamFailuresReleaseRepliesAndActivity() {
+    enum class Kind { Translation, Table, Latex, Markdown, Html, ExpiredTable };
+    auto& activity = snow_shot::runtime::RuntimeActivityTracker::shared();
+    translation_tests::flushEvents();
+    const auto baseline = activity.snapshot().activeCount;
+    SnowShotApiClient client(QStringLiteral("http://127.0.0.1:1"));
+    auto* manager = new FinishedChatBurstManager(&client);
+    for (const auto kind : {Kind::Translation, Kind::Table, Kind::Latex, Kind::Markdown, Kind::Html,
+                            Kind::ExpiredTable}) {
+        auto receiver = std::make_unique<QObject>();
+        bool finished = false;
+        int completions = 0;
+        manager->body.clear();
+        for (int index = 0; index < 512; ++index)
+            manager->body += contentFrame(QStringLiteral("x"));
+        manager->body += "data: invalid-json\n\n";
+        manager->transportFinished = [&] {
+            finished = true;
+            if (kind == Kind::ExpiredTable)
+                SnowShotApiClientTestAccess::visionTimeout(client, 0);
+        };
+        const auto complete = [&](const auto& result) {
+            require(finished && !result.succeeded(),
+                    "queued stream validation and expiry fail after HTTP completion");
+            require(activity.snapshot().activeCount > baseline,
+                    "terminal callbacks remain protected until reply disposal");
+            if (kind == Kind::ExpiredTable)
+                require(result.code == QStringLiteral("recognition_timeout"),
+                        "finished transport expiry precedes queued invalid stream parsing");
+            ++completions;
+        };
+        SnowShotApiClient::RequestToken token = 0;
+        if (kind == Kind::Translation) {
+            token = client.streamTranslation(
+                {QStringLiteral("builtin"), {}, {}, QStringLiteral("Hello")}, receiver.get(),
+                [](const QString&) {}, complete);
+        } else {
+            QImage image(16, 16, QImage::Format_RGBA8888);
+            image.fill(Qt::white);
+            if (kind == Kind::Table || kind == Kind::ExpiredTable)
+                token = client.extractTableVision(image, QStringLiteral("vision"), receiver.get(),
+                                                  complete);
+            else if (kind == Kind::Latex)
+                token = client.extractLatexVision(image, QStringLiteral("vision"), receiver.get(),
+                                                  complete);
+            else
+                token = client.streamImageConversion(
+                    {QStringLiteral("vision"), image,
+                     kind == Kind::Markdown ? SnowShotImageConversionFormat::Markdown
+                                            : SnowShotImageConversionFormat::Html},
+                    receiver.get(), [](const QString&) {}, complete);
+        }
+        require(token != 0, "finished stream lifetime fixture starts");
+        translation_tests::waitUntil([&] { return completions == 1; },
+                                     "queued finished stream failure completes");
+        receiver.reset();
+        translation_tests::flushEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        require(!manager->reply && manager->findChildren<QNetworkReply*>().isEmpty(),
+                "finished failed stream releases its reply before the shared client is destroyed");
+        require(SnowShotApiClientTestAccess::requests(client) == 0 &&
+                    activity.snapshot().activeCount == baseline,
+                "finished failed stream returns requests and memory activity to baseline");
+        manager->transportFinished = {};
+    }
+}
+
 void chatStreamsYieldBetweenBatchesAndCancelSafely() {
     auto& activity = snow_shot::runtime::RuntimeActivityTracker::shared();
     for (int scenario = 0; scenario < 4; ++scenario) {
@@ -2531,6 +2713,12 @@ void modelNotificationsAllowClientDestruction() {
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
 
+    if (application.arguments().contains(QStringLiteral("--stream-lifetime-only"))) {
+        finishedChatStreamFailuresReleaseRepliesAndActivity();
+        chatStreamsYieldBetweenBatchesAndCancelSafely();
+        imageConversionUsesVisionAndRejectsIncompleteStreams();
+        return 0;
+    }
     modelNotificationsAllowClientDestruction();
     if (application.arguments().contains(QStringLiteral("--lifetime-only")))
         return 0;
@@ -2572,6 +2760,7 @@ int main(int argc, char** argv) {
     ensuredCatalogsAndFingerprintsFollowTheServer();
     obsoleteLocalesCannotReplaceTheCurrentCatalog();
     visionExtractionPreservesTypedOutputAndImageDetails();
+    finishedChatStreamFailuresReleaseRepliesAndActivity();
     chatStreamsYieldBetweenBatchesAndCancelSafely();
     largeFragmentedStreamEventsPublishExactlyOnce();
     visionQueuedDrainsCheckElapsedDeadlineBeforeTimerDelivery();
@@ -2583,6 +2772,7 @@ int main(int argc, char** argv) {
     visionLatexResponsesMustContainCompleteSource();
     tablePreparationIsAsynchronousAndLifetimeSafe();
     latexPreparationIsAsynchronousAndLifetimeSafe();
+    dedicatedExtractionDeadlinesStayIndependent();
     latexUploadDimensions();
     latexResponseContracts();
     customModelConcurrency();

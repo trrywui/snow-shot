@@ -244,8 +244,18 @@ TranslationJob::TranslationJob(TranslationService& service, const QStringList& t
                                QObject* owner)
     : QObject(owner), m_service(&service), m_client(service.m_client),
       m_preferences(service.preferences()) {
-    for (const auto& text : texts)
+    QHash<QString, int> groupsBySource;
+    for (const auto& text : texts) {
+        const int index = static_cast<int>(m_units.size());
         m_units.append({text, {}, State::Idle});
+        const auto existing = groupsBySource.constFind(text);
+        if (existing == groupsBySource.cend()) {
+            groupsBySource.insert(text, static_cast<int>(m_unitGroups.size()));
+            m_unitGroups.append(QVector<int>{index});
+        } else {
+            m_unitGroups[*existing].append(index);
+        }
+    }
     connect(&service, &TranslationService::catalogChanged, this, [this] {
         if (m_state == State::WaitingForModels)
             prepare();
@@ -323,9 +333,10 @@ void TranslationJob::retry() {
     }
     m_effectiveTargetLanguage = resolveTranslationTarget(m_preferences, m_detectedLanguage);
     m_state = State::WaitingForModels;
+    const auto generation = m_generation;
     const QPointer<TranslationJob> guard(this);
     emit stateChanged();
-    if (guard == nullptr)
+    if (!guard || generation != m_generation || m_state != State::WaitingForModels)
         return;
     prepare();
 }
@@ -336,10 +347,7 @@ void TranslationJob::prepare() {
     if (std::all_of(m_units.cbegin(), m_units.cend(),
                     [](const auto& unit) { return unit.state == State::Completed; })) {
         m_state = State::Completed;
-        const QPointer<TranslationJob> guard(this);
-        emit stateChanged();
-        if (guard != nullptr && m_state == State::Completed)
-            emit finished();
+        publishState();
         return;
     }
     const auto& models = m_service->models();
@@ -375,34 +383,46 @@ void TranslationJob::pump() {
     if (m_state != State::Streaming || m_client == nullptr)
         return;
     const auto generation = m_generation;
-    for (int index = 0;
-         index < m_units.size() &&
+    for (int group = 0;
+         group < m_unitGroups.size() &&
          m_requests.size() < (m_client->isTextTranslation(m_preferences.modelId) ? 16 : 4) &&
          !m_rateLimited;
-         ++index) {
-        auto& unit = m_units[index];
+         ++group) {
+        const auto indices = m_unitGroups[group];
+        const auto& unit = m_units[indices.first()];
         if (unit.state != State::Idle)
             continue;
-        unit.state = State::Streaming;
-        unit.text.clear();
+        for (const int index : indices) {
+            m_units[index].state = State::Streaming;
+            m_units[index].text.clear();
+        }
         const SnowShotTranslationRequest request{
             m_preferences.modelId, m_preferences.sourceLanguage, m_effectiveTargetLanguage,
             unit.sourceText, m_translationMode};
         const auto token = m_client->streamTranslation(
             request, this,
-            [this, generation, index](const QString& delta) {
+            [this, generation, indices](const QString& delta) {
                 if (generation != m_generation || m_state != State::Streaming)
                     return;
-                m_units[index].text += delta;
-                emit unitChanged(index);
+                // Publish one coherent snapshot before observers see any original position.
+                QString text = m_units[indices.first()].text;
+                text += delta;
+                for (const int index : indices)
+                    m_units[index].text = text;
+                const QPointer<TranslationJob> guard(this);
+                for (const int index : indices) {
+                    emit unitChanged(index);
+                    if (!guard || generation != m_generation || m_state != State::Streaming)
+                        return;
+                }
             },
-            [this, generation, index](SnowShotTranslationResult result) {
-                if (generation != m_generation || !m_requests.remove(index))
+            [this, generation, group, indices](SnowShotTranslationResult result) {
+                if (generation != m_generation || !m_requests.remove(group))
                     return;
-                auto& completed = m_units[index];
-                if (result.succeeded() && completed.text.trimmed().isEmpty())
+                if (result.succeeded() && m_units[indices.first()].text.trimmed().isEmpty())
                     result.error = tr("The model returned no content");
-                completed.state = result.succeeded() ? State::Completed : State::Failed;
+                for (const int index : indices)
+                    m_units[index].state = result.succeeded() ? State::Completed : State::Failed;
                 if (!result.succeeded())
                     m_result = result;
                 if (result.httpStatus == 429) {
@@ -413,7 +433,8 @@ void TranslationJob::pump() {
                         const auto requests = std::exchange(m_requests, {});
                         for (auto it = requests.cbegin(); it != requests.cend(); ++it) {
                             m_client->cancel(it.value());
-                            m_units[it.key()].state = State::Failed;
+                            for (const int index : m_unitGroups[it.key()])
+                                m_units[index].state = State::Failed;
                         }
                     }
                     for (auto& pending : m_units)
@@ -423,9 +444,10 @@ void TranslationJob::pump() {
                 pump();
             });
         if (token != 0)
-            m_requests.insert(index, token);
+            m_requests.insert(group, token);
         else {
-            unit.state = State::Failed;
+            for (const int index : indices)
+                m_units[index].state = State::Failed;
             m_result.error = tr("Translation request could not be prepared");
         }
     }
@@ -435,10 +457,22 @@ void TranslationJob::pump() {
                       ? State::Failed
                       : State::Completed;
     }
+    if (generation == m_generation)
+        publishState();
+}
+
+void TranslationJob::publishState() {
+    const auto generation = m_generation;
+    const auto state = m_state;
     const QPointer<TranslationJob> guard(this);
     emit stateChanged();
-    if (guard != nullptr && generation == m_generation && !busy())
+    // A listener may retire this transition even when its retry reaches the same state.
+    if (!guard || generation != m_generation || state != m_state)
+        return;
+    if (state == State::Completed || state == State::Failed)
         emit finished();
+    else if (state == State::Invalidated)
+        emit invalidated();
 }
 
 void TranslationJob::fail(const QString& error) {
@@ -448,10 +482,7 @@ void TranslationJob::fail(const QString& error) {
     for (auto& unit : m_units)
         if (unit.state != State::Completed)
             unit.state = State::Failed;
-    const QPointer<TranslationJob> guard(this);
-    emit stateChanged();
-    if (guard != nullptr)
-        emit finished();
+    publishState();
 }
 
 void TranslationJob::invalidateModel(const QString& id) {
@@ -464,10 +495,7 @@ void TranslationJob::invalidateModel(const QString& id) {
     }
     m_state = State::Invalidated;
     m_result.error = TranslationService::modelConfigurationChangedText();
-    const QPointer<TranslationJob> guard(this);
-    emit stateChanged();
-    if (guard != nullptr)
-        emit invalidated();
+    publishState();
 }
 
 QString TranslationJob::errorText() const {

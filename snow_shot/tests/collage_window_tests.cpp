@@ -781,6 +781,37 @@ void singletonWindowScenarios() {
     timed("Singleton busy export rejection", singletonExportsIgnoreNewOperationsWithoutPresenting);
 }
 
+void windowPinStartsEnabledAndPreservesEdits() {
+    CollageWindow window;
+    window.present();
+    window.document()->append(image(), QStringLiteral("pin-test"));
+    flushEvents();
+    auto* surface = window.editor()->window();
+    auto* pin = surface->findChild<QToolButton*>(QStringLiteral("ad-modal-always-on-top"));
+    require(pin && pin->isVisible() && pin->isChecked() && window.modal()->windowAlwaysOnTop() &&
+                surface->windowFlags().testFlag(Qt::WindowStaysOnTopHint),
+            "stitching opens pinned with a checked title-bar pin button");
+    const auto pinPosition = pin->mapTo(surface, QPoint());
+    require(pinPosition.x() > surface->width() / 2 &&
+                pinPosition.y() < window.editor()->mapTo(surface, QPoint()).y(),
+            "stitching pin is in the top-right window header");
+    const auto geometry = surface->geometry();
+    const auto revision = window.document()->contentRevision();
+    for (const bool pinned : {false, true}) {
+        pin->click();
+        window.present();
+        flushEvents();
+        require(pin->isChecked() == pinned && window.modal()->windowAlwaysOnTop() == pinned &&
+                    surface->windowFlags().testFlag(Qt::WindowStaysOnTopHint) == pinned,
+                "stitching pin toggles always-on-top and survives repeated presentation");
+        require(window.modal()->isOpen() && surface->isVisible() &&
+                    window.editor()->window() == surface && surface->geometry() == geometry &&
+                    window.document()->contentRevision() == revision,
+                "toggling stitching pin preserves the visible window, geometry, and edits");
+    }
+    window.shutdown();
+}
+
 void windowOpensCenteredOnCurrentScreen() {
     resetSettings();
     QScreen* screen = QGuiApplication::screenAt(QCursor::pos());
@@ -2423,6 +2454,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Collage import feedback tests passed\n";
         return 0;
     }
+    timed("Window pin", windowPinStartsEnabledAndPreservesEdits);
     timed("Centered window placement", windowOpensCenteredOnCurrentScreen);
     singletonWindowScenarios();
     timed("Selected-file ordered imports", selectedFilesOpenAndAppendInOrder);

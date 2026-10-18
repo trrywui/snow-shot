@@ -8,6 +8,7 @@
 #include "snow_draw_engine_qt/snow_canvas_style_edit.h"
 #include "snow_shot/presentation/screenshotdefaultstyles.h"
 #include "snow_shot/image/screenshotregiongeometry.h"
+#include "snow_shot/image/screenshotlayoutcompaction.h"
 #include "snow_shot/presentation/screenshotgeometry.h"
 #include "snow_shot/presentation/screenshotscrollingtypes.h"
 #include "snow_shot/presentation/screenshotwheelinput.h"
@@ -345,6 +346,12 @@ class ScreenshotToolPalette final : public QWidget,
     void setCursorVisible(bool enabled);
     void setCursorAvailable(bool available);
     void setScreenshotRegionType(ScreenshotRegionType type);
+    void setSelectionBackgroundOpacityState(int percent, bool available);
+    void setLayoutCompactionState(ScreenshotLayoutCompaction options, bool available,
+                                  bool canvasUsesPoints);
+    [[nodiscard]] ScreenshotLayoutCompaction layoutCompaction() const {
+        return m_layoutCompaction;
+    }
     [[nodiscard]] bool cursorVisible() const;
     void setSelectionDisplayUnit(ScreenshotSelectionDisplayUnit unit);
     void setSelectionToolbarHidden(bool hidden);
@@ -479,6 +486,10 @@ class ScreenshotToolPalette final : public QWidget,
     void recaptureRequested();
     void qrCodeVisibilityRequested(bool visible);
     void screenshotRegionTypeRequested(int type);
+    void layoutCompactionChanged(bool enabled, int spacing);
+    void selectionBackgroundOpacityChanged(int percent);
+    void selectionBackgroundOpacityWheelAdjusted(int delta);
+    void selectionBackgroundPreviewVisibleChanged(bool visible);
     void addScreenshotRegionRequested();
     void subtractScreenshotRegionRequested();
     void selectionDisplayUnitChanged(ScreenshotSelectionDisplayUnit unit);
@@ -552,17 +563,10 @@ class ScreenshotToolPalette final : public QWidget,
     void cancelRequested();
     void copyRequested();
     void confirmRequested();
-    void shapeStyleChanged(const SnowCanvasShapeStyle& style, quint32 properties,
-                           SnowCanvasShapeKind kind);
-    void filterStyleChanged(const SnowCanvasFilterStyle& style, quint32 properties);
-    void watermarkConfigChanged(const SnowCanvasWatermarkConfig& config);
     void watermarkPreviewChanged(const SnowCanvasWatermarkConfig& config);
-    void spotlightConfigChanged(const SnowCanvasSpotlightConfig& config);
     void spotlightPreviewChanged(const SnowCanvasSpotlightConfig& config);
-    void textStyleChanged(const SnowCanvasTextStyle& style, quint32 properties);
     void textStylePopupInteractionBegan();
     void textStylePopupInteractionEnded();
-    void serialNumberStyleChanged(const SnowCanvasSerialNumberStyle& style);
     void canvasColorSamplingRequested(adqt::widgets::AdColorPicker* picker);
     void sendSelectionToBackRequested();
     void sendSelectionBackwardRequested();
@@ -1119,6 +1123,14 @@ class ScreenshotToolPalette final : public QWidget,
     bool m_recordingCursorVisible = true;
     bool m_cursorVisible = false;
     bool m_cursorAvailable = true;
+    int m_backgroundOpacityPercent = 0;
+    bool m_backgroundOpacityAvailable = false;
+    IconNumericValuePreviewButton* m_backgroundOpacityEditor = nullptr;
+    ScreenshotLayoutCompaction m_layoutCompaction;
+    bool m_layoutCompactionAvailable = false;
+    bool m_layoutCompactionCanvasUsesPoints = false;
+    adqt::widgets::AdButton* m_layoutCompactionButton = nullptr;
+    IconNumericValuePreviewButton* m_layoutSpacingEditor = nullptr;
     ScreenshotRegionType m_screenshotRegionType = ScreenshotRegionType::Rectangle;
     ScreenshotSelectionDisplayUnit m_selectionDisplayUnit = kDefaultScreenshotSelectionDisplayUnit;
     bool m_selectionToolbarHidden = false;

@@ -2942,7 +2942,7 @@ void sharedShiftShortcutChoosesResizeOrColorFormat() {
             "failed to restore the aspect shortcut after contextual input test");
 }
 
-void selectAllShortcutSelectsCurrentScreen() {
+void selectAllShortcutSelectsCurrentScreenThenDesktop() {
     for (int stage = 0; stage < 4; ++stage) {
         ScreenshotCaptureState capture;
         capture.sessionState = ScreenshotSessionState::OverlayVisible;
@@ -2959,6 +2959,10 @@ void selectAllShortcutSelectsCurrentScreen() {
         right.geometryResolved = true;
         displays.appendDisplay(left);
         displays.appendDisplay(right);
+        auto inactive = display(QStringLiteral("inactive"), QStringLiteral("Inactive"),
+                                QRect(-2000, -1000, 400, 300), {});
+        inactive.active = false;
+        displays.appendDisplay(inactive);
         ScreenshotGeometryMapper geometry;
         geometry.rebuild(displays);
         ScreenshotSelectionModel selection;
@@ -2966,7 +2970,7 @@ void selectAllShortcutSelectsCurrentScreen() {
             selection.setAspectRatioPreset(ScreenshotSelectionAspectRatioPreset::Square, {}, 1.0),
             "arm a remembered aspect ratio for full-screen selection");
         if (stage == 0)
-            selection.setSelectionRect(QRectF(820, 20, 100, 60));
+            selection.setSelectionRect(displays.displayAt(1).canvasRect);
         if (stage == 2)
             selection.setSelectionRegion(
                 QRegion(QRect(40, 20, 60, 40)).united(QRect(820, 20, 100, 60)));
@@ -3039,10 +3043,44 @@ void selectAllShortcutSelectsCurrentScreen() {
             static_cast<void>(dispatchShortcutRelease(receiver, Qt::Key_A, Qt::ControlModifier));
         }
 
+        const QRect desktop(0, 0, 2000, 800);
+        const auto selectAndExpect = [&](const QRect& expected) {
+            const int count = confirmations + 1;
+            require(dispatchShortcut(receiver, Qt::Key_A, Qt::ControlModifier),
+                    "a fresh Ctrl+A press must select a screen or expand to the desktop");
+            require(selection.pixelSelection() == expected && selection.rectangular() &&
+                        preparations == count && confirmations == count && presentations == count,
+                    "Ctrl+A must confirm the exact target once, excluding inactive displays");
+            static_cast<void>(dispatchShortcut(receiver, Qt::Key_A, Qt::ControlModifier, true));
+            require(selection.pixelSelection() == expected && confirmations == count,
+                    "holding Ctrl+A must not expand or reconfirm the selection");
+            static_cast<void>(dispatchShortcutRelease(receiver, Qt::Key_A, Qt::ControlModifier));
+        };
+        selectAndExpect(desktop);
+        cursor = right.logicalRect.center();
+        selectAndExpect(desktop);
+
+        // A custom region with screen-sized bounds has not selected the whole screen.
+        const QRect screen = displays.displayAt(1).canvasRect;
+        QPainterPath triangle;
+        triangle.moveTo(screen.x(), screen.y());
+        triangle.lineTo(screen.x() + screen.width(), screen.y());
+        triangle.lineTo(screen.center().x(), screen.y() + screen.height());
+        triangle.closeSubpath();
+        selection.setSelectionRegion(
+            ScreenshotRegionGeometry::fromPath(triangle, ScreenshotRegionType::Polyline));
+        require(selection.pixelSelection() == screen, "custom region must span the current screen");
+        selectAndExpect(screen);
+        selectAndExpect(desktop);
+
+        selection.setSelectionRegion(QRegion(desktop).subtracted(QRect(100, 100, 100, 100)));
+        selectAndExpect(screen);
+
         const QRect confirmed = selection.pixelSelection();
+        const int confirmedCount = confirmations;
         const auto rejectShortcut = [&] {
             static_cast<void>(dispatchShortcut(receiver, Qt::Key_A, Qt::ControlModifier));
-            require(selection.pixelSelection() == confirmed && confirmations == 2,
+            require(selection.pixelSelection() == confirmed && confirmations == confirmedCount,
                     "ineligible Ctrl+A must leave the current selection untouched");
         };
         interaction.enterScrollingCapture();
@@ -3062,7 +3100,8 @@ void selectAllShortcutSelectsCurrentScreen() {
         selection.setDraftRegion(ScreenshotRegionGeometry(QRect(10, 10, 40, 40)));
         static_cast<void>(dispatchShortcut(receiver, Qt::Key_A, Qt::ControlModifier));
         require(selection.constructionActive() &&
-                    selection.pixelSelection() == QRect(10, 10, 40, 40) && confirmations == 2,
+                    selection.pixelSelection() == QRect(10, 10, 40, 40) &&
+                    confirmations == confirmedCount,
                 "Ctrl+A must leave an unfinished region draft untouched");
         selection.clearDraftRegion();
         selection.setSelectionRect(confirmed);
@@ -3070,7 +3109,7 @@ void selectAllShortcutSelectsCurrentScreen() {
         const QRect pending = selection.pixelSelection();
         static_cast<void>(dispatchShortcut(receiver, Qt::Key_A, Qt::ControlModifier));
         require(selection.regionOperationActive() && selection.pixelSelection() == pending &&
-                    confirmations == 2,
+                    confirmations == confirmedCount,
                 "Ctrl+A must not interrupt an active region operation");
         selection.cancelRegionOperation();
         displays.startup = std::make_shared<ScreenshotStartupContext>();
@@ -3082,6 +3121,46 @@ void selectAllShortcutSelectsCurrentScreen() {
         displays.displayAt(0).active = false;
         cursor = left.logicalRect.center();
         rejectShortcut();
+    }
+}
+
+void selectAllShortcutWithSingleScreen() {
+    for (const bool canvasUsesPoints : {false, true}) {
+        ScreenshotCaptureState capture;
+        ScreenshotDisplaySession displays;
+        auto screen = display(QStringLiteral("only"), QStringLiteral("Only"),
+                              QRect(-1200, -400, 1200, 800), {});
+        screen.logicalRect = QRect(-800, -200, 800, 400);
+        screen.logicalToPhysicalScale = 1.5;
+        screen.canvasUsesPoints = canvasUsesPoints;
+        screen.geometryResolved = true;
+        displays.appendDisplay(screen);
+        ScreenshotGeometryMapper geometry;
+        geometry.rebuild(displays);
+        ScreenshotSelectionModel selection;
+        ScreenshotIntelligentSelectionModel intelligent;
+        ScreenshotInteractionState interaction;
+        interaction.enterOverlayVisible(false);
+        QWidget receiver;
+        snow_shot::presentation::WindowShortcutManager manager;
+        manager.addScopeWindow(&receiver);
+        int confirmations = 0;
+        ScreenshotOverlayInputActions actions;
+        actions.currentLogicalCursorPosition = [&] { return screen.logicalRect.center(); };
+        actions.selectionConfirmed = [&] { ++confirmations; };
+        ScreenshotOverlayInputHandler handler(
+            {capture, interaction, selection, intelligent, geometry, displays, actions});
+        ScreenshotOverlayShortcutController shortcuts(manager, handler, interaction, intelligent,
+                                                      actions);
+        for (int count = 1; count <= 3; ++count) {
+            require(dispatchShortcut(receiver, Qt::Key_A, Qt::ControlModifier),
+                    "Ctrl+A must remain available with one screen");
+            require(selection.pixelSelection() == displays.displayAt(0).canvasRect &&
+                        selection.rectangular() && interaction.movingSelection() &&
+                        confirmations == count,
+                    "repeated Ctrl+A must retain the single display's exact canvas extent");
+            static_cast<void>(dispatchShortcutRelease(receiver, Qt::Key_A, Qt::ControlModifier));
+        }
     }
 }
 
@@ -5767,9 +5846,9 @@ void rectangularRegionOperationsUseSmartSelection() {
     workflow.applyHitPath({QRectF(0, 0, 300, 300)});
     handler.handleMousePress(nullptr, QPointF(40, 40));
     handler.handleMouseRelease(nullptr, QPointF(40, 40));
-    require(interaction.intelligentSelecting() && !selection.hasPixelSelection() &&
-                !selection.regionOperationActive(),
-            "subtracting the entire selection must resume smart selection");
+    require(interaction.manualSelecting() && !selection.hasPixelSelection() &&
+                !selection.regionOperationActive() && selection.multiRegionEditing(),
+            "subtracting the entire selection retains the empty multi-region context");
     selection.setSelectionRegion(QRegion(original));
     interaction.confirmSelection();
     require(handler.handleRightClick(nullptr, QPointF(40, 40)) ==
@@ -5849,6 +5928,302 @@ void regionOperationsUseMarqueeAndRestoreOnCancel() {
     handler.handleMouseRelease(nullptr, QPointF(150, 150));
     require(selection.rectangular() && interaction.movingSelection(),
             "manual recovery after total subtraction");
+}
+
+void individualRegionSnapInput() {
+    for (qreal displayScale : {1.0, 1.5, 2.0}) {
+        ScreenshotCaptureState capture;
+        ScreenshotDisplaySession displays;
+        auto screen = display(QStringLiteral("snap"), QStringLiteral("snap"),
+                              QRect(-100, -100, 500, 500), {});
+        screen.geometryResolved = true;
+        screen.logicalToPhysicalScale = displayScale;
+        displays.appendDisplay(screen);
+        ScreenshotGeometryMapper geometry;
+        geometry.rebuild(displays);
+        ScreenshotSelectionModel selection;
+        ScreenshotIntelligentSelectionModel intelligent;
+        ScreenshotInteractionState interaction;
+        interaction.confirmSelection();
+        int presentations = 0;
+        ScreenshotOverlayInputActions actions;
+        actions.requestSelectionDragPresentation = [&] { ++presentations; };
+        actions.updateOverlayState = [&] { ++presentations; };
+        ScreenshotOverlayInputHandler handler(
+            {capture, interaction, selection, intelligent, geometry, displays, actions});
+        ScreenshotOverlayEventAdapter adapter;
+        adapter.setEventTargets(handler, [] {});
+        const auto seed = [&] {
+            selection.setSelectionRect(QRect(20, 30, 40, 40));
+            selection.beginRegionOperation(ScreenshotSelectionModel::RegionOperation::Add);
+            selection.setSelectionRect(QRect(180, 130, 40, 40));
+            selection.commitRegionOperation();
+        };
+        seed();
+        const auto moving = selection.regionAt({190, 140});
+        adapter.handleOverlayMousePress(nullptr, {190, 140});
+        adapter.handleOverlayMouseMove(nullptr, {34, 122});
+        require(selection.highlightedRegion()->boundingRect().x() == 24,
+                "ordinary pointer movement remains unsnapped");
+        adapter.updateOverlayModifiers(Qt::ControlModifier, true);
+        require(selection.highlightedRegion()->boundingRect().x() == 20 &&
+                    !selection.moveSnapGuides().isEmpty(),
+                "Ctrl press snaps the last pointer sample without another mouse move");
+        adapter.updateOverlayModifiers(Qt::NoModifier, true);
+        require(selection.highlightedRegion()->boundingRect().x() == 24 &&
+                    selection.moveSnapGuides().isEmpty(),
+                "Ctrl release restores raw movement without accumulated offsets");
+        adapter.updateOverlayModifiers(Qt::ControlModifier, true);
+        const auto beforeGroup = selection.selectionRegion();
+        require(handler.activateMoveEntireSelectionShortcut() &&
+                    selection.moveSnapGuides().isEmpty(),
+                "Space suspends snapping");
+        adapter.handleOverlayMouseMove(nullptr, {39, 127});
+        require(selection.selectionRegion() == beforeGroup.translated(5, 5),
+                "Ctrl does not snap whole-selection movement");
+        require(handler.releaseMoveEntireSelectionShortcut(), "resume individual region");
+        adapter.handleOverlayMouseMove(nullptr, {43, 127});
+        require(selection.highlightedRegion()->boundingRect().x() == 25 &&
+                    selection.regionAt({35, 130}) == moving,
+                "resuming individual movement snaps against the translated target");
+        adapter.clearOverlaySnapping();
+        require(selection.moveSnapGuides().isEmpty(), "focus loss clears guides");
+        adapter.handleOverlayMouseRelease(nullptr, {43, 127});
+        require(selection.moveSnapGuides().isEmpty(), "release retires guide state");
+
+        seed();
+        adapter.updateOverlayModifiers(Qt::ControlModifier, false);
+        adapter.handleOverlayMousePress(nullptr, {190, 140});
+        // Mouse release has its own endpoint even if no move event was delivered.
+        adapter.handleOverlayMouseRelease(nullptr, {34, 122});
+        require(selection.regionAt({30, 120}).has_value() &&
+                    selection.selectionRegion().contains({20, 112}) &&
+                    selection.moveSnapGuides().isEmpty(),
+                "Ctrl held before press also snaps the final release endpoint");
+
+        seed();
+        adapter.handleOverlayMousePress(nullptr, {190, 140});
+        adapter.handleOverlayMouseMove(nullptr, {30, 122});
+        const auto aligned = selection.selectionRegion();
+        const int beforeGuides = presentations;
+        adapter.updateOverlayModifiers(Qt::NoModifier, true);
+        require(selection.selectionRegion() == aligned && selection.moveSnapGuides().isEmpty() &&
+                    presentations > beforeGuides,
+                "guide-only changes request presentation even when pixels stay aligned");
+        adapter.updateOverlayModifiers(Qt::ControlModifier, true);
+        handler.resetTransientShortcuts();
+        require(selection.moveSnapGuides().isEmpty(), "session reset clears guides");
+    }
+}
+
+void independentRegionInputAndShortcuts() {
+    const storage::ScreenshotShortcutSettings settings;
+    const auto original = settings.allShortcuts();
+    const auto restore = qScopeGuard([&] {
+        require(settings.setAllShortcutsAtomic(original), "restore multi-region shortcuts");
+    });
+    auto configured = original;
+    configured.insert(QStringLiteral("duplicate_latest_region"), {QStringLiteral("R")});
+    configured.insert(QStringLiteral("move_entire_selection"), {QStringLiteral("Space")});
+    require(settings.setAllShortcutsAtomic(configured), "shared contextual R defaults are valid");
+    ScreenshotCaptureState capture;
+    ScreenshotDisplaySession displays;
+    auto screen =
+        display(QStringLiteral("regions"), QStringLiteral("regions"), QRect(0, 0, 300, 300), {});
+    screen.geometryResolved = true;
+    screen.logicalToPhysicalScale = 1.0;
+    displays.appendDisplay(screen);
+    ScreenshotGeometryMapper geometry;
+    geometry.rebuild(displays);
+    ScreenshotSelectionModel selection;
+    ScreenshotIntelligentSelectionModel intelligent;
+    ScreenshotInteractionState interaction;
+    interaction.confirmSelection();
+    int historyCalls = 0, confirmations = 0;
+    QPoint cursor(150, 150);
+    ScreenshotOverlayInputActions actions;
+    actions.currentLogicalCursorPosition = [&] { return cursor; };
+    actions.selectPreviousSelection = actions.selectNextPreviousSelection = [&] {
+        ++historyCalls;
+        return true;
+    };
+    actions.selectionConfirmed = [&] { ++confirmations; };
+    ScreenshotOverlayInputHandler handler(
+        {capture, interaction, selection, intelligent, geometry, displays, actions});
+    QWidget window;
+    snow_shot::presentation::WindowShortcutManager manager;
+    manager.addScopeWindow(&window);
+    ScreenshotOverlayShortcutController shortcuts(manager, handler, interaction, intelligent,
+                                                  actions);
+    selection.setSelectionRect(QRect(10, 10, 40, 40));
+    require(!dispatchShortcut(window, Qt::Key_Space, Qt::ControlModifier),
+            "single-region Space retains its existing modifier eligibility");
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_Space, Qt::ControlModifier));
+    handler.beginRegionOperation(false);
+    handler.handleMousePress(nullptr, {80, 10});
+    handler.handleMouseMove(nullptr, {119, 49});
+    handler.handleMouseRelease(nullptr, {119, 49});
+    require(selection.createdRegionCount() == 2 && interaction.movingSelection(),
+            "confirming add preserves the multi-region session");
+    const auto second = selection.regionAt({90, 20});
+    handler.handleMousePress(nullptr, {90, 20});
+    handler.handleMouseMove(nullptr, {110, 50});
+    require(dispatchShortcut(window, Qt::Key_R) && selection.createdRegionCount() == 2,
+            "duplication during a region drag is a consumed no-op");
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_R));
+    handler.handleMouseRelease(nullptr, {110, 50});
+    require(selection.regionAt({110, 50}) == second &&
+                selection.selectionRegion() ==
+                    QRegion(QRect(10, 10, 40, 40)).united(QRect(100, 40, 40, 40)),
+            "mouse input moves only the chosen region");
+    const auto beforeGap = selection.selectionRegion();
+    handler.handleMousePress(nullptr, {70, 35});
+    handler.handleMouseMove(nullptr, {75, 35});
+    handler.handleMouseRelease(nullptr, {75, 35});
+    require(selection.selectionRegion() == beforeGap && !interaction.dragging(),
+            "empty space within the union bounds must not replace or move the selection");
+    const auto beforeSpace = selection;
+    require(dispatchShortcut(window, Qt::Key_Space, Qt::ControlModifier),
+            "Ctrl must allow the group movement shortcut while editing multiple regions");
+    require(dispatchShortcutRelease(window, Qt::Key_Space, Qt::ControlModifier),
+            "Ctrl group movement shortcut releases normally");
+    for (const QPointF start : {QPointF(20, 20), QPointF(70, 35)}) {
+        require(dispatchShortcut(window, Qt::Key_Space),
+                "Space must arm whole-selection movement in multi-region editing");
+        handler.handleMousePress(nullptr, start);
+        handler.handleMouseMove(nullptr, start + QPointF(15, 20));
+        require(interaction.dragging() &&
+                    selection.selectionRegion() == beforeGap.translated(15, 20),
+                "Space-drag from a region or gap must translate every region together");
+        handler.handleMouseRelease(nullptr, start + QPointF(15, 20));
+        require(dispatchShortcutRelease(window, Qt::Key_Space) && selection.multiRegionEditing() &&
+                    selection.createdRegionCount() == 2 && selection.regionAt({125, 70}) == second,
+                "whole-selection movement must retain independent region identities");
+        selection = beforeSpace;
+    }
+    handler.handleMousePress(nullptr, {110, 50});
+    handler.handleMouseMove(nullptr, {115, 57});
+    const auto beforeSwitch = selection.selectionRegion();
+    require(dispatchShortcut(window, Qt::Key_Space) && selection.selectionRegion() == beforeSwitch,
+            "pressing Space during a region drag must preserve the current geometry");
+    handler.handleMouseMove(nullptr, {125, 72});
+    require(selection.selectionRegion() == beforeSwitch.translated(10, 15),
+            "Space during an individual drag must immediately move the entire selection");
+    const auto beforeRelease = selection.selectionRegion();
+    require(dispatchShortcutRelease(window, Qt::Key_Space) &&
+                selection.selectionRegion() == beforeRelease,
+            "releasing Space during a drag must preserve the current geometry");
+    handler.handleMouseMove(nullptr, {130, 75});
+    handler.handleMouseRelease(nullptr, {130, 75});
+    require(selection.selectionRegion() ==
+                    QRegion(QRect(20, 25, 40, 40)).united(QRect(120, 65, 40, 40)) &&
+                selection.regionAt({130, 75}) == second,
+            "Space release must resume individual movement from the latest pointer position");
+    selection = beforeSpace;
+    handler.handleMousePress(nullptr, {110, 50});
+    require(dispatchShortcut(window, Qt::Key_Space), "Space must activate during another drag");
+    handler.handleMouseMove(nullptr, {1000, 1000});
+    require(selection.pixelSelection() == QRect(170, 230, 130, 70),
+            "whole-selection dragging must clamp every region together at the canvas edge");
+    require(dispatchShortcutRelease(window, Qt::Key_Space), "clamped Space drag must release");
+    handler.handleMouseMove(nullptr, {995, 993});
+    handler.handleMouseRelease(nullptr, {995, 993});
+    require(
+        selection.selectionRegion() ==
+                QRegion(QRect(170, 230, 40, 40)).united(QRect(255, 253, 40, 40)) &&
+            selection.regionAt({265, 263}) == second,
+        "Space release outside the clamped selection must retain the originally grabbed region");
+    selection = beforeSpace;
+    const int beforeCopy = confirmations;
+    require(dispatchShortcut(window, Qt::Key_R) && selection.createdRegionCount() == 3 &&
+                selection.highlightedRegion() == ScreenshotRegionGeometry(QRect(130, 130, 40, 40)),
+            "R centers a copy on the live cursor");
+    static_cast<void>(dispatchShortcut(window, Qt::Key_R, Qt::NoModifier, true));
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_R));
+    require(confirmations == beforeCopy + 1 && selection.createdRegionCount() == 3,
+            "held R must create and confirm only one region");
+    static_cast<void>(dispatchShortcut(window, Qt::Key_R, Qt::ShiftModifier));
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_R, Qt::ShiftModifier));
+    ScreenshotSelectionParams previous;
+    previous.selection = QRect(0, 0, 30, 30);
+    require(historyCalls == 0 && !handler.restorePreviousSelection(previous),
+            "both shortcut and restore entry points must suppress selection history");
+    configured.insert(QStringLiteral("duplicate_latest_region"), {QStringLiteral("K")});
+    configured.insert(QStringLiteral("select_next_previously_selected_area"),
+                      {QStringLiteral("K")});
+    require(settings.setAllShortcutsAtomic(configured),
+            "duplicate may share the remapped next key");
+    static_cast<void>(dispatchShortcut(window, Qt::Key_R));
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_R));
+    require(historyCalls == 0 && selection.createdRegionCount() == 3,
+            "remapped previous history stays suppressed");
+    handler.beginRegionOperation(true);
+    selection.setSelectionRect(QRect(0, 0, 300, 300));
+    require(dispatchShortcut(window, Qt::Key_K) && !selection.regionOperationActive() &&
+                selection.createdRegionCount() == 4 &&
+                selection.selectionRegion().contains({15, 15}),
+            "idle duplication discards subtract hover preview and adds a region");
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_K));
+    handler.beginRegionOperation(false);
+    handler.setRegionType(ScreenshotRegionType::Polyline);
+    handler.handleMousePress(nullptr, {20, 20});
+    const auto draft = selection.draftVertices();
+    require(dispatchShortcut(window, Qt::Key_K) && selection.draftVertices() == draft &&
+                selection.createdRegionCount() == 4,
+            "unfinished custom construction must own input without committing a copy");
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_K));
+    require(handler.cancelRegionOperation(), "cancel unfinished custom addition");
+    handler.setRegionType(ScreenshotRegionType::Rectangle);
+    handler.beginRegionOperation(true);
+    selection.setSelectionRect(QRect(0, 0, 300, 300));
+    handler.confirmSelection();
+    require(selection.multiRegionEditing() && selection.createdRegionCount() == 0 &&
+                dispatchShortcut(window, Qt::Key_K) && historyCalls == 0,
+            "empty multi-region sessions consume duplication without navigating history");
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_K));
+    selection.setSelectionRect(QRect(10, 10, 40, 40));
+    interaction.confirmSelection();
+    require(dispatchShortcut(window, Qt::Key_K) && historyCalls == 1,
+            "replacement restores the usual history context for a shared shortcut");
+    static_cast<void>(dispatchShortcutRelease(window, Qt::Key_K));
+    setScreenshotRegionPreference(ScreenshotRegionType::Rectangle);
+}
+
+void duplicatedRegionsUseDisplayCoordinates() {
+    for (bool points : {false, true}) {
+        ScreenshotCaptureState capture;
+        ScreenshotDisplaySession displays;
+        auto screen = display(QStringLiteral("scaled"), QStringLiteral("scaled"),
+                              QRect(-1200, -400, 1200, 800), {});
+        screen.logicalRect = QRect(-800, -200, 800, 400);
+        screen.logicalToPhysicalScale = 1.5;
+        screen.canvasUsesPoints = points;
+        screen.geometryResolved = true;
+        displays.appendDisplay(screen);
+        ScreenshotGeometryMapper geometry;
+        geometry.rebuild(displays);
+        ScreenshotSelectionModel selection;
+        const auto bounds = geometry.canvasBounds().toAlignedRect();
+        selection.setSelectionRect(QRect(bounds.topLeft() + QPoint(10, 10), QSize(31, 21)));
+        selection.beginRegionOperation(ScreenshotSelectionModel::RegionOperation::Add);
+        ScreenshotIntelligentSelectionModel intelligent;
+        ScreenshotInteractionState interaction;
+        interaction.returnToSelectionMode(false);
+        ScreenshotOverlayInputActions actions;
+        const QPoint logical = screen.logicalRect.center();
+        actions.currentLogicalCursorPosition = [=] { return logical; };
+        ScreenshotOverlayInputHandler handler(
+            {capture, interaction, selection, intelligent, geometry, displays, actions});
+        const auto expectedCenter = geometry.canvasPositionForPhysicalPoint(
+            displays, geometry.physicalPositionForLogicalPoint(displays, logical));
+        require(handler.duplicateLatestRegion(),
+                "duplicate on a scaled negative-coordinate display");
+        const QRectF actual(selection.highlightedRegion()->boundingRect());
+        require(std::abs(actual.center().x() - expectedCenter.x()) <= 0.5 &&
+                    std::abs(actual.center().y() - expectedCenter.y()) <= 0.5 &&
+                    actual.size() == QSizeF(31, 21),
+                "cursor conversion centers odd-size copies without changing canvas size");
+    }
 }
 
 void complexRegionsMoveFromTheirBoundingRectangle() {
@@ -7305,6 +7680,13 @@ int main(int argc, char** argv) {
         storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
+    if (QCoreApplication::arguments().contains(QStringLiteral("--independent-regions-only"))) {
+        individualRegionSnapInput();
+        independentRegionInputAndShortcuts();
+        duplicatedRegionsUseDisplayCoordinates();
+        storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
     if (QCoreApplication::arguments().contains(QStringLiteral("--region-shapes-only"))) {
         rectangularRegionOperationsUseSmartSelection();
         customRegionInputTransactions();
@@ -7321,6 +7703,12 @@ int main(int argc, char** argv) {
             QDir(temporary.path()).filePath(QStringLiteral("selection-history-shortcuts")));
         selectionHistoryBrowserTests(
             QDir(temporary.path()).filePath(QStringLiteral("selection-browser")));
+        storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (QCoreApplication::arguments().contains(QStringLiteral("--select-all-screens-only"))) {
+        selectAllShortcutSelectsCurrentScreenThenDesktop();
+        selectAllShortcutWithSingleScreen();
         storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
@@ -7358,7 +7746,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (QCoreApplication::arguments().contains(QStringLiteral("--shortcut-input-only"))) {
-        selectAllShortcutSelectsCurrentScreen();
+        selectAllShortcutSelectsCurrentScreenThenDesktop();
+        selectAllShortcutWithSingleScreen();
         previousSelectionShortcutUsesSharedConfirmation();
         selectionHistoryShortcutsKeepShiftContextAndConfiguration(
             QDir(temporary.path()).filePath(QStringLiteral("selection-history-shortcuts")));
@@ -7388,7 +7777,8 @@ int main(int argc, char** argv) {
         storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
-    selectAllShortcutSelectsCurrentScreen();
+    selectAllShortcutSelectsCurrentScreenThenDesktop();
+    selectAllShortcutWithSingleScreen();
     previousSelectionShortcutUsesSharedConfirmation();
     selectionHistoryShortcutsKeepShiftContextAndConfiguration(
         QDir(temporary.path()).filePath(QStringLiteral("selection-history-shortcuts")));

@@ -203,6 +203,14 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_BENCHMARKS)
         snow_draw_engine_qt_canvas
     )
 
+    add_executable(snow-canvas-stroke-rendering-benchmark
+        tests/snow_canvas_stroke_rendering_benchmark.cpp)
+    target_include_directories(snow-canvas-stroke-rendering-benchmark PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-stroke-rendering-benchmark PRIVATE snow_draw_engine_qt_canvas)
+    snow_shot_import_offscreen_platform(snow-canvas-stroke-rendering-benchmark)
+
     add_executable(snow-canvas-filter-benchmark
         tests/snow_canvas_filter_benchmark.cpp
     )
@@ -264,6 +272,14 @@ endif()
 
 if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     enable_testing()
+    add_executable(snow-canvas-snapping-tests tests/snow_canvas_snapping_tests.cpp)
+    target_include_directories(snow-canvas-snapping-tests PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-snapping-tests PRIVATE snow_draw_engine_qt_canvas)
+    snow_shot_import_offscreen_platform(snow-canvas-snapping-tests)
+    add_test(NAME snow-canvas-snapping-tests COMMAND snow-canvas-snapping-tests -platform offscreen)
+    set_tests_properties(snow-canvas-snapping-tests PROPERTIES LABELS "unit" TIMEOUT 60)
     add_executable(snow-canvas-pressure-mask-tests tests/snow_canvas_pressure_mask_tests.cpp)
     target_include_directories(snow-canvas-pressure-mask-tests PRIVATE
         ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
@@ -362,6 +378,22 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     # Test binaries must report failures as stderr output plus a non-zero
     # exit code instead of blocking on modal dialogs.
     snow_link_test_cli_guard(qt)
+
+    add_executable(snow-canvas-path-geometry-tests tests/snow_canvas_path_geometry_tests.cpp)
+    target_link_libraries(snow-canvas-path-geometry-tests PRIVATE snow_draw_engine_qt_canvas)
+    add_test(NAME snow-canvas-path-geometry-tests COMMAND snow-canvas-path-geometry-tests)
+    set_tests_properties(snow-canvas-path-geometry-tests PROPERTIES LABELS "unit" TIMEOUT 30)
+
+    add_executable(snow-canvas-stroke-rendering-tests tests/snow_canvas_stroke_rendering_tests.cpp)
+    target_include_directories(snow-canvas-stroke-rendering-tests PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include")
+    target_link_libraries(snow-canvas-stroke-rendering-tests PRIVATE snow_draw_engine_qt_canvas)
+    snow_shot_import_offscreen_platform(snow-canvas-stroke-rendering-tests)
+    add_test(NAME snow-canvas-stroke-rendering-tests
+        COMMAND snow-canvas-stroke-rendering-tests -platform offscreen)
+    set_tests_properties(snow-canvas-stroke-rendering-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "unit" TIMEOUT 120)
 
     add_executable(snow-canvas-fill-render-tests tests/snow_canvas_fill_render_tests.cpp)
     target_include_directories(snow-canvas-fill-render-tests PRIVATE
@@ -481,6 +513,19 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     qt_import_plugins(snow-canvas-distance-tests INCLUDE Qt6::QOffscreenIntegrationPlugin)
     add_test(NAME snow-canvas-distance-tests COMMAND snow-canvas-distance-tests)
     set_tests_properties(snow-canvas-distance-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        LABELS "unit"
+    )
+
+    add_executable(snow-canvas-shape-text-tests tests/snow_canvas_shape_text_tests.cpp)
+    target_include_directories(snow-canvas-shape-text-tests PRIVATE
+        ${SNOW_CANVAS_QT_PRIVATE_SOURCE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/crates/snow-draw-engine-c/include"
+    )
+    target_link_libraries(snow-canvas-shape-text-tests PRIVATE snow_draw_engine_qt_canvas)
+    qt_import_plugins(snow-canvas-shape-text-tests INCLUDE Qt6::QOffscreenIntegrationPlugin)
+    add_test(NAME snow-canvas-shape-text-tests COMMAND snow-canvas-shape-text-tests)
+    set_tests_properties(snow-canvas-shape-text-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         LABELS "unit"
     )
@@ -608,10 +653,14 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
         snow_draw_engine_qt_canvas
     )
     add_test(NAME snow-canvas-state-tests COMMAND snow-canvas-state-tests)
+    add_test(NAME snow-canvas-stroke-rendering-state-tests
+        COMMAND snow-canvas-state-tests --stroke-rendering-only)
+    set_tests_properties(snow-canvas-stroke-rendering-state-tests PROPERTIES LABELS "unit")
 
     add_executable(snow-canvas-filter-safety-tests
         tests/snow_canvas_filter_safety_tests.cpp
         src/rendering/snow_canvas_filter_avx2.cpp
+        src/rendering/snow_canvas_filter_neon.cpp
         src/rendering/snow_canvas_render_diagnostics.cpp
     )
     target_link_libraries(snow-canvas-filter-safety-tests PRIVATE
@@ -702,6 +751,7 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     )
     snow_shot_import_offscreen_platform(snow-canvas-filter-render-tests)
     add_test(NAME snow-canvas-filter-render-tests COMMAND snow-canvas-filter-render-tests)
+    add_test(NAME snow-canvas-filter-simd-tests COMMAND snow-canvas-filter-render-tests --simd-only)
     add_test(NAME snow-canvas-serial-number-font-tests
         COMMAND snow-canvas-filter-render-tests --serial-number-font-only)
     add_test(NAME snow-canvas-retained-filter-paint-tests
@@ -709,7 +759,7 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     add_test(NAME snow-canvas-sparse-filter-damage-tests
         COMMAND snow-canvas-filter-render-tests --sparse-filter-damage-only)
     set_tests_properties(
-        snow-canvas-filter-render-tests snow-canvas-retained-filter-paint-tests
+        snow-canvas-filter-render-tests snow-canvas-filter-simd-tests snow-canvas-retained-filter-paint-tests
         snow-canvas-sparse-filter-damage-tests snow-canvas-serial-number-font-tests PROPERTIES
         ENVIRONMENT
             "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::QOffscreenIntegrationPlugin>"

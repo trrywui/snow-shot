@@ -10,6 +10,7 @@
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/pinnedwindowrepository.h"
 #include "mcppinnedstate_p.h"
+#include "mcppinnedworkflowowners_p.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -90,7 +91,7 @@ class McpMediaService::Impl {
         QString pinId;
     };
     QHash<QString, Pending> pending;
-    QHash<quint64, QSet<QString>> recognitionOwners;
+    McpPinnedWorkflowOwners recognitionOwners;
     QHash<quint64, QList<std::shared_ptr<ScreenshotExportArtifact>>> exports;
     QHash<quint64, std::shared_ptr<ScreenshotClipboardCommitScope>> clipboardScopes;
     QHash<QString, std::function<void()>> cancellations;
@@ -267,8 +268,11 @@ class McpMediaService::Impl {
             return;
         }
         const auto textStyle = ScreenshotClipboardContentReader::capturePinnedTextStyle();
-        if (snapshot)
+        const auto colorSwatchStyle = capturePinnedColorSwatchStyle();
+        if (snapshot) {
             snapshot->textStyle = textStyle;
+            snapshot->colorSwatchStyle = colorSwatchStyle;
+        }
         auto content = std::make_shared<std::optional<ScreenshotClipboardContent>>();
         const QString token = uuid();
         const auto id = r.params.value(QStringLiteral("id")).toString();
@@ -294,7 +298,8 @@ class McpMediaService::Impl {
         auto job = ScreenshotExportCoordinator::shared().submit(
             &q, ScreenshotExportCoordinator::Priority::Foreground,
             [snapshot = std::move(snapshot), path, kind, content, dpr, replace,
-             replacementTransform, textStyle](const ScreenshotExportCancellation& cancel) mutable {
+             replacementTransform, textStyle,
+             colorSwatchStyle](const ScreenshotExportCancellation& cancel) mutable {
                 if (kind == QStringLiteral("file")) {
                     const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path});
                     if (files.size() != 1)
@@ -304,6 +309,7 @@ class McpMediaService::Impl {
                     ScreenshotClipboardContentSnapshot file;
                     file.localImage = files.front();
                     file.textStyle = textStyle;
+                    file.colorSwatchStyle = colorSwatchStyle;
                     file.devicePixelRatio = dpr;
                     snapshot = std::move(file);
                 }
@@ -725,9 +731,7 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
         auto result =
             window->automationEdit(action, p.value(QStringLiteral("payload")).toObject(), &error);
         if (error.isEmpty() && startsJob) {
-            for (auto& owned : s.recognitionOwners)
-                owned.remove(id);
-            s.recognitionOwners[r.connectionId].insert(id);
+            s.recognitionOwners.track(r.connectionId, window);
         }
         auto updatedState = s.pinState(id);
         updatedState.insert(QStringLiteral("result"), result);
@@ -932,9 +936,7 @@ void McpMediaService::disconnected(quint64 connection) {
         } else
             ++it;
     }
-    for (const auto& id : s.recognitionOwners.take(connection))
-        if (auto* window = s.groups.liveWindow(id))
-            window->cancelAutomationRecognition();
+    s.recognitionOwners.cancel(connection);
     for (const auto& artifact : s.exports.take(connection))
         artifact->cancel();
     s.clipboardScopes.remove(connection);
@@ -972,11 +974,7 @@ void McpMediaService::shutdown() {
             artifact->cancel();
     s.exports.clear();
     s.clipboardScopes.clear();
-    for (const auto& ids : s.recognitionOwners)
-        for (const auto& id : ids)
-            if (auto* window = s.groups.liveWindow(id))
-                window->cancelAutomationRecognition();
-    s.recognitionOwners.clear();
+    s.recognitionOwners.cancelAll();
     if (s.recordingOwner && s.recording)
         s.recording->detachAutomation();
 }

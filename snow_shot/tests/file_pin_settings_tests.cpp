@@ -12,6 +12,8 @@
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include <QHash>
 #include <QTemporaryDir>
+#include <algorithm>
+#include <iterator>
 #include <cstdlib>
 #include <iostream>
 
@@ -166,6 +168,62 @@ void windowButtonSettings() {
                 backend.resetSection(settings::SettingsSectionReset::PinToScreenBehavior) &&
                 stored.showWindowButtons() && backend.switchValue(binding),
             "resetting pin behavior must restore visible window buttons");
+}
+
+void exitAnnotationModeBeforeClosingSettings() {
+    const storage::PinToScreenSettings stored;
+    constexpr auto binding = settings::SettingsSwitchBinding::PinExitAnnotationModeBeforeClosing;
+    GlobalShortcutManager manager(std::make_unique<Backend>(), nullptr, [] { return false; });
+    settings::BuiltInSettingsBackend backend(manager);
+    settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
+    const auto* field = settings::builtInSettingsRegistry().fieldForSwitch(binding);
+    require(field && field->pageId == QStringLiteral("pinned-windows") &&
+                field->sectionId == QStringLiteral("pin-to-screen-settings") &&
+                field->id == QStringLiteral("pin-to-screen.exit-annotation-mode-before-closing") &&
+                field->configurationKey ==
+                    QStringLiteral("pin_to_screen/exit_annotation_mode_before_closing") &&
+                field->definition->title.translated() ==
+                    QStringLiteral("Exit annotation mode before closing") &&
+                field->reset == settings::SettingsSectionReset::PinToScreenBehavior &&
+                session.state(field->id).visible && session.state(field->id).enabled,
+            "exit annotation mode switch belongs to available pin behavior settings");
+    const auto* section =
+        settings::builtInSettingsRegistry().catalog().section(field->pageId, field->sectionId);
+    require(section, "pin behavior section exists");
+    int index = -1;
+    for (int i = 0; i < section->items.size(); ++i) {
+        if (section->items[i].id == field->id)
+            index = i;
+    }
+    require(index >= 0 && index + 1 < section->items.size() &&
+                section->items[index + 1].id ==
+                    QStringLiteral("pin-to-screen.confirm-before-closing-window"),
+            "exit annotation mode setting immediately precedes close confirmation");
+    require(!stored.exitAnnotationModeBeforeClosing() && !session.switchValue(binding),
+            "exit annotation mode before closing defaults off");
+    require(
+        !storage::ConfigurationSchema::normalize(field->configurationKey, QStringLiteral("enabled"))
+             .valid,
+        "exit annotation mode preference must reject nonboolean values");
+    require(session.applySwitchValue(binding, true) && stored.exitAnnotationModeBeforeClosing() &&
+                backend.switchValue(binding),
+            "settings session enables exiting annotation mode before closing");
+    auto& applicationStorage = storage::ApplicationStorage::instance();
+    require(applicationStorage.configuration().flushNow().success,
+            "exit annotation mode preference must be flushable");
+    storage::ConfigurationStore reloaded(applicationStorage.configurationDirectory() +
+                                             QStringLiteral("/config.json"),
+                                         true, true, 60000);
+    require(reloaded.value(field->configurationKey).toBool(),
+            "exit annotation mode preference survives configuration reload");
+    require(session.reset(settings::SettingsSectionReset::PinToScreen) &&
+                stored.exitAnnotationModeBeforeClosing(),
+            "appearance reset preserves exit annotation mode preference");
+    require(session.applySwitchValue(binding, false) && !stored.exitAnnotationModeBeforeClosing() &&
+                session.applySwitchValue(binding, true) &&
+                session.reset(settings::SettingsSectionReset::PinToScreenBehavior) &&
+                !stored.exitAnnotationModeBeforeClosing() && !session.switchValue(binding),
+            "pin behavior reset restores exit annotation mode default");
 }
 
 void windowConfirmationSettings() {
@@ -324,6 +382,79 @@ void duplicateContentSettings() {
             "pin behavior reset restores shake policy");
 }
 
+void mouseWheelStepSettings() {
+    const storage::PinToScreenSettings stored;
+    GlobalShortcutManager manager(std::make_unique<Backend>(), nullptr, [] { return false; });
+    settings::BuiltInSettingsBackend backend(manager);
+    const auto& registry = settings::builtInSettingsRegistry();
+    settings::SettingsRuntimeSession session(registry, backend);
+    const auto* page = registry.catalog().page(QStringLiteral("pinned-windows"));
+    require(page != nullptr, "pinned settings page exists");
+    const auto& items = page->sections.at(0).items;
+    const auto duplicate = std::find_if(items.cbegin(), items.cend(), [](const auto& item) {
+        return item.id == QStringLiteral("pin-to-screen.duplicate-content-action");
+    });
+    require(duplicate != items.cend() && std::distance(duplicate, items.cend()) >= 3 &&
+                (duplicate + 1)->id == QStringLiteral("pin-to-screen.mouse-wheel-opacity-step") &&
+                (duplicate + 2)->id == QStringLiteral("pin-to-screen.mouse-wheel-zoom-step"),
+            "opacity and zoom step sliders immediately follow the duplicate content setting");
+    require(stored.mouseWheelOpacityStep() == 5 && stored.mouseWheelZoomStep() == 10,
+            "wheel defaults preserve five-point opacity and ten-point zoom steps");
+    for (const auto binding : {settings::SettingsSliderBinding::PinMouseWheelOpacityStep,
+                               settings::SettingsSliderBinding::PinMouseWheelZoomStep}) {
+        const bool opacity = binding == settings::SettingsSliderBinding::PinMouseWheelOpacityStep;
+        const auto* field = registry.fieldForSlider(binding);
+        const QString key = opacity ? QStringLiteral("pin_to_screen/mouse_wheel_opacity_step")
+                                    : QStringLiteral("pin_to_screen/mouse_wheel_zoom_step");
+        const QString title = opacity ? QStringLiteral("Mouse wheel opacity step")
+                                      : QStringLiteral("Mouse wheel zoom step");
+        const auto* schema = storage::ConfigurationSchema::entry(key);
+        require(field && field->pageId == QStringLiteral("pinned-windows") &&
+                    field->sectionId == QStringLiteral("pin-to-screen-settings") &&
+                    field->reset == settings::SettingsSectionReset::PinToScreenBehavior &&
+                    field->configurationKey == key &&
+                    field->definition->title.translated() == title &&
+                    session.state(field->id).visible && session.state(field->id).enabled,
+                "wheel sliders are available in Pin to screen interaction settings");
+        const auto& slider =
+            std::get<settings::SettingsSliderDefinition>(field->definition->payload);
+        require(slider.suffix.translated() == QStringLiteral("%") && schema &&
+                    schema->integerRange && schema->integerRange->minimum == 1 &&
+                    schema->integerRange->maximum == 20 && schema->integerRange->step == 1,
+                "wheel sliders expose an integer range of one to twenty percent");
+        for (const int value : {1, 7, 20}) {
+            require(session.applySliderValue(binding, value) &&
+                        backend.sliderValue(binding) == value &&
+                        (opacity ? stored.mouseWheelOpacityStep() : stored.mouseWheelZoomStep()) ==
+                            value,
+                    "wheel steps persist through the settings session and adapters");
+        }
+        for (const int value : {0, 21}) {
+            require(
+                !backend.applySliderValue(binding, value) && backend.sliderValue(binding) == 20,
+                "wheel steps outside the allowed range are rejected without changing the value");
+        }
+        require(!storage::ConfigurationSchema::normalize(key, 1.5).valid &&
+                    !storage::ConfigurationSchema::normalize(key, QStringLiteral("7")).valid,
+                "wheel steps must be integer settings");
+    }
+    auto& applicationStorage = storage::ApplicationStorage::instance();
+    require(applicationStorage.configuration().flushNow().success, "wheel preferences flush");
+    storage::ConfigurationStore reloaded(applicationStorage.configurationDirectory() +
+                                             QStringLiteral("/config.json"),
+                                         true, true, 60000);
+    require(reloaded.value(QStringLiteral("pin_to_screen/mouse_wheel_opacity_step")).toInt() ==
+                    20 &&
+                reloaded.value(QStringLiteral("pin_to_screen/mouse_wheel_zoom_step")).toInt() == 20,
+            "wheel preferences survive configuration reload");
+    require(backend.resetSection(settings::SettingsSectionReset::PinToScreen) &&
+                stored.mouseWheelOpacityStep() == 20 && stored.mouseWheelZoomStep() == 20,
+            "window appearance reset preserves wheel steps");
+    require(session.reset(settings::SettingsSectionReset::PinToScreenBehavior) &&
+                stored.mouseWheelOpacityStep() == 5 && stored.mouseWheelZoomStep() == 10,
+            "interaction reset restores both wheel step defaults");
+}
+
 void shortcutSettings() {
     const auto action = GlobalShortcutAction::PinSelectedFiles;
     const QString id = QStringLiteral("quick.pin-selected-files");
@@ -332,13 +463,15 @@ void shortcutSettings() {
         {QStringLiteral("global-hotkeys"), QStringLiteral("pin-to-screen"), id});
     require(item != nullptr, "file pin action must remain in global shortcut settings");
 #ifdef Q_OS_MACOS
-    require(item->description.translated() ==
-                QStringLiteral("Pin selected image files from Finder or the desktop to the screen"),
-            "macOS file pin description must identify Finder");
+    require(
+        item->description.translated() ==
+            QStringLiteral(
+                "Pin selected image or document files from Finder or the desktop to the screen"),
+        "macOS file pin description must identify Finder");
 #else
     require(item->description.translated() ==
-                QStringLiteral(
-                    "Pin selected image files from File Explorer or the desktop to the screen"),
+                QStringLiteral("Pin selected image or document files from File Explorer or the "
+                               "desktop to the screen"),
             "Windows file pin description must identify File Explorer");
 #endif
     require(stored.pinSelectedFiles().isEmpty(), "selected files starts unassigned");
@@ -432,9 +565,11 @@ int main(int argc, char** argv) {
         "temporary storage must initialize");
     pinnedTextStyleSettings();
     windowButtonSettings();
+    exitAnnotationModeBeforeClosingSettings();
     windowConfirmationSettings();
     textSelectionSettings();
     duplicateContentSettings();
+    mouseWheelStepSettings();
     clipboardSourceIdentity();
     shortcutSettings();
     storage.shutdown();

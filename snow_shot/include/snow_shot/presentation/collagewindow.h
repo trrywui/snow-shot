@@ -48,6 +48,7 @@ class CollageWindow final : public QObject {
     void presentPinnedRecords(const QStringList& recordIds);
     void presentPinnedWindows(const QVector<ScreenshotPinnedImageSnapshot>& snapshots);
     void addFiles(const QStringList& paths);
+    void paste();
     void addSelectedFiles(std::shared_ptr<platform::SelectedFileBackend> backend,
                           platform::SelectedFileTarget target);
     void replaceFile(quint64 id, const QString& path);

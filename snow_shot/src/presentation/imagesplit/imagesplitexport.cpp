@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "snow_shot/presentation/imagesplitdocument.h"
+#include "snow_shot/storage/exportfilename.h"
 #include "snow_shot/presentation/screenshotimagefileservice.h"
 #include "imagesplitimagepreparation_p.h"
 
@@ -8,7 +9,6 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
-#include <QRegularExpression>
 
 #include <algorithm>
 #include <cstring>
@@ -33,21 +33,13 @@ void setError(ImageSplitExportResult& result, const char* source, QStringList ar
     result.error = result.errorMessage();
 }
 
-QString safeImageName(QString name) {
-    name.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f]")),
-                 QStringLiteral("_"));
-    name = name.trimmed();
-    while (name.endsWith(u'.') || name.endsWith(u' '))
-        name.chop(1);
-    return name.isEmpty() ? QStringLiteral("Screenshot") : name;
-}
-
 QString createExportDirectory(const QString& parentDirectory, const QString& imageName) {
     const QFileInfo parentInfo(parentDirectory);
     if (!parentInfo.isDir())
         return {};
     QDir parent(parentInfo.absoluteFilePath());
-    const QString base = QStringLiteral("Split Images_%1").arg(safeImageName(imageName));
+    const QString base = QStringLiteral("Split Images_%1")
+                             .arg(storage::sanitizeExportFileName(imageName, u"Screenshot"));
     for (qint64 suffix = 1; suffix <= std::numeric_limits<int>::max(); ++suffix) {
         const QString name = suffix == 1 ? base : QStringLiteral("%1 (%2)").arg(base).arg(suffix);
         if (parent.mkdir(name))
