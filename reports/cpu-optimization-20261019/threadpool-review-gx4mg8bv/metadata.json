@@ -1,0 +1,10 @@
+{
+  "source_baseline": "0baac00dd",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/static-backdrop-516bow4b/deploy/snow_shot.app",
+  "candidate_changes": "Only per-process QT_NO_GUI_THREADPOOL=1. Static backdrop disabled for both. No clipping candidate.",
+  "order": "disabled,default",
+  "manual_confirmations": {
+    "disabled": "关闭版完成",
+    "default": "默认版完成"
+  }
+}

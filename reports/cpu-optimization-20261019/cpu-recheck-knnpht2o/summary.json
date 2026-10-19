@@ -1,0 +1,54 @@
+[
+  {
+    "phase": "move-selection",
+    "threadpool_disabled": false,
+    "runs": 3,
+    "app_cpu_median": 42.481713937417794,
+    "windowserver_cpu_median": 41.391863071659664,
+    "rss_mib_median": 201.9765625,
+    "updates": [
+      297,
+      298,
+      297
+    ]
+  },
+  {
+    "phase": "move-selection",
+    "threadpool_disabled": true,
+    "runs": 3,
+    "app_cpu_median": 39.08773148679959,
+    "windowserver_cpu_median": 41.38700980955124,
+    "rss_mib_median": 202.140625,
+    "updates": [
+      300,
+      298,
+      299
+    ]
+  },
+  {
+    "phase": "resize-selection",
+    "threadpool_disabled": false,
+    "runs": 3,
+    "app_cpu_median": 42.98161095389575,
+    "windowserver_cpu_median": 42.29581825898876,
+    "rss_mib_median": 202.1796875,
+    "updates": [
+      298,
+      295,
+      298
+    ]
+  },
+  {
+    "phase": "resize-selection",
+    "threadpool_disabled": true,
+    "runs": 3,
+    "app_cpu_median": 38.4846576602006,
+    "windowserver_cpu_median": 43.18720481023659,
+    "rss_mib_median": 202.22265625,
+    "updates": [
+      297,
+      297,
+      297
+    ]
+  }
+]

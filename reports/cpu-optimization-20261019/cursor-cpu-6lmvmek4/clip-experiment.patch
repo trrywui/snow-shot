@@ -1,0 +1,168 @@
+diff --git a/snow_shot/src/presentation/overlay/screenshotimagerendering.cpp b/snow_shot/src/presentation/overlay/screenshotimagerendering.cpp
+index 203a333ca..647fffa66 100644
+--- a/snow_shot/src/presentation/overlay/screenshotimagerendering.cpp
++++ b/snow_shot/src/presentation/overlay/screenshotimagerendering.cpp
+@@ -66,6 +66,36 @@ bool sourceMappingFitsRaster(const QRectF& source, qreal sourcePerTargetX, qreal
+            sourcePerTargetY <= kMaximumRasterSourceScale;
+ }
+ 
++bool canDrawOpaqueExposureRectangles(const QPainter& painter, const QRectF& target,
++                                     const QImage& image, const QRectF& source,
++                                     const QRegion& exposedRegion) {
++    // Bound the extra painter calls when damage is unusually fragmented. Qt's direct image
++    // paths cover 1x images and 2x images on a 2x device; other mappings keep the general path.
++    constexpr int kMaximumExposureRectangles = 128;
++    if (exposedRegion.rectCount() <= 1 || exposedRegion.rectCount() > kMaximumExposureRectangles ||
++        image.format() != QImage::Format_RGB32 || painter.opacity() != 1.0 ||
++        painter.testRenderHint(QPainter::SmoothPixmapTransform) ||
++        (painter.compositionMode() != QPainter::CompositionMode_SourceOver &&
++         painter.compositionMode() != QPainter::CompositionMode_Source) ||
++        !QRectF(image.rect()).contains(source)) {
++        return false;
++    }
++
++    const QTransform transform = painter.deviceTransform();
++    if (transform.type() > QTransform::TxScale ||
++        (transform.m11() != 1.0 && transform.m11() != 2.0) || transform.m22() != transform.m11()) {
++        return false;
++    }
++    const QRectF deviceTarget = transform.mapRect(target);
++    const auto pixelAligned = [](const QRectF& rect) {
++        return finiteRect(rect) && rect.left() == std::floor(rect.left()) &&
++               rect.top() == std::floor(rect.top()) && rect.width() == std::floor(rect.width()) &&
++               rect.height() == std::floor(rect.height());
++    };
++    return deviceTarget.size() == source.size() && pixelAligned(deviceTarget) &&
++           pixelAligned(source);
++}
++
+ void paintScaledSourceWindow(QPainter& painter, const QRectF& targetWindow, const QImage& image,
+                              const QRect& sourceBounds) {
+     if (targetWindow.isEmpty() || sourceBounds.isEmpty()) {
+@@ -175,9 +205,25 @@ void paintExposedScreenshotImage(QPainter& painter, const QRectF& targetRect, co
+         return;
+     }
+ 
+-    // Keep the ordinary path as a single draw. The explicit clip makes this
+-    // correct even when a caller supplies a damage region without clipping its painter first.
+     if (sourceMappingFitsRaster(sourceRect, sourcePerTargetX, sourcePerTargetY)) {
++        if (canDrawOpaqueExposureRectangles(painter, targetRect, image, sourceRect,
++                                            exposedRegion)) {
++            // A complex region sends otherwise pixel-aligned images through Qt's span rasterizer
++            // and GUI thread pool. Rectangular clips allow its direct image-copy path instead.
++            // Intersect each clip to retain the caller's clip and the widget's system clip.
++            for (const QRect& exposedRectangle : exposedRegion) {
++                if (!drawableTarget.intersects(QRectF(exposedRectangle))) {
++                    continue;
++                }
++                painter.save();
++                painter.setClipRect(exposedRectangle, Qt::IntersectClip);
++                painter.drawImage(targetRect, image, sourceRect);
++                painter.restore();
++            }
++            return;
++        }
++
++        // The explicit clip also handles callers that supply damage without clipping the painter.
+         painter.save();
+         painter.setClipRegion(exposedRegion, Qt::IntersectClip);
+         painter.drawImage(targetRect, image, sourceRect);
+diff --git a/snow_shot/tests/screenshot_canvas_renderer_tests.cpp b/snow_shot/tests/screenshot_canvas_renderer_tests.cpp
+index 6ae8a5676..98884145b 100644
+--- a/snow_shot/tests/screenshot_canvas_renderer_tests.cpp
++++ b/snow_shot/tests/screenshot_canvas_renderer_tests.cpp
+@@ -14,6 +14,7 @@
+ #include "snow_shot/presentation/screenshotinteractionstate.h"
+ #include "snow_shot/presentation/screenshotdisplaysession.h"
+ #include "snow_shot/presentation/screenshotgeometry.h"
++#include "snow_shot/presentation/screenshotimagerendering.h"
+ #include "snow_shot/presentation/screenshotguidelinerendering.h"
+ #include "snow_shot/presentation/screenshotmessageservice.h"
+ #include "snow_shot/presentation/screenshotocrpresentation.h"
+@@ -1624,6 +1625,70 @@ void ordinaryExposedImageRenderingRemainsPixelEquivalent() {
+             "ordinary exposed image rendering should remain pixel equivalent to one drawImage");
+ }
+ 
++void disjointOpaqueImageExposurePreservesPixelsAndPainterState() {
++    QImage source(QSize(96, 80), QImage::Format_RGB32);
++    for (int y = 0; y < source.height(); ++y) {
++        for (int x = 0; x < source.width(); ++x) {
++            source.setPixel(
++                x, y,
++                qRgb((x * 13 + y * 7) % 256, (x * 3 + y * 17) % 256, (x * 29 + y * 11) % 256));
++        }
++    }
++    const QRectF sourceRect(3, 5, 80, 60);
++    const QRegion exposed = QRegion(QRect(9, 11, 21, 13)) + QRect(40, 16, 27, 29) +
++                            QRect(15, 47, 62, 11) + QRect(110, 80, 10, 10);
++    for (const qreal dpr : {1.0, 2.0, 1.5}) {
++        const QRectF targetRect(7, 9, sourceRect.width() / dpr, sourceRect.height() / dpr);
++        for (int clipKind = 0; clipKind < 3; ++clipKind) {
++            for (const auto mode :
++                 {QPainter::CompositionMode_SourceOver, QPainter::CompositionMode_Source}) {
++                const auto render = [&](bool useHelper) {
++                    QImage output(QSize(qRound(128 * dpr), qRound(96 * dpr)),
++                                  QImage::Format_ARGB32_Premultiplied);
++                    output.setDevicePixelRatio(dpr);
++                    output.fill(QColor(12, 14, 16, 93));
++                    QPainter painter(&output);
++                    painter.translate(1, 2);
++                    painter.setCompositionMode(mode);
++                    painter.setRenderHint(QPainter::Antialiasing, true);
++                    if (clipKind == 1) {
++                        painter.setClipRegion(QRegion(QRect(12, 13, 48, 40)) -
++                                              QRect(23, 18, 19, 17));
++                    } else if (clipKind == 2) {
++                        QPainterPath clip;
++                        clip.addEllipse(QRectF(11.5, 12.5, 57, 43));
++                        painter.setClipPath(clip);
++                    }
++                    const bool hadClipping = painter.hasClipping();
++                    const QPainterPath originalClip = painter.clipPath();
++                    const QTransform originalTransform = painter.transform();
++                    const auto originalHints = painter.renderHints();
++                    if (useHelper) {
++                        paintExposedScreenshotImage(painter, targetRect, source, sourceRect,
++                                                    exposed);
++                    } else {
++                        painter.save();
++                        painter.setClipRegion(exposed, Qt::IntersectClip);
++                        painter.drawImage(targetRect, source, sourceRect);
++                        painter.restore();
++                    }
++                    require(painter.hasClipping() == hadClipping &&
++                                painter.clipPath() == originalClip &&
++                                painter.transform() == originalTransform &&
++                                painter.renderHints() == originalHints &&
++                                painter.compositionMode() == mode && painter.opacity() == 1.0,
++                            "exposed image rendering must restore the caller's painter state");
++                    painter.end();
++                    return output;
++                };
++                require(render(true) == render(false),
++                        "disjoint opaque exposure must preserve crop pixels, damage holes and "
++                        "caller clips at integer and fractional device pixel ratios");
++            }
++        }
++    }
++}
++
+ void chunkedImagePaintersRenderPastTheRasterCoordinateLimit() {
+     constexpr int kLargeDimension = 70000;
+     const QImage source = verticalRasterPattern(QSize(4, kLargeDimension));
+@@ -9270,6 +9335,7 @@ int main(int argc, char** argv) {
+         indexedLargeImageWindowsPreserveTheirColorTable();
+         disjointLargeImageExposureDoesNotPaintItsBoundingInterval();
+         ordinaryExposedImageRenderingRemainsPixelEquivalent();
++        disjointOpaqueImageExposurePreservesPixelsAndPainterState();
+         chunkedImagePaintersRenderPastTheRasterCoordinateLimit();
+         return 0;
+     }
+@@ -9367,6 +9433,7 @@ int main(int argc, char** argv) {
+     indexedLargeImageWindowsPreserveTheirColorTable();
+     disjointLargeImageExposureDoesNotPaintItsBoundingInterval();
+     ordinaryExposedImageRenderingRemainsPixelEquivalent();
++    disjointOpaqueImageExposurePreservesPixelsAndPainterState();
+     chunkedImagePaintersRenderPastTheRasterCoordinateLimit();
+     partialRoundedMaskMatchesFullViewportMaskAtFractionalDpr();
+     rectangularMaskAndBorderMatchPathRasterizationAtFractionalDprs();

@@ -1,0 +1,158 @@
+[
+  {
+    "phase": "move-selection",
+    "mode": 0,
+    "total_runs": 3,
+    "valid_runs": 3,
+    "raw": [
+      {
+        "trial": 0,
+        "updates": 299,
+        "seconds": 10.001865405996796,
+        "app_cpu": 48.191010420017086,
+        "windowserver_cpu": 42.5920548525484,
+        "app_rss_mib": 211.12890625
+      },
+      {
+        "trial": 3,
+        "updates": 300,
+        "seconds": 10.003840874000161,
+        "app_cpu": 49.980803003323736,
+        "windowserver_cpu": 45.98233876305693,
+        "app_rss_mib": 201.96875
+      },
+      {
+        "trial": 4,
+        "updates": 299,
+        "seconds": 10.004769138999109,
+        "app_cpu": 48.17702370773745,
+        "windowserver_cpu": 46.77769106892186,
+        "app_rss_mib": 201.94140625
+      }
+    ],
+    "medians": {
+      "app_cpu": 48.191010420017086,
+      "windowserver_cpu": 45.98233876305693,
+      "app_rss_mib": 201.96875,
+      "windowserver_rss_mib": 80.6328125,
+      "combined_cpu": 94.9547147766593
+    }
+  },
+  {
+    "phase": "move-selection",
+    "mode": 1,
+    "total_runs": 3,
+    "valid_runs": 3,
+    "raw": [
+      {
+        "trial": 1,
+        "updates": 297,
+        "seconds": 10.002901708001446,
+        "app_cpu": 46.38653998057789,
+        "windowserver_cpu": 42.487671318417256,
+        "app_rss_mib": 183.91015625
+      },
+      {
+        "trial": 2,
+        "updates": 300,
+        "seconds": 10.00205794700014,
+        "app_cpu": 46.09051481632989,
+        "windowserver_cpu": 41.191523002879414,
+        "app_rss_mib": 183.98046875
+      },
+      {
+        "trial": 5,
+        "updates": 299,
+        "seconds": 10.004521110000496,
+        "app_cpu": 43.38038724973798,
+        "windowserver_cpu": 52.37632008954321,
+        "app_rss_mib": 175.16015625
+      }
+    ],
+    "medians": {
+      "app_cpu": 46.09051481632989,
+      "windowserver_cpu": 42.487671318417256,
+      "app_rss_mib": 183.91015625,
+      "windowserver_rss_mib": 80.03515625,
+      "combined_cpu": 88.87421129899515
+    }
+  },
+  {
+    "phase": "resize-selection",
+    "mode": 0,
+    "total_runs": 3,
+    "valid_runs": 3,
+    "raw": [
+      {
+        "trial": 0,
+        "updates": 298,
+        "seconds": 10.001907804005896,
+        "app_cpu": 47.69090151070532,
+        "windowserver_cpu": 43.791645412346845,
+        "app_rss_mib": 211.00390625
+      },
+      {
+        "trial": 3,
+        "updates": 299,
+        "seconds": 10.002979362005135,
+        "app_cpu": 47.3858820303499,
+        "windowserver_cpu": 45.18653729476385,
+        "app_rss_mib": 202.046875
+      },
+      {
+        "trial": 4,
+        "updates": 300,
+        "seconds": 10.000346191998688,
+        "app_cpu": 47.798345259532056,
+        "windowserver_cpu": 44.09847334613587,
+        "app_rss_mib": 202.015625
+      }
+    ],
+    "medians": {
+      "app_cpu": 47.69090151070532,
+      "windowserver_cpu": 44.09847334613587,
+      "app_rss_mib": 202.046875,
+      "windowserver_rss_mib": 81.05859375,
+      "combined_cpu": 91.89681860566793
+    }
+  },
+  {
+    "phase": "resize-selection",
+    "mode": 1,
+    "total_runs": 3,
+    "valid_runs": 3,
+    "raw": [
+      {
+        "trial": 1,
+        "updates": 299,
+        "seconds": 10.003733566998562,
+        "app_cpu": 42.384175584077816,
+        "windowserver_cpu": 43.083914331927595,
+        "app_rss_mib": 183.88671875
+      },
+      {
+        "trial": 2,
+        "updates": 300,
+        "seconds": 10.00157042000501,
+        "app_cpu": 44.79296562307019,
+        "windowserver_cpu": 41.39349948203233,
+        "app_rss_mib": 183.953125
+      },
+      {
+        "trial": 5,
+        "updates": 299,
+        "seconds": 10.003414012004214,
+        "app_cpu": 44.28488108843589,
+        "windowserver_cpu": 45.684403289877935,
+        "app_rss_mib": 175.1875
+      }
+    ],
+    "medians": {
+      "app_cpu": 44.28488108843589,
+      "windowserver_cpu": 43.083914331927595,
+      "app_rss_mib": 183.88671875,
+      "windowserver_rss_mib": 80.44921875,
+      "combined_cpu": 86.18646510510251
+    }
+  }
+]

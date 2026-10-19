@@ -1,0 +1,56 @@
+diff --git a/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp b/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp
+index aacf08106..bdbac199b 100644
+--- a/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp
++++ b/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp
+@@ -285,7 +285,9 @@ bool ScreenshotCaptureWorker::ensureSession(const QVector<std::uint32_t>& exclud
+     config.capture_backend = backend;
+     config.exclusions.windows = excludedWindowIds.constData();
+     config.exclusions.window_count = static_cast<size_t>(excludedWindowIds.size());
+-#if defined(Q_OS_WIN) || defined(_WIN32)
++#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
++    // Opaque BGRA frames map directly to Qt's RGB32 raster path without a
++    // channel conversion or alpha blend on every overlay repaint.
+     config.pixel_format = SNOW_CAPTURE_PIXEL_FORMAT_BGRA8;
+ #endif
+     m_session = snow_capture_desktop_session_create(&config);
+diff --git a/snow_shot/tests/screenshot_capture_worker_tests.cpp b/snow_shot/tests/screenshot_capture_worker_tests.cpp
+index c2ab82eac..e6b065dfc 100644
+--- a/snow_shot/tests/screenshot_capture_worker_tests.cpp
++++ b/snow_shot/tests/screenshot_capture_worker_tests.cpp
+@@ -149,6 +149,28 @@ void invalidLayoutDoesNotAcquireFrames() {
+     require(capture(worker).succeeded, "valid layout must recover on the next invocation");
+ }
+ 
++void desktopFramesUseNativeRasterFormat() {
++    ScreenshotCaptureResult result;
++    {
++        ScreenshotCaptureWorker worker;
++        result = capture(worker);
++    }
++    require(result.succeeded && result.displays.size() == 1,
++            "desktop capture must deliver one display");
++    const QImage image = result.displays.front().image;
++#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
++    require(image.format() == QImage::Format_RGB32 && !image.hasAlphaChannel() &&
++                image.pixelColor(0, 0) == QColor(30, 20, 10),
++            "opaque desktop BGRA pixels must reach Qt's native raster path with correct colors");
++#else
++    require(image.format() == QImage::Format_RGBA8888 &&
++                image.pixelColor(0, 0) == QColor(10, 20, 30),
++            "other desktop capture platforms must preserve their RGBA layout");
++#endif
++    require(image.constBits()[0] == 10 && image.pixelColor(0, 0).alpha() == 255,
++            "native raster images must retain their frame lease after session shutdown");
++}
++
+ void requireBackend(ScreenshotCaptureWorker& worker, uint8_t expected) {
+     const auto result = capture(worker);
+     require(result.succeeded && result.displays.size() == 1, "capture did not return a display");
+@@ -581,6 +603,7 @@ int main(int argc, char** argv) {
+                                           temporary.filePath(QStringLiteral("data")), 60000}));
+     recaptureExclusionsReplaceSessionAndDoNotLeak();
+     invalidLayoutDoesNotAcquireFrames();
++    desktopFramesUseNativeRasterFormat();
+     changedModeReplacesPrewarmedSession();
+     allModeTransitionsApplyWithoutRestart();
+     colorRestorationAppliesAcrossBackendChanges();

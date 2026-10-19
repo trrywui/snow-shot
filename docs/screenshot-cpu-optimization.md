@@ -50,14 +50,15 @@
 给出精确降幅、缓存的独立贡献，或宣称精简版与完整版性能等价。
 这些数字未包含 WindowServer，也不是合并上游 1.3.2 后的新性能基线。
 
-## 验证与本地报告
+## 验证与报告归档
 
 缓存普通缩放、2× 缩放及原生窗口回归通过；正式默认 30 Hz 的调度回归通过。
 合并上游 1.3.2 后，Release 构建、截图呈现与快捷键迁移两项 C++ 回归、
 相关脚本检查及发布包校验通过；没有运行全套测试或重新进行多轮性能采样。
 
-本地归档根目录（相对仓库）：
-`.tools/macos14-personal/reports/cpu-optimization-20261019/`，共复制并校验 120 个文件。
+归档已从 `.tools` 搬到仓库根目录的
+[`reports/cpu-optimization-20261019/`](../reports/cpu-optimization-20261019/)，
+包含清理前复制并校验的 120 个文件，另附 `ARCHIVE_COMPLETE` 标记。
 
 - `decoration-cadence-20261018a/README.md`、`comparison-summary.json`：最终方案及复测。
 - `presentation-cadence-nv28zb1i/README.md`、`comparison-summary.json`：呈现频率实验。
@@ -65,5 +66,6 @@
 - `final-cpu-merge-20261018a/tests.log`、`upstream-1.3.2-20261018/tests.log`：合并及发布回归结果。
 
 归档保留结论、汇总、元数据、脚本、补丁和选定测试日志；原始采样与测试程序
-不保证保留。`.tools/` 被 Git 忽略，报告需单独备份，`clean --all` 会删除它们。
+不保证保留。报告现已纳入 Git，随提交推送备份，不受 `.tools` 清理影响。
+归档中的旧路径是实验时的历史位置，脚本保留供查阅，不能直接当作当前构建入口。
 后续继续优化时，应从当前发布版重新建立性能基线，再做单变量比较。

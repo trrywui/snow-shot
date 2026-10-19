@@ -1,0 +1,110 @@
+[
+  {
+    "label": "bgra30-retry2",
+    "phase": "hover",
+    "samples": 11,
+    "cpu_median": 38.28655433384644,
+    "cpu_range": [
+      24.644438178595028,
+      42.145142718098235
+    ],
+    "ws_median": 41.365977906723835,
+    "pointer_distance_median": 947.4953907626268
+  },
+  {
+    "label": "bgra30-retry2",
+    "phase": "drag",
+    "samples": 10,
+    "cpu_median": 43.698260015130906,
+    "cpu_range": [
+      39.17499570562666,
+      45.28398092387407
+    ],
+    "ws_median": 39.2252823736619,
+    "pointer_distance_median": 394.5062647202856
+  },
+  {
+    "label": "bgra30-retry2",
+    "phase": "idle",
+    "samples": 9,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9851633182646442
+    ],
+    "ws_median": 6.894295211155284,
+    "pointer_distance_median": 0.0
+  },
+  {
+    "label": "full30-recheck1",
+    "phase": "hover",
+    "samples": 10,
+    "cpu_median": 24.092533499998805,
+    "cpu_range": [
+      2.946260170298012,
+      34.29042235769339
+    ],
+    "ws_median": 41.41119659805014,
+    "pointer_distance_median": 840.0713853153229
+  },
+  {
+    "label": "full30-recheck1",
+    "phase": "drag",
+    "samples": 11,
+    "cpu_median": 28.500838705039442,
+    "cpu_range": [
+      10.812021013366742,
+      32.455003156684484
+    ],
+    "ws_median": 41.02849648863524,
+    "pointer_distance_median": 347.4342096662939
+  },
+  {
+    "label": "full30-recheck1",
+    "phase": "idle",
+    "samples": 7,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9804128406942935
+    ],
+    "ws_median": 7.867010252793783,
+    "pointer_distance_median": 0.0
+  },
+  {
+    "label": "full30-retry2",
+    "phase": "hover",
+    "samples": 11,
+    "cpu_median": 23.617680646396565,
+    "cpu_range": [
+      13.76024742096365,
+      26.587418146771014
+    ],
+    "ws_median": 41.28344818524339,
+    "pointer_distance_median": 808.1308371907701
+  },
+  {
+    "label": "full30-retry2",
+    "phase": "drag",
+    "samples": 10,
+    "cpu_median": 31.96123259800213,
+    "cpu_range": [
+      26.581537226116872,
+      34.521107387553336
+    ],
+    "ws_median": 42.7290887535399,
+    "pointer_distance_median": 288.5534998774693
+  },
+  {
+    "label": "full30-retry2",
+    "phase": "idle",
+    "samples": 8,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9863667679743668
+    ],
+    "ws_median": 6.890348125626877,
+    "pointer_distance_median": 0.0
+  }
+]

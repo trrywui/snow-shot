@@ -1,0 +1,125 @@
+{
+  "dpr": 2,
+  "fractional_scale_estimates": false,
+  "surfaces": [
+    {
+      "paint_events": 2,
+      "paint_logical_pixels": 68480,
+      "paint_bounding_logical_pixels": 68480,
+      "paint_rectangles": 2,
+      "full_paints": 2,
+      "clear_events": 1,
+      "clear_logical_pixels": 34240,
+      "logical_size": [
+        160,
+        214
+      ],
+      "mean_paint_fraction": 1.0,
+      "bounding_expansion": 1.0,
+      "paint_physical_pixels": 273920,
+      "clear_write_bytes": 547840
+    },
+    {
+      "paint_events": 9,
+      "paint_logical_pixels": 1806304,
+      "paint_bounding_logical_pixels": 2203680,
+      "paint_rectangles": 21,
+      "full_paints": 2,
+      "logical_size": [
+        900,
+        640
+      ],
+      "mean_paint_fraction": 0.3484382716049383,
+      "bounding_expansion": 1.2199939766506636,
+      "paint_physical_pixels": 7225216,
+      "clear_write_bytes": 0
+    },
+    {
+      "paint_events": 302,
+      "paint_logical_pixels": 18662580,
+      "paint_bounding_logical_pixels": 25699960,
+      "paint_rectangles": 3613,
+      "full_paints": 1,
+      "clear_events": 297,
+      "clear_logical_pixels": 18240552,
+      "logical_size": [
+        1242,
+        142
+      ],
+      "mean_paint_fraction": 0.35039249799594185,
+      "bounding_expansion": 1.3770850546923308,
+      "paint_physical_pixels": 74650320,
+      "clear_write_bytes": 291848832
+    },
+    {
+      "paint_events": 328,
+      "paint_logical_pixels": 15235172,
+      "paint_bounding_logical_pixels": 89426457,
+      "paint_rectangles": 10953,
+      "full_paints": 1,
+      "clear_events": 323,
+      "clear_logical_pixels": 13492199,
+      "logical_size": [
+        1680,
+        1051
+      ],
+      "mean_paint_fraction": 0.026306406099605377,
+      "bounding_expansion": 5.869737276349752,
+      "paint_physical_pixels": 60940688,
+      "clear_write_bytes": 215875184
+    }
+  ],
+  "buffer_copies": [
+    {
+      "physical_size": [
+        1800,
+        1280
+      ],
+      "copy_events": 6,
+      "copy_physical_pixels": 5566336,
+      "copy_write_bytes": 22265344
+    },
+    {
+      "physical_size": [
+        2484,
+        284
+      ],
+      "copy_events": 305,
+      "copy_physical_pixels": 75784032,
+      "copy_write_bytes": 303136128
+    },
+    {
+      "physical_size": [
+        3360,
+        2102
+      ],
+      "copy_events": 300,
+      "copy_physical_pixels": 49285760,
+      "copy_write_bytes": 197143040
+    }
+  ],
+  "timings": [
+    {
+      "kind": "paint",
+      "logical_size": [
+        1680,
+        1050
+      ],
+      "events": 301,
+      "median_ms": 1.337758,
+      "total_ms": 436.312379,
+      "maximum_ms": 8.726922
+    },
+    {
+      "kind": "update",
+      "logical_size": [
+        1680,
+        1051
+      ],
+      "events": 304,
+      "median_ms": 3.757113,
+      "total_ms": 1251.73725,
+      "maximum_ms": 33.39285
+    }
+  ]
+}

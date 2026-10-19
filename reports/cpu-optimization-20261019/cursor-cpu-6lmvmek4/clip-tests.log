@@ -1,0 +1,16 @@
+Test project /Users/lee/workspace/code/snow-shot/.tools/macos14-personal/build
+    Start 354: snow-shot-pinned-result-scaling-tests
+1/4 Test #354: snow-shot-pinned-result-scaling-tests .............   Passed    0.38 sec
+    Start 601: snow-shot-background-coverage-tests
+2/4 Test #601: snow-shot-background-coverage-tests ...............   Passed    0.59 sec
+    Start 602: snow-shot-rectangular-selection-rendering-tests
+3/4 Test #602: snow-shot-rectangular-selection-rendering-tests ...   Passed    0.43 sec
+    Start 840: snow-shot-large-image-slice-rendering-tests
+4/4 Test #840: snow-shot-large-image-slice-rendering-tests .......   Passed    0.22 sec
+
+100% tests passed out of 4
+
+Label Time Summary:
+unit    =   1.62 sec*proc (4 tests)
+
+Total Test time (real) =   1.66 sec

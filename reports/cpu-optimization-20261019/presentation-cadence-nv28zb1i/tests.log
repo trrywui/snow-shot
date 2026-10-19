@@ -1,0 +1,12 @@
+Test project /Users/lee/workspace/code/snow-shot/.tools/macos14-personal/build
+    Start 590: snow-shot-presentation-frame-scheduler-tests
+1/2 Test #590: snow-shot-presentation-frame-scheduler-tests ...   Passed    0.61 sec
+    Start 594: snow-shot-selection-presentation-tests
+2/2 Test #594: snow-shot-selection-presentation-tests .........   Passed    5.11 sec
+
+100% tests passed out of 2
+
+Label Time Summary:
+unit    =   5.72 sec*proc (2 tests)
+
+Total Test time (real) =   5.76 sec

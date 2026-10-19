@@ -72,6 +72,8 @@ Desktop.ini
 
 # Logs and temporary files
 *.log
+# Preserve selected historical test logs alongside the CPU optimization reports.
+!/reports/cpu-optimization-20261019/**/*.log
 *.tmp
 *.stackdump
 *.autosave

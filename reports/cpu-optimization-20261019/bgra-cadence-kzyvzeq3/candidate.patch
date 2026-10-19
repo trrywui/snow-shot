@@ -1,0 +1,194 @@
+diff --git a/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp b/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp
+index aacf08106..bdbac199b 100644
+--- a/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp
++++ b/snow_shot/src/presentation/capture/screenshotcaptureworker.cpp
+@@ -285,7 +285,9 @@ bool ScreenshotCaptureWorker::ensureSession(const QVector<std::uint32_t>& exclud
+     config.capture_backend = backend;
+     config.exclusions.windows = excludedWindowIds.constData();
+     config.exclusions.window_count = static_cast<size_t>(excludedWindowIds.size());
+-#if defined(Q_OS_WIN) || defined(_WIN32)
++#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
++    // Opaque BGRA frames map directly to Qt's RGB32 raster path without a
++    // channel conversion or alpha blend on every overlay repaint.
+     config.pixel_format = SNOW_CAPTURE_PIXEL_FORMAT_BGRA8;
+ #endif
+     m_session = snow_capture_desktop_session_create(&config);
+diff --git a/snow_shot/src/presentation/services/screenshotpresentationservices.cpp b/snow_shot/src/presentation/services/screenshotpresentationservices.cpp
+index 18795c661..38901d550 100644
+--- a/snow_shot/src/presentation/services/screenshotpresentationservices.cpp
++++ b/snow_shot/src/presentation/services/screenshotpresentationservices.cpp
+@@ -29,6 +29,16 @@
+ #include <utility>
+ 
+ namespace {
++int experimentalPresentationRateLimit() {
++#ifdef Q_OS_MACOS
++    // Process-local experiment: leave production cadence unchanged unless explicitly selected.
++    const int rate = qEnvironmentVariableIntValue("SNOW_SHOT_CAPTURE_PRESENTATION_FPS");
++    if (rate == 30 || rate == 45 || rate == 60)
++        return rate;
++#endif
++    return 0;
++}
++
+ struct PresentationLifecycle {
+     ScreenshotSessionState sessionState = ScreenshotSessionState::IdleCold;
+     ScreenshotStartupContext::Phase startupPhase = ScreenshotStartupContext::Phase::Inactive;
+@@ -121,6 +131,7 @@ struct ScreenshotPresentationServices::State {
+     QElapsedTimer clock;
+     std::unique_ptr<ScreenshotPresentationFrameScheduler> scheduler;
+     ScreenshotPresentationFrameClock frameClock;
++    const int presentationRateLimit = experimentalPresentationRateLimit();
+     ScreenshotToolbarPresentationState toolbar;
+     PresentationLifecycle lifecycle;
+     ScreenshotSelectionVisualState visual;
+@@ -444,7 +455,11 @@ void ScreenshotPresentationServices::scheduleFrame() {
+         if (display)
+             screen = display->screen;
+     }
+-    const qreal rate = screen ? screen->refreshRate() : 60.0;
++    qreal rate = screen ? screen->refreshRate() : 60.0;
++    if (m_state->presentationRateLimit > 0) {
++        const qreal validRate = std::isfinite(rate) && rate > 1.0 ? rate : 60.0;
++        rate = std::min(validRate, static_cast<qreal>(m_state->presentationRateLimit));
++    }
+     m_state->frameClock.setRefreshRate(rate, m_state->lastFrameNs);
+     m_state->scheduler->setDeadline(m_state->frameClock.nextFrameNanoseconds());
+ }
+diff --git a/snow_shot/tests/screenshot_capture_worker_tests.cpp b/snow_shot/tests/screenshot_capture_worker_tests.cpp
+index c2ab82eac..e6b065dfc 100644
+--- a/snow_shot/tests/screenshot_capture_worker_tests.cpp
++++ b/snow_shot/tests/screenshot_capture_worker_tests.cpp
+@@ -149,6 +149,28 @@ void invalidLayoutDoesNotAcquireFrames() {
+     require(capture(worker).succeeded, "valid layout must recover on the next invocation");
+ }
+ 
++void desktopFramesUseNativeRasterFormat() {
++    ScreenshotCaptureResult result;
++    {
++        ScreenshotCaptureWorker worker;
++        result = capture(worker);
++    }
++    require(result.succeeded && result.displays.size() == 1,
++            "desktop capture must deliver one display");
++    const QImage image = result.displays.front().image;
++#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
++    require(image.format() == QImage::Format_RGB32 && !image.hasAlphaChannel() &&
++                image.pixelColor(0, 0) == QColor(30, 20, 10),
++            "opaque desktop BGRA pixels must reach Qt's native raster path with correct colors");
++#else
++    require(image.format() == QImage::Format_RGBA8888 &&
++                image.pixelColor(0, 0) == QColor(10, 20, 30),
++            "other desktop capture platforms must preserve their RGBA layout");
++#endif
++    require(image.constBits()[0] == 10 && image.pixelColor(0, 0).alpha() == 255,
++            "native raster images must retain their frame lease after session shutdown");
++}
++
+ void requireBackend(ScreenshotCaptureWorker& worker, uint8_t expected) {
+     const auto result = capture(worker);
+     require(result.succeeded && result.displays.size() == 1, "capture did not return a display");
+@@ -581,6 +603,7 @@ int main(int argc, char** argv) {
+                                           temporary.filePath(QStringLiteral("data")), 60000}));
+     recaptureExclusionsReplaceSessionAndDoNotLeak();
+     invalidLayoutDoesNotAcquireFrames();
++    desktopFramesUseNativeRasterFormat();
+     changedModeReplacesPrewarmedSession();
+     allModeTransitionsApplyWithoutRestart();
+     colorRestorationAppliesAcrossBackendChanges();
+diff --git a/snow_shot/tests/screenshot_selection_presentation_tests.cpp b/snow_shot/tests/screenshot_selection_presentation_tests.cpp
+index 1aa5cee03..c41089dfc 100644
+--- a/snow_shot/tests/screenshot_selection_presentation_tests.cpp
++++ b/snow_shot/tests/screenshot_selection_presentation_tests.cpp
+@@ -11,7 +11,9 @@
+ #include <QEventLoop>
+ #include <QPointer>
+ #include <QTimer>
++#include <QChronoTimer>
+ 
++#include <algorithm>
+ #include <cstdlib>
+ #include <iostream>
+ 
+@@ -113,6 +115,71 @@ void repeatedSelectionLeavesThePresentedUiIdle() {
+             "repeated selections must preserve the displayed rectangle");
+ }
+ 
++#ifdef Q_OS_MACOS
++void experimentalCadenceCoalescesFramesAndCommitsReleaseImmediately() {
++    constexpr auto variable = "SNOW_SHOT_CAPTURE_PRESENTATION_FPS";
++    const bool wasSet = qEnvironmentVariableIsSet(variable);
++    const QByteArray previous = qgetenv(variable);
++    for (const QByteArray& setting : {QByteArray("30"), QByteArray("45"), QByteArray("60"),
++                                      QByteArray("0"), QByteArray("bad"), QByteArray("120")}) {
++        qputenv(variable, setting);
++        Fixture fixture(QSize(320, 240), false, true,
++                        ScreenshotPresentationFrameScheduler::Backend::QtTimer);
++        fixture.interaction.confirmSelection();
++        require(fixture.interaction.enterSelectionDrag(ScreenshotSelectionDragMode::All),
++                "cadence verification needs an active move gesture");
++        fixture.services->updateOverlayState();
++        fixture.resetCounters();
++        const QRectF initial = fixture.displayedSelection();
++        QRectF latest;
++        for (int step = 1; step <= 12; ++step) {
++            latest = initial.translated(step, step);
++            fixture.selection.setDraggedSelectionRect(latest, ScreenshotSelectionDragMode::All);
++            fixture.services->requestSelectionDragPresentation();
++        }
++        const auto& scheduler = fixture.services->frameSchedulerForTesting();
++        auto* timer = qobject_cast<QChronoTimer*>(scheduler.wakeupObject());
++        const qreal screenRate = fixture.overlay.screen()->refreshRate();
++        const qreal validRate = std::isfinite(screenRate) && screenRate > 1 ? screenRate : 60;
++        const int limit = setting.toInt();
++        const qreal expectedRate = limit == 30 || limit == 45 || limit == 60
++                                       ? std::min(validRate, static_cast<qreal>(limit))
++                                       : validRate;
++        const qint64 periodNs = qRound64(1000000000.0 / expectedRate);
++        require(timer && timer->interval().count() == periodNs,
++                "the experimental limit must cap presentation without exceeding display rate");
++        require(fixture.selection.normalizedSelection() == latest &&
++                    fixture.displayedSelection() == initial && fixture.stateNotifications == 0,
++                "input must update the model immediately while presentation retains one frame");
++        PresentationTimerObserver observer;
++        fixture.nowNanoseconds += periodNs - 1;
++        require(observer.waitForNextTimeout() && fixture.displayedSelection() == initial,
++                "a presentation wake must not publish before its experimental deadline");
++        ++fixture.nowNanoseconds;
++        require(observer.waitForNextTimeout() && fixture.displayedSelection() == latest &&
++                    fixture.stateNotifications == 1 && !scheduler.active(),
++                "the deadline must present only the latest geometry and then become idle");
++        const QRectF released = latest.translated(2, 3);
++        fixture.selection.setDraggedSelectionRect(released, ScreenshotSelectionDragMode::All);
++        fixture.services->requestSelectionDragPresentation();
++        fixture.interaction.finishDrag();
++        fixture.services->updateOverlayState();
++        require(fixture.displayedSelection() == released && !scheduler.active(),
++                "release must immediately commit final geometry even before the next deadline");
++
++        fixture.requestPointer(QPointF(15, 20));
++        fixture.services->resetPresentation();
++        fixture.nowNanoseconds += periodNs * 2;
++        fixture.processEvents();
++        require(!scheduler.active(), "ending capture must cancel a deferred experimental frame");
++    }
++    if (wasSet)
++        qputenv(variable, previous);
++    else
++        qunsetenv(variable);
++}
++#endif
++
+ void multipleRequestsCommitOnlyTheirLatestSelection() {
+     Fixture fixture(QSize(1200, 800), false);
+     const QRectF initial = fixture.displayedSelection();
+@@ -1766,6 +1833,9 @@ int main(int argc, char* argv[]) {
+         nativeToolbarRaiseAllowsPresenterDeletion();
+         return 0;
+     }
++#ifdef Q_OS_MACOS
++    experimentalCadenceCoalescesFramesAndCommitsReleaseImmediately();
++#endif
+     deferredToolbarRaiseEndsWithItsPresenter();
+     nativeToolbarRaiseAllowsPresenterDeletion();
+     repeatedSelectionLeavesThePresentedUiIdle();

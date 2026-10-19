@@ -1,0 +1,11 @@
+Test project /Users/lee/workspace/code/snow-shot/.tools/macos14-personal/build
+    Start 321: snow-shot-macos-color-picker-animation-native-tests
+1/1 Test #321: snow-shot-macos-color-picker-animation-native-tests ...   Passed    0.69 sec
+
+100% tests passed out of 1
+
+Label Time Summary:
+interactive    =   0.69 sec*proc (1 test)
+macos          =   0.69 sec*proc (1 test)
+
+Total Test time (real) =   0.71 sec

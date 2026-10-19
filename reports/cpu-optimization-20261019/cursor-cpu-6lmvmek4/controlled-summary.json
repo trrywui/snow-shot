@@ -1,0 +1,116 @@
+[
+  {
+    "mode": 0,
+    "phase": "move-selection",
+    "valid": 3,
+    "total": 3,
+    "app_cpu_median": 44.089025346577586,
+    "app_cpu_values": [
+      42.78169006127494,
+      44.089025346577586,
+      45.48662980105238
+    ],
+    "ws_cpu_median": 41.589647492462895,
+    "rss_mib_median": 210.765625,
+    "updates": [
+      300,
+      300,
+      299
+    ]
+  },
+  {
+    "mode": 1,
+    "phase": "move-selection",
+    "valid": 3,
+    "total": 3,
+    "app_cpu_median": 42.296559504810105,
+    "app_cpu_values": [
+      42.88136608675493,
+      41.5971981999259,
+      42.296559504810105
+    ],
+    "ws_cpu_median": 44.09641310075915,
+    "rss_mib_median": 210.62890625,
+    "updates": [
+      300,
+      299,
+      300
+    ]
+  },
+  {
+    "mode": 0,
+    "phase": "resize-selection",
+    "valid": 3,
+    "total": 3,
+    "app_cpu_median": 43.49575628435026,
+    "app_cpu_values": [
+      43.49575628435026,
+      44.17936419450474,
+      42.79908488279787
+    ],
+    "ws_cpu_median": 42.97992444261841,
+    "rss_mib_median": 210.76953125,
+    "updates": [
+      300,
+      300,
+      300
+    ]
+  },
+  {
+    "mode": 1,
+    "phase": "resize-selection",
+    "valid": 3,
+    "total": 3,
+    "app_cpu_median": 42.58268270455275,
+    "app_cpu_values": [
+      40.68033804544939,
+      43.07967063880662,
+      42.58268270455275
+    ],
+    "ws_cpu_median": 42.48272335548104,
+    "rss_mib_median": 210.5234375,
+    "updates": [
+      300,
+      300,
+      300
+    ]
+  },
+  {
+    "mode": 0,
+    "phase": "settle",
+    "valid": 3,
+    "total": 3,
+    "app_cpu_median": 0.0,
+    "app_cpu_values": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ws_cpu_median": 9.47938828827726,
+    "rss_mib_median": 210.76953125,
+    "updates": [
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "mode": 1,
+    "phase": "settle",
+    "valid": 3,
+    "total": 3,
+    "app_cpu_median": 0.0,
+    "app_cpu_values": [
+      0.0,
+      0.4989666926208514,
+      0.0
+    ],
+    "ws_cpu_median": 8.98281707462614,
+    "rss_mib_median": 210.5234375,
+    "updates": [
+      0,
+      0,
+      0
+    ]
+  }
+]

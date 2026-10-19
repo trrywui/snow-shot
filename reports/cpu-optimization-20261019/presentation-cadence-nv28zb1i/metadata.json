@@ -1,0 +1,25 @@
+{
+  "source_baseline": "31600ee7a",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/presentation-cadence-nv28zb1i/deploy/snow_shot.app",
+  "experiment": "SNOW_SHOT_CAPTURE_PRESENTATION_FPS: unset/60,45,30; GUI threadpool enabled",
+  "manual_confirmations": {
+    "native-retry1": "基线完成",
+    "fps30-retry1": "刚才是我操作失误了，跟手程度和复制正常",
+    "fps45": "与30Hz一样跟手，复制正常，没有明显差别",
+    "native-confirm": "复核完成，与30/45Hz相比无明显体验差异"
+  },
+  "paint_logging": "One canvas paint_ns line per paint; no Qt backing-store logs or stack sampling. Same setting across modes.",
+  "clock_alignment": "Qt steady_clock timestamps are converted to mach/Python monotonic by a per-run measured offset; reject >10ms endpoint offset drift.",
+  "manual_order_plan": [
+    "native-retry1",
+    "fps30-retry1",
+    "fps45",
+    "native-confirm"
+  ],
+  "binary_sha256": "8d51409a574837d6cf6e73c4c23777df4a139d7a84efbd24c0c88c9d5c1f4b65",
+  "excluded_manual_runs": {
+    "native": "用户报告操作失误，要求重做",
+    "fps30": "用户确认操作失误，要求重做"
+  },
+  "decision": "Retain opt-in process-local cadence cap; 30 Hz is preferred for this Mac. Default follows display rate; installed app unchanged."
+}

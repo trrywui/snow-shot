@@ -1,0 +1,695 @@
+diff --git a/snow_shot/CMakeLists.txt b/snow_shot/CMakeLists.txt
+index e48d1c268..f187a8375 100644
+--- a/snow_shot/CMakeLists.txt
++++ b/snow_shot/CMakeLists.txt
+@@ -7077,6 +7077,9 @@ if(SNOW_SHOT_BUILD_TESTS)
+         COMMAND snow-shot-screenshot-canvas-renderer-tests --pointer-presentation-only -platform offscreen)
+     add_test(NAME snow-shot-background-coverage-tests
+         COMMAND snow-shot-screenshot-canvas-renderer-tests --background-coverage-only -platform offscreen)
++    add_test(NAME snow-shot-static-backdrop-tests
++        COMMAND snow-shot-screenshot-canvas-renderer-tests --static-backdrop-only -platform offscreen)
++    set_tests_properties(snow-shot-static-backdrop-tests PROPERTIES LABELS "unit" TIMEOUT 60)
+     add_test(NAME snow-shot-rectangular-selection-rendering-tests
+         COMMAND snow-shot-screenshot-canvas-renderer-tests --rectangular-selection-rendering-only -platform offscreen)
+     set_tests_properties(snow-shot-selection-presentation-tests
+diff --git a/snow_shot/include/snow_shot/platform/screenshotnative.h b/snow_shot/include/snow_shot/platform/screenshotnative.h
+index 4125dce30..930f028ca 100644
+--- a/snow_shot/include/snow_shot/platform/screenshotnative.h
++++ b/snow_shot/include/snow_shot/platform/screenshotnative.h
+@@ -2,12 +2,20 @@
+ #define SNOW_SHOT_PLATFORM_SCREENSHOTNATIVE_H
+ #include "snow_shot/platform/windows/scrollinput.h"
+ class QWidget;
++class QImage;
+ namespace snow_shot::platform {
+ using ScrollInputResult = windows::ScrollInputResult;
+ #ifdef Q_OS_MACOS
+ // Give Qt exclusive drag ownership, including after native surface recreation.
+ void configureControlledWindowDragging(QWidget* widget, bool controlResizing = false);
+ void configureScreenshotOverlayWindow(QWidget* widget);
++// Experimental passive child window: upload static pixels once, below the Qt overlay.
++[[nodiscard]] bool presentScreenshotBackdrop(QWidget* owner, const QImage& image,
++                                             const QRect& canvasRect);
++void clearScreenshotBackdrop(QWidget* owner);
++#if defined(SNOW_SHOT_BENCH_INTERNALS)
++[[nodiscard]] bool screenshotBackdropIsPassiveAndVisible(QWidget* owner);
++#endif
+ // Disable Qt updates before this terminal presentation retirement, then hide and
+ // destroy the surface without painting again. Call before the first native hide.
+ // Call on the GUI thread outside any caller-owned explicit CATransaction, so the
+diff --git a/snow_shot/include/snow_shot/presentation/screenshotcanvasrenderer.h b/snow_shot/include/snow_shot/presentation/screenshotcanvasrenderer.h
+index f6674d297..bee9323f9 100644
+--- a/snow_shot/include/snow_shot/presentation/screenshotcanvasrenderer.h
++++ b/snow_shot/include/snow_shot/presentation/screenshotcanvasrenderer.h
+@@ -202,6 +202,14 @@ class ScreenshotCanvasRenderer final : public SnowCanvasCustomRenderer {
+     // True when the next paint will Source-fill or blit screenshot content over
+     // every pixel of widgetRect, so a parent translucent clear is redundant.
+     [[nodiscard]] bool coversWidgetRect(const QRect& widgetRect) const override;
++    // Native presentation only replaces the on-screen backdrop. Sampling, filters,
++    // QWidget::render and exports continue to render the original image normally.
++    [[nodiscard]] bool canPresentExternalBackground() const;
++    [[nodiscard]] QImage externalBackgroundImage();
++    void setExternalBackgroundPresented(bool presented);
++    [[nodiscard]] bool externalBackgroundPresented() const {
++        return m_externalBackgroundPresented;
++    }
+ #if defined(SNOW_SHOT_BENCH_INTERNALS)
+     [[nodiscard]] quint64 ocrGeometrySynchronizationCountForTesting() const;
+ #endif
+@@ -212,6 +220,7 @@ class ScreenshotCanvasRenderer final : public SnowCanvasCustomRenderer {
+     void renderAfterCanvas(QPainter& painter, const SnowCanvasRenderContext& context) override;
+ 
+   private:
++    [[nodiscard]] bool imageCoversWidgetRect(const QRect& widgetRect) const;
+     struct SelectionViewGeometry {
+         bool valid = false;
+         QTransform canvasToViewTransform;
+@@ -272,6 +281,7 @@ class ScreenshotCanvasRenderer final : public SnowCanvasCustomRenderer {
+     mutable QRect m_opaqueCoverageViewport;
+     mutable bool m_opaqueCoverageValid = false;
+     QImage m_scrollingResultPreviewImage;
++    bool m_externalBackgroundPresented = false;
+     QRectF m_scrollingResultPreviewCanvasRect;
+     std::optional<Qt::Orientation> m_scrollingCropGuide;
+     QSize m_imageViewportPhysicalSize;
+diff --git a/snow_shot/include/snow_shot/presentation/screenshotoverlaywindow.h b/snow_shot/include/snow_shot/presentation/screenshotoverlaywindow.h
+index 7e4ca6fc8..82efd9bdc 100644
+--- a/snow_shot/include/snow_shot/presentation/screenshotoverlaywindow.h
++++ b/snow_shot/include/snow_shot/presentation/screenshotoverlaywindow.h
+@@ -11,6 +11,7 @@
+ #include <QRectF>
+ #include "snow_shot/image/screenshotregiongeometry.h"
+ #include <QWidget>
++#include <QTransform>
+ 
+ #include <memory>
+ #include <optional>
+@@ -172,6 +173,8 @@ class ScreenshotOverlayWindow final : public QWidget {
+     bool handleCanvasWheel(QWheelEvent* event);
+     bool dispatchHandledMouseEvent(QMouseEvent* event);
+     void initializeScreenshotSurface();
++    void updateStaticBackdrop();
++    void clearStaticBackdrop();
+     void layoutRegionTypeControl();
+     void layoutScrollingThumbnail();
+     void updateScrollingInputTransparency();
+@@ -197,6 +200,13 @@ class ScreenshotOverlayWindow final : public QWidget {
+     ScreenshotScrollingRecognitionMode m_scrollingThumbnailMode =
+         ScreenshotScrollingRecognitionMode::Vertical;
+     bool m_scrollingCaptureMode = false;
++    bool m_allowStaticBackdrop = false;
++    bool m_staticBackdropActive = false;
++    bool m_staticBackdropClearWasEnabled = false;
++    quint64 m_staticBackdropRevision = 0;
++    QTransform m_staticBackdropTransform;
++    QRect m_staticBackdropRect;
++    qreal m_staticBackdropDpr = 0;
+     bool m_canvasContentWasVisible = true;
+     bool m_canvasClearBackgroundWasEnabled = true;
+     bool m_canvasInteractionWasEnabled = true;
+diff --git a/snow_shot/src/platform/macos/screenshotnative.mm b/snow_shot/src/platform/macos/screenshotnative.mm
+index fe8c68688..21c89b9b8 100644
+--- a/snow_shot/src/platform/macos/screenshotnative.mm
++++ b/snow_shot/src/platform/macos/screenshotnative.mm
+@@ -21,6 +21,7 @@
+ #include <QPointer>
+ #include <QVariant>
+ #include <QWindow>
++#include <QImage>
+ #include <QWidget>
+ #include <qpa/qplatformwindow.h>
+ 
+@@ -51,11 +52,28 @@ @interface SnowScreenshotWindowPolicy : NSObject {
+ @implementation SnowScreenshotWindowPolicy
+ @end
+ 
++@interface SnowScreenshotBackdrop : NSObject {
++  @public
++    NSPanel* panel;
++}
++@end
++@implementation SnowScreenshotBackdrop
++- (void)dealloc {
++    panel.contentView.layer.contents = nil;
++    [panel.parentWindow removeChildWindow:panel];
++    [panel orderOut:nil];
++    [panel close];
++    [panel release];
++    [super dealloc];
++}
++@end
++
+ namespace snow_shot::platform {
+ namespace {
+ using namespace detail;
+ 
+ char nativePolicyKey;
++char staticBackdropKey;
+ constexpr auto kImmediateCapturePresentation = "snowCaptureWindowImmediatePresentation";
+ 
+ SnowScreenshotWindowPolicy* nativePolicyState(NSWindow* window) {
+@@ -672,6 +690,85 @@ void configureScreenshotOverlayWindow(QWidget* widget) {
+     configureControlledWindowDragging(widget, true);
+ }
+ 
++bool presentScreenshotBackdrop(QWidget* widget, const QImage& image, const QRect& canvasRect) {
++    if (!widget || !widget->internalWinId() || image.isNull() || canvasRect.isEmpty() ||
++        QGuiApplication::platformName() != QStringLiteral("cocoa"))
++        return false;
++    NSView* view = reinterpret_cast<NSView*>(widget->internalWinId());
++    NSWindow* owner = view.window;
++    if (!owner)
++        return false;
++    CGImageRef pixels = image.toCGImage();
++    if (!pixels)
++        return false;
++    clearScreenshotBackdrop(widget);
++    auto* state = [SnowScreenshotBackdrop new];
++    NSRect local =
++        NSMakeRect(canvasRect.x(), canvasRect.y(), canvasRect.width(), canvasRect.height());
++    if (!view.flipped)
++        local.origin.y = NSHeight(view.bounds) - NSMaxY(local);
++    const NSRect frame = [owner convertRectToScreen:[view convertRect:local toView:nil]];
++    state->panel = [[NSPanel alloc]
++        initWithContentRect:frame
++                  styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
++                    backing:NSBackingStoreBuffered
++                      defer:NO];
++    NSPanel* panel = state->panel;
++    panel.releasedWhenClosed = NO;
++    panel.hasShadow = NO;
++    panel.opaque = YES;
++    panel.backgroundColor = NSColor.blackColor;
++    panel.ignoresMouseEvents = YES;
++    panel.hidesOnDeactivate = NO;
++    panel.animationBehavior = NSWindowAnimationBehaviorNone;
++    panel.collectionBehavior = owner.collectionBehavior;
++    panel.level = owner.level;
++    panel.contentView.wantsLayer = YES;
++    [CATransaction begin];
++    [CATransaction setDisableActions:YES];
++    panel.contentView.layer.contentsGravity = kCAGravityResize;
++    panel.contentView.layer.contentsScale = widget->devicePixelRatioF();
++    panel.contentView.layer.contents = reinterpret_cast<id>(pixels);
++    [CATransaction commit];
++    CGImageRelease(pixels);
++    [owner addChildWindow:panel ordered:NSWindowBelow];
++    [panel orderWindow:NSWindowBelow relativeTo:owner.windowNumber];
++    objc_setAssociatedObject(owner, &staticBackdropKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++    [state release];
++    return panel.visible;
++}
++
++void clearScreenshotBackdrop(QWidget* widget) {
++    if (!widget || !widget->internalWinId() ||
++        QGuiApplication::platformName() != QStringLiteral("cocoa"))
++        return;
++    NSWindow* owner = reinterpret_cast<NSView*>(widget->internalWinId()).window;
++    auto* state =
++        static_cast<SnowScreenshotBackdrop*>(objc_getAssociatedObject(owner, &staticBackdropKey));
++    if (!state)
++        return;
++    [CATransaction begin];
++    [CATransaction setDisableActions:YES];
++    state->panel.contentView.layer.contents = nil;
++    [CATransaction commit];
++    [CATransaction flush];
++    objc_setAssociatedObject(owner, &staticBackdropKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++}
++
++#if defined(SNOW_SHOT_BENCH_INTERNALS)
++bool screenshotBackdropIsPassiveAndVisible(QWidget* widget) {
++    if (!widget || !widget->internalWinId() ||
++        QGuiApplication::platformName() != QStringLiteral("cocoa"))
++        return false;
++    NSWindow* owner = reinterpret_cast<NSView*>(widget->internalWinId()).window;
++    auto* state =
++        static_cast<SnowScreenshotBackdrop*>(objc_getAssociatedObject(owner, &staticBackdropKey));
++    return state && state->panel.visible && state->panel.ignoresMouseEvents &&
++           !state->panel.keyWindow && !state->panel.mainWindow &&
++           state->panel.parentWindow == owner;
++}
++#endif
++
+ void retireScreenshotWindowPresentation(QWidget* widget) {
+     if (widget == nullptr || qApp == nullptr || QThread::currentThread() != qApp->thread() ||
+         QGuiApplication::platformName() != QStringLiteral("cocoa") || !widget->isWindow() ||
+diff --git a/snow_shot/src/presentation/overlay/screenshotcanvasrenderer.cpp b/snow_shot/src/presentation/overlay/screenshotcanvasrenderer.cpp
+index b82b18649..1255a3222 100644
+--- a/snow_shot/src/presentation/overlay/screenshotcanvasrenderer.cpp
++++ b/snow_shot/src/presentation/overlay/screenshotcanvasrenderer.cpp
+@@ -1,6 +1,7 @@
+ #include "snow_draw_engine_qt/snow_canvas_image.h"
+ #include "snow_shot/presentation/screenshotcanvasrenderer.h"
+ #include "snow_shot/presentation/screenshotimagerendering.h"
++#include "screenshotoverlaycanvaswidget.h"
+ 
+ #include "snow_shot/presentation/screenshotguidelinerendering.h"
+ #include "snow_shot/presentation/screenshotocrpresentation.h"
+@@ -2878,6 +2879,7 @@ void ScreenshotCanvasRenderer::clearOcrPresentation() {
+ }
+ 
+ void ScreenshotCanvasRenderer::reset() {
++    m_externalBackgroundPresented = false;
+     // Pinned/export snapshots can share geometry with the ending capture.
+     // Release only derived data, leaving those snapshots fully usable.
+     clearRenderState();
+@@ -3034,6 +3036,45 @@ QRectF ScreenshotCanvasRenderer::selection() const {
+ }
+ 
+ bool ScreenshotCanvasRenderer::coversWidgetRect(const QRect& widgetRect) const {
++    return !m_externalBackgroundPresented && imageCoversWidgetRect(widgetRect);
++}
++
++bool ScreenshotCanvasRenderer::canPresentExternalBackground() const {
++    return m_renderMode == RenderMode::Standard &&
++           (!m_ocrVisible || (m_ocrPresentation == nullptr && m_ocrFilteredImage.isNull())) &&
++           imageCoversWidgetRect(m_canvas.rect());
++}
++
++QImage ScreenshotCanvasRenderer::externalBackgroundImage() {
++    if (!canPresentExternalBackground())
++        return {};
++    const qreal dpr = m_canvas.devicePixelRatioF();
++    const QSize pixels(qRound(m_canvas.width() * dpr), qRound(m_canvas.height() * dpr));
++    const auto transform = m_canvas.canvasToViewTransform();
++    if (m_imageSource.isMaterialized() && m_imageSource.materializedImage.size() == pixels &&
++        transform.mapRect(m_imageSource.materializedCanvasRect) == QRectF(m_canvas.rect()) &&
++        m_imageViewportPhysicalSize.isEmpty())
++        return m_imageSource.materializedImage;
++    QImage image(pixels, QImage::Format_RGB32);
++    if (image.isNull())
++        return {};
++    image.setDevicePixelRatio(dpr);
++    image.fill(Qt::black);
++    QPainter painter(&image);
++    const SnowCanvasRenderContext context{m_canvas.rect(), QRegion(m_canvas.rect()), transform,
++                                          dpr};
++    renderOriginalBackground(painter, context);
++    return image;
++}
++
++void ScreenshotCanvasRenderer::setExternalBackgroundPresented(bool presented) {
++    if (m_externalBackgroundPresented == presented)
++        return;
++    m_externalBackgroundPresented = presented;
++    m_canvas.update();
++}
++
++bool ScreenshotCanvasRenderer::imageCoversWidgetRect(const QRect& widgetRect) const {
+     if (!widgetRect.isValid() || widgetRect.isEmpty() || !m_canvas.rect().contains(widgetRect)) {
+         return false;
+     }
+@@ -3105,6 +3146,10 @@ ScreenshotOcrTextLayer* ScreenshotCanvasRenderer::ensureOcrTextLayer() {
+ 
+ void ScreenshotCanvasRenderer::renderBeforeCanvas(QPainter& painter,
+                                                   const SnowCanvasRenderContext& context) {
++    const auto* overlayCanvas = dynamic_cast<const ScreenshotOverlayCanvasWidget*>(&m_canvas);
++    if (m_externalBackgroundPresented && canPresentExternalBackground() && overlayCanvas &&
++        overlayCanvas->isDirectScreenPaint() && painter.device() == &m_canvas)
++        return;
+     paintBackground(painter, context, false);
+ }
+ 
+diff --git a/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.cpp b/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.cpp
+index 544158f2f..29083f676 100644
+--- a/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.cpp
++++ b/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.cpp
+@@ -7,6 +7,7 @@
+ #include <QElapsedTimer>
+ #include <QLoggingCategory>
+ #include <QRegion>
++#include <QScopedValueRollback>
+ 
+ namespace {
+ Q_LOGGING_CATEGORY(lcScreenshotCanvasRender, "snow_shot.capture.render.canvas", QtWarningMsg)
+@@ -31,6 +32,7 @@ ScreenshotOverlayCanvasWidget::ScreenshotOverlayCanvasWidget(SnowCanvasRuntime&
+ }
+ 
+ void ScreenshotOverlayCanvasWidget::paintEvent(QPaintEvent* event) {
++    const QScopedValueRollback directPaint(m_directScreenPaint, sharedPainter() == nullptr);
+     QElapsedTimer timer;
+     const bool trace = lcScreenshotCanvasRender().isInfoEnabled();
+     if (trace)
+@@ -50,7 +52,8 @@ void ScreenshotOverlayCanvasWidget::paintEvent(QPaintEvent* event) {
+     SnowCanvasWidget::paintEvent(event);
+     if (trace) {
+         qCInfo(lcScreenshotCanvasRender).nospace()
+-            << "paint_ns=" << timer.nsecsElapsed() << " size=" << size();
++            << "paint_ns=" << timer.nsecsElapsed() << " size=" << size()
++            << " direct_screen=" << m_directScreenPaint;
+     }
+     SNOW_SHOT_CAPTURE_PERF_MILESTONE("presentation.window.canvas.paint_end");
+ }
+diff --git a/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.h b/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.h
+index 5a585cb8f..418b5302a 100644
+--- a/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.h
++++ b/snow_shot/src/presentation/overlay/screenshotoverlaycanvaswidget.h
+@@ -9,9 +9,16 @@ class SnowCanvasRuntime;
+ class ScreenshotOverlayCanvasWidget final : public SnowCanvasWidget {
+   public:
+     explicit ScreenshotOverlayCanvasWidget(SnowCanvasRuntime& runtime, QWidget* parent = nullptr);
++    // QWidget::render/grab use a shared painter and must retain the full backdrop.
++    [[nodiscard]] bool isDirectScreenPaint() const {
++        return m_directScreenPaint;
++    }
+ 
+   protected:
+     void paintEvent(QPaintEvent* event) override;
++
++  private:
++    bool m_directScreenPaint = false;
+ };
+ 
+ #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTOVERLAYCANVASWIDGET_H
+diff --git a/snow_shot/src/presentation/overlay/screenshotoverlaywindow.cpp b/snow_shot/src/presentation/overlay/screenshotoverlaywindow.cpp
+index e8d421026..f209c8a4f 100644
+--- a/snow_shot/src/presentation/overlay/screenshotoverlaywindow.cpp
++++ b/snow_shot/src/presentation/overlay/screenshotoverlaywindow.cpp
+@@ -79,6 +79,10 @@ qint64 paintRegionArea(const QRegion& region) {
+ ScreenshotOverlayWindow::ScreenshotOverlayWindow(ScreenshotOverlayEventSink& eventSink,
+                                                  SnowCanvasWidget* canvas, QWidget* parent)
+     : QWidget(parent), m_eventSink(eventSink), m_canvas(canvas) {
++#ifdef Q_OS_MACOS
++    m_allowStaticBackdrop = QGuiApplication::platformName() == QStringLiteral("cocoa") &&
++                            qEnvironmentVariableIntValue("SNOW_SHOT_STATIC_BACKDROP") == 1;
++#endif
+     setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
+ #ifdef Q_OS_MACOS
+     setWindowFlag(Qt::NoDropShadowWindowHint);
+@@ -123,6 +127,7 @@ ScreenshotOverlayWindow::ScreenshotOverlayWindow(ScreenshotOverlayEventSink& eve
+ }
+ 
+ ScreenshotOverlayWindow::~ScreenshotOverlayWindow() {
++    clearStaticBackdrop();
+     cancelBackingStorePreparation();
+     setScrollingCaptureMode(false);
+     if (m_canvas != nullptr) {
+@@ -160,6 +165,7 @@ QPoint ScreenshotOverlayWindow::canvasLocalPosition(const QPoint& globalPosition
+ }
+ 
+ void ScreenshotOverlayWindow::setScreenshotImage(QImage image, const QRectF& canvasRect) {
++    clearStaticBackdrop();
+     cancelBackingStorePreparation();
+     if (m_screenshotRenderer != nullptr) {
+         m_screenshotRenderer->setImage(std::move(image), canvasRect);
+@@ -174,6 +180,7 @@ void ScreenshotOverlayWindow::setScreenshotImageSource(ScreenshotImageSource sou
+ void ScreenshotOverlayWindow::setScreenshotImageSource(
+     ScreenshotImageSource source, const QRectF& damage,
+     const ScreenshotImageSource& samplingSource) {
++    clearStaticBackdrop();
+     cancelBackingStorePreparation();
+     if (m_screenshotRenderer)
+         m_screenshotRenderer->setImageSource(std::move(source), damage, samplingSource);
+@@ -334,6 +341,7 @@ void ScreenshotOverlayWindow::setHistoryLoadingVisible(bool visible) {
+ }
+ 
+ void ScreenshotOverlayWindow::resetScreenshotRendering() {
++    clearStaticBackdrop();
+     retirePresentation();
+     setScrollingCaptureMode(false);
+     if (m_canvas != nullptr) {
+@@ -360,7 +368,12 @@ void ScreenshotOverlayWindow::setCanvasClearBackgroundEnabled(bool enabled) {
+         return;
+     }
+ 
+-    m_canvas->setClearBackgroundEnabled(enabled);
++    if (m_staticBackdropActive) {
++        m_staticBackdropClearWasEnabled = enabled;
++        m_canvas->setClearBackgroundEnabled(false);
++    } else {
++        m_canvas->setClearBackgroundEnabled(enabled);
++    }
+ }
+ 
+ QJsonObject ScreenshotOverlayWindow::scrollingDiagnostics() const {
+@@ -388,6 +401,8 @@ QJsonObject ScreenshotOverlayWindow::scrollingDiagnostics() const {
+ }
+ 
+ void ScreenshotOverlayWindow::setScrollingCaptureMode(bool enabled) {
++    if (enabled)
++        clearStaticBackdrop();
+     if (!enabled) {
+         clearScrollingResultPreview();
+         clearScrollingThumbnail();
+@@ -796,6 +811,8 @@ bool ScreenshotOverlayWindow::showPreparedFrameForPresentation(quint64 generatio
+ }
+ 
+ void ScreenshotOverlayWindow::setVisible(bool visible) {
++    if (!visible)
++        clearStaticBackdrop();
+     // Consume the prepared show's reservation before Qt dispatches Show/focus events;
+     // a reentrant public show() must acquire its own generation.
+     const bool showingPreparedFrame = visible && std::exchange(m_showingPreparedFrame, false);
+@@ -810,6 +827,7 @@ void ScreenshotOverlayWindow::setVisible(bool visible) {
+ }
+ 
+ void ScreenshotOverlayWindow::hideForNativeSurfaceRelease() {
++    clearStaticBackdrop();
+     retirePresentation();
+     setUpdatesEnabled(false);
+     if (m_canvas != nullptr) {
+@@ -877,6 +895,53 @@ void ScreenshotOverlayWindow::initializeScreenshotSurface() {
+     m_canvas->setAttribute(Qt::WA_NoMousePropagation, true);
+ }
+ 
++void ScreenshotOverlayWindow::clearStaticBackdrop() {
++    if (!m_staticBackdropActive)
++        return;
++#ifdef Q_OS_MACOS
++    snow_shot::platform::clearScreenshotBackdrop(this);
++#endif
++    m_staticBackdropActive = false;
++    if (m_canvas)
++        m_canvas->setClearBackgroundEnabled(m_staticBackdropClearWasEnabled);
++    if (m_screenshotRenderer)
++        m_screenshotRenderer->setExternalBackgroundPresented(false);
++}
++
++void ScreenshotOverlayWindow::updateStaticBackdrop() {
++#ifdef Q_OS_MACOS
++    if (!m_allowStaticBackdrop || !isVisible() || !m_canvas || !m_canvas->isVisible() ||
++        !m_canvas->canvasContentVisible() || m_scrollingCaptureMode || !m_screenshotRenderer ||
++        !m_screenshotRenderer->canPresentExternalBackground()) {
++        clearStaticBackdrop();
++        return;
++    }
++    const auto revision = m_screenshotRenderer->originalBackgroundRevision();
++    const auto transform = m_canvas->canvasToViewTransform();
++    const auto canvasRect = m_canvas->geometry();
++    const auto dpr = m_canvas->devicePixelRatioF();
++    if (m_staticBackdropActive && m_staticBackdropRevision == revision &&
++        m_staticBackdropTransform == transform && m_staticBackdropRect == canvasRect &&
++        m_staticBackdropDpr == dpr)
++        return;
++    const QImage image = m_screenshotRenderer->externalBackgroundImage();
++    if (image.isNull() ||
++        !snow_shot::platform::presentScreenshotBackdrop(this, image, canvasRect)) {
++        clearStaticBackdrop();
++        return;
++    }
++    if (!m_staticBackdropActive)
++        m_staticBackdropClearWasEnabled = m_canvas->clearBackgroundEnabled();
++    m_staticBackdropActive = true;
++    m_canvas->setClearBackgroundEnabled(false);
++    m_staticBackdropRevision = revision;
++    m_staticBackdropTransform = transform;
++    m_staticBackdropRect = canvasRect;
++    m_staticBackdropDpr = dpr;
++    m_screenshotRenderer->setExternalBackgroundPresented(true);
++#endif
++}
++
+ bool ScreenshotOverlayWindow::event(QEvent* event) {
+     if (event != nullptr && forwardCanvasInputEvent(event)) {
+         return true;
+@@ -890,6 +955,7 @@ bool ScreenshotOverlayWindow::event(QEvent* event) {
+         (event->type() == QEvent::Resize || event->type() == QEvent::ScreenChangeInternal ||
+          event->type() == QEvent::DevicePixelRatioChange ||
+          event->type() == QEvent::PlatformSurface)) {
++        clearStaticBackdrop();
+         cancelBackingStorePreparation();
+     }
+     if (event != nullptr &&
+@@ -898,6 +964,7 @@ bool ScreenshotOverlayWindow::event(QEvent* event) {
+         m_eventSink.leaveEffectEditors();
+     }
+     if (event != nullptr && event->type() == QEvent::Hide) {
++        clearStaticBackdrop();
+         retirePresentation();
+         clearScrollingResultPreview();
+     }
+@@ -939,6 +1006,7 @@ bool ScreenshotOverlayWindow::event(QEvent* event) {
+     }
+ 
+     SNOW_SHOT_CAPTURE_PERF_SCOPE("presentation.window.update_request");
++    updateStaticBackdrop();
+     QElapsedTimer updateTimer;
+     const bool traceUpdate = lcScreenshotWindowRender().isInfoEnabled();
+     if (traceUpdate)
+@@ -948,7 +1016,8 @@ bool ScreenshotOverlayWindow::event(QEvent* event) {
+     const bool handled = QWidget::event(event);
+     if (traceUpdate) {
+         qCInfo(lcScreenshotWindowRender).nospace()
+-            << "update_ns=" << updateTimer.nsecsElapsed() << " size=" << size();
++            << "update_ns=" << updateTimer.nsecsElapsed() << " size=" << size()
++            << " background_split=" << m_staticBackdropActive;
+     }
+     SNOW_SHOT_CAPTURE_PERF_MILESTONE("presentation.window.update_request_end");
+     return handled;
+diff --git a/snow_shot/tests/screenshot_canvas_renderer_tests.cpp b/snow_shot/tests/screenshot_canvas_renderer_tests.cpp
+index 6ae8a5676..a7d79769a 100644
+--- a/snow_shot/tests/screenshot_canvas_renderer_tests.cpp
++++ b/snow_shot/tests/screenshot_canvas_renderer_tests.cpp
+@@ -7,6 +7,10 @@
+ #include "close_release_native_test_support.h"
+ #include "screenshot_guide_targets_test_support.h"
+ #include "snow_shot/presentation/screenshotcanvasrenderer.h"
++#include "../src/presentation/overlay/screenshotoverlaycanvaswidget.h"
++#ifdef Q_OS_MACOS
++#include "snow_shot/platform/screenshotnative.h"
++#endif
+ #include "snow_shot/presentation/crosshaircursor.h"
+ #include "snow_shot/presentation/screenshotcursorimagesource.h"
+ #include "snow_shot/presentation/directcapturehistory.h"
+@@ -2984,6 +2988,124 @@ void overlayPaintSkipsRedundantTransparentClearWhenRendererCoversTheRect() {
+             "an empty translucent overlay must still Source-clear its backing store");
+ }
+ 
++void externalBackgroundKeepsSnapshotsAndOriginalPixels() {
++    SnowCanvasRuntime runtime;
++    ScreenshotOverlayCanvasWidget canvas(runtime);
++    canvas.resize(96, 72);
++    canvas.setAttribute(Qt::WA_TranslucentBackground);
++    canvas.setClearBackgroundEnabled(false);
++    canvas.show();
++    QApplication::processEvents();
++    require(canvas.setViewportCamera(0, 0, 1), "initialize external backdrop camera");
++    ScreenshotCanvasRenderer renderer(canvas);
++    canvas.setCustomRenderer(&renderer);
++    const QRectF sourceRect(-48, -36, 96, 72);
++    QImage source(96, 72, QImage::Format_RGB32);
++    for (int y = 0; y < source.height(); ++y)
++        for (int x = 0; x < source.width(); ++x)
++            source.setPixelColor(x, y, QColor(x * 2, y * 3, (x + y) % 256));
++    renderer.setImage(source, sourceRect);
++    renderer.setMaskVisible(true);
++    renderer.setSelection(QRectF(-24, -18, 48, 36), false, 4);
++    const QImage reference = renderCanvas(canvas);
++    const auto originalRevision = renderer.originalBackgroundRevision();
++    require(renderer.canPresentExternalBackground(),
++            "opaque viewport should allow split rendering");
++    const QImage backdrop = renderer.externalBackgroundImage();
++    require(!backdrop.isNull(), "split backdrop must have original pixels");
++    renderer.setExternalBackgroundPresented(true);
++    require(!renderer.coversWidgetRect(canvas.rect()),
++            "dynamic canvas must preserve transparent clears after splitting");
++    require(renderer.originalBackgroundRevision() == originalRevision,
++            "presentation must not change eraser and sampling source revisions");
++    require(renderCanvas(canvas) == reference,
++            "QWidget::render snapshots must retain image, mask and selection");
++    require(canvas.grab().toImage().convertToFormat(QImage::Format_RGBA8888) == reference,
++            "QWidget::grab must retain the original screenshot");
++    canvas.repaint();
++    QApplication::processEvents();
++    auto* store = canvas.backingStore();
++    require(store && store->paintDevice()->devType() == QInternal::Image,
++            "split test must retain a readable raster backing store");
++    const QImage dynamic = static_cast<QImage*>(store->paintDevice())->copy();
++    require(dynamic.pixelColor(dynamic.width() / 2, dynamic.height() / 2).alpha() == 0,
++            "on-screen canvas must omit the screenshot inside the selection");
++    QImage combined = backdrop.convertToFormat(QImage::Format_ARGB32_Premultiplied);
++    combined.setDevicePixelRatio(canvas.devicePixelRatioF());
++    {
++        QPainter painter(&combined);
++        painter.drawImage(QPointF(), dynamic);
++    }
++    require(combined == reference.convertToFormat(QImage::Format_ARGB32_Premultiplied),
++            "compositing static and dynamic layers must preserve every pixel");
++    renderer.setRenderMode(ScreenshotCanvasRenderer::RenderMode::ScrollingCapture);
++    require(!renderer.canPresentExternalBackground(), "scrolling must use the existing path");
++    renderer.setRenderMode(ScreenshotCanvasRenderer::RenderMode::PinnedResult);
++    require(!renderer.canPresentExternalBackground(), "pinned windows must use the existing path");
++    renderer.setRenderMode(ScreenshotCanvasRenderer::RenderMode::Standard);
++    source = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
++    source.setPixelColor(40, 30, Qt::transparent);
++    renderer.setImage(source, sourceRect);
++    require(!renderer.canPresentExternalBackground(), "transparent images must not be split");
++    renderer.setImage(backdrop, sourceRect);
++    require(canvas.setViewportCamera(0, 0, 0.5), "zoom out split background");
++    require(!renderer.canPresentExternalBackground(), "viewport gaps must disable splitting");
++    renderer.reset();
++    require(!renderer.externalBackgroundPresented(), "reset must retire split presentation");
++}
++
++void externalBackgroundFollowsOverlayLifetime() {
++#ifdef Q_OS_MACOS
++    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
++        return;
++    const QByteArray previous = qgetenv("SNOW_SHOT_STATIC_BACKDROP");
++    qputenv("SNOW_SHOT_STATIC_BACKDROP", "1");
++    NoopOverlayEventSink sink;
++    SnowCanvasRuntime runtime;
++    ScreenshotOverlayWindow overlay(sink, new ScreenshotOverlayCanvasWidget(runtime));
++    if (previous.isNull())
++        qunsetenv("SNOW_SHOT_STATIC_BACKDROP");
++    else
++        qputenv("SNOW_SHOT_STATIC_BACKDROP", previous);
++    overlay.setCaptureGeometry(QRect(40, 80, 96, 72));
++    overlay.canvas()->setViewportCamera(0, 0, 1);
++    QImage image(96, 72, QImage::Format_RGB32);
++    image.fill(QColor(12, 34, 56));
++    overlay.setScreenshotImage(image, QRectF(-48, -36, 96, 72));
++    overlay.setCanvasClearBackgroundEnabled(true);
++    overlay.show();
++    QApplication::processEvents();
++    overlay.repaint();
++    auto* renderer = overlay.screenshotRendererForTesting();
++    const auto nativeId = overlay.winId();
++    require(renderer->externalBackgroundPresented() &&
++                snow_shot::platform::screenshotBackdropIsPassiveAndVisible(&overlay),
++            "native static backdrop must be visible, passive, and owned by the overlay");
++    require(!overlay.canvas()->clearBackgroundEnabled(),
++            "split canvas must not overwrite the native backdrop with its clear color");
++    overlay.setScrollingCaptureMode(true);
++    require(!snow_shot::platform::screenshotBackdropIsPassiveAndVisible(&overlay) &&
++                !renderer->externalBackgroundPresented(),
++            "scrolling must remove the native backdrop immediately");
++    overlay.setScrollingCaptureMode(false);
++    QApplication::processEvents();
++    overlay.repaint();
++    require(snow_shot::platform::screenshotBackdropIsPassiveAndVisible(&overlay),
++            "leaving scrolling must allow the backdrop to return");
++    overlay.hide();
++    require(!snow_shot::platform::screenshotBackdropIsPassiveAndVisible(&overlay) &&
++                overlay.canvas()->clearBackgroundEnabled(),
++            "hide must release native pixels and restore the requested canvas clear policy");
++    overlay.show();
++    overlay.repaint();
++    require(overlay.winId() == nativeId && renderer->externalBackgroundPresented(),
++            "reusing the overlay must retain native identity and restore the backdrop");
++    overlay.releaseNativeSurface();
++    require(!renderer->externalBackgroundPresented() && overlay.internalWinId() == 0,
++            "surface release must retire the backdrop before destroying its native owner");
++#endif
++}
++
+ void screenshotImageMaskAndSelectionRenderInTheirOwnedPasses() {
+     SnowCanvasWidget canvas;
+     canvas.resize(80, 80);
+@@ -9075,6 +9197,15 @@ int main(int argc, char** argv) {
+         nativeTabletBarrelButtonsPreserveOverlayBrushOwnership();
+         return 0;
+     }
++    if (application.arguments().contains(QStringLiteral("--static-backdrop-native-only"))) {
++        externalBackgroundFollowsOverlayLifetime();
++        return 0;
++    }
++    if (application.arguments().contains(QStringLiteral("--static-backdrop-only"))) {
++        externalBackgroundKeepsSnapshotsAndOriginalPixels();
++        externalBackgroundFollowsOverlayLifetime();
++        return 0;
++    }
+     if (application.arguments().contains(QStringLiteral("--background-coverage-only"))) {
+         imageSourceOpacityMetadataIsSharedAndTracksPixelChanges();
+         rendererCoversTheWidgetRectOnceAScreenshotFillsTheViewport();

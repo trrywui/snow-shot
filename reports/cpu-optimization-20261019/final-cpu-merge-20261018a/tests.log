@@ -1,0 +1,10 @@
+Test project /Users/lee/workspace/code/snow-shot/.tools/macos14-personal/build
+    Start 594: snow-shot-selection-presentation-tests
+1/1 Test #594: snow-shot-selection-presentation-tests ...   Passed    4.79 sec
+
+100% tests passed out of 1
+
+Label Time Summary:
+unit    =   4.79 sec*proc (1 test)
+
+Total Test time (real) =   4.82 sec

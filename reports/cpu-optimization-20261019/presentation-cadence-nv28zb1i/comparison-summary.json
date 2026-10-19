@@ -1,0 +1,158 @@
+[
+  {
+    "label": "fps30-retry1",
+    "phase": "hover",
+    "samples": 13,
+    "cpu_median": 23.77910502642824,
+    "cpu_range": [
+      7.923496792298399,
+      27.773913318748402
+    ],
+    "ws_median": 37.55319839195924,
+    "pointer_distance_median": 709.3767900729956,
+    "canvas_paints_per_second_median": 0.0
+  },
+  {
+    "label": "fps30-retry1",
+    "phase": "drag",
+    "samples": 9,
+    "cpu_median": 27.65233526318343,
+    "cpu_range": [
+      25.783351240033518,
+      32.602867019855736
+    ],
+    "ws_median": 36.554729688918364,
+    "pointer_distance_median": 276.23122683871935,
+    "canvas_paints_per_second_median": 29.75002066157716
+  },
+  {
+    "label": "fps30-retry1",
+    "phase": "idle",
+    "samples": 10,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.987731979646867
+    ],
+    "ws_median": 0.9900740129239334,
+    "pointer_distance_median": 0.0,
+    "canvas_paints_per_second_median": 0.0
+  },
+  {
+    "label": "fps45",
+    "phase": "hover",
+    "samples": 12,
+    "cpu_median": 28.702236145453178,
+    "cpu_range": [
+      6.9159881105270316,
+      32.73163142277819
+    ],
+    "ws_median": 44.476423124882245,
+    "pointer_distance_median": 994.118971378567,
+    "canvas_paints_per_second_median": 0.9889927490577443
+  },
+  {
+    "label": "fps45",
+    "phase": "drag",
+    "samples": 8,
+    "cpu_median": 44.41733321650341,
+    "cpu_range": [
+      35.5803432298532,
+      94.86752499191608
+    ],
+    "ws_median": 48.45523878597033,
+    "pointer_distance_median": 287.10136610937786,
+    "canvas_paints_per_second_median": 44.546523381310315
+  },
+  {
+    "label": "fps45",
+    "phase": "idle",
+    "samples": 7,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9932286103148042
+    ],
+    "ws_median": 1.9733096549312532,
+    "pointer_distance_median": 0.0,
+    "canvas_paints_per_second_median": 0.0
+  },
+  {
+    "label": "native-confirm",
+    "phase": "hover",
+    "samples": 12,
+    "cpu_median": 32.13689606157944,
+    "cpu_range": [
+      25.74812358994551,
+      34.714507646098355
+    ],
+    "ws_median": 50.02605924261678,
+    "pointer_distance_median": 834.513408561186,
+    "canvas_paints_per_second_median": 0.4932665339678501
+  },
+  {
+    "label": "native-confirm",
+    "phase": "drag",
+    "samples": 9,
+    "cpu_median": 60.39890879140618,
+    "cpu_range": [
+      50.48101638210103,
+      94.85549531548207
+    ],
+    "ws_median": 46.573625398989925,
+    "pointer_distance_median": 323.3421814205613,
+    "canvas_paints_per_second_median": 57.0817318873466
+  },
+  {
+    "label": "native-confirm",
+    "phase": "idle",
+    "samples": 9,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9864971856072763
+    ],
+    "ws_median": 0.9881268378949203,
+    "pointer_distance_median": 0.0,
+    "canvas_paints_per_second_median": 0.0
+  },
+  {
+    "label": "native-retry1",
+    "phase": "hover",
+    "samples": 12,
+    "cpu_median": 31.711734363488603,
+    "cpu_range": [
+      15.777598498219339,
+      34.66590062294177
+    ],
+    "ws_median": 48.51031242399394,
+    "pointer_distance_median": 799.2224174536378,
+    "canvas_paints_per_second_median": 0.9888069284097913
+  },
+  {
+    "label": "native-retry1",
+    "phase": "drag",
+    "samples": 10,
+    "cpu_median": 84.8846933701779,
+    "cpu_range": [
+      65.25169331984586,
+      104.21999440726223
+    ],
+    "ws_median": 70.61155438672114,
+    "pointer_distance_median": 284.8208778171884,
+    "canvas_paints_per_second_median": 44.462088187347476
+  },
+  {
+    "label": "native-retry1",
+    "phase": "idle",
+    "samples": 8,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9862879979623213
+    ],
+    "ws_median": 3.957866727911111,
+    "pointer_distance_median": 0.0,
+    "canvas_paints_per_second_median": 0.0
+  }
+]

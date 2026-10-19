@@ -1,0 +1,74 @@
+[
+  {
+    "label": "full30",
+    "phase": "hover",
+    "samples": 11,
+    "cpu_median": 25.498149051095805,
+    "cpu_range": [
+      1.9731723968751393,
+      27.583272443941855
+    ],
+    "ws_median": 44.25429264368486,
+    "pointer_distance_median": 832.5141090838682
+  },
+  {
+    "label": "full30",
+    "phase": "drag",
+    "samples": 9,
+    "cpu_median": 31.49720333971233,
+    "cpu_range": [
+      24.56088804033852,
+      34.53536690654688
+    ],
+    "ws_median": 42.23734268894743,
+    "pointer_distance_median": 304.4842201139122
+  },
+  {
+    "label": "full30",
+    "phase": "idle",
+    "samples": 9,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9854562940565187
+    ],
+    "ws_median": 6.894141844603813,
+    "pointer_distance_median": 0.0
+  },
+  {
+    "label": "opacity30",
+    "phase": "hover",
+    "samples": 12,
+    "cpu_median": 36.917015601334086,
+    "cpu_range": [
+      4.906927191183337,
+      39.26580534076639
+    ],
+    "ws_median": 41.3663016617907,
+    "pointer_distance_median": 684.6428550020051
+  },
+  {
+    "label": "opacity30",
+    "phase": "drag",
+    "samples": 11,
+    "cpu_median": 45.216247564094516,
+    "cpu_range": [
+      38.22091413581314,
+      49.94153364247461
+    ],
+    "ws_median": 43.25032375696526,
+    "pointer_distance_median": 275.3954632653532
+  },
+  {
+    "label": "opacity30",
+    "phase": "idle",
+    "samples": 8,
+    "cpu_median": 0.0,
+    "cpu_range": [
+      0.0,
+      0.9864396129166518
+    ],
+    "ws_median": 6.901888326040709,
+    "pointer_distance_median": 0.0
+  }
+]

@@ -1,0 +1,42 @@
+{
+  "base": "9359bf30e",
+  "reference_commit": "fb0caf79c",
+  "reference_app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/presentation-cadence-nv28zb1i/deploy/snow_shot.app",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/minimal-cadence-pj99r6v1/deploy/snow_shot.app",
+  "mode": "only cadence changes, 30 Hz, GUI thread pool enabled, paint logging disabled",
+  "excluded_manual_runs": {},
+  "branch": "codex/screenshot-30hz-minimal",
+  "source_files": [
+    "snow_shot/src/presentation/services/screenshotpresentationservices.cpp",
+    "snow_shot/tests/screenshot_selection_presentation_tests.cpp"
+  ],
+  "reference_binary_sha256": "8d51409a574837d6cf6e73c4c23777df4a139d7a84efbd24c0c88c9d5c1f4b65",
+  "source_patch_sha256": "463d73301ff7094b371935c1bfc6251a884c9632e334cd9e3c314a47aa573b5d",
+  "validation": {
+    "clang_format": "passed",
+    "git_diff_check": "passed",
+    "focused_ctest": {
+      "passed": 2,
+      "total": 2,
+      "log": "tests.log",
+      "tests": [
+        "snow-shot-selection-presentation-tests",
+        "snow-shot-presentation-frame-scheduler-tests"
+      ]
+    },
+    "clang_tidy": "not run"
+  },
+  "candidate_commit": "b7c03b43971d2d8ba731e8455d8fd136cbe6f6cb",
+  "candidate_binary_sha256": "bc9bf67ea57c3049afd6c2ca722abce95f06ea05327b9b871a2695901e1b757f",
+  "build_passed": true,
+  "deployment_signature_verified": true,
+  "manual_feedback": "\u7528\u6237\u786e\u8ba4\u4e24\u8f6e\u5b8c\u6210\uff1b\u672a\u5355\u72ec\u8bf4\u660e\u653e\u5927\u955c\u3001\u8ddf\u624b\u6216\u590d\u5236\u5dee\u5f02\u3002",
+  "valid_manual_runs": [
+    "minimal30",
+    "full30"
+  ],
+  "manual_configurations_identical": true,
+  "comparison_result": "Minimal 30 Hz shows materially higher CPU in this single matched-condition manual pair; individual removed changes are not isolated.",
+  "comparison_summary": "comparison-summary.json",
+  "next_candidate_not_implemented": "minimal30 plus BGRA only"
+}

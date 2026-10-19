@@ -1,0 +1,8 @@
+{
+  "experiment": "QT_NO_GUI_THREADPOOL",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/static-backdrop-516bow4b/deploy/snow_shot.app",
+  "baseline_feature_flags": {
+    "SNOW_SHOT_STATIC_BACKDROP": "0"
+  },
+  "note": "Same Release binary, independent data directories; fixed selection API input, not real mouse input."
+}

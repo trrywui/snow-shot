@@ -1,0 +1,8 @@
+{
+  "base_commit": "f51d700c5dbd9e8e0014a3209413ddd3db6318a9",
+  "branch": "codex/screenshot-rendering-cpu",
+  "feature_env": "SNOW_SHOT_STATIC_BACKDROP",
+  "default_enabled": false,
+  "input_rate": 30,
+  "experiment": "static screenshot in a passive native child window, Qt dynamic overlay retained"
+}

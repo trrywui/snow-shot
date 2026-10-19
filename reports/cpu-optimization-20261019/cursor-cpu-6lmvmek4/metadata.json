@@ -1,0 +1,20 @@
+{
+  "baseline": "3eff464d8",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/static-backdrop-516bow4b/deploy/snow_shot.app",
+  "modes": {
+    "0": "original picker setting",
+    "1": "always_hide"
+  },
+  "note": "Static backdrop and GUI threadpool experiment disabled; mouse coordinates/buttons read only while own capture is visible.",
+  "candidate_app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/cursor-cpu-6lmvmek4/deploy/snow_shot.app",
+  "candidate": "Disjoint opaque image exposures drawn with individual rectangular clips; default Qt GUI threadpool and magnifier retained.",
+  "manual_confirmations": {
+    "0": "正常，能看到放大镜",
+    "1": "放大镜消失，其他正常",
+    "threadpool": "流畅，复制正常",
+    "clip-confirm": "用户回复两轮完成；候选采集有效，未收到具体外观/流畅度说明。基线副本未进入截图会话，不能构成手动 A/B。"
+  },
+  "outcome": "Archive candidate; fixed API gain small and overlapping, manual candidate drag remains high. Manual baseline-confirm had no capture session and is invalid.",
+  "tests": "Focused CTest 4/4 passed; no full suite or clang-tidy.",
+  "candidate_macho_uuid": "4D45FC49-1B59-320E-BB77-3BF5F34D8A0C"
+}

@@ -1,0 +1,107 @@
+{
+  "dpr": 2.0,
+  "surfaces": [
+    {
+      "paint_events": 1157,
+      "paint_logical_pixels": 39581441,
+      "paint_bounding_logical_pixels": 39581441,
+      "paint_rectangles": 1157,
+      "full_paints": 1156,
+      "clear_events": 1066,
+      "clear_logical_pixels": 36465601,
+      "logical_size": [
+        160,
+        214
+      ],
+      "mean_paint_fraction": 0.9991357210074395,
+      "bounding_expansion": 1.0,
+      "paint_physical_pixels": 158325764,
+      "clear_write_bytes": 583449616
+    },
+    {
+      "paint_events": 15,
+      "paint_logical_pixels": 2233564,
+      "paint_bounding_logical_pixels": 2544752,
+      "paint_rectangles": 30,
+      "full_paints": 2,
+      "logical_size": [
+        900,
+        640
+      ],
+      "mean_paint_fraction": 0.25851435185185184,
+      "bounding_expansion": 1.1393235206154828,
+      "paint_physical_pixels": 8934256,
+      "clear_write_bytes": 0
+    },
+    {
+      "paint_events": 2,
+      "paint_logical_pixels": 237780,
+      "paint_bounding_logical_pixels": 261160,
+      "paint_rectangles": 13,
+      "full_paints": 1,
+      "logical_size": [
+        1242,
+        142
+      ],
+      "mean_paint_fraction": 0.6741171667687283,
+      "bounding_expansion": 1.0983261838674405,
+      "paint_physical_pixels": 951120,
+      "clear_write_bytes": 0
+    },
+    {
+      "paint_events": 502,
+      "paint_logical_pixels": 35358255,
+      "paint_bounding_logical_pixels": 240952686,
+      "paint_rectangles": 3310,
+      "full_paints": 2,
+      "clear_events": 398,
+      "clear_logical_pixels": 28293791,
+      "logical_size": [
+        1680,
+        1051
+      ],
+      "mean_paint_fraction": 0.03989101701119946,
+      "bounding_expansion": 6.8146090919928035,
+      "paint_physical_pixels": 141433020,
+      "clear_write_bytes": 452700656
+    }
+  ],
+  "buffer_copies": [
+    {
+      "physical_size": [
+        320,
+        428
+      ],
+      "copy_events": 2,
+      "copy_physical_pixels": 273920,
+      "copy_write_bytes": 1095680
+    },
+    {
+      "physical_size": [
+        1800,
+        1280
+      ],
+      "copy_events": 11,
+      "copy_physical_pixels": 5704080,
+      "copy_write_bytes": 22816320
+    },
+    {
+      "physical_size": [
+        2484,
+        284
+      ],
+      "copy_events": 2,
+      "copy_physical_pixels": 705456,
+      "copy_write_bytes": 2821824
+    },
+    {
+      "physical_size": [
+        3360,
+        2102
+      ],
+      "copy_events": 470,
+      "copy_physical_pixels": 757655040,
+      "copy_write_bytes": 3030620160
+    }
+  ]
+}

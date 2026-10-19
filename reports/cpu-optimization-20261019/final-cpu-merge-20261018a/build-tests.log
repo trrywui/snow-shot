@@ -1,0 +1,188 @@
+[0/2] Re-checking globbed directories...
+[0/14] cd /Users/lee/workspace/code/snow-shot/snow_rust_ffi && /Users/lee/workspace/code/snow-shot/.tools/macos14-personal/host/venv/lib/python3.12/site-packages/cmake/data/bin/cmake -E env VCPKG_ROOT=/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/vcpkg VCPKGRS_TRIPLET=x64-osx-snow-shot-macos14-static VCPKGRS_DYNAMIC=0 FFMPEG_DIR=/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static CARGO_TARGET_DIR=/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/build/cargo MACOSX_DEPLOYMENT_TARGET=14.4 CARGO_PROFILE_RELEASE_DEBUG=2 CARGO_PROFILE_RELEASE_FAST_DEBUG=2 /Users/lee/workspace/code/snow-shot/.tools/macos14-personal/rustup/toolchains/1.97.1-x86_64-apple-darwin/bin/cargo build --locked --package snow-shot-rust-ffi --target x86_64-apple-darwin --profile release
+    Finished `release` profile [optimized + debuginfo] target(s) in 1.05s
+[2/14] Automatic MOC for target snow-shot-selection-presentation-runtime
+[3/13] Building CXX object snow_shot/CMakeFiles/snow-shot-selection-presentation-runtime.dir/src/presentation/services/screenshotcolorpickercontroller.cpp.o
+[4/13] Building CXX object snow_shot/CMakeFiles/snow-shot-selection-presentation-runtime.dir/src/presentation/overlay/screenshotoverlaycoordinator.cpp.o
+[5/13] Building CXX object snow_shot/CMakeFiles/snow-shot-selection-presentation-runtime.dir/src/presentation/services/screenshotcolorpickerwindow.cpp.o
+[6/13] Building CXX object snow_shot/CMakeFiles/snow-shot-selection-presentation-runtime.dir/src/presentation/overlay/screenshotoverlayuihost.cpp.o
+[7/13] Building CXX object snow_shot/CMakeFiles/snow-shot-selection-presentation-runtime.dir/src/presentation/services/screenshotpresentationservices.cpp.o
+[8/13] Linking CXX static library snow_shot/libsnow-shot-selection-presentation-runtime.a
+[9/13] Automatic MOC for target snow-shot-selection-presentation-tests
+[10/12] Building CXX object snow_shot/CMakeFiles/snow-shot-selection-presentation-tests.dir/tests/screenshot_selection_presentation_tests.cpp.o
+[11/12] Linking CXX executable snow_shot/test-bin/snow-shot-selection-presentation-tests
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[2](jsimdcpu.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[3](jfdctflt-sse.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[4](jccolor-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[5](jcgray-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[6](jchuff-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[7](jcphuff-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[8](jcsample-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[9](jdcolor-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[10](jdmerge-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[11](jdsample-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[12](jfdctfst-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[13](jfdctint-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[14](jidctflt-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[15](jidctfst-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[16](jidctint-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[17](jidctred-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[18](jquantf-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[19](jquanti-sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[20](jccolor-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[21](jcgray-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[22](jcsample-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[23](jdcolor-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[24](jdmerge-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[25](jdsample-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[26](jfdctint-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[27](jidctint-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libturbojpeg.a[28](jquanti-avx2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[49](intrapred_asm_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[50](aom_high_subpixel_8t_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[51](aom_high_subpixel_bilinear_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[52](highbd_intrapred_asm_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[59](sad4d_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[60](sad_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[61](subtract_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[62](highbd_sad4d_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[63](highbd_sad_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[64](highbd_subpel_variance_impl_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[65](highbd_variance_impl_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[79](aom_subpixel_8t_ssse3.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[80](aom_subpixel_bilinear_ssse3.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[84](subpel_variance_ssse3.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[86](quantize_ssse3_x86_64.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libaom.a[258](error_sse2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[193](aacencdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[195](aacpsdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[197](blockdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[199](bswapdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[204](fpel.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[205](h263_loopfilter.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[207](h264_chromamc.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[208](h264_chromamc_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[209](h264_deblock.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[210](h264_deblock_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[211](h264_idct.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[212](h264_idct_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[213](h264_intrapred.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[214](h264_intrapred_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[217](h264_qpel_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[218](h264_qpel_8bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[219](h264_weight.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[220](h264_weight_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[223](h2656_inter.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[225](add_res.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[226](deblock.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[227](dequant.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[229](idct.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[230](mc.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[231](sao.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[232](sao_10bit.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[233](hpeldsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[235](idctdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[237](lossless_videoencdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[239](lpc.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[241](me_cmp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[246](mpegvideoencdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[248](pixblockdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[250](pngdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[252](qpel.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[253](qpeldsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[255](sbrdsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[257](simple_idct10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[258](videodsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[260](vp8dsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[262](vp8dsp_loopfilter.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavcodec.a[263](xvididct.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[63](cpu-a.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[64](dct-64-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[65](trellis-64-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[66](bitstream-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[67](const-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[68](cabac-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[69](dct-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[70](deblock-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[71](mc-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[72](mc-a2-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[73](pixel-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[74](predict-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[75](quant-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[76](sad-a-8.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[77](dct-64-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[78](trellis-64-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[79](bitstream-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[80](const-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[81](cabac-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[82](dct-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[83](deblock-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[84](mc-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[85](mc-a2-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[86](pixel-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[87](predict-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[88](quant-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx264.a[89](sad16-a-10.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[20](pixel-a.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[21](const-a.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[22](cpu-a.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[23](ssd-a.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[24](mc-a.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[25](mc-a2.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[26](pixel-util8.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[27](blockcopy8.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[28](pixeladd8.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[29](dct8.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[30](seaintegral.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[31](sad16-a.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[32](intrapred16.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[33](v4-ipfilter16.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[34](h4-ipfilter16.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[35](h-ipfilter16.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[36](ipfilter16.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libx265.a[37](loopfilter.asm.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswresample.a[11](audio_convert.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswresample.a[13](rematrix.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswresample.a[15](resample.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[32](input.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[34](ops_common.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[35](ops_float.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[36](ops_int.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[37](output.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[38](range_convert.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[40](rgb_2_rgb.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[41](scale.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[42](scale_avx2.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[45](yuv2yuvX.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libswscale.a[46](yuv_2_rgb.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[95](aes.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[98](cpuid.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[99](crc.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[102](float_dsp.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[104](imgutils.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[106](lls.o)', assuming: macOS
+ld: warning: no platform load command found in '/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/installed/x64-osx-snow-shot-macos14-static/lib/libavutil.a[108](tx_float.o)', assuming: macOS
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QLayout11maximumSizeEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QLayout8geometryEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QLayout7isEmptyEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_N7QLayout10invalidateEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_N7QLayout6layoutEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QLayout12controlTypesEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK17QAccessibleWidget11actionNamesEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_N17QAccessibleWidget8doActionERK7QString'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK17QAccessibleWidget20keyBindingsForActionERK7QString'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QWidget7devTypeEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QWidget11paintEngineEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QWidget6metricEN12QPaintDevice17PaintDeviceMetricE'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QWidget11initPainterEP8QPainter'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QWidget10redirectedEP6QPoint'
+ld: warning: Linker asked to preserve available_externally global: '_ZThn16_NK7QWidget13sharedPainterEv'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV11QSpacerItem'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV32QAccessibleTableModelChangeEvent'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV28QAccessibleAnnouncementEvent'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV7QPixmap'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV16QAccessibleEvent'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV27QAccessibleValueChangeEvent'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV27QAccessibleStateChangeEvent'
+ld: warning: Linker asked to preserve available_externally global: '_ZTVN9QRunnable16QGenericRunnableE'
+ld: warning: Linker asked to preserve available_externally global: '_ZTV6QImage'

@@ -1,0 +1,59 @@
+{
+  "base": "9359bf30e",
+  "cadence_commit": "b7c03b439",
+  "branch": "codex/screenshot-30hz-decoration-cache",
+  "mode": "30 Hz + magnifier decoration cache; original opacity effect and pixel format",
+  "reference_app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/presentation-cadence-nv28zb1i/deploy/snow_shot.app",
+  "reference_binary_sha256": "8d51409a574837d6cf6e73c4c23777df4a139d7a84efbd24c0c88c9d5c1f4b65",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/decoration-cadence-20261018a/deploy/snow_shot.app",
+  "planned_manual_runs": [
+    "cache30",
+    "full30"
+  ],
+  "excluded_manual_runs": {},
+  "source_files": [
+    "snow_shot/CMakeLists.txt",
+    "snow_shot/include/snow_shot/presentation/screenshotcolorpickerwindow.h",
+    "snow_shot/src/presentation/services/screenshotcolorpickerwindow.cpp",
+    "snow_shot/tests/screenshot_color_picker_tests.cpp"
+  ],
+  "build_passed": true,
+  "candidate_binary_sha256": "0b6087f20c44843dac4269a60790d5b75e9a464e7a4710ee7f8d76f7a1ad442c",
+  "validation": {
+    "offscreen": "passed",
+    "offscreen_scale2": "passed",
+    "native_cache_and_lifecycle": "passed",
+    "format": "passed",
+    "diff_check": "passed",
+    "full_suite": "not run"
+  },
+  "source_patch_sha256": "b40feac906124a52cbe0be0d2a578eecbaa26122cd0787bbbd9705be3d86ff45",
+  "deployment_signature_verified": true,
+  "candidate_commit": "145459400b65343d60266257a40b3e467a2fb243",
+  "completed_manual_runs": ["cache30", "full30", "cache30-recheck1"],
+  "manual_comparison": {
+    "summary_file": "comparison-summary.json",
+    "rows_file": "comparison-rows.json",
+    "configurations_verified": true,
+    "binary_hashes_verified": true,
+    "one_complete_capture_per_run": true,
+    "user_feedback": "User confirmed both rounds completed; appearance, responsiveness and clipboard success were not separately described.",
+    "conclusion": "Cache-only candidate was close to full: hover 23.58 vs 23.55 percent, drag 31.32 vs 28.53 percent. Candidate pointer travel and estimated area were larger. Promising minimal candidate; one manual pair does not establish equivalence or exact causal effect."
+  },
+  "cleanup": "Test apps and sampling probes exited. Installed app PID 550 retained.",
+  "planned_recheck": {
+    "label": "cache30-recheck1",
+    "purpose": "Repeat the cache-only 30 Hz candidate with the existing binary to assess reproducibility.",
+    "source_changes": false
+  },
+  "repeat_verification": {
+    "label": "cache30-recheck1",
+    "complete": true,
+    "binary_and_relevant_settings_match": true,
+    "hover_cpu_median": 24.57562660418253,
+    "drag_cpu_median": 34.76894350999078,
+    "idle_cpu_median": 0.0,
+    "user_feedback": "复测完成，放大镜阴影、颜色、跟手和复制均正常，无异常。",
+    "conclusion": "Candidate hover result repeats closely; drag increased 3.45 percentage points from its previous run and remains higher than full. Supports retaining as a minimal candidate, not claiming equivalence."
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "base": "9359bf30e",
+  "cadence_commit": "b7c03b439",
+  "branch": "codex/screenshot-30hz-native-opacity",
+  "mode": "30 Hz + Cocoa native magnifier opacity only; no BGRA, no decoration cache, no paint tracing",
+  "reference_app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/presentation-cadence-nv28zb1i/deploy/snow_shot.app",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/opacity-cadence-iko6_4ym/deploy/snow_shot.app",
+  "previous_experiment": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/bgra-cadence-kzyvzeq3",
+  "source_files": [
+    "snow_shot/src/presentation/services/screenshotcolorpickerwindow.cpp",
+    "snow_shot/include/snow_shot/presentation/screenshotcolorpickerwindow.h",
+    "snow_shot/tests/screenshot_color_picker_tests.cpp"
+  ],
+  "planned_manual_runs": [
+    "opacity30",
+    "full30"
+  ],
+  "hypothesis": "仅原生透明度是否已能接近完整版，从而省去BGRA和放大镜装饰缓存；需要实际测量，不预设收益。",
+  "validation": {
+    "focused_ctest": "3/3 passed",
+    "native_opacity_and_lifecycle": "1/1 passed",
+    "clang_format": "passed",
+    "diff_check": "passed",
+    "full_suite": "not run"
+  },
+  "build_passed": true,
+  "deployment_signature_verified": true,
+  "candidate_binary_sha256": "082598e2194253118bd281c41ffddc7bc9adf1b83a5692ac0c8ab1b313d9755e",
+  "deployment_after_build_completed": true,
+  "source_patch_sha256": "16f7a9d7883ab6e41632871dcc0ab1629bbc88136caa7d75b30b88f99c281193",
+  "candidate_commit": "d05a92077f54a55f4ac3972a3c038e6282f1d529",
+  "completed_manual_runs": [
+    "opacity30",
+    "full30"
+  ],
+  "manual_comparison": {
+    "summary_file": "comparison-summary.json",
+    "rows_file": "comparison-rows.json",
+    "user_feedback": "两轮完成，未单独描述外观、跟手和复制。",
+    "configuration_matches": true,
+    "hashes_verified": true,
+    "captures_complete": true,
+    "conclusion": "30 Hz＋原生透明度移动36.92%、框选45.22%，完整优化版25.50%/31.50%；候选路程较小但选区较大。尚不支持性能等价替代，不单独归因装饰缓存或断言原生透明度零收益。"
+  },
+  "cleanup": "测试副本与探针已退出；正式版PID550保留。"
+}

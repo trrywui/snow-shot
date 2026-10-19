@@ -1,0 +1,108 @@
+{
+  "base": "9359bf30e",
+  "cadence_commit": "b7c03b439",
+  "candidate_commit": "bead79761195eeff4a5b0794fd69b359176abba3",
+  "branch": "codex/screenshot-30hz-bgra",
+  "reference_commit": "fb0caf79c",
+  "reference_app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/presentation-cadence-nv28zb1i/deploy/snow_shot.app",
+  "minimal_app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/minimal-cadence-pj99r6v1/deploy/snow_shot.app",
+  "app": "/Users/lee/workspace/code/snow-shot/.tools/macos14-personal/tmp/bgra-cadence-kzyvzeq3/deploy/snow_shot.app",
+  "mode": "30 Hz + BGRA, original magnifier, default GUI thread pool, no paint logging",
+  "excluded_manual_runs": {
+    "full30": "用户报告截图权限缺失；未完成截图，不计入性能对比",
+    "full30-retry1": "用户报告辅助功能权限门槛未满足，未开始有效截图对比；本轮排除。"
+  },
+  "source_files": [
+    "snow_shot/src/presentation/capture/screenshotcaptureworker.cpp",
+    "snow_shot/tests/screenshot_capture_worker_tests.cpp",
+    "snow_shot/src/presentation/services/screenshotpresentationservices.cpp",
+    "snow_shot/tests/screenshot_selection_presentation_tests.cpp"
+  ],
+  "reference_binary_sha256": "8d51409a574837d6cf6e73c4c23777df4a139d7a84efbd24c0c88c9d5c1f4b65",
+  "source_patch_sha256": "793af44e26fe36ad06ad902ceffe01a6a08a6482f351105e57d7a09bf36cddfe",
+  "format_check": "passed",
+  "diff_check": "passed",
+  "candidate_binary_sha256": "aece4930a0687f986dcf5c846f9c085a999dbdb90fe57633897f4841a7da05da",
+  "build_passed": true,
+  "deployment_signature_verified": true,
+  "validation": {
+    "focused_ctest": {
+      "passed": 3,
+      "total": 3,
+      "log": "tests.log"
+    },
+    "clang_format": "passed",
+    "diff_check": "passed",
+    "clang_tidy": "not run"
+  },
+  "permission_issue": "已于恢复会话后核验两版：screen-recording 与 accessibility 均 granted，权限中断轮次继续排除。",
+  "planned_manual_runs": [
+    "full30-retry2",
+    "bgra30-retry2"
+  ],
+  "permission_verification": "permissions-resume.json",
+  "completed_manual_runs": [
+    "full30-retry2",
+    "bgra30-retry2",
+    "full30-recheck1"
+  ],
+  "manual_comparison": {
+    "summary_file": "comparison-summary.json",
+    "rows_file": "comparison-rows.json",
+    "both_runs_complete": true,
+    "user_feedback": "用户回复“两轮完成”；未单独确认放大镜、跟手、颜色或复制结果。",
+    "conclusion": "本轮30 Hz＋BGRA的移动和框选CPU仍高于完整优化版；候选版手动移动更快，不能精确归因差值。BGRA单独加回尚未证明能恢复完整优化版表现。"
+  },
+  "planned_recheck": {
+    "label": "full30-recheck1",
+    "purpose": "复核完整优化版30 Hz的CPU重复性，回应用户对上轮测量准确性的疑问",
+    "binary_sha256": "8d51409a574837d6cf6e73c4c23777df4a139d7a84efbd24c0c88c9d5c1f4b65",
+    "source_changes": false
+  },
+  "repeat_verification": {
+    "label": "full30-recheck1",
+    "complete": true,
+    "binary_sha256": "8d51409a574837d6cf6e73c4c23777df4a139d7a84efbd24c0c88c9d5c1f4b65",
+    "relevant_configuration_matches": true,
+    "summary": [
+      {
+        "label": "full30-recheck1",
+        "phase": "hover",
+        "samples": 10,
+        "cpu_median": 24.092533499998805,
+        "cpu_range": [
+          2.946260170298012,
+          34.29042235769339
+        ],
+        "ws_median": 41.41119659805014,
+        "pointer_distance_median": 840.0713853153229
+      },
+      {
+        "label": "full30-recheck1",
+        "phase": "drag",
+        "samples": 11,
+        "cpu_median": 28.500838705039442,
+        "cpu_range": [
+          10.812021013366742,
+          32.455003156684484
+        ],
+        "ws_median": 41.02849648863524,
+        "pointer_distance_median": 347.4342096662939
+      },
+      {
+        "label": "full30-recheck1",
+        "phase": "idle",
+        "samples": 7,
+        "cpu_median": 0.0,
+        "cpu_range": [
+          0.0,
+          0.9804128406942935
+        ],
+        "ws_median": 7.867010252793783,
+        "pointer_distance_median": 0.0
+      }
+    ],
+    "user_feedback": "复核完成，未单独描述放大镜、跟手或复制结果。",
+    "conclusion": "完整优化版移动24.09%、框选28.50%，重现上一轮低占用趋势；手动轨迹未控制，不能量化各项优化的独立贡献。"
+  }
+}
