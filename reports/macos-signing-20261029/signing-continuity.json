@@ -1,0 +1,22 @@
+{
+  "previous": {
+    "bundleIdentifier": "io.github.trrywui.snowshot",
+    "version": "1.1.3",
+    "buildNumber": "5",
+    "certificateSha1": "E2AC5BEA62E3D6643F4DC4ADB155F3BA31D9860E",
+    "designatedRequirement": "identifier \"io.github.trrywui.snowshot\" and certificate leaf = H\"e2ac5bea62e3d6643f4dc4adb155f3ba31d9860e\"",
+    "cdhash": "526fdf072a5da9bba029e5a23f188c7d14a39938",
+    "executableSha256": "044278c2dd8bf5972aae29b0d5c476559e2a3de054cba785dbecea9189a331f4"
+  },
+  "current": {
+    "bundleIdentifier": "io.github.trrywui.snowshot",
+    "version": "1.1.4",
+    "buildNumber": "6",
+    "certificateSha1": "E2AC5BEA62E3D6643F4DC4ADB155F3BA31D9860E",
+    "designatedRequirement": "identifier \"io.github.trrywui.snowshot\" and certificate leaf = H\"e2ac5bea62e3d6643f4dc4adb155f3ba31d9860e\"",
+    "cdhash": "4627c9de278431f95a3e1cb8a585b5df2bcb97b2",
+    "executableSha256": "3061190f7b08f5b8328c0fc29c23e2a6acb1bea05e2955a49bf232b208f3ef0d"
+  },
+  "mutualSigningRequirementCheck": "passed",
+  "actualScreenRecordingAndAccessibilityInheritance": "not tested; manual installation only"
+}

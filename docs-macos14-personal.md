@@ -1,6 +1,6 @@
 # Snow Shot Intel macOS 维护分支
 
-正式名称为 **Snow Shot**，版本 **1.1.3+up.1.4.3**，Bundle ID 为 `io.github.trrywui.snowshot`。
+正式名称为 **Snow Shot**，版本 **1.1.4+up.1.4.3**，Bundle ID 为 `io.github.trrywui.snowshot`。
 最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `17fad782a3f9`。
 
 ## 构建隔离
@@ -19,8 +19,10 @@
 | `artifacts/<完整版本号>` | 本次发布的应用、DMG、校验和源码材料 |
 | `user-data` | 仅通过开发脚本运行时使用的隔离测试数据 |
 
-环境变量只影响脚本子进程，不修改全局 Rust 默认版本、Homebrew、shell 配置或系统证书。
-ad-hoc 签名不创建钥匙串证书。默认并行度为 2，可用 `SNOW_PERSONAL_JOBS=1` 降低负载。
+环境变量只影响脚本子进程，不修改全局 Rust 默认版本、Homebrew 或 shell 配置。
+维护版签名私钥长期保存在登录钥匙串，首次初始化只在当前用户范围内为该证书设置信任，
+用途限于代码签名；构建和打包不会自行生成证书或修改信任。
+默认并行度为 2，可用 `SNOW_PERSONAL_JOBS=1` 降低负载。
 Release 的首次 LTO 链接可能持续数十分钟并使用数 GB 内存，这不是应用运行占用。
 ThinLTO 链接缓存位于 `cache/thinlto`，供重复链接复用，不进入安装包。
 
@@ -41,17 +43,50 @@ bash scripts/macos14-personal.sh package
 `macos14-personal-jpeg` feature 使 TurboJPEG 与静态 Qt 的 JPEG v8 ABI 一致，不应删除。
 
 ```text
-.tools/macos14-personal/artifacts/1.1.3+up.1.4.3/Snow Shot.app
-.tools/macos14-personal/artifacts/1.1.3+up.1.4.3/snow-shot-1.1.3+up.1.4.3-intel.dmg
-.tools/macos14-personal/artifacts/1.1.3+up.1.4.3/snow-shot-1.1.3+up.1.4.3-intel.dmg.sha256
+.tools/macos14-personal/artifacts/1.1.4+up.1.4.3/Snow Shot.app
+.tools/macos14-personal/artifacts/1.1.4+up.1.4.3/snow-shot-1.1.4+up.1.4.3-intel.dmg
+.tools/macos14-personal/artifacts/1.1.4+up.1.4.3/snow-shot-1.1.4+up.1.4.3-intel.dmg.sha256
 ```
 
 打包保留 OCR 模型、许可证和第三方声明，并验证签名、Mach-O 系统依赖及最低版本。
 不覆盖已有同版本产物；重打包前先移动对应版本目录保存回退材料。
 
 版本唯一配置为 `snow_shot/packaging/macos/maintained-release.json`。
-应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.3`，内部构建号为 `5`。
+应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.4`，内部构建号为 `6`。
 后续发布递增维护版本及构建号，上游版本需与根构建声明一致。
+
+## 固定签名与覆盖升级权限
+
+从 `1.1.4+up.1.4.3` 起，维护版使用固定证书 `Snow Shot Maintained (trrywui)`。
+公开证书指纹和指定要求（designated requirement）记录于
+`snow_shot/packaging/macos/maintained-signing.json`，后续版本必须复用。
+指纹为 `E2AC5BEA62E3D6643F4DC4ADB155F3BA31D9860E`。
+这不等同于 Developer ID 或 Apple 公证；macOS 首次打开和隐私授权仍由系统决定。
+
+```sh
+python3 scripts/macos14-signing.py identity
+python3 scripts/macos14-signing.py verify --app '/path/to/Snow Shot.app'
+```
+
+构建配置使用 `SNOW_MACOS_CODESIGN_IDENTITY=MAINTAINED`，查找固定证书及私钥；
+缺失、失效或被替换时立即失败，不自动换证，不退回 ad-hoc。
+打包还校验 Bundle ID、公开证书指纹、固定指定要求以及完整嵌套签名。
+这些检查仅在构建和打包时运行，不增加应用闲置 CPU 或内存占用。
+
+私钥不在 `.tools/`，`clean --all` 不会删除它。请通过 Keychain Access 找到
+`Snow Shot Maintained (trrywui)` 身份，导出含私钥的加密 `.p12` 并离线备份，
+密码另行保管。不要把 `.p12`、私钥或密码加入 Git 或 Release。
+换机器时先导入同一证书和私钥，并在用户范围内恢复代码签名信任，再执行 `identity`。
+仅恢复源码或仅导入公开证书不足以继续签名。
+
+`init` 仅用于本维护分支首次确立身份，已存在策略时会拒绝执行；
+首次初始化中断时，`recover` 仅复用已导入的身份完成验证，不创建新证书。
+已发布的维护分支不能删除固定策略后重新初始化来解决缺钥问题；须恢复原私钥。
+
+从旧 ad-hoc 包首次切换到固定身份，可能需要在系统设置删除旧的屏幕录制和辅助功能条目，
+然后为 `/Applications/Snow Shot.app` 重新授权一次并重启应用。
+此后的正常覆盖升级须保持 Bundle ID、安装位置和签名身份，不能混用上游包、旧 ad-hoc 包
+或本地另一个签名身份。固定身份改善权限继承，但不保证所有系统版本、策略或签名更换下均免授权。
 
 ## 正式运行与开发测试
 
@@ -59,6 +94,8 @@ bash scripts/macos14-personal.sh package
 正式维护版之间升级沿用配置和历史，正常退出后替换应用，无需清理数据。
 双击应用使用 macOS 标准数据目录，不自动迁移原个人兼容版数据。
 构建、清理和打包均不修改 `/Applications` 或已安装应用的数据和权限。
+维护者要求手动安装；助手不得为了发布验收替换本机应用。
+发行验证区分安装包签名连续性与实际权限继承，后者由维护者手动覆盖升级后验证。
 新配置恢复上游开机启动默认值，用户可自行关闭。
 
 开发时可隔离运行：

@@ -518,7 +518,7 @@ include([==[{(ROOT / 'cmake/SnowShotMiniMacOS.cmake').as_posix()}]==])
         setup = '\n'.join(line for line in setup.splitlines()
                           if not line.startswith(('cmake_minimum_required(', 'project(')))
         deployment = (ROOT / 'cmake/DeploySnowShotMacOS.cmake.in').read_text()
-        preconditions = deployment.split('set(_snow_codesign_identity ', 1)[0]
+        preconditions = deployment.split('string(TOLOWER ', 1)[0]
         managed_cmake = ROOT / '.tools/macos-dev/bin/cmake'
         cmake = str(managed_cmake) if managed_cmake.is_file() else shutil.which('cmake')
         self.assertIsNotNone(cmake)
@@ -1759,6 +1759,32 @@ if name == 'openssl':
 class MacOSSigningDeployment(unittest.TestCase):
     """Exercise the deployment script with fake external tools, including OCR resealing."""
 
+    def test_maintained_deployment_checks_the_identity_and_final_bundle(self):
+        calls, result = self.deploy('Pinned Certificate', static=True, maintained=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls[0][-1], 'identity')
+        self.assertEqual(calls[-1][2:4], ['verify', '--app'])
+
+    def test_maintained_deployment_rejects_a_changed_cached_identity_before_mutation(self):
+        for identity in ('Other Certificate', '-'):
+            with self.subTest(identity=identity):
+                calls, result = self.deploy(identity, static=True, maintained=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][-1], 'identity')
+
+    def test_maintained_deployment_rejects_a_missing_private_key_before_mutation(self):
+        calls, result = self.deploy('Pinned Certificate', static=True, maintained=True,
+                                   identity_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+
+    def test_maintained_deployment_stops_if_final_policy_verification_fails(self):
+        calls, result = self.deploy('Pinned Certificate', static=True, maintained=True,
+                                   policy_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[-1][2:4], ['verify', '--app'])
+
     def test_identity_survives_deployment_and_ocr_reseal(self):
         for identity in ('-', 'Snow Shot Development (Local)'):
             with self.subTest(identity=identity):
@@ -1878,7 +1904,8 @@ class MacOSSigningDeployment(unittest.TestCase):
                                          for call in calls), 1)
 
     def deploy(self, identity, fail=False, static=False, config='Debug', release_static=None,
-               mini=False, strip_fail=False, repeat=1, arch='arm64', ocr=True, verify_fail=False):
+               mini=False, strip_fail=False, repeat=1, arch='arm64', ocr=True, verify_fail=False,
+               maintained=False, identity_fail=False, policy_fail=False):
         with tempfile.TemporaryDirectory(prefix='snow signing tests ') as temp:
             root = Path(temp)
             log = root / 'calls.jsonl'
@@ -1887,6 +1914,13 @@ import json, os, pathlib, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 with open(os.environ['SNOW_TEST_LOG'], 'a') as log:
     log.write(json.dumps([name] + sys.argv[1:]) + '\\n')
+if name == 'ocr' and sys.argv[1].endswith('macos14-signing.py'):
+    if sys.argv[2] == 'identity':
+        if os.environ.get('SNOW_TEST_FAIL_IDENTITY'): sys.exit(40)
+        print('Pinned Certificate')
+    elif os.environ.get('SNOW_TEST_FAIL_POLICY'):
+        sys.exit(41)
+    sys.exit(0)
 if name == 'macdeployqt' and os.environ.get('SNOW_TEST_FAIL_SIGN'): sys.exit(1)
 if name == 'file':
     print('ASCII text' if sys.argv[-1].endswith('.txt') else 'Mach-O 64-bit executable arm64')
@@ -1920,6 +1954,8 @@ if name == 'ocr' and 'verify' in sys.argv and '--app' in sys.argv:
                 script = script.replace('snow_shot.app', 'snow_shot_mini.app')
                 script = script.replace('snow-shot-mcp', 'snow-shot-mini-mcp')
             values = {'SNOW_MACOS_CODESIGN_IDENTITY': identity,
+                      'SNOW_APPS_MACOS14_PERSONAL': 'ON' if maintained else 'OFF',
+                      'CMAKE_SOURCE_DIR': str(root),
                       'SNOW_MACDEPLOYQT': str(root / 'macdeployqt'),
                       'SNOW_MACOS_OCR_ASSETS_ENABLED': 'ON' if ocr else 'OFF',
                       'SNOW_MACOS_OCR_ARCH': arch,
@@ -1939,6 +1975,10 @@ if name == 'ocr' and 'verify' in sys.argv and '--app' in sys.argv:
             path.write_text(script)
             cmake = shutil.which('cmake') or str(ROOT / '.tools/macos-dev/bin/cmake')
             env = dict(os.environ, SNOW_TEST_LOG=str(log))
+            if identity_fail:
+                env['SNOW_TEST_FAIL_IDENTITY'] = '1'
+            if policy_fail:
+                env['SNOW_TEST_FAIL_POLICY'] = '1'
             if fail:
                 env['SNOW_TEST_FAIL_SIGN'] = '1'
             if strip_fail:

@@ -205,7 +205,26 @@ else()
     set(SNOW_MACDEPLOYQT "")
 endif()
 set(SNOW_MACOS_CODESIGN_IDENTITY "-" CACHE STRING
-    "Code-signing certificate name or SHA-1; AUTO provisions the local development identity; '-' uses ad-hoc signing")
+    "Code-signing certificate name or SHA-1; AUTO provisions a development identity; MAINTAINED uses the pinned fork identity; '-' uses ad-hoc signing")
+if(SNOW_APPS_MACOS14_PERSONAL)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_LIST_DIR}/../snow_shot/packaging/macos/maintained-signing.json"
+        "${CMAKE_CURRENT_LIST_DIR}/../scripts/macos14-signing.py")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../scripts/macos14-signing.py" identity
+        RESULT_VARIABLE _snow_maintained_signing_result
+        OUTPUT_VARIABLE _snow_maintained_signing_identity
+        ERROR_VARIABLE _snow_maintained_signing_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT _snow_maintained_signing_result EQUAL 0)
+        message(FATAL_ERROR "Maintained signing identity unavailable: ${_snow_maintained_signing_error}")
+    endif()
+    if(NOT SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "MAINTAINED" AND
+       NOT SNOW_MACOS_CODESIGN_IDENTITY STREQUAL _snow_maintained_signing_identity)
+        message(FATAL_ERROR "The maintained edition requires its pinned signing identity; use SNOW_MACOS_CODESIGN_IDENTITY=MAINTAINED")
+    endif()
+    set(SNOW_MACOS_CODESIGN_IDENTITY "${_snow_maintained_signing_identity}")
+endif()
 if(SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "")
     message(FATAL_ERROR "SNOW_MACOS_CODESIGN_IDENTITY must be AUTO, a certificate identity, or '-'")
 elseif(SNOW_MACOS_CODESIGN_IDENTITY STREQUAL "AUTO")

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "bundleIdentifier": "io.github.trrywui.snowshot",
+  "certificateName": "Snow Shot Maintained (trrywui)",
+  "certificateSha1": "E2AC5BEA62E3D6643F4DC4ADB155F3BA31D9860E",
+  "designatedRequirement": "identifier \"io.github.trrywui.snowshot\" and certificate leaf = H\"e2ac5bea62e3d6643f4dc4adb155f3ba31d9860e\""
+}

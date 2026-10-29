@@ -60,7 +60,7 @@ class PersonalWorkflow(unittest.TestCase):
         self.personal.symlink_to(self.personal.with_name('linked-target'), target_is_directory=True)
         self.assertNotEqual(self.command('clean', '--all').returncode, 0)
 
-    def test_configure_uses_isolated_dependencies_and_ad_hoc_signing(self):
+    def test_configure_uses_isolated_dependencies_and_pinned_signing(self):
         tools = self.repo / 'fake-tools'
         tools.mkdir()
         for name, body in {
@@ -84,7 +84,7 @@ class PersonalWorkflow(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         args = log.read_text().splitlines()
         for expected in ('-DCMAKE_OSX_DEPLOYMENT_TARGET=14.4',
-                         '-DSNOW_APPS_MACOS14_PERSONAL=ON', '-DSNOW_MACOS_CODESIGN_IDENTITY=-',
+                         '-DSNOW_APPS_MACOS14_PERSONAL=ON', '-DSNOW_MACOS_CODESIGN_IDENTITY=MAINTAINED',
                          '-DSNOW_SHOT_ENABLE_MCP=OFF', '-DSNOW_APPS_BUILD_SNOW_SHOT_MINI=OFF',
                          '-DSNOW_APPS_BUILD_TESTS=OFF', '-DSNOW_APPS_QT_STATIC=ON'):
             self.assertIn(expected, args)
