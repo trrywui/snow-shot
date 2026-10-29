@@ -1,5 +1,5 @@
 #pragma once
-#include "snow_shot/shortcuts/shortcutdisplayservice.h"
+#include "snow_shot/presentation/shortcutdisplaytext.h"
 
 #include "snow_shot/presentation/components/icons/snowshoticons.h"
 #include "snow_shot/presentation/screenshotregionpreferences.h"
@@ -186,7 +186,7 @@ class ScreenshotRegionTypeControl final : public QWidget {
                     ? QString()
                     : QCoreApplication::translate("ScreenshotRegionTypeControl",
                                                   "%1 to switch region type")
-                          .arg(snow_shot::shortcuts::formatShortcutListDisplayText(bindings)));
+                          .arg(snow_shot::presentation::formatShortcutListDisplayText(bindings)));
             m_hint->setVisible(!bindings.isEmpty());
         }
         adjustSize();

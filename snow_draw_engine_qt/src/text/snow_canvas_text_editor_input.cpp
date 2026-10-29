@@ -24,8 +24,8 @@ double wheelDeltaY(const FontSizeWheelRequest& request) {
 
 } // namespace
 
-KeyResult handleKeyPress(QKeyEvent* event, SnowCanvasTextDraft& draft,
-                         const MoveCursor& moveCursor) {
+KeyResult handleKeyPress(QKeyEvent* event, SnowCanvasTextDraft& draft, const MoveCursor& moveCursor,
+                         bool deleteTextAfterCursor) {
     KeyResult result;
     if (event == nullptr) {
         return result;
@@ -84,7 +84,11 @@ KeyResult handleKeyPress(QKeyEvent* event, SnowCanvasTextDraft& draft,
         result.changed = draft.deletePreviousCharacter();
         return result;
     case Qt::Key_Delete:
-        result.command = EventCommand::DeleteElement;
+        if (deleteTextAfterCursor) {
+            result.changed = draft.deleteNextCharacter();
+        } else {
+            result.command = EventCommand::DeleteElement;
+        }
         return result;
     case Qt::Key_Left:
         if (moveCursor) {

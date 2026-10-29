@@ -39,8 +39,10 @@ struct ScreenshotSelectionVisualState {
     bool borderVisible = true;
     int backgroundOpacityPercent = 0;
     int cornerRadius = 0;
-    int shadowWidth = 0;
-    QColor shadowColor = QColor(0x33, 0x33, 0x33);
+    ScreenshotSelectionBorderType borderType = ScreenshotSelectionBorderType::Shadow;
+    // Resolved values for the active selection effect.
+    int effectWidth = 0;
+    QColor effectColor = QColor(0x33, 0x33, 0x33);
     bool toolbarHovered = false;
     bool effectEditorsVisible = false;
     ScreenshotSelectionEffectHandle hoveredEffectHandle = ScreenshotSelectionEffectHandle::None;
@@ -63,8 +65,9 @@ struct ScreenshotSelectionVisualState {
         return backgroundOpacityPercent == other.backgroundOpacityPercent &&
                bounds == other.bounds && present == other.present &&
                handlesVisible == other.handlesVisible && borderVisible == other.borderVisible &&
-               cornerRadius == other.cornerRadius && shadowWidth == other.shadowWidth &&
-               shadowColor == other.shadowColor && toolbarHovered == other.toolbarHovered &&
+               cornerRadius == other.cornerRadius && borderType == other.borderType &&
+               effectWidth == other.effectWidth && effectColor == other.effectColor &&
+               toolbarHovered == other.toolbarHovered &&
                effectEditorsVisible == other.effectEditorsVisible &&
                hoveredEffectHandle == other.hoveredEffectHandle &&
                activeEffectHandle == other.activeEffectHandle &&
@@ -216,7 +219,7 @@ class ScreenshotCanvasRenderer final : public SnowCanvasCustomRenderer {
     [[nodiscard]] bool hasSelection() const;
     [[nodiscard]] bool selectionHandlesVisible() const;
     [[nodiscard]] int selectionCornerRadius() const;
-    [[nodiscard]] int selectionShadowWidth() const;
+    [[nodiscard]] int selectionEffectWidth() const;
     [[nodiscard]] bool selectionToolbarHovered() const;
     [[nodiscard]] bool selectionBorderVisible() const;
     [[nodiscard]] QRectF selection() const;
@@ -294,6 +297,7 @@ class ScreenshotCanvasRenderer final : public SnowCanvasCustomRenderer {
                               const QRectF& bounds);
     void paintBackground(QPainter& painter, const SnowCanvasRenderContext& context,
                          bool originalOnly);
+    void paintPinnedRegionEffects(QPainter& painter, const SnowCanvasRenderContext& context);
     [[nodiscard]] QRectF pinnedViewportForContext(const SnowCanvasRenderContext& context) const;
     SelectionViewGeometry& selectionViewGeometry(const SnowCanvasRenderContext& context,
                                                  int cornerRadius, int borderCornerRadius);

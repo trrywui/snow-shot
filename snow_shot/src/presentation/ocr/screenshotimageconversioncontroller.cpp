@@ -102,6 +102,15 @@ void ScreenshotImageConversionController::setProvider(SnowShotApiClient* provide
 void ScreenshotImageConversionController::bindProviderSignals() {
     if (m_api != nullptr) {
         const quint64 providerGeneration = m_providerGeneration;
+        connect(m_api, &SnowShotApiClient::chatModelsChanged, this, [this, providerGeneration]() {
+            if (providerGeneration != m_providerGeneration)
+                return;
+            const QString selected = Settings().visionModel();
+            const QString resolved =
+                snowShotResolvedBuiltInModelId(m_api->cachedChatModels(), selected);
+            if (resolved != selected)
+                Settings().setVisionModel(resolved);
+        });
         connect(m_api, &SnowShotApiClient::baseUrlChanged, this, [this, providerGeneration]() {
             if (providerGeneration != m_providerGeneration)
                 return;
@@ -197,20 +206,30 @@ bool ScreenshotImageConversionController::entryMatchesProvider(
 }
 
 bool ScreenshotImageConversionController::restoreCachedResult(const QString& model) {
+    qsizetype selected = -1;
     for (qsizetype index = m_cache.size(); index > 0; --index) {
         const auto& cached = m_cache.at(index - 1);
         if (cached.key != m_key || cached.result.format != m_format ||
-            cached.result.model != model || !entryMatchesProvider(cached.result))
+            !entryMatchesProvider(cached.result))
             continue;
-        auto entry = m_cache.takeAt(index - 1);
-        m_source = entry.result.source;
-        m_requestModel = entry.result.model;
-        m_cache.append(std::move(entry));
-        m_state = State::Completed;
-        notifyChanged();
-        return true;
+        if (cached.result.model == model) {
+            selected = index - 1;
+            break;
+        }
+        // A migrated preference can reopen a historical result, including offline. An
+        // exact model match still wins, and the stored result keeps its original identity.
+        if (selected < 0 && snowShotBuiltInModelAlias(cached.result.model, model))
+            selected = index - 1;
     }
-    return false;
+    if (selected < 0)
+        return false;
+    auto entry = m_cache.takeAt(selected);
+    m_source = entry.result.source;
+    m_requestModel = entry.result.model;
+    m_cache.append(std::move(entry));
+    m_state = State::Completed;
+    notifyChanged();
+    return true;
 }
 
 void ScreenshotImageConversionController::cacheResult(const QString& key,
@@ -263,6 +282,7 @@ void ScreenshotImageConversionController::reset(bool discardCache) {
     cancelRequests();
     m_active = false;
     m_state = State::Idle;
+    m_image = {};
     m_source.clear();
     m_error.clear();
     if (discardCache) {
@@ -270,7 +290,6 @@ void ScreenshotImageConversionController::reset(bool discardCache) {
             m_api->cancel(m_settingsToken);
         m_settingsToken = 0;
         m_cache.clear();
-        m_image = {};
         m_key.clear();
     }
     if (m_modal != nullptr) {
@@ -361,7 +380,7 @@ void ScreenshotImageConversionController::start(bool refreshModels) {
 void ScreenshotImageConversionController::startWithModels(
     const QVector<SnowShotChatModel>& models) {
     const QPointer<ScreenshotImageConversionController> lifetime(this);
-    const QString saved = Settings().visionModel();
+    const QString saved = snowShotResolvedBuiltInModelId(models, Settings().visionModel());
     auto selected = std::find_if(models.cbegin(), models.cend(), [&saved](const auto& model) {
         return model.supportsVision && model.id == saved;
     });
@@ -491,9 +510,10 @@ void ScreenshotImageConversionController::openSettings(QWidget* owner) {
     };
     retranslate();
     const auto apply = [modal, select, alert](const QVector<SnowShotChatModel>& models) {
-        const QString selected = select->currentValue().toString().isEmpty()
-                                     ? Settings().visionModel()
-                                     : select->currentValue().toString();
+        const QString selected =
+            snowShotResolvedBuiltInModelId(models, select->currentValue().toString().isEmpty()
+                                                       ? Settings().visionModel()
+                                                       : select->currentValue().toString());
         QVector<AdSelect::Option> options;
         for (const auto& model : models) {
             if (model.supportsVision) {

@@ -5,12 +5,16 @@ use ffmpeg_next as ffmpeg;
 use snow_core::cancellation::CancellationToken;
 use snow_recording_model::BundleAssetKind;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
+
+// Amortize short replay/tempo reads without retaining an entire PCM asset.
+pub(crate) const PCM_READ_BUFFER_BYTES: usize = 64 * 1024;
 
 struct PcmSource {
-    file: File,
+    file: BufReader<File>,
     offset: u64,
     length: u64,
+    position: u64,
     id: String,
 }
 struct EncodedSource {
@@ -51,10 +55,13 @@ impl AudioReader {
                 let asset = footer
                     .asset(BundleAssetKind::AudioTrack, Some(&track.asset_id))
                     .ok_or_else(|| media_error("missing source PCM"))?;
+                let mut file = File::open(&source.path)?;
+                file.seek(SeekFrom::Start(asset.offset))?;
                 pcm.push(PcmSource {
-                    file: File::open(&source.path)?,
+                    file: BufReader::with_capacity(PCM_READ_BUFFER_BYTES, file),
                     offset: asset.offset,
                     length: asset.len,
+                    position: 0,
                     id: track.track_id.clone(),
                 });
             }
@@ -127,8 +134,11 @@ impl AudioReader {
             let offset = start.saturating_mul(4).min(pcm.length);
             let len = ((pcm.length - offset) as usize).min(count * 4);
             self.scratch.resize(len, 0);
-            pcm.file.seek(SeekFrom::Start(pcm.offset + offset))?;
+            if offset != pcm.position {
+                pcm.file.seek(SeekFrom::Start(pcm.offset + offset))?;
+            }
             pcm.file.read_exact(&mut self.scratch)?;
+            pcm.position = offset + len as u64;
             for (route, output) in self.routes.iter().zip(&mut self.output) {
                 if route != "mixed" && route != &pcm.id {
                     continue;

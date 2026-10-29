@@ -127,6 +127,29 @@ def github_digest(release, name):
     return value.split(':', 1)[1].lower()
 
 
+def cask_installation(edition, archive_architecture):
+    slug, name = PRODUCTS[edition]
+    edition_argument = ',\n                   "mini"' if edition == 'mini' else ''
+    return f'''  # Vendor installers preserve HOME and Keychain access; flight steps isolate HOME.
+  installer script: {{
+    executable:   "/bin/bash",
+    args:         [staged_path.join("prepare-snow-shot-homebrew.sh"),
+                   staged_path.join("{slug}-#{{version}}-macos-{archive_architecture}.dmg"),
+                   staged_path.join("{name}.app"){edition_argument}],
+    must_succeed: true,
+    sudo:         false,
+    print_stderr: true,
+  }}
+
+  # Remove any prepared copy; the app artifact removes the installed app.
+  # Keep the installing account's persistent signing identity and state.
+  uninstall script: {{
+    executable: "/bin/rm",
+    args:       ["-rf", "--", "#{{staged_path}}/{name}.app"],
+    sudo:       false,
+  }}'''
+
+
 def cask(version, sha256, tag=None, edition='full', architecture='arm64'):
     slug, name = PRODUCTS[edition]
     checksums = sha256 if isinstance(sha256, dict) else {architecture: sha256}
@@ -145,7 +168,6 @@ def cask(version, sha256, tag=None, edition='full', architecture='arm64'):
         checksum_stanza = f'  sha256 "{checksums[architecture]}"'
         archive_architecture = ARCHITECTURES[architecture]
         architecture_requirement = f'  depends_on arch: :{archive_architecture}\n'
-    edition_argument = ',\n                                  "mini"' if edition == 'mini' else ''
     tag = tag or f'v{version}_snow-shot'
     if tag_version(tag) != version:
         raise ValueError('Cask version does not match its release tag.')
@@ -163,17 +185,7 @@ def cask(version, sha256, tag=None, edition='full', architecture='arm64'):
 {conflict}{architecture_requirement}  depends_on macos: :sequoia
 
   app "{name}.app"
-
-  # Third-party Ruby hooks preserve the desktop user's HOME and Keychain access.
-  preflight do
-    system_command "/bin/bash",
-                   args:         [staged_path.join("prepare-snow-shot-homebrew.sh"),
-                                  staged_path.join("{slug}-#{{version}}-macos-{archive_architecture}.dmg"),
-                                  staged_path.join("{name}.app"){edition_argument}],
-                   must_succeed: true,
-                   print_stdout: true,
-                   print_stderr: true
-  end
+{cask_installation(edition, archive_architecture)}
 
   caveats <<~EOS
     {name} reuses a signing identity in your login Keychain. The first install
@@ -199,6 +211,55 @@ def package_source(source, version, edition):
     if b'\r' in preflight:
         raise ValueError('The Homebrew preflight must use LF line endings.')
     return installer, preflight
+
+
+def migrate_casks(tap):
+    """Replace only the known legacy hook, without repackaging published assets."""
+    if not (tap / 'Casks').is_dir():
+        raise ValueError('Expected a local tap with a Casks directory.')
+    prepared = []
+    for edition, (slug, name) in PRODUCTS.items():
+        for token in (slug, slug + '@beta'):
+            path = tap / f'Casks/{token}.rb'
+            if path.is_symlink():
+                raise ValueError(f'Refusing to migrate a symlinked cask: {token}.')
+            if not path.exists():
+                continue
+            text = path.read_text(encoding='utf-8')
+            if not re.search(r'^  preflight\b', text, re.MULTILINE):
+                continue
+            if not text.startswith(f'cask "{token}" do\n'):
+                raise ValueError(f'Cask header does not match {token}.')
+            edition_argument = ',\n                                  "mini"' if edition == 'mini' else ''
+            architectures = ('arm64',) if edition == 'mini' else ('arm64', 'x86_64', '#{arch}')
+            migrated = None
+            for architecture in architectures:
+                legacy = f'''
+  # Third-party Ruby hooks preserve the desktop user's HOME and Keychain access.
+  preflight do
+    system_command "/bin/bash",
+                   args:         [staged_path.join("prepare-snow-shot-homebrew.sh"),
+                                  staged_path.join("{slug}-#{{version}}-macos-{architecture}.dmg"),
+                                  staged_path.join("{name}.app"){edition_argument}],
+                   must_succeed: true,
+                   print_stdout: true,
+                   print_stderr: true
+  end'''
+                if text.count(legacy) != 1:
+                    continue
+                remainder = text.replace(legacy, '', 1)
+                if re.search(r'^  (?:preflight|installer|uninstall)\b', remainder, re.MULTILINE):
+                    raise ValueError(f'Conflicting installation artifacts in {token}; no casks were changed.')
+                migrated = text.replace(legacy, cask_installation(edition, architecture), 1)
+                break
+            if migrated is None:
+                raise ValueError(f'Unrecognized legacy preflight in {token}; no casks were changed.')
+            prepared.append((path, migrated))
+    # Validate every cask before changing any file. Version, URL, SHA-256 and all
+    # other metadata remain byte-identical outside the recognized artifact block.
+    for path, generated in prepared:
+        path.write_text(generated, encoding='utf-8')
+    return len(prepared)
 
 
 def verified_dmg(release, assets, name):
@@ -343,6 +404,9 @@ def main():
     remote = commands.add_parser('publish', help='Publish verified assets and update the checked-out tap')
     remote.add_argument('--tag', required=True)
     remote.add_argument('--tap', type=Path, required=True)
+    migration = commands.add_parser('migrate-casks',
+                                    help='Migrate known legacy hooks in a local tap without publishing')
+    migration.add_argument('--tap', type=Path, required=True)
     for command in (local, remote):
         command.add_argument('--source', type=Path, required=True)
         command.add_argument('--output', type=Path, required=True)
@@ -351,8 +415,10 @@ def main():
         if args.command == 'package':
             package_all(json.loads(args.release_json.read_text(encoding='utf-8')), args.source,
                         args.assets, args.output, args.current_cask, args.edition)
-        else:
+        elif args.command == 'publish':
             publish(args.tag, args.source, args.tap, args.output)
+        else:
+            print(f'Migrated {migrate_casks(args.tap)} Homebrew cask(s). No release assets were changed.')
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'Homebrew release failed: {error}\n')
 

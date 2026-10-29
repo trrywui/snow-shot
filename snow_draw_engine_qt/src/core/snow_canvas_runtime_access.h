@@ -20,6 +20,10 @@ class Client {
     virtual ~Client() = default;
 
     virtual std::uint64_t runtimeViewportId() const = 0;
+    // Retained renderers can depend on a source viewport in addition to the live view.
+    virtual bool observesRuntimeViewport(std::uint64_t id) const {
+        return id == runtimeViewportId();
+    }
     virtual void detachRuntimeForReplacement() = 0;
     virtual void attachRuntime(SnowRuntime runtime) = 0;
     virtual void detachRuntimeOwner(SnowCanvasRuntime* runtimeOwner) = 0;

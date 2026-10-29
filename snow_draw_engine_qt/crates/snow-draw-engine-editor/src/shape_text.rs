@@ -28,8 +28,6 @@ impl Editor {
     ) -> Option<(ElementId, RectangleData)> {
         if !matches!(self.active_tool(), ActiveTool::Select | ActiveTool::Shape)
             || self.state.active_text_draft.is_some()
-            || self.speech_bubble_tail_drag.is_some()
-            || !matches!(self.state.interaction, InteractionState::Idle)
             || self.state.selection.ids.len() != 1
         {
             return None;
@@ -53,8 +51,23 @@ impl Editor {
         Some((id, shape))
     }
 
+    fn selected_shape_text_interaction_owner(
+        &self,
+        document: &DocumentModel,
+    ) -> Option<(ElementId, RectangleData)> {
+        if !matches!(self.state.interaction, InteractionState::Idle)
+            || self.speech_bubble_tail_drag.is_some()
+        {
+            return None;
+        }
+        self.selected_shape_text_owner(document)
+    }
+
     pub(crate) fn shape_text_handle(&self, document: &DocumentModel) -> Option<Point<f64>> {
-        let (_, shape) = self.selected_shape_text_owner(document)?;
+        let (id, _) = self.selected_shape_text_owner(document)?;
+        // Presentation follows the rendered selection, including move, resize,
+        // and rotation previews. Only starting a gesture requires idle state.
+        let shape = self.rectangle_snapshot(document, id)?;
         Some(selection_bottom_control_center(&shape, self.camera().zoom))
     }
 
@@ -67,7 +80,8 @@ impl Editor {
 
     pub(crate) fn shape_text_has_invalid_target(&self, document: &DocumentModel) -> bool {
         self.state.shape_text_drag.as_ref().is_some_and(|drag| {
-            self.selected_shape_text_owner(document) != Some((drag.preview.owner_id, drag.owner))
+            self.selected_shape_text_interaction_owner(document)
+                != Some((drag.preview.owner_id, drag.owner))
                 || drag.original_text.as_ref().is_some_and(|original| {
                     document.text(drag.preview.text_id).ok() != Some(original)
                 })
@@ -173,7 +187,7 @@ impl Editor {
         if !down && !hover {
             return Ok(None);
         }
-        let Some((owner_id, owner)) = self.selected_shape_text_owner(document) else {
+        let Some((owner_id, owner)) = self.selected_shape_text_interaction_owner(document) else {
             return Ok(None);
         };
         let center = selection_bottom_control_center(&owner, self.camera().zoom);

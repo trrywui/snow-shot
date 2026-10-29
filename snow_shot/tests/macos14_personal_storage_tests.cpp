@@ -2,6 +2,7 @@
 #include "snow_shot/platform/macos/loginitemservice.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/configurationschema.h"
+#include "snow_shot/storage/configurationstore.h"
 #include "snow_shot/storage/storageusagetracker.h"
 
 #include <QCoreApplication>
@@ -32,7 +33,6 @@ int main(int argc, char** argv) {
     require(disabled.valid && !disabled.value.toBool(), "users can disable launch at login");
     for (const auto& key : {QStringLiteral("pin_to_screen/automatic_text_recognition"),
                             QStringLiteral("screenshot/auto_recognize_qr_code"),
-                            QStringLiteral("text_recognition/resident_process"),
                             QStringLiteral("text_recognition/model_hot_start")}) {
         require(!storage::ConfigurationSchema::defaultValue(key).toBool(),
                 "fresh personal settings must avoid automatic recognition");
@@ -40,8 +40,30 @@ int main(int argc, char** argv) {
         require(enabled.valid && enabled.value.toBool(),
                 "users can still enable automatic recognition explicitly");
     }
+    require(storage::ConfigurationSchema::defaultValue(
+                QStringLiteral("text_recognition/resident_process"))
+                .toBool(),
+            "maintained builds preserve the upstream configurable OCR residency default");
+    const auto nonResident = storage::ConfigurationSchema::normalize(
+        QStringLiteral("text_recognition/resident_process"), false);
+    require(nonResident.valid && !nonResident.value.toBool(),
+            "users can disable OCR residency for lower idle memory");
     QTemporaryDir temporary;
     require(temporary.isValid(), "temporary personal data root exists");
+    const QString configurationFile =
+        QDir(temporary.path()).filePath(QStringLiteral("configuration.json"));
+    {
+        storage::ConfigurationStore configuration(configurationFile, true, true);
+        require(
+            configuration.setValue(QStringLiteral("text_recognition/resident_process"), false) &&
+                configuration.flushNow().success,
+            "disabling OCR residency must persist the user preference");
+    }
+    {
+        storage::ConfigurationStore configuration(configurationFile, true, true);
+        require(!configuration.value(QStringLiteral("text_recognition/resident_process")).toBool(),
+                "the saved nonresident preference must override the upstream default");
+    }
     const QString root = QDir(temporary.path()).filePath(QStringLiteral("user-data"));
     qputenv("SNOW_SHOT_PERSONAL_DATA_DIR", root.toUtf8());
     require(storage::StorageUsageTracker::defaultThumbnailCacheDirectory() ==

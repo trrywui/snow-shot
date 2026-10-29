@@ -18,6 +18,7 @@ class QEvent;
 class QShowEvent;
 class RecordingRegionDragHandle;
 class RecordingRegionInputRouter;
+class RecordingWebcamControl;
 class SnowCanvasRuntime;
 class SnowCanvasWidget;
 
@@ -41,6 +42,8 @@ class ScreenRecordingAreaWindow final : public QWidget {
     // Desktop points on macOS; physical desktop pixels on Windows.
     void setRecordingRegion(const QRect& region);
     [[nodiscard]] QRect recordingRegion() const;
+    [[nodiscard]] bool canRestoreRecordingRegion() const;
+    bool restoreRecordingRegion(const QRect& region);
     void setRecordingState(ScreenshotToolPalette::RecordingState state);
     void setInputMode(InputMode mode);
     [[nodiscard]] InputMode inputMode() const;
@@ -48,6 +51,10 @@ class ScreenRecordingAreaWindow final : public QWidget {
     bool activateInput();
     void setDrawingBlocked(bool blocked);
     void setTrimming(bool enabled);
+    void setWebcamOverlay(const QRectF& bounds, const QSize& region = {}, int size = 150,
+                          const QPoint& offset = {}, const QPoint& fittedOffset = {},
+                          bool circle = false);
+    void cancelWebcamInteraction();
     void setPreviewFrame(const QImage& frame);
     [[nodiscard]] bool drawingBlocked() const;
     void startCountdown(int seconds);
@@ -65,6 +72,9 @@ class ScreenRecordingAreaWindow final : public QWidget {
     }
 
   signals:
+    void webcamLayoutPreviewed(int size, const QPoint& offset);
+    void webcamLayoutCommitted(int size, const QPoint& offset);
+    void webcamOrientationRequested(int action);
     void recordingRegionChanged(const QRect& region);
     void regionInteractionStarted();
     void regionInteractionFinished();
@@ -97,7 +107,6 @@ class ScreenRecordingAreaWindow final : public QWidget {
     void setRegionCursor(Qt::Edges edges);
     [[nodiscard]] int minimumRegionExtent() const;
     void updateRegionCursor(const QPointF& position);
-    void applyQuickSelectionPreferences();
     void applyNativePassThrough(bool enabled);
     [[nodiscard]] bool regionEditingEnabled() const;
     [[nodiscard]] bool drawingEnabled() const;
@@ -109,6 +118,7 @@ class ScreenRecordingAreaWindow final : public QWidget {
     void layoutSelection();
     void layoutCountdownOverlay();
     void layoutRegionDragHandle();
+    void layoutWebcamControl();
     [[nodiscard]] QRegion regionInteractionRegion() const;
     void updateNativeMouseRouting(const QPoint& desktopPosition);
 
@@ -139,6 +149,8 @@ class ScreenRecordingAreaWindow final : public QWidget {
     snow_shot::presentation::WheelStepAccumulator m_angleWheelSteps;
     std::unique_ptr<RecordingRegionInputRouter> m_regionInputRouter;
     RecordingRegionDragHandle* m_regionDragHandle = nullptr;
+    RecordingWebcamControl* m_webcamControl = nullptr;
+    bool m_webcamVisible = false;
     snow_shot::presentation::recording::RecordingCountdownOverlay* m_countdownOverlay = nullptr;
 };
 

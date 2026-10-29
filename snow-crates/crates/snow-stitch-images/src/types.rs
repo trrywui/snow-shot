@@ -93,14 +93,6 @@ pub struct CandidateDiagnostics {
     pub score: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegionDiagnostics {
-    pub fixed_tiles: u32,
-    pub scrolling_tiles: u32,
-    pub dynamic_tiles: u32,
-    pub neutral_tiles: u32,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MotionDiagnostics {
     pub stage: MotionStage,
@@ -110,7 +102,6 @@ pub struct MotionDiagnostics {
     pub direct_similarity: f32,
     pub selected_offset: Option<i32>,
     pub candidates: Vec<CandidateDiagnostics>,
-    pub regions: RegionDiagnostics,
 }
 
 impl MotionDiagnostics {
@@ -123,7 +114,6 @@ impl MotionDiagnostics {
             direct_similarity: 0.0,
             selected_offset: None,
             candidates: Vec::new(),
-            regions: RegionDiagnostics::default(),
         }
     }
 }
@@ -172,7 +162,6 @@ pub struct MotionEstimatorOptions {
     pub max_features: u32,
     pub max_motion_ratio: f32,
     pub min_confidence: f32,
-    pub temporal_learning_rate: f32,
 }
 
 impl Default for MotionEstimatorOptions {
@@ -182,7 +171,6 @@ impl Default for MotionEstimatorOptions {
             max_features: 2_500,
             max_motion_ratio: 0.6,
             min_confidence: 0.65,
-            temporal_learning_rate: 0.2,
         }
     }
 }

@@ -204,7 +204,7 @@ class ToolbarCommands final : public ScreenshotToolbarCommandSink,
     void adjustSelectionFromToolbar(int, int, int, int) override {}
     void adjustSelectionEffectsFromWheel(int, int) override {}
     void setSelectionCornerRadiusFromToolbar(int) override {}
-    void setSelectionShadowWidthFromToolbar(int) override {}
+    void setSelectionEffectWidthFromToolbar(int) override {}
     void setSelectionToolbarHovered(bool) override {}
 };
 

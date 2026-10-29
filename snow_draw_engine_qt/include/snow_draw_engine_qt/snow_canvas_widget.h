@@ -155,6 +155,9 @@ class SnowCanvasWidget : public QWidget {
     // selection.
     void clearRenderState();
     [[nodiscard]] bool hasActiveTextEditing() const;
+    // Makes Delete edit the active text draft instead of removing its element.
+    bool deleteTextAfterCursor() const;
+    void setDeleteTextAfterCursor(bool enabled);
     // Limits automatic-width, unrotated text input to this canvas-space area's
     // horizontal edges. Clearing the bounds restores natural-width input.
     std::optional<QRectF> textEditingBounds() const;
@@ -182,6 +185,10 @@ class SnowCanvasWidget : public QWidget {
     std::uint64_t viewportId() const;
 
     bool setViewportCamera(double centerX, double centerY, double zoom);
+    // Clips document pixels and limits new pointer gestures to the host image bounds.
+    // Existing selection controls and inline editing remain usable outside the image.
+    // Does not change document geometry, history, or runtime exports.
+    void setContentClip(std::optional<QRectF> canvasRect);
     // Limits the viewport-anchored watermark to a canvas-space area. An empty
     // area renders no watermark; clearWatermarkRenderArea() restores the full
     // viewport behavior.
@@ -203,6 +210,9 @@ class SnowCanvasWidget : public QWidget {
     // Repaint changed original pixels and magnifier destinations that sample them.
     void updateBaseImageContent(const QRegion& damage);
     [[nodiscard]] QTransform canvasToViewTransform() const;
+    // Paint the current viewport at physicalSize without editor overlays. Hosts receive
+    // ContentSnapshot so they can omit presentation-only selection masks and borders.
+    [[nodiscard]] QImage renderContentToImage(const QSize& physicalSize);
     QRect viewRectForCanvasRect(const QRectF& canvasRect, int paddingPx = 0) const;
 
   public slots:

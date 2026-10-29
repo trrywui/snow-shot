@@ -9,6 +9,7 @@
 #include "widgets/modal.h"
 #include "pinned_animation_fixtures.h"
 #include "physical_key_test_support.h"
+#include "snowimageqtcodec.h"
 
 #include <QApplication>
 #include <QBuffer>
@@ -107,7 +108,6 @@ void files(const QStringList& paths) {
         urls.append(QUrl::fromLocalFile(path));
     urls.append(QUrl(QStringLiteral("https://example.com/remote.png")));
     data->setUrls(urls);
-    data->setImageData(image({3, 2}, Qt::green));
     QApplication::clipboard()->setMimeData(data);
 }
 
@@ -326,6 +326,90 @@ void ignoredContentAndTextFocus() {
     stitch.shutdown();
 }
 
+void scrollingExportFileImports(const QString& directory, QSize size = {2048, 32769}) {
+    // A modest-width scrolling capture exceeds both historical clipboard limits:
+    // 64 million pixels, and (as uncompressed RGBA BMP) 256 MiB on disk.
+    ScreenshotImageRowSource rows;
+    rows.size = size;
+    rows.readRows = [size](int first, int count, qsizetype stride, uchar* output, qsizetype) {
+        for (int y = 0; y < count; ++y) {
+            for (int x = 0; x < size.width(); ++x) {
+                auto* pixel = output + y * stride + x * 4;
+                pixel[0] = static_cast<uchar>(x % 251);
+                pixel[1] = static_cast<uchar>((first + y) % 251);
+                pixel[2] = 90;
+                pixel[3] = 128;
+            }
+        }
+        return true;
+    };
+    for (const auto format : {snow::image::Format::png, snow::image::Format::bmp}) {
+        // libpng's encoder has its own one-million-pixel axis limit. BMP can export longer axes.
+        if (format == snow::image::Format::png && size.height() > 1'000'000)
+            continue;
+        const auto path =
+            directory + (format == snow::image::Format::png ? QStringLiteral("/scrolling.png")
+                                                            : QStringLiteral("/scrolling.bmp"));
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly) &&
+                    snow_shot::image_codec::encodeToDevice(rows, &file, format, {}),
+                "scrolling export writes a large image through the production row encoder");
+        file.close();
+        if (format == snow::image::Format::bmp && size.width() == 2048)
+            require(file.size() > 256LL * 1024 * 1024,
+                    "the BMP regression exceeds the previous encoded-file limit");
+        const auto snapshots = ScreenshotClipboardContentReader::snapshotLocalFiles(
+            {path}, {}, ScreenshotClipboardContentReader::FilePurpose::ImageImport);
+        require(snapshots.size() == 1, "editor file selection admits the exported scrolling image");
+        require(ScreenshotClipboardContentReader::decodeImageFile(snapshots.first(),
+                                                                  [] { return true; })
+                    .isNull(),
+                "cancelled large imports do not decode");
+        qint64 admittedBytes = 0;
+        require(ScreenshotClipboardContentReader::decodeImageFile(
+                    snapshots.first(), {},
+                    [&](qint64 bytes) {
+                        admittedBytes = bytes;
+                        return bytes <= file.size() + 1;
+                    }).isNull() &&
+                    admittedBytes >= qint64(size.width()) * size.height() * 8,
+                "large imports reserve decoded pixels before allocation and honor rejection");
+        const auto check = [size](const QImage& actual) {
+            require(actual.size() == size, "large scrolling import retains every source pixel");
+            require(actual.pixelColor(size.width() - 1, size.height() - 1) ==
+                        QColor((size.width() - 1) % 251, (size.height() - 1) % 251, 90, 128),
+                    "large scrolling import preserves the final row and alpha");
+        };
+        {
+            ImageSplitWindow split;
+            split.presentSource({});
+            split.replaceFile(path);
+            idle(split);
+            if (split.document()->image().isNull())
+                std::cerr << "Import failed for " << path.toStdString() << ": "
+                          << split.lastError().toStdString() << '\n';
+            check(split.document()->image());
+            split.shutdown();
+        }
+        // Large imports must also detect content when the suffix names a different codec.
+        const auto mislabeledPath =
+            path +
+            (format == snow::image::Format::png ? QStringLiteral(".bmp") : QStringLiteral(".png"));
+        require(file.rename(mislabeledPath), "rename the large export to a misleading suffix");
+        {
+            CollageWindow stitch;
+            stitch.present();
+            stitch.addFiles({mislabeledPath});
+            idle(stitch);
+            require(stitch.document()->items().size() == 1,
+                    "stitching imports the exported scrolling image");
+            check(stitch.document()->items().first().image);
+            stitch.shutdown();
+        }
+        require(file.remove(), "large export fixture is released after import");
+    }
+}
+
 void animatedClipboardInitialFrames() {
     for (const auto& fixture : pinned_animation_fixtures::images()) {
         encoded(fixture.bytes, fixture.mimeType);
@@ -395,17 +479,17 @@ void admissionAndShutdown() {
         split.presentSource({});
         CollageWindow stitch;
         stitch.present();
-        auto occupied = reserveCollageImport(qint64{512} * 1024 * 1024);
-        require(occupied != nullptr, "occupy import budget before capturing clipboard image");
-        bitmap();
+        QImage oversized(8001, 8000, QImage::Format_Mono);
+        require(!oversized.isNull(), "allocate a compact bitmap beyond the clipboard pixel limit");
+        oversized.fill(0);
+        bitmap(oversized);
         split.paste();
         stitch.paste();
         idle(split);
         idle(stitch);
         require(split.document()->image().isNull() && !split.lastError().isEmpty() &&
                     stitch.document()->items().isEmpty(),
-                "clipboard memory rejection preserves documents");
-        occupied.reset();
+                "clipboard pixel admission rejection preserves documents");
         bitmap();
         split.paste();
         stitch.paste();
@@ -508,6 +592,13 @@ int main(int argc, char** argv) {
     require(storage.initialize({directory.path(), directory.path(), 60000}).success,
             "isolated paste test storage initializes");
     styles::ThemeManager::instance().initialize(app);
+    if (app.arguments().contains(QStringLiteral("--large-file-only"))) {
+        scrollingExportFileImports(directory.path());
+        scrollingExportFileImports(directory.path(), {1, (1 << 20) + 1});
+        ScreenshotExportCoordinator::shared().shutdown();
+        storage.shutdown();
+        return 0;
+    }
     const auto run = [](const char* name, const auto& test) {
         std::cout << name << '\n' << std::flush;
         test();
@@ -515,6 +606,9 @@ int main(int argc, char** argv) {
     run("Splitting clipboard and replacement", splittingClipboardAndReplacement);
     run("Stitching clipboard and PDF", stitchingClipboardAndPdf);
     run("File order and failures", [&] { fileSelectionOrderAndFailures(directory.path()); });
+    run("Scrolling export imports", [&] { scrollingExportFileImports(directory.path()); });
+    run("Long image imports",
+        [&] { scrollingExportFileImports(directory.path(), {1, (1 << 20) + 1}); });
     run("Ignored content and text focus", ignoredContentAndTextFocus);
     run("Animated clipboard initial frames", animatedClipboardInitialFrames);
     run("Encoded bitmap fallback", encodedCorruptionRetainsBitmapFallback);

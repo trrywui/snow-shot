@@ -49,13 +49,15 @@ pub use api::{
     SERIAL_NUMBER_STYLE_MIXED_NUMERIC_TYPE, SERIAL_NUMBER_STYLE_MIXED_OPACITY,
     SERIAL_NUMBER_STYLE_MIXED_STROKE_RENDERING_STYLE, SERIAL_NUMBER_STYLE_MIXED_STROKE_STYLE,
     SERIAL_NUMBER_STYLE_MIXED_STROKE_WIDTH, SERIAL_NUMBER_STYLE_MIXED_TYPE,
+    SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR, SHAPE_STYLE_MIXED_ARROW_OUTLINE_WIDTH,
     SHAPE_STYLE_MIXED_ARROW_RATIO, SHAPE_STYLE_MIXED_ARROW_SHAFT_TYPE,
     SHAPE_STYLE_MIXED_ARROW_TYPE, SHAPE_STYLE_MIXED_CORNER_RADII, SHAPE_STYLE_MIXED_END_ARROWHEAD,
     SHAPE_STYLE_MIXED_FILL, SHAPE_STYLE_MIXED_FILL_STYLE, SHAPE_STYLE_MIXED_HIGHLIGHT_SHAPE,
     SHAPE_STYLE_MIXED_OPACITY, SHAPE_STYLE_MIXED_SHAPE, SHAPE_STYLE_MIXED_START_ARROWHEAD,
     SHAPE_STYLE_MIXED_STROKE, SHAPE_STYLE_MIXED_STROKE_RENDERING_STYLE,
     SHAPE_STYLE_MIXED_STROKE_STYLE, SHAPE_STYLE_MIXED_STROKE_WIDTH, SHAPE_STYLE_PROPERTY_ALL,
-    SHAPE_STYLE_PROPERTY_ARROW, SHAPE_STYLE_PROPERTY_ARROW_RATIO,
+    SHAPE_STYLE_PROPERTY_ARROW, SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR,
+    SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH, SHAPE_STYLE_PROPERTY_ARROW_RATIO,
     SHAPE_STYLE_PROPERTY_ARROW_SHAFT_TYPE, SHAPE_STYLE_PROPERTY_ARROW_TYPE,
     SHAPE_STYLE_PROPERTY_CORNER_RADII, SHAPE_STYLE_PROPERTY_END_ARROWHEAD,
     SHAPE_STYLE_PROPERTY_FILL, SHAPE_STYLE_PROPERTY_FILL_STYLE, SHAPE_STYLE_PROPERTY_FREE_DRAW,
@@ -74,7 +76,7 @@ pub use api::{
 };
 pub use api::{SHAPE_STYLE_MIXED_BRUSH_MODE, SHAPE_STYLE_PROPERTY_BRUSH_MODE};
 pub use defaults::{EditorStyleDefaults, editor_style_defaults};
-pub use draw_template::DrawTemplate;
+pub use draw_template::{DRAW_TEMPLATE_SCHEMA_VERSION, DrawTemplate};
 pub use session::{
     EditorSession, EditorSessionSnapshot, PersistedEditorSession, validate_editor_style_defaults,
 };
@@ -117,6 +119,7 @@ pub struct SerialNumberTextOperation {
 pub struct ApplyTransactionCommand {
     pub transaction: Transaction,
     pub history_undo_snapshot: Option<DocumentSyncSnapshot>,
+    pub created_selection_target: Option<ElementId>,
 }
 
 impl ApplyTransactionCommand {
@@ -124,7 +127,13 @@ impl ApplyTransactionCommand {
         Self {
             transaction,
             history_undo_snapshot: None,
+            created_selection_target: None,
         }
+    }
+
+    fn selecting_created(mut self, id: ElementId) -> Self {
+        self.created_selection_target = Some(id);
+        self
     }
 
     fn with_history_undo_snapshot(
@@ -134,6 +143,7 @@ impl ApplyTransactionCommand {
         Self {
             transaction,
             history_undo_snapshot: Some(history_undo_snapshot),
+            created_selection_target: None,
         }
     }
 }
@@ -158,6 +168,8 @@ pub struct Editor {
     view: std::cell::Cell<EditorViewportState>,
     config: EngineConfig,
     quick_selection_disabled_tools: u64,
+    automatically_select_newly_created_elements: bool,
+    automatic_selection_excluded_tools: u64,
     scene_state_revision: u64,
     overlay_state_revision: u64,
     pending_command: Option<EditorCommand>,
@@ -183,6 +195,11 @@ impl Editor {
             view: Default::default(),
             config,
             quick_selection_disabled_tools: 0,
+            automatically_select_newly_created_elements: false,
+            automatic_selection_excluded_tools: ActiveTool::FreeDraw.policy_bit()
+                | ActiveTool::PenFilter.policy_bit()
+                | ActiveTool::Text.policy_bit()
+                | ActiveTool::SpeechBubble.policy_bit(),
             scene_state_revision: 0,
             overlay_state_revision: 0,
             pending_command: None,
@@ -266,6 +283,39 @@ impl Editor {
         self.state.active_tool
     }
 
+    pub fn automatically_select_newly_created_elements(&self) -> bool {
+        self.automatically_select_newly_created_elements
+    }
+
+    pub fn set_automatically_select_newly_created_elements(&mut self, enabled: bool) {
+        self.automatically_select_newly_created_elements = enabled;
+    }
+
+    pub fn automatic_selection_excluded_tools(&self) -> u64 {
+        self.automatic_selection_excluded_tools
+    }
+
+    pub fn set_automatic_selection_excluded_tools(&mut self, tools: u64) {
+        self.automatic_selection_excluded_tools = tools;
+    }
+
+    pub(crate) fn select_created_element(&mut self, document: &DocumentModel, id: ElementId) {
+        if !self.automatically_select_newly_created_elements()
+            || (self.automatic_selection_excluded_tools & self.active_tool().policy_bit()) != 0
+        {
+            return;
+        }
+        let Ok(element) = document.element(id) else {
+            return;
+        };
+        if element.data.is_background_restore()
+            || element.data.kind() == snow_draw_engine_document::ElementKind::AutoFilter
+        {
+            return;
+        }
+        self.set_selection_state_with_document(Some(document), vec![id], Some(id));
+    }
+
     pub fn quick_selection_disabled_tools(&self) -> u64 {
         self.quick_selection_disabled_tools
     }
@@ -320,6 +370,13 @@ impl Editor {
         document: &DocumentModel,
         snapshot: &DocumentSyncSnapshot,
     ) {
+        if self
+            .state
+            .active_distance_value_owner
+            .is_some_and(|owner| self.distance_value_target(document, owner).is_err())
+        {
+            self.clear_active_text_draft_presentation();
+        }
         self.invalidate_auto_filter_gesture(document);
         self.sync_selection_after_document_change(document, &snapshot.selection);
         self.sync_magnifier_interaction_styles(document);
@@ -360,6 +417,7 @@ impl Editor {
         }
         self.state.ui.free_draw_hover_position = None;
         self.state.pending_text_edit = None;
+        self.state.pending_distance_value_edit = None;
         self.state.pending_new_text_draft = false;
         self.state.auto_filter = Default::default();
         self.bump_overlay_state_revision();

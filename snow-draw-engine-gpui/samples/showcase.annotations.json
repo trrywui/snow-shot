@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "label": "Canvas showcase",
+  "operations": [
+    {"type":"text","bounds":[48,30,810,52],"text":"A canvas for clear ideas","style":{"color":[28,37,55,255],"font_size":32}},
+    {"type":"text","bounds":[48,91,810,32],"text":"Shapes, ink, measurements and image effects. One shared engine.","style":{"color":[105,114,130,255],"font_size":16}},
+    {"type":"rounded_rectangle","bounds":[48,164,190,126],"style":{"fill":[232,241,255,255],"stroke":[55,111,194,255],"stroke_width":2,"corner_radius":16}},
+    {"type":"text","bounds":[74,198,140,54],"text":"Shape\nand style","style":{"color":[38,74,131,255],"font_size":22}},
+    {"type":"arrow","points":[[260,225],[420,225]],"style":{"stroke":[55,111,194,255],"stroke_width":3}},
+    {"type":"diamond","bounds":[452,164,126,126],"style":{"fill":[251,239,211,255],"stroke":[194,145,52,255],"stroke_width":2}},
+    {"type":"serial_number","center":[644,185],"number":1,"style":{"stroke":[55,111,194,255],"font_size":20,"diameter":36}},
+    {"type":"text","bounds":[674,167,226,48],"text":"Select, move, resize\nand rotate","style":{"color":[65,77,96,255],"font_size":17}},
+    {"type":"serial_number","center":[644,253],"number":2,"style":{"stroke":[55,111,194,255],"font_size":20,"diameter":36}},
+    {"type":"text","bounds":[674,235,226,48],"text":"Edit text with native IME\nUndo each complete gesture","style":{"color":[65,77,96,255],"font_size":17}},
+    {"type":"freehand","points":[[54,356],[82,337],[111,362],[140,339],[170,359],[200,342],[229,354]],"style":{"stroke":[187,73,83,255],"stroke_width":5}},
+    {"type":"text","bounds":[48,386,200,30],"text":"Freehand ink","style":{"color":[105,114,130,255],"font_size":15}},
+    {"type":"distance","points":[[288,354],[520,354]],"style":{"stroke":[67,100,83,255],"stroke_width":2}},
+    {"type":"text","bounds":[288,386,240,30],"text":"Measured annotations","style":{"color":[105,114,130,255],"font_size":15}},
+    {"type":"angle","points":[[650,360],[730,360],[784,304]],"style":{"stroke":[124,91,159,255],"stroke_width":2}},
+    {"type":"text","bounds":[648,386,250,30],"text":"Angles and generated labels","style":{"color":[105,114,130,255],"font_size":15}},
+    {"type":"text","bounds":[48,450,175,30],"text":"Original image","style":{"color":[52,63,83,255],"font_size":15}},
+    {"type":"text","bounds":[280,450,175,30],"text":"Mosaic","style":{"color":[52,63,83,255],"font_size":15}},
+    {"type":"text","bounds":[512,450,175,30],"text":"Blur","style":{"color":[52,63,83,255],"font_size":15}},
+    {"type":"text","bounds":[744,450,175,30],"text":"Grayscale","style":{"color":[52,63,83,255],"font_size":15}},
+    {"type":"rectangle_filter","bounds":[280,490,168,92],"style":{"filter":"mosaic","strength":0.75}},
+    {"type":"rectangle_filter","bounds":[512,490,168,92],"style":{"filter":"gaussian_blur","strength":0.3}},
+    {"type":"rectangle_filter","bounds":[744,490,168,92],"style":{"filter":"grayscale"}}
+  ]
+}

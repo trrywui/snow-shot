@@ -72,7 +72,7 @@ void copyShortcutReset(settings::SettingsRuntimeSession& session) {
     constexpr auto scope = settings::SettingsLocalShortcutScope::Screenshot;
     const QString id = QStringLiteral("copy_to_clipboard");
     const shortcuts::ShortcutBindingList defaults{QStringLiteral("Ctrl+C"),
-                                                  QStringLiteral("Return")};
+                                                  QStringLiteral("Enter")};
     auto& configuration = storage::ApplicationStorage::instance().configuration();
     const auto before = configuration.snapshot();
     require(session.localShortcuts(scope, id) == defaults,

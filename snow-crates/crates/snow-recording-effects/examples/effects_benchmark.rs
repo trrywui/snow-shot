@@ -42,6 +42,7 @@ fn main() -> Result<(), String> {
             labels: Default::default(),
         };
         let config = PreviewConfig {
+            webcam: None,
             region: (0, 0, size.0, size.1),
             canvas: size,
             output: size,
@@ -51,6 +52,7 @@ fn main() -> Result<(), String> {
             highlight_radius: snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
             highlight: [0; 4],
             record_mouse_clicks: false,
+            record_mouse_scrolling: false,
             show_keyboard: true,
             keyboard: Some(style.clone()),
             generation: 1,

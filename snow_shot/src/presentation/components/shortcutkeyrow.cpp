@@ -117,12 +117,19 @@ bool isModifierOnlyKey(int key) {
            key == Qt::Key_AltGr || key == Qt::Key_Super_L || key == Qt::Key_Super_R;
 }
 
+snow_shot::shortcuts::ShortcutPolicy shortcutPolicy(ShortcutKeyRowConfig::ValidationScope scope) {
+    using Scope = ShortcutKeyRowConfig::ValidationScope;
+    return scope == Scope::GlobalShortcut || scope == Scope::WindowsContextMenu
+               ? snow_shot::shortcuts::ShortcutPolicy::Native
+               : snow_shot::shortcuts::ShortcutPolicy::Application;
+}
+
 QString
 shortcutValidationMessage(const snow_shot::presentation::GlobalShortcutValidationResult& validation,
                           const snow_shot::shortcuts::ShortcutBinding& attemptedShortcut,
                           ShortcutKeyRowConfig::ValidationScope validationScope) {
-    const QString displayShortcut =
-        snow_shot::shortcuts::formatShortcutDisplayText(attemptedShortcut);
+    const QString displayShortcut = snow_shot::shortcuts::formatShortcutDisplayText(
+        attemptedShortcut, shortcutPolicy(validationScope));
     if (validationScope == ShortcutKeyRowConfig::ValidationScope::WindowsContextMenu) {
         return QObject::tr("Use one letter (A–Z) or digit (0–9) without modifier keys");
     }
@@ -535,9 +542,10 @@ class ShortcutKeyConfigContent final : public QWidget {
             if (shortcut.portableText.isEmpty()) {
                 continue;
             }
-            const bool duplicate =
-                std::any_of(bindings.cbegin(), bindings.cend(), [&shortcut](const auto& existing) {
-                    return snow_shot::shortcuts::bindingsConflict(existing, shortcut);
+            const bool duplicate = std::any_of(
+                bindings.cbegin(), bindings.cend(), [this, &shortcut](const auto& existing) {
+                    return snow_shot::shortcuts::bindingsConflict(
+                        existing, shortcut, shortcutPolicy(m_validationScope));
                 });
             if (!duplicate) {
                 bindings.push_back(shortcut);
@@ -672,17 +680,19 @@ class ShortcutKeyConfigContent final : public QWidget {
                     keyButton->setText(
                         m_rejectedShortcut.portableText.isEmpty()
                             ? QObject::tr("Unsupported key")
-                            : snow_shot::shortcuts::formatShortcutDisplayText(m_rejectedShortcut));
+                            : snow_shot::shortcuts::formatShortcutDisplayText(
+                                  m_rejectedShortcut, shortcutPolicy(m_validationScope)));
                     validationButton->setTooltipText(m_validationMessage);
                 } else {
                     keyButton->setText(
                         m_pendingShortcut.portableText.isEmpty()
                             ? QObject::tr("Please press a key")
-                            : snow_shot::shortcuts::formatShortcutDisplayText(m_pendingShortcut));
+                            : snow_shot::shortcuts::formatShortcutDisplayText(
+                                  m_pendingShortcut, shortcutPolicy(m_validationScope)));
                 }
             } else {
-                keyButton->setText(
-                    snow_shot::shortcuts::formatShortcutDisplayText(keyConfig.binding));
+                keyButton->setText(snow_shot::shortcuts::formatShortcutDisplayText(
+                    keyConfig.binding, shortcutPolicy(m_validationScope)));
             }
 
             connect(keyButton, &QAbstractButton::clicked, this,
@@ -802,10 +812,12 @@ class ShortcutKeyConfigContent final : public QWidget {
         }
 
         const bool allowModifierOnlyShift =
-            m_validationScope == ShortcutKeyRowConfig::ValidationScope::ScreenshotShortcut;
+            m_validationScope == ShortcutKeyRowConfig::ValidationScope::ScreenshotShortcut ||
+            m_validationScope == ShortcutKeyRowConfig::ValidationScope::RecordingShortcut;
         const snow_shot::shortcuts::ShortcutBinding shortcut =
             snow_shot::shortcuts::bindingFromKeyEvent(event, allowModifierOnlyShift,
-                                                      m_allowModifierOnlyAlt);
+                                                      m_allowModifierOnlyAlt,
+                                                      shortcutPolicy(m_validationScope));
         snow_shot::presentation::GlobalShortcutValidationResult validation{
             shortcut.portableText,
             !shortcut.portableText.isEmpty(),
@@ -818,7 +830,8 @@ class ShortcutKeyConfigContent final : public QWidget {
             m_keyConfigs.cbegin(), m_keyConfigs.cend(), [this, &shortcut](const KeyConfig& config) {
                 return config.index != m_recordingConfigIndex &&
                        !config.binding.portableText.isEmpty() &&
-                       snow_shot::shortcuts::bindingsConflict(config.binding, shortcut);
+                       snow_shot::shortcuts::bindingsConflict(config.binding, shortcut,
+                                                              shortcutPolicy(m_validationScope));
             });
         if (duplicate) {
             validation.supported = false;
@@ -1296,8 +1309,8 @@ void ShortcutKeyRow::openShortcutConfigDialog() {
 }
 
 void ShortcutKeyRow::syncRegistrationStatus() {
-    const QString shortcutText =
-        snow_shot::shortcuts::formatShortcutListDisplayText(m_registrationState.shortcuts);
+    const QString shortcutText = snow_shot::shortcuts::formatShortcutListDisplayText(
+        m_registrationState.shortcuts, shortcutPolicy(m_validationScope));
     const auto status =
         m_showRegistrationStatus
             ? m_registrationState.status
@@ -1368,7 +1381,8 @@ QString ShortcutKeyRow::registrationTooltipText() const {
         const QString displayShortcut = snow_shot::shortcuts::formatShortcutDisplayText(
             binding.binding.portableText.isEmpty()
                 ? snow_shot::shortcuts::bindingFromPortableText(binding.shortcut)
-                : binding.binding);
+                : binding.binding,
+            shortcutPolicy(m_validationScope));
         if (binding.registered) {
             registeredShortcuts.push_back(displayShortcut);
             continue;

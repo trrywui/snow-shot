@@ -143,6 +143,7 @@ fn speech_bubble_clamped_resize_keeps_corner_controls_on_resolved_body() {
                         EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                             transaction: tx,
                             history_undo_snapshot: None,
+                            created_selection_target: None,
                         }),
                     )
                     .unwrap();

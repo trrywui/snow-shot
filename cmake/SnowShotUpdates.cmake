@@ -1,4 +1,4 @@
-if(NOT APPLE)
+if(NOT APPLE AND NOT SNOW_SHOT_DISTRIBUTION_CHANNEL STREQUAL "store")
     # The GPL updater is a standalone Rust package inside the Snow Shot license boundary. The main
     # application links only the Qt process/protocol adapter below.
     set(_snow_shot_updater_manifest_dir
@@ -45,6 +45,7 @@ add_library(snow_shot_updates STATIC
     src/update/updateerrors.cpp)
 target_include_directories(snow_shot_updates PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(snow_shot_updates PUBLIC Qt6::Core)
+target_link_libraries(snow_shot_updates PRIVATE snow_shot_distribution)
 if(APPLE)
     target_link_libraries(snow_shot_updates PRIVATE Qt6::Network)
     target_compile_definitions(snow_shot_updates PRIVATE SNOW_SHOT_VERSION="${SNOW_SHOT_VERSION}")
@@ -57,7 +58,7 @@ if(APPLE)
     add_custom_command(TARGET snow_shot POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E rm -f "$<TARGET_FILE_DIR:snow_shot>/snow-shot-updater")
 endif()
-if(NOT APPLE)
+if(NOT APPLE AND NOT SNOW_SHOT_DISTRIBUTION_CHANNEL STREQUAL "store")
     add_dependencies(snow_shot snow-shot-updater)
     add_custom_command(TARGET snow_shot POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -66,6 +67,12 @@ if(NOT APPLE)
 
     install(PROGRAMS "$<TARGET_FILE:snow-shot-updater-binary>"
         DESTINATION bin COMPONENT SnowShot)
+elseif(SNOW_SHOT_DISTRIBUTION_CHANNEL STREQUAL "store")
+    # A reused build directory must not carry executable self-update code into MSIX.
+    add_custom_command(TARGET snow_shot POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_FILE_DIR:snow_shot>/snow-shot-updater${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:snow_shot>/snow-shot-mini-updater${CMAKE_EXECUTABLE_SUFFIX}")
 endif()
 
 option(SNOW_SHOT_BUILD_UPDATE_TESTS "Build focused update tests without unrelated test targets"

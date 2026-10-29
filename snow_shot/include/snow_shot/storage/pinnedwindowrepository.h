@@ -86,6 +86,8 @@ class PinnedWindowRepository final {
     [[nodiscard]] QVector<PinnedWindowSummary> pendingSummaries() const;
     // Reads source identity without materializing any persisted image payload.
     [[nodiscard]] PinnedSourceIdentity sourceIdentity(const QString& id) const;
+    // Resolves only persisted managed content; never flushes a pending first save.
+    [[nodiscard]] std::optional<QString> revealPath(const QString& id) const;
     [[nodiscard]] quint64 revision() const;
     // Advances only when records enter, leave, close, restore, or change groups.
     [[nodiscard]] quint64 membershipRevision() const;

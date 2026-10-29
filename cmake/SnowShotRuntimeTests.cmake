@@ -87,7 +87,8 @@ function(snow_shot_add_ocr_runtime_tests)
         include/snow_shot/presentation/screenshotocrassets.h
         src/presentation/ocr/screenshotocrassets.cpp)
     target_include_directories(snow-shot-ocr-assets-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-    target_link_libraries(snow-shot-ocr-assets-tests PRIVATE Qt6::Core Qt6::Network MINIZIP::minizip-ng)
+    target_link_libraries(snow-shot-ocr-assets-tests PRIVATE
+        snow_shot_distribution Qt6::Core Qt6::Network MINIZIP::minizip-ng)
     if(APPLE)
         target_link_libraries(snow-shot-ocr-assets-tests PRIVATE snow_shot_rust_ffi_selector)
     endif()
@@ -102,7 +103,7 @@ function(snow_shot_add_ocr_runtime_tests)
         target_include_directories(snow-shot-ocr-assets-arm64-contract-tests PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/include")
         target_link_libraries(snow-shot-ocr-assets-arm64-contract-tests PRIVATE
-            Qt6::Core Qt6::Network MINIZIP::minizip-ng)
+            snow_shot_distribution Qt6::Core Qt6::Network MINIZIP::minizip-ng)
         add_test(NAME snow-shot-ocr-assets-arm64-contract-tests
             COMMAND snow-shot-ocr-assets-arm64-contract-tests)
         set_tests_properties(snow-shot-ocr-assets-arm64-contract-tests PROPERTIES

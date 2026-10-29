@@ -59,48 +59,12 @@ void ScreenshotController::mcpCommand(const QString& method, const QJsonObject& 
         return;
     }
     if (method == QStringLiteral("snow_shot_screenshot_set_selection_style")) {
-        auto candidate = s.m_selection;
-        for (const auto& key : {QStringLiteral("corner_radius"), QStringLiteral("shadow_width")}) {
-            if (!params.contains(key))
-                continue;
-            const auto value = params.value(key);
-            if (!value.isDouble() || value.toDouble() < 0 || value.toDouble() > 4096 ||
-                std::floor(value.toDouble()) != value.toDouble()) {
-                fail();
-                return;
-            }
+        if (!snow_shot::app::mcp::applySelectionStyle(
+                s.m_selection, params, nullptr,
+                snow_shot::presentation::kScreenshotSelectionMinimumSize)) {
+            fail();
+            return;
         }
-        if (params.contains(QStringLiteral("corner_radius")))
-            static_cast<void>(
-                candidate.setCornerRadius(params.value(QStringLiteral("corner_radius")).toInt()));
-        if (params.contains(QStringLiteral("shadow_width")))
-            static_cast<void>(
-                candidate.setShadowWidth(params.value(QStringLiteral("shadow_width")).toInt()));
-        if (params.contains(QStringLiteral("shadow_color"))) {
-            const auto color = params.value(QStringLiteral("shadow_color")).toArray();
-            if (color.size() != 4) {
-                fail();
-                return;
-            }
-            for (auto v : color)
-                if (!v.isDouble() || v.toDouble() < 0 || v.toDouble() > 255 ||
-                    std::floor(v.toDouble()) != v.toDouble()) {
-                    fail();
-                    return;
-                }
-            candidate.setShadowColor(
-                QColor(color[0].toInt(), color[1].toInt(), color[2].toInt(), color[3].toInt()));
-        }
-        if (params.contains(QStringLiteral("aspect_ratio_locked"))) {
-            if (!params.value(QStringLiteral("aspect_ratio_locked")).isBool()) {
-                fail();
-                return;
-            }
-            static_cast<void>(candidate.setAspectRatioLockEnabled(
-                params.value(QStringLiteral("aspect_ratio_locked")).toBool(),
-                snow_shot::presentation::kScreenshotSelectionMinimumSize));
-        }
-        s.m_selection = candidate;
         s.m_presentationServices->updateOverlayState();
         success();
         return;

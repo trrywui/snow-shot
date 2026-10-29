@@ -70,6 +70,31 @@ fn click(engine: &mut Engine, viewport: ViewportId, point: Point<f64>) {
     pointer(engine, viewport, PointerEventType::Down, point);
     pointer(engine, viewport, PointerEventType::Up, point);
 }
+#[test]
+fn pending_angle_keeps_interaction_active_between_pointer_grabs() {
+    let (mut engine, view) = setup();
+    assert!(!engine.has_active_interaction());
+    click(&mut engine, view, Point::new(100., 0.));
+    assert!(!engine.has_pointer_capture());
+    assert!(engine.has_active_interaction());
+    click(&mut engine, view, Point::new(0., 0.));
+    assert!(engine.has_active_interaction());
+    engine
+        .process_input(
+            view,
+            InputEvent::Key(KeyEvent {
+                event_type: KeyEventType::KeyDown,
+                key_code: KeyCode::Escape,
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }),
+        )
+        .unwrap();
+    assert!(!engine.has_active_interaction());
+    assert!(engine.model.paint_order().is_empty());
+    create(&mut engine, view);
+    assert!(!engine.has_active_interaction());
+}
 fn create(engine: &mut Engine, viewport: ViewportId) -> ElementId {
     click(engine, viewport, Point::new(100.0, 0.0));
     click(engine, viewport, Point::new(0.0, 0.0));

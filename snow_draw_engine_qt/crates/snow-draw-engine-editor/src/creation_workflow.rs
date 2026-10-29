@@ -73,7 +73,8 @@ impl Editor {
                         pen,
                     );
                     self.queue_command(EditorCommand::ApplyTransaction(
-                        ApplyTransactionCommand::new(transaction),
+                        ApplyTransactionCommand::new(transaction)
+                            .selecting_created(document.peek_next_element_id()),
                     ));
                 }
                 Ok(InteractionOutput {
@@ -236,7 +237,8 @@ impl Editor {
             transaction.insert_text(text_id, ElementMeta::default(), label);
         }
         self.queue_command(EditorCommand::ApplyTransaction(
-            ApplyTransactionCommand::new(transaction),
+            ApplyTransactionCommand::new(transaction)
+                .selecting_created(document.peek_next_element_id()),
         ));
         Ok(())
     }
@@ -273,7 +275,8 @@ impl Editor {
             ApplyTransactionCommand::with_history_undo_snapshot(
                 transaction,
                 self.capture_document_sync_snapshot(document),
-            ),
+            )
+            .selecting_created(id),
         )))
     }
 
@@ -408,6 +411,9 @@ impl Editor {
             preview_arrow_from_points(
                 points,
                 ArrowStyle {
+                    arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(
+                    ),
+                    arrow_outline_width: 0.0,
                     stroke: style.stroke,
                     stroke_width: style.stroke_width,
                     start_arrowhead: None,
@@ -578,10 +584,10 @@ impl Editor {
                 let mut transaction = Transaction::new("create speech bubble");
                 transaction.insert_speech_bubble(id, ElementMeta::default(), bubble);
                 let undo = self.capture_document_sync_snapshot(document);
-                self.set_selection_state(vec![id], Some(id));
                 self.state.pending_speech_bubble_text_edit = Some(id);
                 self.queue_command(EditorCommand::ApplyTransaction(
-                    ApplyTransactionCommand::with_history_undo_snapshot(transaction, undo),
+                    ApplyTransactionCommand::with_history_undo_snapshot(transaction, undo)
+                        .selecting_created(id),
                 ));
                 return Ok(InteractionOutput {
                     consumed: true,
@@ -599,7 +605,8 @@ impl Editor {
                     value,
                 );
                 self.queue_command(EditorCommand::ApplyTransaction(
-                    ApplyTransactionCommand::new(transaction),
+                    ApplyTransactionCommand::new(transaction)
+                        .selecting_created(document.peek_next_element_id()),
                 ));
                 return Ok(InteractionOutput {
                     consumed: true,
@@ -638,7 +645,8 @@ impl Editor {
                     filter,
                 );
                 self.queue_command(EditorCommand::ApplyTransaction(
-                    ApplyTransactionCommand::new(transaction),
+                    ApplyTransactionCommand::new(transaction)
+                        .selecting_created(document.peek_next_element_id()),
                 ));
                 return Ok(InteractionOutput {
                     consumed: true,
@@ -660,7 +668,8 @@ impl Editor {
                 rect,
             );
             self.queue_command(EditorCommand::ApplyTransaction(
-                ApplyTransactionCommand::new(transaction),
+                ApplyTransactionCommand::new(transaction)
+                    .selecting_created(document.peek_next_element_id()),
             ));
         }
 
@@ -1072,7 +1081,11 @@ impl Editor {
             return Ok(InteractionOutput::default());
         };
         let text = state.text.clone();
+        let serial_id = state.serial_id;
         self.cancel_interaction();
+        // The badge is inserted on pointer down. Selecting it after the drag finishes
+        // preserves the gesture that creates and positions its attached label.
+        self.select_created_element(document, serial_id);
         if let Some((id, text)) = text {
             if let Ok(original) = document.text(id)
                 && original != &text

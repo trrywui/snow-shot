@@ -1,3 +1,5 @@
+mod thought_bubble;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -125,7 +127,10 @@ pub fn speech_bubble_body_proxy(value: &SpeechBubbleData) -> RectangleData {
             bottom_left: body.corner_radii.bottom_left.min(limit),
         };
     }
-    if body.highlight_shape == HighlightShape::Ellipse {
+    if matches!(
+        body.highlight_shape,
+        HighlightShape::Ellipse | HighlightShape::ThoughtBubble
+    ) {
         body.corner_radii = CornerRadii::default();
     } else {
         body.corner_radii = crate::normalize_shape_corner_radii(
@@ -153,7 +158,7 @@ pub fn validate_speech_bubble(value: &SpeechBubbleData) -> Result<(), ErrorCode>
     {
         return Err(ErrorCode::InvalidArgument);
     }
-    crate::validate_rectangle(&speech_bubble_body_proxy(value))?;
+    crate::document_geometry::validate_rectangle_properties(&speech_bubble_body_proxy(value))?;
     if value.body.rectangle_kind != RectangleElementKind::Rectangle
         || value.body.text_element_id.is_some()
         || value.body.width <= 0.0
@@ -210,11 +215,20 @@ pub fn speech_bubble_tail_base_points(
     tail: &SpeechBubbleTail,
 ) -> [Point<f64>; 2] {
     if let Some(index) = value.tails.iter().position(|existing| existing == tail) {
-        let triangle = cached_geometry(value).triangles[index];
-        return [triangle[0], triangle[2]];
+        let geometry = cached_geometry(value);
+        return if value.body.highlight_shape == HighlightShape::ThoughtBubble {
+            geometry.tail_bases[index]
+        } else {
+            let triangle = geometry.triangles[index];
+            [triangle[0], triangle[2]]
+        };
     }
     let body = body_segments(speech_bubble_body_proxy(value));
-    tail_bases(&body, tail)
+    if value.body.highlight_shape == HighlightShape::ThoughtBubble {
+        thought_bubble::base_points(value, &body, tail)
+    } else {
+        tail_bases(&body, tail)
+    }
 }
 
 pub fn speech_bubble_tail_effective_half_angle(
@@ -246,6 +260,10 @@ pub fn speech_bubble_base_width_from_point(
     tail: &SpeechBubbleTail,
     point: Point<f64>,
 ) -> f64 {
+    if value.body.highlight_shape == HighlightShape::ThoughtBubble {
+        let length = tail.tip.x.hypot(tail.tip.y).max(f64::EPSILON);
+        return (2.0 * cross(tail.tip, point).abs() / length).max(SPEECH_BUBBLE_MIN_BASE_WIDTH);
+    }
     if point.x == 0.0 && point.y == 0.0 {
         return tail.base_width;
     }
@@ -371,12 +389,22 @@ pub fn speech_bubble_bounds(value: &SpeechBubbleData) -> DrawRect {
         value.body.stroke_width / 2.0
     } else {
         0.0
-    };
+    } + speech_bubble_stroke_rendering_outset(value);
     DrawRect::new(
         bounds[0] - outset,
         bounds[1] - outset,
         bounds[2] + outset,
         bounds[3] + outset,
+    )
+}
+
+fn speech_bubble_stroke_rendering_outset(value: &SpeechBubbleData) -> f64 {
+    if value.body.stroke.a == 0 || value.body.stroke_width <= 0.0 {
+        return 0.0;
+    }
+    snow_draw_engine_core::arrow::stroke_rendering_outset(
+        value.body.stroke_rendering_style,
+        f64::MAX,
     )
 }
 
@@ -389,6 +417,13 @@ pub fn speech_bubble_hit_test(value: &SpeechBubbleData, point: Point<f64>, toler
     let has_stroke = value.body.stroke.a != 0 && value.body.stroke_width > 0.0;
     let has_fill = value.body.fill_style.is_visible(value.body.fill);
     if (has_fill || has_stroke) && point_inside_body(&geometry.body, point) {
+        return true;
+    }
+    if (has_fill || has_stroke)
+        && geometry.circles.iter().any(|circle| {
+            (point.x - circle.center.x).hypot(point.y - circle.center.y) <= circle.radius
+        })
+    {
         return true;
     }
     if has_fill
@@ -406,7 +441,8 @@ pub fn speech_bubble_hit_test(value: &SpeechBubbleData, point: Point<f64>, toler
         value.body.stroke_width / 2.0
     } else {
         0.0
-    } + tolerance.max(0.0);
+    } + tolerance.max(0.0)
+        + speech_bubble_stroke_rendering_outset(value);
     geometry
         .outline
         .iter()
@@ -416,6 +452,7 @@ pub fn speech_bubble_hit_test(value: &SpeechBubbleData, point: Point<f64>, toler
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct GeometryKey {
     shape: u8,
+    stroke_width: u64,
     size: [u64; 2],
     radii: [u64; 4],
     tails: Vec<[u64; 4]>,
@@ -426,6 +463,11 @@ impl GeometryKey {
         let body = speech_bubble_body_proxy(value);
         Self {
             shape: body.highlight_shape as u8,
+            stroke_width: if body.highlight_shape == HighlightShape::ThoughtBubble {
+                body.stroke_width.to_bits()
+            } else {
+                0
+            },
             size: [body.width.to_bits(), body.height.to_bits()],
             radii: [
                 body.corner_radii.top_left.to_bits(),
@@ -512,6 +554,8 @@ pub fn speech_bubble_geometry_retained_bytes() -> usize {
 struct BubbleGeometry {
     body: Vec<Segment>,
     triangles: Vec<[Point<f64>; 3]>,
+    tail_bases: Vec<[Point<f64>; 2]>,
+    circles: Vec<thought_bubble::Circle>,
     outline: Vec<Segment>,
     path: PathGeometry,
 }
@@ -525,6 +569,8 @@ fn geometry_bytes(key: &GeometryKey, geometry: &BubbleGeometry) -> usize {
         + 64
         + geometry.body.capacity() * size_of::<Segment>()
         + geometry.triangles.capacity() * size_of::<[Point<f64>; 3]>()
+        + geometry.tail_bases.capacity() * size_of::<[Point<f64>; 2]>()
+        + geometry.circles.capacity() * size_of::<thought_bubble::Circle>()
         + geometry.outline.capacity() * size_of::<Segment>()
         + geometry.path.chunks.len() * size_of::<snow_draw_engine_core::PathChunk>()
         + geometry
@@ -672,6 +718,9 @@ fn body_segments(body: RectangleData) -> Vec<Segment> {
     let b = body.height / 2.0;
     if a <= 0.0 || b <= 0.0 {
         return Vec::new();
+    }
+    if body.highlight_shape == HighlightShape::ThoughtBubble {
+        return thought_bubble::body_segments(body);
     }
     if body.highlight_shape == HighlightShape::Ellipse {
         return arc_segments(Point::new(0.0, 0.0), a, b, -FRAC_PI_2, TAU);
@@ -1086,6 +1135,9 @@ fn bounds_overlap(a: DrawRect, b: DrawRect) -> bool {
 }
 
 fn build_geometry(value: &SpeechBubbleData, key: &GeometryKey) -> BubbleGeometry {
+    if value.body.highlight_shape == HighlightShape::ThoughtBubble {
+        return thought_bubble::build_geometry(value, key);
+    }
     let body = body_segments(speech_bubble_body_proxy(value));
     let triangles: Vec<_> = value
         .tails
@@ -1192,6 +1244,8 @@ fn build_geometry(value: &SpeechBubbleData, key: &GeometryKey) -> BubbleGeometry
     key.hash(&mut revision);
     BubbleGeometry {
         body,
+        tail_bases: Vec::new(),
+        circles: Vec::new(),
         triangles,
         outline,
         path: PathGeometry::from_commands(revision.finish(), commands, true),
@@ -1279,6 +1333,261 @@ mod tests {
             opacity: 1.0,
         })
     }
+    #[test]
+    fn speech_bubble_styled_bounds_and_hits_include_only_visible_ink_excursions() {
+        use snow_draw_engine_core::arrow::StrokeRenderingStyle;
+
+        for shape in [
+            HighlightShape::Rectangle,
+            HighlightShape::Ellipse,
+            HighlightShape::Diamond,
+            HighlightShape::ThoughtBubble,
+        ] {
+            let mut value = bubble(shape);
+            value.body.rotation = 0.37;
+            value.tails.push(speech_bubble_default_tail(
+                &value,
+                Point::new(0.0, 110.0),
+                1.0,
+            ));
+            let plain = speech_bubble_bounds(&value);
+            let path = speech_bubble_path_geometry(&value);
+            for (style, extra) in [
+                (StrokeRenderingStyle::Artist, 2.0),
+                (StrokeRenderingStyle::Cartoonist, 4.0),
+            ] {
+                value.body.stroke_rendering_style = style;
+                let styled = speech_bubble_bounds(&value);
+                assert!((styled.min_x - (plain.min_x - extra)).abs() < 1e-9);
+                assert!((styled.max_y - (plain.max_y + extra)).abs() < 1e-9);
+                assert_eq!(speech_bubble_path_geometry(&value), path);
+                value.body.stroke.a = 0;
+                let hidden = speech_bubble_bounds(&value);
+                assert!((hidden.min_x - path.canvas_bounds[0]).abs() < 1e-9);
+                value.body.stroke.a = 255;
+            }
+        }
+
+        let mut value = bubble(HighlightShape::Rectangle);
+        value.body.fill.a = 0;
+        value.body.rotation = 0.37;
+        let point = speech_bubble_local_to_canvas(&value, Point::new(-52.5, 0.0));
+        assert!(!speech_bubble_hit_test(&value, point, 0.0));
+        value.body.stroke_rendering_style = StrokeRenderingStyle::Artist;
+        assert!(speech_bubble_hit_test(&value, point, 0.0));
+        value.body.stroke_rendering_style = StrokeRenderingStyle::Cartoonist;
+        assert!(speech_bubble_hit_test(&value, point, 0.0));
+        value.body.stroke.a = 0;
+        assert!(!speech_bubble_hit_test(&value, point, 0.0));
+        value.body.stroke.a = 255;
+        value.body.stroke_width = 0.0;
+        assert!(!speech_bubble_hit_test(&value, point, 0.0));
+    }
+
+    #[test]
+    fn thought_bubble_cloud_preserves_bounds_and_radial_hit_testing_when_resized() {
+        for (width, height) in [(280.0, 180.0), (160.0, 160.0), (20.0, 600.0), (800.0, 20.0)] {
+            let mut value = bubble(HighlightShape::ThoughtBubble);
+            value.body.width = width;
+            value.body.height = height;
+            value.body.stroke_width = 0.0;
+            let geometry = cached_geometry(&value);
+            let bounds = speech_bubble_bounds(&value);
+            for (actual, expected) in [
+                (bounds.min_x, -width / 2.0),
+                (bounds.max_x, width / 2.0),
+                (bounds.min_y, -height / 2.0),
+                (bounds.max_y, height / 2.0),
+            ] {
+                assert!((actual - expected).abs() < 1e-9);
+            }
+            for (i, segment) in geometry.body.iter().enumerate() {
+                let next = geometry.body[(i + 1) % geometry.body.len()];
+                assert_eq!(
+                    segment.end, next.start,
+                    "the cloud contour closes without seams"
+                );
+                // Every point on a puff must be the first boundary encountered
+                // from the center, including the inward scallops. Otherwise the
+                // radial hit test would disagree with the painted cloud.
+                for step in 0..=32 {
+                    let point = segment.eval(f64::from(step) / 32.0);
+                    let distance = point.x.hypot(point.y);
+                    let boundary = ray_radius(&geometry.body, point.y.atan2(point.x));
+                    assert!((boundary - distance).abs() < 1e-7);
+                    assert!(speech_bubble_hit_test(
+                        &value,
+                        Point::new(point.x * 0.99, point.y * 0.99),
+                        0.0
+                    ));
+                    assert!(!speech_bubble_hit_test(
+                        &value,
+                        Point::new(point.x * 1.01, point.y * 1.01),
+                        0.0
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thought_bubble_contours_trails_bounds_and_empty_gaps_agree() {
+        for (width, height) in [(200.0, 120.0), (20.0, 600.0), (800.0, 20.0)] {
+            for stroke in [0.0, 2.0, 12.0, 72.0] {
+                let mut value = bubble(HighlightShape::ThoughtBubble);
+                value.body.width = width;
+                value.body.height = height;
+                value.body.stroke_width = stroke;
+                for i in 0..8 {
+                    let angle = i as f64 * std::f64::consts::TAU / 8.0;
+                    value.tails.push(SpeechBubbleTail {
+                        id: i + 1,
+                        tip: Point::new(
+                            angle.cos() * (width + 240.0),
+                            angle.sin() * (height + 240.0),
+                        ),
+                        base_width: 48.0 + stroke * 3.0,
+                    });
+                }
+                assert_eq!(validate_speech_bubble(&value), Ok(()));
+                assert_eq!(
+                    crate::validate_rectangle(&value.body),
+                    Err(ErrorCode::InvalidArgument)
+                );
+                assert!(!value.body.supports_corner_radius());
+                let geometry = cached_geometry(&value);
+                assert!(geometry.triangles.is_empty());
+                assert!(geometry.circles.len() <= 3 * value.tails.len());
+                assert_eq!(
+                    geometry
+                        .path
+                        .flattened_commands()
+                        .iter()
+                        .filter(|command| { matches!(command, PathCommand::MoveTo { .. }) })
+                        .count(),
+                    1 + geometry.circles.len(),
+                    "each trail circle remains disconnected from the cloud"
+                );
+                let bounds = speech_bubble_bounds(&value);
+                for circle in &geometry.circles {
+                    assert!(speech_bubble_hit_test(&value, circle.center, 0.0));
+                    assert!(circle.center.x - circle.radius >= bounds.min_x);
+                    assert!(circle.center.x + circle.radius <= bounds.max_x);
+                    assert!(circle.center.y - circle.radius >= bounds.min_y);
+                    assert!(circle.center.y + circle.radius <= bounds.max_y);
+                }
+                let saved = serde_json::to_string(&value).unwrap();
+                let restored: SpeechBubbleData = serde_json::from_str(&saved).unwrap();
+                assert_eq!(restored.body, value.body);
+                assert_eq!(restored.tails.len(), value.tails.len());
+                for (a, b) in restored.tails.iter().zip(&value.tails) {
+                    assert_eq!((a.id, a.base_width), (b.id, b.base_width));
+                    assert!((a.tip.x - b.tip.x).hypot(a.tip.y - b.tip.y) < 1e-9);
+                }
+            }
+        }
+        let mut value = bubble(HighlightShape::ThoughtBubble);
+        value.tails.push(SpeechBubbleTail {
+            id: 1,
+            tip: Point::new(0.0, 220.0),
+            base_width: 32.0,
+        });
+        let geometry = cached_geometry(&value);
+        assert_eq!(
+            geometry.circles.len(),
+            3,
+            "a long trail keeps three readable bubbles"
+        );
+        for circle in &geometry.circles {
+            assert!(!geometry.body.iter().any(|segment| segment_near_point(
+                *segment,
+                circle.center,
+                circle.radius + value.body.stroke_width,
+                0
+            )));
+        }
+        for pair in geometry.circles.windows(2) {
+            assert!(pair[0].radius > pair[1].radius);
+            let gap = Point::new(
+                0.0,
+                (pair[0].center.y + pair[0].radius + pair[1].center.y - pair[1].radius) / 2.0,
+            );
+            assert!(!speech_bubble_hit_test(&value, gap, 0.0));
+        }
+        assert_eq!(geometry.circles.last().unwrap().center, value.tails[0].tip);
+    }
+
+    #[test]
+    fn thought_bubble_geometry_cache_ignores_placement_and_preserves_requested_style() {
+        let mut value = bubble(HighlightShape::ThoughtBubble);
+        value.tails.push(SpeechBubbleTail {
+            id: 23,
+            tip: Point::new(110.0, 180.0),
+            base_width: 34.0,
+        });
+        let original = cached_geometry(&value);
+        value.body.center = Point::new(300.0, -80.0);
+        value.body.rotation = 0.7;
+        value.body.fill.r = 19;
+        value.body.corner_radii = CornerRadii::splat(400.0);
+        assert!(Arc::ptr_eq(&original, &cached_geometry(&value)));
+        for circle in &original.circles {
+            assert!(speech_bubble_hit_test(
+                &value,
+                speech_bubble_local_to_canvas(&value, circle.center),
+                0.0
+            ));
+        }
+        value.body.stroke_width = 7.0;
+        assert!(!Arc::ptr_eq(&original, &cached_geometry(&value)));
+        assert_eq!(value.body.corner_radii, CornerRadii::splat(400.0));
+        let base = speech_bubble_tail_base_points(&value, &value.tails[0]);
+        for point in base {
+            assert!(
+                (speech_bubble_base_width_from_point(&value, &value.tails[0], point)
+                    - value.tails[0].base_width)
+                    .abs()
+                    < 1e-9
+            );
+        }
+        assert!(speech_bubble_geometry_retained_bytes() <= GEOMETRY_CACHE_BYTE_BUDGET);
+    }
+
+    #[test]
+    fn thought_bubble_tiny_trails_are_finite_and_keep_their_endpoints() {
+        let mut value = bubble(HighlightShape::ThoughtBubble);
+        for distance in [0.00001, 0.1, 1.0, 4.0, 10.0, 30.0, 80.0, 300.0, 1e6] {
+            value.tails = vec![SpeechBubbleTail {
+                id: 1,
+                tip: Point::new(0.0, value.body.height / 2.0 + distance),
+                base_width: 32.0,
+            }];
+            let geometry = cached_geometry(&value);
+            assert!(geometry.circles.len() <= 3);
+            assert!(
+                geometry
+                    .circles
+                    .iter()
+                    .all(|c| c.radius.is_finite() && c.radius > 0.0)
+            );
+            if let Some(last) = geometry.circles.last() {
+                assert_eq!(last.center, value.tails[0].tip);
+            }
+            assert_eq!(validate_speech_bubble(&value), Ok(()));
+        }
+        value.tails[0].tip = Point::new(0.0, value.body.height / 2.0 + 12.0);
+        value.tails[0].base_width = 200.0;
+        let short = cached_geometry(&value);
+        assert_eq!(
+            short.circles.len(),
+            1,
+            "a short trail compresses its requested spacing"
+        );
+        assert_eq!(short.circles[0].center, value.tails[0].tip);
+        assert!(short.circles[0].radius < value.tails[0].base_width / 2.0);
+        assert_eq!(value.tails[0].base_width, 200.0);
+    }
+
     #[test]
     fn border_fill_keeps_stroke_hit_policy_without_invisible_tail_fill() {
         let mut value = bubble(HighlightShape::Rectangle);
@@ -1835,6 +2144,8 @@ mod tests {
             let geometry = Arc::new(BubbleGeometry {
                 body: vec![line(Point::new(0.0, 0.0), Point::new(1.0, 1.0)); 10_000],
                 triangles: Vec::new(),
+                tail_bases: Vec::new(),
+                circles: Vec::new(),
                 outline: Vec::new(),
                 path: PathGeometry::default(),
             });
@@ -1851,6 +2162,8 @@ mod tests {
                 GEOMETRY_CACHE_BYTE_BUDGET / std::mem::size_of::<Segment>() + 1
             ],
             triangles: Vec::new(),
+            tail_bases: Vec::new(),
+            circles: Vec::new(),
             outline: Vec::new(),
             path: PathGeometry::default(),
         });

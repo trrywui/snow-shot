@@ -58,7 +58,7 @@ function Get-SnowWindowsTarget {
         $presetArchitecture = if ($Preset -match '^snow-shot-msvc-arm64-(debug|performance|release|fast)$') {
             "arm64"
         } elseif ($Preset -in @("windows-msvc-debug", "windows-msvc-performance",
-                "windows-clang-portability", "snow-shot-msvc-release", "snow-shot-msvc-fast")) {
+                "windows-clang-portability", "snow-shot-msvc-release", "snow-shot-msvc-fast", "snow-shot-msvc-store-release")) {
             "x64"
         } else { throw "Unsupported Windows preset: $Preset" }
         if ($PSBoundParameters.ContainsKey("Architecture") -and $Architecture -cne $presetArchitecture) {
@@ -90,6 +90,8 @@ function Get-SnowWindowsTarget {
         Preset = $Preset
         ReleasePreset = if ($Architecture -eq "arm64") { "snow-shot-msvc-arm64-release" }
             else { "snow-shot-msvc-release" }
+        StorePreset = if ($Architecture -eq "x64") { "snow-shot-msvc-store-release" } else { $null }
+        DistributionChannel = if ($Preset -match '-store-release$') { 'store' } else { 'standalone' }
         Configuration = $configuration
         IsStatic = [bool]$static
         GeneratorPlatform = if ($Architecture -eq "arm64") { "ARM64" } else { "x64" }
@@ -372,7 +374,7 @@ function Test-SnowQtSystemCodecKit {
             continue
         }
         $text = if ($feature.Name -ceq "system_png") { $guiText } else { $coreText }
-        $visibility = if ($feature.Name -ceq "timezone") { "PUBLIC" } else { "PRIVATE" }
+        $visibility = if ($feature.Name -cin @("timezone", "concurrent")) { "PUBLIC" } else { "PRIVATE" }
         $enabled = if ($feature.Name -ceq "ltcg") {
             $ltcgEnabled
         } elseif ($feature.Name -cin @("system_png", "system_zlib")) {

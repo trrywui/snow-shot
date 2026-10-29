@@ -4,7 +4,7 @@
 #include "snow_draw_engine_qt/snow_canvas_types.h"
 #include "snow_shot/presentation/screenshotinteractionstate.h"
 #include "snow_shot/storage/configurationschema.h"
-#include "snow_shot/shortcuts/shortcutdisplayservice.h"
+#include "snow_shot/presentation/shortcutdisplaytext.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -160,7 +160,7 @@ screenshotShortcutHintSelectionModeForContext(const ScreenshotShortcutHintContex
     }
     if (sourceText == QStringLiteral("Delete selected elements: Delete")) {
         return row("Delete selected elements",
-                   snow_shot::shortcuts::formatShortcutDisplayText(
+                   snow_shot::presentation::formatShortcutDisplayText(
                        snow_shot::shortcuts::bindingFromPortableText(QStringLiteral("Delete"))));
     }
     if (sourceText == QStringLiteral("Draw straight line: Shift")) {
@@ -198,7 +198,7 @@ screenshotShortcutSchemaDefaultKeys(const QString& actionId) {
     const QString& actionId, const char* label) {
     return {
         QCoreApplication::translate("SettingsCatalog", label),
-        snow_shot::shortcuts::formatShortcutListDisplayText(
+        snow_shot::presentation::formatShortcutListDisplayText(
             screenshotConfiguredShortcutHintKeys(configuredShortcuts, actionId)),
         ScreenshotShortcutHintInput::Keyboard,
         {},
@@ -300,16 +300,17 @@ screenshotShortcutHintRowsForMode(ScreenshotShortcutHintMode mode,
             QStringList historyShortcutChips;
             if (!previousHistoryShortcuts.isEmpty()) {
                 historyShortcutChips.push_back(
-                    snow_shot::shortcuts::formatShortcutListDisplayText(previousHistoryShortcuts));
+                    snow_shot::presentation::formatShortcutListDisplayText(
+                        previousHistoryShortcuts));
             }
             if (!nextHistoryShortcuts.isEmpty()) {
                 historyShortcutChips.push_back(
-                    snow_shot::shortcuts::formatShortcutListDisplayText(nextHistoryShortcuts));
+                    snow_shot::presentation::formatShortcutListDisplayText(nextHistoryShortcuts));
             }
-            rows.push_back({screenshotShortcutHintText("Switch screenshot history"),
-                            snow_shot::shortcuts::formatShortcutListDisplayText(historyShortcuts),
-                            ScreenshotShortcutHintInput::Keyboard,
-                            std::move(historyShortcutChips)});
+            rows.push_back(
+                {screenshotShortcutHintText("Switch screenshot history"),
+                 snow_shot::presentation::formatShortcutListDisplayText(historyShortcuts),
+                 ScreenshotShortcutHintInput::Keyboard, std::move(historyShortcutChips)});
         }
     }
     if (context.multiRegionEditing && !context.regionConstructionActive &&

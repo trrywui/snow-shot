@@ -42,6 +42,7 @@ impl NativeEditableSession {
         }
         if config.effects.keyboard.is_some()
             || config.effects.record_mouse_clicks
+            || config.effects.record_mouse_scrolling
             || config.effects.highlight_rgba[3] != 0
         {
             return Err(ScreenRecorderError::UnsupportedFeature(

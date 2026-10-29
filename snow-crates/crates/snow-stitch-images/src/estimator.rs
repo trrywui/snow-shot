@@ -1,11 +1,14 @@
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
 use rayon::prelude::*;
 
 use crate::{
     CandidateDiagnostics, Frame, Geometry, MotionDiagnostics, MotionEstimate,
-    MotionEstimatorOptions, MotionStage, PixelFormat, RegionDiagnostics, StitchAxis, StitchError,
-    region::{GrayImage, SimilarityMap, TemporalRegionModel, TileLayout},
+    MotionEstimatorOptions, MotionStage, PixelFormat, StitchAxis, StitchError,
+    region::{GrayImage, SimilarityMap, TileLayout},
     sampling::SamplingPlan,
 };
 
@@ -44,12 +47,6 @@ struct DescriptorMatch {
     distance: u32,
 }
 
-#[derive(Debug, Clone)]
-struct ScoredCandidate {
-    diagnostics: CandidateDiagnostics,
-    compensated: SimilarityMap,
-}
-
 struct FeatureEvidence {
     reference_features: u32,
     incoming_features: u32,
@@ -67,7 +64,6 @@ struct EvaluationImages<'a> {
 
 struct EvaluatedMotion {
     estimate: MotionEstimate,
-    compensated: Option<SimilarityMap>,
     scene_cut: bool,
     margin: f32,
 }
@@ -76,14 +72,13 @@ impl EvaluatedMotion {
     fn rejected(scene_cut: bool, confidence: f32, diagnostics: MotionDiagnostics) -> Self {
         Self {
             estimate: MotionEstimate::indeterminate(confidence, diagnostics),
-            compensated: None,
             scene_cut,
             margin: 0.0,
         }
     }
 
     fn needs_full_resolution(&self) -> bool {
-        self.compensated.is_none()
+        !matches!(self.estimate.outcome, crate::MotionOutcome::Motion { .. })
             || self.margin <= 0.0
             || !self
                 .estimate
@@ -416,7 +411,6 @@ fn mutual_observations_rust(
 fn detect_balanced_rust(
     frame: &Frame,
     layout: TileLayout,
-    regions: &TemporalRegionModel,
     max_features: usize,
     pyramid_plan: &crate::orb::PyramidPlan,
     sampling: Option<&SamplingPlan>,
@@ -437,7 +431,7 @@ fn detect_balanced_rust(
                 plan.source_coordinates(keypoint.x, keypoint.y)
             });
             let tile = layout.index(x, y)?;
-            let score = keypoint.response.max(0.001) * regions.weight_at_tile(tile);
+            let score = keypoint.response.max(0.001);
             Some((score, tile, keypoint))
         })
         .collect::<Vec<_>>();
@@ -480,43 +474,52 @@ fn detect_balanced_rust(
         .collect()
 }
 
-// The estimator hands this its full state (frames, tiling, regions, tuning);
+// The estimator hands this its frames, tiling, and feature-extraction tuning;
 // grouping them into a struct would churn every call site for no clarity.
 #[allow(clippy::too_many_arguments)]
 fn pure_rust_feature_evidence(
     reference: &Frame,
     incoming: &Frame,
     layout: TileLayout,
-    regions: &TemporalRegionModel,
     max_features: usize,
     axis: StitchAxis,
     parallel_work: bool,
     pyramid_plan: &crate::orb::PyramidPlan,
     sampling: Option<&SamplingPlan>,
-) -> FeatureEvidence {
+    cached_reference: &mut Option<Vec<BinaryFeature>>,
+) -> (FeatureEvidence, Vec<BinaryFeature>) {
     let feature_perf = crate::perf::Scope::new(crate::perf::Stage::FeatureExtraction);
-    let detect =
-        |frame| detect_balanced_rust(frame, layout, regions, max_features, pyramid_plan, sampling);
-    let (reference_features, incoming_features) = if parallel_work {
-        rayon::join(|| detect(reference), || detect(incoming))
+    let detect = |frame| detect_balanced_rust(frame, layout, max_features, pyramid_plan, sampling);
+    let incoming_features = if cached_reference.is_some() {
+        detect(incoming)
     } else {
-        (detect(reference), detect(incoming))
+        let (reference_features, incoming_features) = if parallel_work {
+            rayon::join(|| detect(reference), || detect(incoming))
+        } else {
+            (detect(reference), detect(incoming))
+        };
+        *cached_reference = Some(reference_features);
+        incoming_features
     };
+    let reference_features = cached_reference
+        .as_ref()
+        .expect("prepared reference features");
     feature_perf.finish();
     let _perf = crate::perf::Scope::new(crate::perf::Stage::DescriptorMatching);
     let observations = mutual_observations_rust(
-        &reference_features,
+        reference_features,
         &incoming_features,
         layout,
         axis,
         parallel_work,
     );
 
-    FeatureEvidence {
+    let evidence = FeatureEvidence {
         reference_features: reference_features.len() as u32,
         incoming_features: incoming_features.len() as u32,
         observations,
-    }
+    };
+    (evidence, incoming_features)
 }
 
 fn candidate_offsets(
@@ -584,7 +587,6 @@ fn alignment_errors(
     direct: &SimilarityMap,
     zero_alignment: &SimilarityMap,
     compensated: &SimilarityMap,
-    regions: &TemporalRegionModel,
 ) -> (f32, f32) {
     let mut samples = Vec::new();
     for tile in 0..direct.layout().len() {
@@ -604,8 +606,7 @@ fn alignment_errors(
         if texture < 0.05 {
             continue;
         }
-        let weight =
-            (0.1 + 0.9 * pair_evidence) * (0.1 + 0.9 * texture) * regions.weight_at_tile(tile);
+        let weight = (0.1 + 0.9 * pair_evidence) * (0.1 + 0.9 * texture);
         samples.push((1.0 - candidate_similarity, 1.0 - zero_similarity, weight));
     }
     if samples.is_empty() {
@@ -638,9 +639,8 @@ fn score_candidate(
     observations: &[MatchObservation],
     direct: &SimilarityMap,
     zero_alignment: &SimilarityMap,
-    compensated: SimilarityMap,
-    regions: &TemporalRegionModel,
-) -> ScoredCandidate {
+    compensated: &SimilarityMap,
+) -> CandidateDiagnostics {
     let mut eligible_by_tile = vec![0.0_f32; direct.layout().len()];
     let mut inlier_by_tile = vec![0.0_f32; direct.layout().len()];
     let mut raw_inliers = 0_u32;
@@ -657,10 +657,7 @@ fn score_candidate(
         };
         let descriptor_quality =
             (1.0 - observation.distance / MAX_HAMMING_DISTANCE).clamp(0.05, 1.0);
-        let history = 0.5
-            * (regions.weight_at_point(observation.reference_x, observation.reference_y)
-                + regions.weight_at_point(observation.incoming_x, observation.incoming_y));
-        let weight = descriptor_quality * (0.1 + 0.9 * pair_evidence) * history;
+        let weight = descriptor_quality * (0.1 + 0.9 * pair_evidence);
         eligible_by_tile[observation.reference_tile] += weight;
         if (axis.primary_delta(observation.dx, observation.dy) - offset).abs() <= INLIER_TOLERANCE {
             inlier_by_tile[observation.reference_tile] += weight;
@@ -687,7 +684,7 @@ fn score_candidate(
         .count() as u32;
     let spatial_coverage = (inlier_tiles as f32 / 12.0).clamp(0.0, 1.0);
     let (zero_error, alignment_error) =
-        alignment_errors(offset, direct, zero_alignment, &compensated, regions);
+        alignment_errors(offset, direct, zero_alignment, compensated);
     let residual_gain = if offset == 0 || zero_error <= f32::EPSILON {
         0.0
     } else {
@@ -695,20 +692,17 @@ fn score_candidate(
     };
     let score = 0.6 * weighted_inlier_share + 0.25 * residual_gain + 0.15 * spatial_coverage;
 
-    ScoredCandidate {
-        diagnostics: CandidateDiagnostics {
-            offset,
-            raw_inliers,
-            inlier_tiles,
-            weighted_support,
-            weighted_inlier_share,
-            spatial_coverage,
-            alignment_error,
-            precise_alignment_error: None,
-            residual_gain,
-            score,
-        },
-        compensated,
+    CandidateDiagnostics {
+        offset,
+        raw_inliers,
+        inlier_tiles,
+        weighted_support,
+        weighted_inlier_share,
+        spatial_coverage,
+        alignment_error,
+        precise_alignment_error: None,
+        residual_gain,
+        score,
     }
 }
 
@@ -732,202 +726,137 @@ fn luminance_gradient(frame: &Frame, x: u32, y: u32) -> u16 {
     u16::from(horizontal) + u16::from(vertical)
 }
 
-// Independent scans avoid histogram-reduction overhead for small viewports.
-fn precise_alignment_error(
-    reference: &Frame,
-    incoming: &Frame,
-    direct: &SimilarityMap,
-    axis: StitchAxis,
-    offset: i32,
-) -> f32 {
-    let mut histogram = [0_u64; 256];
-    let mut samples = 0_u64;
-    let width = incoming.width() as i32;
-    let height = incoming.height() as i32;
-    for incoming_y in (1..incoming.height().saturating_sub(1)).step_by(4) {
-        for x in (1..incoming.width().saturating_sub(1)).step_by(4) {
-            let (reference_x, reference_y) = match axis {
-                StitchAxis::Vertical => (x as i32, incoming_y as i32 - offset),
-                StitchAxis::Horizontal => (x as i32 - offset, incoming_y as i32),
-            };
-            if reference_x <= 0
-                || reference_x >= width - 1
-                || reference_y <= 0
-                || reference_y >= height - 1
-            {
-                continue;
-            }
-            if direct.at_point(x as f32, incoming_y as f32).unwrap_or(1.0) >= 0.85 {
-                continue;
-            }
-            let reference_value = luminance_at(reference, reference_x as u32, reference_y as u32);
-            let incoming_value = luminance_at(incoming, x, incoming_y);
-            let reference_gradient =
-                luminance_gradient(reference, reference_x as u32, reference_y as u32);
-            let incoming_gradient = luminance_gradient(incoming, x, incoming_y);
-            if reference_gradient.max(incoming_gradient) < 16 {
-                continue;
-            }
-            let intensity_error = u16::from(reference_value.abs_diff(incoming_value));
-            let gradient_error = reference_gradient.abs_diff(incoming_gradient) / 2;
-            let difference = intensity_error.saturating_add(gradient_error).min(255) as usize;
-            histogram[difference] += 1;
-            samples += 1;
-        }
-    }
-    if samples == 0 {
-        return 1.0;
-    }
-    let target = samples.saturating_mul(3).div_ceil(5);
-    let mut accumulated = 0_u64;
-    for (difference, count) in histogram.into_iter().enumerate() {
-        accumulated += count;
-        if accumulated >= target {
-            return difference as f32 / 255.0;
-        }
-    }
-    1.0
-}
+const REFINEMENT_OFFSETS: usize = (2 * INLIER_TOLERANCE + 1) as usize;
+const REFINEMENT_PATCH_RADIUS: i32 = 4;
+const MAX_REFINEMENT_PATCHES_PER_TILE: usize = 2;
 
-fn precise_alignment_errors(
+fn refinement_tile_errors(
     reference: &Frame,
     incoming: &Frame,
-    direct: &SimilarityMap,
     axis: StitchAxis,
-    strongest_mode: i32,
-    maximum_shift: i32,
-) -> [(i32, f32); (2 * INLIER_TOLERANCE + 1) as usize] {
-    const OFFSETS: usize = (2 * INLIER_TOLERANCE + 1) as usize;
-    let offsets: [i32; OFFSETS] =
-        std::array::from_fn(|index| strongest_mode - INLIER_TOLERANCE + index as i32);
+    offsets: &[i32],
+    observations: &[&MatchObservation],
+) -> Option<[f32; REFINEMENT_OFFSETS]> {
     let width = incoming.width() as i32;
     let height = incoming.height() as i32;
-    // Incoming values and the fixed-region mask are identical for every offset.
-    // Reduce integer histograms across row groups to preserve exact error scores.
-    let histograms = (0..incoming.height().saturating_sub(2).div_ceil(4))
-        .into_par_iter()
-        .with_min_len(16)
-        .fold(
-            || [[0_u64; 256]; OFFSETS],
-            |mut histograms, row| {
-                let y = 1 + row * 4;
-                for x in (1..incoming.width().saturating_sub(1)).step_by(4) {
-                    if direct.at_point(x as f32, y as f32).unwrap_or(1.0) >= 0.85 {
-                        continue;
-                    }
-                    let incoming_value = luminance_at(incoming, x, y);
-                    let incoming_gradient = luminance_gradient(incoming, x, y);
-                    for (offset, histogram) in offsets.iter().zip(&mut histograms) {
-                        if offset.abs() > maximum_shift {
-                            continue;
-                        }
-                        let (reference_x, reference_y) = match axis {
-                            StitchAxis::Vertical => (x as i32, y as i32 - offset),
-                            StitchAxis::Horizontal => (x as i32 - offset, y as i32),
-                        };
-                        if reference_x <= 0
-                            || reference_x >= width - 1
-                            || reference_y <= 0
-                            || reference_y >= height - 1
-                        {
-                            continue;
-                        }
-                        let reference_x = reference_x as u32;
-                        let reference_y = reference_y as u32;
-                        let reference_value = luminance_at(reference, reference_x, reference_y);
-                        let reference_gradient =
-                            luminance_gradient(reference, reference_x, reference_y);
-                        if reference_gradient.max(incoming_gradient) < 16 {
-                            continue;
-                        }
-                        let intensity_error = u16::from(reference_value.abs_diff(incoming_value));
-                        let gradient_error = reference_gradient.abs_diff(incoming_gradient) / 2;
-                        let difference = intensity_error.saturating_add(gradient_error).min(255);
-                        histogram[usize::from(difference)] += 1;
-                    }
-                }
-                histograms
-            },
-        )
-        .reduce(
-            || [[0_u64; 256]; OFFSETS],
-            |mut left, right| {
-                for (left, right) in left.iter_mut().flatten().zip(right.iter().flatten()) {
-                    *left += right;
-                }
-                left
-            },
-        );
-    std::array::from_fn(|index| {
-        let offset = offsets[index];
-        let histogram = histograms[index];
-        let samples = histogram.iter().sum::<u64>();
-        let target = samples.saturating_mul(3).div_ceil(5);
-        let mut accumulated = 0_u64;
-        let error = if samples == 0 {
-            1.0
-        } else {
-            histogram
-                .into_iter()
-                .position(|count| {
-                    accumulated += count;
-                    accumulated >= target
-                })
-                .map_or(1.0, |difference| difference as f32 / 255.0)
+    let first = *offsets.first()?;
+    let last = *offsets.last()?;
+    let mut sums = [0_u64; REFINEMENT_OFFSETS];
+    let mut samples = 0_u32;
+    for observation in observations.iter().take(MAX_REFINEMENT_PATCHES_PER_TILE) {
+        let x = round_coordinate(observation.incoming_x);
+        let y = round_coordinate(observation.incoming_y);
+        let (left, top, right, bottom) = match axis {
+            StitchAxis::Vertical => (x, y - last, x, y - first),
+            StitchAxis::Horizontal => (x - last, y, x - first, y),
         };
-        (offset, error)
-    })
+        let border = REFINEMENT_PATCH_RADIUS + 1;
+        // Every candidate must use the same full patch, including gradient neighbors.
+        if x < border
+            || y < border
+            || x >= width - border
+            || y >= height - border
+            || left < border
+            || top < border
+            || right >= width - border
+            || bottom >= height - border
+        {
+            continue;
+        }
+        for dy in (-REFINEMENT_PATCH_RADIUS..=REFINEMENT_PATCH_RADIUS).step_by(2) {
+            for dx in (-REFINEMENT_PATCH_RADIUS..=REFINEMENT_PATCH_RADIUS).step_by(2) {
+                let x = (x + dx) as u32;
+                let y = (y + dy) as u32;
+                let incoming_gradient = luminance_gradient(incoming, x, y);
+                // Texture eligibility must not change with the candidate offset.
+                if incoming_gradient < 16 {
+                    continue;
+                }
+                let incoming_value = luminance_at(incoming, x, y);
+                for (index, &offset) in offsets.iter().enumerate() {
+                    let (rx, ry) = match axis {
+                        StitchAxis::Vertical => (x, (y as i32 - offset) as u32),
+                        StitchAxis::Horizontal => ((x as i32 - offset) as u32, y),
+                    };
+                    let value = luminance_at(reference, rx, ry);
+                    let gradient = luminance_gradient(reference, rx, ry);
+                    let error = u16::from(value.abs_diff(incoming_value))
+                        + gradient.abs_diff(incoming_gradient) / 2;
+                    sums[index] += u64::from(error.min(255));
+                }
+                samples += 1;
+            }
+        }
+    }
+    // A tile needs multiple textured points, not a single accidental agreement.
+    (samples >= 4).then(|| sums.map(|sum| sum as f32 / (samples as f32 * 255.0)))
 }
 
 fn refine_motion_offset(
     reference: &Frame,
     incoming: &Frame,
-    direct: &SimilarityMap,
     axis: StitchAxis,
     strongest_mode: i32,
     maximum_shift: i32,
+    observations: &[MatchObservation],
 ) -> (i32, f32) {
-    let compare = |left: &(i32, f32), right: &(i32, f32)| {
-        left.1
-            .total_cmp(&right.1)
-            .then_with(|| {
-                (left.0 - strongest_mode)
-                    .abs()
-                    .cmp(&(right.0 - strongest_mode).abs())
-            })
-            .then_with(|| left.0.cmp(&right.0))
-    };
-    // Histogram reduction loses on small images and cheap Gray8 scans at 1080p.
-    let minimum_shared_pixels = match incoming.pixel_format() {
-        PixelFormat::Gray8 => 4 * 1024 * 1024,
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 => 1024 * 1024,
-    };
-    let best = if u64::from(incoming.width()) * u64::from(incoming.height()) < minimum_shared_pixels
-    {
-        (strongest_mode - INLIER_TOLERANCE..=strongest_mode + INLIER_TOLERANCE)
-            .into_par_iter()
-            .filter(|offset| offset.abs() <= maximum_shift)
-            .map(|offset| {
-                (
-                    offset,
-                    precise_alignment_error(reference, incoming, direct, axis, offset),
-                )
-            })
-            .min_by(compare)
-    } else {
-        precise_alignment_errors(
-            reference,
-            incoming,
-            direct,
-            axis,
-            strongest_mode,
-            maximum_shift,
-        )
+    let offsets = (strongest_mode - INLIER_TOLERANCE..=strongest_mode + INLIER_TOLERANCE)
+        .filter(|offset| offset.abs() <= maximum_shift)
+        .collect::<Vec<_>>();
+    let mut inliers = observations
+        .iter()
+        .filter(|observation| {
+            (axis.primary_delta(observation.dx, observation.dy) - strongest_mode).abs()
+                <= INLIER_TOLERANCE
+        })
+        .collect::<Vec<_>>();
+    // Preserve the motion hypothesis's spatial support. Fixed UI with zero motion
+    // must not vote on the precision of a scrolling offset. Choose the best two
+    // descriptors per tile, so a dense patch cannot outweigh the rest of the image.
+    inliers.sort_by(|left, right| {
+        left.reference_tile
+            .cmp(&right.reference_tile)
+            .then_with(|| left.distance.total_cmp(&right.distance))
+    });
+    let groups = inliers
+        .chunk_by(|left, right| left.reference_tile == right.reference_tile)
+        .collect::<Vec<_>>();
+    let tile_errors = groups
+        .par_iter()
+        .with_min_len(8)
+        .filter_map(|group| refinement_tile_errors(reference, incoming, axis, &offsets, group))
+        .collect::<Vec<_>>();
+    if tile_errors.len() < MIN_INLIER_TILES as usize {
+        // Preserve the coarse estimate when there is no spatially distributed
+        // precision evidence. 1.0 also requests the existing full-resolution retry.
+        return (strongest_mode, 1.0);
+    }
+    let retained = (tile_errors.len() * 3).div_ceil(4);
+    offsets
         .into_iter()
-        .filter(|(offset, _)| offset.abs() <= maximum_shift)
-        .min_by(compare)
-    };
-    best.expect("motion refinement range contains its center")
+        .enumerate()
+        .map(|(index, offset)| {
+            let mut errors = tile_errors
+                .iter()
+                .map(|errors| errors[index])
+                .collect::<Vec<_>>();
+            errors.sort_by(f32::total_cmp);
+            // As in coarse alignment, trim the worst quarter to tolerate dynamic
+            // patches; normalize each tile first to retain equal spatial influence.
+            let error = errors[..retained].iter().sum::<f32>() / retained as f32;
+            (offset, error)
+        })
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| {
+                    (left.0 - strongest_mode)
+                        .abs()
+                        .cmp(&(right.0 - strongest_mode).abs())
+                })
+                .then_with(|| left.0.cmp(&right.0))
+        })
+        .unwrap_or((strongest_mode, 1.0))
 }
 
 fn options_error(message: impl Into<String>) -> StitchError {
@@ -953,15 +882,30 @@ pub(crate) fn validate_estimator_options(
     if !options.min_confidence.is_finite() || !(0.0..=1.0).contains(&options.min_confidence) {
         return Err(options_error("min_confidence must be finite and in [0, 1]"));
     }
-    if !options.temporal_learning_rate.is_finite()
-        || !(0.0..=1.0).contains(&options.temporal_learning_rate)
-        || options.temporal_learning_rate == 0.0
-    {
-        return Err(options_error(
-            "temporal_learning_rate must be finite and in (0, 1]",
-        ));
-    }
     Ok(())
+}
+
+/// Prepared data belonging to one stitch accumulator. A duplicate leaves it intact;
+/// every estimated frame replaces `previous_raw`, and accepted motion invalidates
+/// the reference before its pixels or canvas-window position can change.
+/// Only selected descriptors and grayscale planes downsampled 4x on each axis
+/// are retained, not ORB pyramids. Equal references share their grayscale planes.
+#[derive(Default)]
+pub(crate) struct EstimationCache {
+    previous_raw: Option<Arc<GrayImage>>,
+    previous_features: Option<Vec<BinaryFeature>>,
+    previous_full_features: Option<Vec<BinaryFeature>>,
+    reference_gray: Option<Arc<GrayImage>>,
+    reference_features: Option<Vec<BinaryFeature>>,
+    full_reference_features: Option<Vec<BinaryFeature>>,
+}
+
+impl EstimationCache {
+    pub(crate) fn invalidate_reference(&mut self) {
+        self.reference_gray = None;
+        self.reference_features = None;
+        self.full_reference_features = None;
+    }
 }
 
 pub struct VerticalMotionEstimator {
@@ -969,7 +913,6 @@ pub struct VerticalMotionEstimator {
     axis: StitchAxis,
     options: MotionEstimatorOptions,
     layout: TileLayout,
-    regions: TemporalRegionModel,
     scene_cut_streak: u8,
     parallel_work: bool,
     pyramid_plan: crate::orb::PyramidPlan,
@@ -984,7 +927,6 @@ impl std::fmt::Debug for VerticalMotionEstimator {
             .field("geometry", &self.geometry)
             .field("axis", &self.axis)
             .field("options", &self.options)
-            .field("regions", &self.regions.summary())
             .field("scene_cut_streak", &self.scene_cut_streak)
             .field("parallel_work", &self.parallel_work)
             .finish()
@@ -1011,7 +953,6 @@ impl VerticalMotionEstimator {
             axis,
             options,
             layout,
-            regions: TemporalRegionModel::new(layout),
             scene_cut_streak: 0,
             parallel_work: std::thread::available_parallelism()
                 .is_ok_and(|parallelism| parallelism.get() > 1),
@@ -1019,10 +960,6 @@ impl VerticalMotionEstimator {
             sampling,
             full_pyramid_plan: OnceLock::new(),
         })
-    }
-
-    pub fn region_summary(&self) -> RegionDiagnostics {
-        self.regions.summary()
     }
 
     fn rejected_estimate(
@@ -1036,13 +973,10 @@ impl VerticalMotionEstimator {
         } else {
             self.scene_cut_streak = 0;
         }
-        self.regions.decay_toward_neutral(0.05);
         if self.scene_cut_streak >= 3 {
-            self.regions.reset();
             self.scene_cut_streak = 0;
             diagnostics.stage = MotionStage::SceneCut;
         }
-        diagnostics.regions = self.regions.summary();
         MotionEstimate::indeterminate(confidence, diagnostics)
     }
 
@@ -1052,6 +986,28 @@ impl VerticalMotionEstimator {
         previous_raw: &Frame,
         incoming: &Frame,
     ) -> Result<MotionEstimate, StitchError> {
+        // Direct callers may supply unrelated frames on every call. Only the
+        // stitch accumulator has the lifecycle needed to reuse prepared data.
+        self.estimate_cached(
+            motion_reference,
+            previous_raw,
+            incoming,
+            &mut EstimationCache::default(),
+        )
+    }
+
+    pub(crate) fn estimate_cached(
+        &mut self,
+        motion_reference: &Frame,
+        previous_raw: &Frame,
+        incoming: &Frame,
+        cache: &mut EstimationCache,
+    ) -> Result<MotionEstimate, StitchError> {
+        // Taking this before early returns also invalidates it when the incoming
+        // frame takes the identical-interior path without preparing grayscale.
+        let previous_gray = cache.previous_raw.take();
+        let previous_features = cache.previous_features.take();
+        let previous_full_features = cache.previous_full_features.take();
         for (name, frame) in [
             ("motion reference", motion_reference),
             ("previous raw frame", previous_raw),
@@ -1078,14 +1034,28 @@ impl VerticalMotionEstimator {
             self.scene_cut_streak = 0;
             let mut diagnostics = MotionDiagnostics::at(MotionStage::IdenticalInterior);
             diagnostics.direct_similarity = 1.0;
-            diagnostics.regions = self.regions.summary();
             return Ok(MotionEstimate::no_motion(1.0, diagnostics));
+        }
+
+        // Composition may reconstruct precisely the last input. In that case
+        // its prepared data is also valid for the new reference. Verify all RGB
+        // pixels: fixed UI, animation, and repainted bands can break this equality.
+        if cache.reference_gray.is_none()
+            && let Some(gray) = &previous_gray
+            && motion_reference.visible_pixels_equal(previous_raw)
+        {
+            cache.reference_gray = Some(Arc::clone(gray));
+            cache.reference_features = previous_features;
+            cache.full_reference_features = previous_full_features;
         }
 
         let (previous_gray, incoming_gray) = {
             let _perf = crate::perf::Scope::new(crate::perf::Stage::Grayscale);
             (
-                GrayImage::from_frame(previous_raw)?,
+                match previous_gray {
+                    Some(gray) => gray,
+                    None => Arc::new(GrayImage::from_frame(previous_raw)?),
+                },
                 GrayImage::from_frame(incoming)?,
             )
         };
@@ -1093,34 +1063,39 @@ impl VerticalMotionEstimator {
             let _perf = crate::perf::Scope::new(crate::perf::Stage::SimilarityMaps);
             SimilarityMap::between(&previous_gray, &incoming_gray, self.layout, self.axis, 0)
         };
-        // The raw comparison is complete. Release its two float planes before
-        // preparing the motion reference or retaining the ORB pyramids.
+        // The raw comparison is complete. Release its planes before ORB unless
+        // they are shared with the cached motion reference.
         drop(previous_gray);
-        let reference_gray = {
+        if cache.reference_gray.is_none() {
             let _perf = crate::perf::Scope::new(crate::perf::Stage::Grayscale);
-            GrayImage::from_frame(motion_reference)?
-        };
+            cache.reference_gray = Some(Arc::new(GrayImage::from_frame(motion_reference)?));
+        }
+        let reference_gray = cache
+            .reference_gray
+            .as_ref()
+            .expect("prepared reference grayscale");
         let zero_alignment = {
             let _perf = crate::perf::Scope::new(crate::perf::Stage::SimilarityMaps);
-            SimilarityMap::between(&reference_gray, &incoming_gray, self.layout, self.axis, 0)
+            SimilarityMap::between(reference_gray, &incoming_gray, self.layout, self.axis, 0)
         };
 
         let max_features = self.options.max_features as usize;
-        let evidence = pure_rust_feature_evidence(
+        let (evidence, incoming_features) = pure_rust_feature_evidence(
             motion_reference,
             incoming,
             self.layout,
-            &self.regions,
             max_features,
             self.axis,
             self.parallel_work,
             &self.pyramid_plan,
             Some(&self.sampling),
+            &mut cache.reference_features,
         );
+        cache.previous_features = Some(incoming_features);
         let images = EvaluationImages {
             reference: motion_reference,
             incoming,
-            reference_gray: &reference_gray,
+            reference_gray,
             incoming_gray: &incoming_gray,
             direct: &direct,
             zero_alignment: &zero_alignment,
@@ -1133,45 +1108,35 @@ impl VerticalMotionEstimator {
                     self.geometry.height as usize,
                 )
             });
-            let evidence = pure_rust_feature_evidence(
+            let (evidence, incoming_features) = pure_rust_feature_evidence(
                 motion_reference,
                 incoming,
                 self.layout,
-                &self.regions,
                 max_features,
                 self.axis,
                 self.parallel_work,
                 pyramid,
                 None,
+                &mut cache.full_reference_features,
             );
+            cache.previous_full_features = Some(incoming_features);
             evaluated = self.evaluate(&images, evidence);
         }
-        Ok(self.commit_evaluation(&direct, evaluated))
+        cache.previous_raw = Some(Arc::new(incoming_gray));
+        Ok(self.commit_evaluation(evaluated))
     }
 
-    fn commit_evaluation(
-        &mut self,
-        direct: &SimilarityMap,
-        evaluated: EvaluatedMotion,
-    ) -> MotionEstimate {
+    fn commit_evaluation(&mut self, evaluated: EvaluatedMotion) -> MotionEstimate {
         let EvaluatedMotion {
-            mut estimate,
-            compensated,
+            estimate,
             scene_cut,
             ..
         } = evaluated;
-        if let Some(selected_map) = compensated {
-            let _perf = crate::perf::Scope::new(crate::perf::Stage::RegionUpdate);
-            self.regions
-                .update(direct, &selected_map, self.options.temporal_learning_rate);
-            self.scene_cut_streak = 0;
-            estimate.diagnostics.regions = self.regions.summary();
-            estimate
-        } else if matches!(estimate.outcome, crate::MotionOutcome::NoMotion) {
-            self.scene_cut_streak = 0;
-            estimate
-        } else {
+        if matches!(estimate.outcome, crate::MotionOutcome::Indeterminate) {
             self.rejected_estimate(scene_cut, estimate.confidence, estimate.diagnostics)
+        } else {
+            self.scene_cut_streak = 0;
+            estimate
         }
     }
 
@@ -1199,7 +1164,6 @@ impl VerticalMotionEstimator {
         diagnostics.reference_keypoints = evidence.reference_features;
         diagnostics.incoming_keypoints = evidence.incoming_features;
         diagnostics.direct_similarity = direct_similarity;
-        diagnostics.regions = self.regions.summary();
         if evidence.observations.is_empty() {
             return EvaluatedMotion::rejected(direct_similarity < 0.6, 0.0, diagnostics);
         }
@@ -1222,15 +1186,15 @@ impl VerticalMotionEstimator {
             .into_iter()
             .map(|offset| {
                 let compensated = if offset == 0 {
-                    zero_alignment.clone()
+                    None
                 } else {
-                    SimilarityMap::between(
+                    Some(SimilarityMap::between(
                         reference_gray,
                         incoming_gray,
                         self.layout,
                         self.axis,
                         offset,
-                    )
+                    ))
                 };
                 score_candidate(
                     offset,
@@ -1238,40 +1202,33 @@ impl VerticalMotionEstimator {
                     &observations,
                     direct,
                     zero_alignment,
-                    compensated,
-                    &self.regions,
+                    compensated.as_ref().unwrap_or(zero_alignment),
                 )
             })
             .collect::<Vec<_>>();
         scored.sort_by(|left, right| {
             right
-                .diagnostics
                 .score
-                .total_cmp(&left.diagnostics.score)
-                .then_with(|| {
-                    left.diagnostics
-                        .offset
-                        .abs()
-                        .cmp(&right.diagnostics.offset.abs())
-                })
-                .then_with(|| left.diagnostics.offset.cmp(&right.diagnostics.offset))
+                .total_cmp(&left.score)
+                .then_with(|| left.offset.abs().cmp(&right.offset.abs()))
+                .then_with(|| left.offset.cmp(&right.offset))
         });
 
         scoring_perf.finish();
-        let strongest_mode = scored[0].diagnostics.offset;
+        let strongest_mode = scored[0].offset;
         if strongest_mode != 0 {
             let _perf = crate::perf::Scope::new(crate::perf::Stage::Refinement);
             let (refined_offset, precise_error) = refine_motion_offset(
                 motion_reference,
                 incoming,
-                direct,
                 self.axis,
                 strongest_mode,
                 maximum_shift,
+                &observations,
             );
             let mut refined = if let Some(index) = scored
                 .iter()
-                .position(|candidate| candidate.diagnostics.offset == refined_offset)
+                .position(|candidate| candidate.offset == refined_offset)
             {
                 scored.remove(index)
             } else {
@@ -1288,46 +1245,38 @@ impl VerticalMotionEstimator {
                     &observations,
                     direct,
                     zero_alignment,
-                    compensated,
-                    &self.regions,
+                    &compensated,
                 )
             };
-            refined.diagnostics.precise_alignment_error = Some(precise_error);
+            refined.precise_alignment_error = Some(precise_error);
             scored.insert(0, refined);
         }
 
-        let best_score = scored[0].diagnostics.score;
+        let best_score = scored[0].score;
         let second_score = scored
             .iter()
             .skip(1)
-            .find(|candidate| {
-                (candidate.diagnostics.offset - scored[0].diagnostics.offset).abs()
-                    > INLIER_TOLERANCE
-            })
-            .map(|candidate| candidate.diagnostics.score)
+            .find(|candidate| (candidate.offset - scored[0].offset).abs() > INLIER_TOLERANCE)
+            .map(|candidate| candidate.score)
             .unwrap_or(0.0);
         let margin = if best_score > f32::EPSILON {
             ((best_score - second_score) / best_score).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let best = &scored[0].diagnostics;
+        let best = &scored[0];
         let confidence = (0.40 * best.weighted_inlier_share
             + 0.25 * best.spatial_coverage
             + 0.20 * best.residual_gain
             + 0.15 * margin)
             .clamp(0.0, 1.0);
         diagnostics.selected_offset = Some(best.offset);
-        diagnostics.candidates = scored
-            .iter()
-            .map(|candidate| candidate.diagnostics.clone())
-            .collect();
+        diagnostics.candidates = scored.clone();
 
         if best.offset == 0 {
             diagnostics.stage = MotionStage::SelectedNoMotion;
             return EvaluatedMotion {
                 estimate: MotionEstimate::no_motion(confidence, diagnostics),
-                compensated: None,
                 scene_cut: false,
                 margin,
             };
@@ -1339,11 +1288,9 @@ impl VerticalMotionEstimator {
             && confidence >= self.options.min_confidence;
         if accepted {
             let selected_offset = best.offset;
-            let selected_map = scored.remove(0).compensated;
             diagnostics.stage = MotionStage::Selected;
             return EvaluatedMotion {
                 estimate: MotionEstimate::motion(selected_offset, confidence, diagnostics),
-                compensated: Some(selected_map),
                 scene_cut: false,
                 margin,
             };
@@ -1352,7 +1299,7 @@ impl VerticalMotionEstimator {
         let scene_cut = direct_similarity < 0.5
             && scored
                 .iter()
-                .all(|candidate| candidate.diagnostics.alignment_error > 0.6);
+                .all(|candidate| candidate.alignment_error > 0.6);
         diagnostics.stage = MotionStage::LowConfidence;
         EvaluatedMotion::rejected(scene_cut, confidence, diagnostics)
     }
@@ -1361,6 +1308,10 @@ impl VerticalMotionEstimator {
 #[cfg(test)]
 #[path = "estimator_optimization_tests.rs"]
 mod optimization_tests;
+
+#[cfg(test)]
+#[path = "estimator_refinement_tests.rs"]
+mod refinement_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1523,13 +1474,11 @@ mod tests {
                 assert_eq!(estimate.offset(), Some(-17), "{axis:?}: {estimate:#?}");
                 previous = incoming;
             }
-            assert!(estimator.region_summary().fixed_tiles > 0);
-            assert!(estimator.region_summary().scrolling_tiles > 0);
         }
     }
 
     #[test]
-    fn texture_too_narrow_for_refinement_uses_full_resolution_result() {
+    fn narrow_texture_in_a_mostly_unchanged_tile_can_refine_motion() {
         for axis in [StitchAxis::Vertical, StitchAxis::Horizontal] {
             let make = |scroll| {
                 let frame = directional_fixture(axis, 2048, 320, scroll, false);
@@ -1555,19 +1504,17 @@ mod tests {
                 MotionEstimatorOptions::default(),
             )
             .unwrap();
-            let mut full = full_resolution_estimator(&reference, axis);
             let actual = estimator
                 .estimate(&reference, &reference, &incoming)
                 .unwrap();
+            assert_eq!(actual.offset(), Some(-17), "{axis:?}: {actual:#?}");
             assert_eq!(
-                actual,
-                full.estimate(&reference, &reference, &incoming).unwrap()
+                actual.diagnostics.candidates[0].precise_alignment_error,
+                Some(0.0)
             );
-            assert!(estimator.full_pyramid_plan.get().is_some());
-            assert_eq!(
-                format!("{:?}", estimator.regions),
-                format!("{:?}", full.regions)
-            );
+            // The textured strip used to be excluded by the tile's high direct
+            // similarity, forcing an unnecessary full-resolution retry.
+            assert!(estimator.full_pyramid_plan.get().is_none());
         }
     }
 
@@ -1603,10 +1550,6 @@ mod tests {
                 let expected = full.estimate(&previous, &previous, &incoming).unwrap();
                 assert_eq!(actual, expected);
                 assert_eq!(estimator.scene_cut_streak, full.scene_cut_streak);
-                assert_eq!(
-                    format!("{:?}", estimator.regions),
-                    format!("{:?}", full.regions)
-                );
                 assert!(estimator.full_pyramid_plan.get().is_some());
                 previous = incoming;
             }
@@ -1651,17 +1594,12 @@ mod tests {
 
     #[test]
     fn retry_requires_accepted_motion_with_positive_margin() {
-        let frame = scrolling_fixture(0, 0);
-        let gray = GrayImage::from_frame(&frame).unwrap();
-        let layout = TileLayout::new(frame.width(), frame.height(), 32);
-        let map = SimilarityMap::between(&gray, &gray, layout, StitchAxis::Vertical, 0);
         let mut evaluated = EvaluatedMotion {
             estimate: MotionEstimate::motion(
                 -17,
                 1.0,
                 MotionDiagnostics::at(MotionStage::Selected),
             ),
-            compensated: Some(map),
             scene_cut: false,
             margin: 0.0,
         };
@@ -1687,7 +1625,7 @@ mod tests {
         assert!(evaluated.needs_full_resolution());
         evaluated.estimate.diagnostics.candidates[0].precise_alignment_error = Some(0.0);
         assert!(!evaluated.needs_full_resolution());
-        evaluated.compensated = None;
+        evaluated.estimate.outcome = crate::MotionOutcome::Indeterminate;
         assert!(evaluated.needs_full_resolution());
     }
 
@@ -1837,10 +1775,6 @@ mod tests {
             },
             MotionEstimatorOptions {
                 min_confidence: f32::NAN,
-                ..MotionEstimatorOptions::default()
-            },
-            MotionEstimatorOptions {
-                temporal_learning_rate: 0.0,
                 ..MotionEstimatorOptions::default()
             },
         ] {
@@ -2116,7 +2050,81 @@ mod tests {
     }
 
     #[test]
-    fn temporal_model_learns_after_repeated_accepted_scrolls() {
+    fn earlier_content_does_not_change_matching_for_the_current_frame_pair() {
+        let mut previous = scrolling_fixture(0, 0);
+        let mut estimator =
+            VerticalMotionEstimator::new(previous.geometry(), MotionEstimatorOptions::default())
+                .unwrap();
+        for step in 1..=4 {
+            let incoming = scrolling_fixture(step * 16, step as u8);
+            let estimate = estimator.estimate(&previous, &previous, &incoming).unwrap();
+            assert_eq!(estimate.offset(), Some(-16), "{estimate:#?}");
+            previous = incoming;
+        }
+
+        let reference = directional_fixture(StitchAxis::Vertical, 320, 224, 0, false);
+        let incoming = directional_fixture(StitchAxis::Vertical, 320, 224, 24, false);
+        let actual = estimator
+            .estimate(&reference, &reference, &incoming)
+            .unwrap();
+        let expected =
+            VerticalMotionEstimator::new(reference.geometry(), MotionEstimatorOptions::default())
+                .unwrap()
+                .estimate(&reference, &reference, &incoming)
+                .unwrap();
+        assert_eq!(expected.offset(), Some(-24), "{expected:#?}");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn blank_to_text_transitions_match_a_fresh_estimator_in_both_directions() {
+        for axis in [StitchAxis::Vertical, StitchAxis::Horizontal] {
+            let make = |scroll| {
+                let frame = directional_fixture(axis, 320, 320, scroll, false);
+                let mut pixels = frame.pixels().to_vec();
+                for y in 0..frame.height() {
+                    for x in 0..frame.width() {
+                        let primary = match axis {
+                            StitchAxis::Vertical => y,
+                            StitchAxis::Horizontal => x,
+                        };
+                        if primary + scroll < 192 {
+                            pixels[(y * frame.width() + x) as usize] = 255;
+                        }
+                    }
+                }
+                Frame::new(frame.width(), frame.height(), PixelFormat::Gray8, pixels).unwrap()
+            };
+            let options = MotionEstimatorOptions {
+                max_features: 128,
+                ..MotionEstimatorOptions::default()
+            };
+            let mut previous = make(0);
+            let mut estimator =
+                VerticalMotionEstimator::new_for_axis(previous.geometry(), axis, options).unwrap();
+            let mut previous_scroll = 0;
+            for scroll in (1..=8).chain((0..8).rev()).map(|step| step * 32) {
+                let incoming = make(scroll);
+                let actual = estimator.estimate(&previous, &previous, &incoming).unwrap();
+                let expected =
+                    VerticalMotionEstimator::new_for_axis(previous.geometry(), axis, options)
+                        .unwrap()
+                        .estimate(&previous, &previous, &incoming)
+                        .unwrap();
+                assert_eq!(
+                    expected.offset(),
+                    Some(previous_scroll as i32 - scroll as i32),
+                    "{axis:?} scroll={scroll}: {expected:#?}"
+                );
+                assert_eq!(actual, expected, "{axis:?} scroll={scroll}");
+                previous = incoming;
+                previous_scroll = scroll;
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_scrolls_keep_recovering_the_offset() {
         let mut previous = scrolling_fixture(0, 0);
         let mut estimator =
             VerticalMotionEstimator::new(previous.geometry(), MotionEstimatorOptions::default())
@@ -2131,10 +2139,6 @@ mod tests {
             );
             previous = incoming;
         }
-        let summary = estimator.region_summary();
-        assert!(summary.fixed_tiles > 0, "{summary:?}");
-        assert!(summary.scrolling_tiles > 0, "{summary:?}");
-        assert!(summary.dynamic_tiles > 0, "{summary:?}");
     }
 
     fn unrelated_fixture(seed: u32) -> Frame {
@@ -2153,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_scene_cuts_reset_temporal_state() {
+    fn repeated_scene_cuts_are_reported() {
         let mut previous = unrelated_fixture(0);
         let mut estimator =
             VerticalMotionEstimator::new(previous.geometry(), MotionEstimatorOptions::default())
@@ -2171,7 +2175,5 @@ mod tests {
         }
         let last = last.unwrap();
         assert_eq!(last.diagnostics.stage, MotionStage::SceneCut, "{last:#?}");
-        let summary = estimator.region_summary();
-        assert_eq!(summary.neutral_tiles as usize, estimator.layout.len());
     }
 }

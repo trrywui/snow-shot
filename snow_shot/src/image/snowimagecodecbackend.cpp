@@ -1,4 +1,5 @@
 #include "snowimagecodecbridge.h"
+#include "snowimageimportoptions.h"
 #include <snow/memory/pixel_buffer.h>
 
 #include <snow/image/codec.h>
@@ -153,6 +154,14 @@ bool formatFromBridge(uint32_t value, snow::image::Format* output) noexcept {
     default:
         return false;
     }
+}
+
+bool decodeFormatFromBridge(uint32_t value, snow::image::Format* output) noexcept {
+    if (value == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN) {
+        *output = snow::image::Format::unknown;
+        return true;
+    }
+    return formatFromBridge(value, output);
 }
 
 uint32_t formatToBridge(snow::image::Format format) noexcept {
@@ -555,7 +564,8 @@ class PackedDecodeSink final : public snow::image::PixelSink {
           maximumOutputBytes_(maximumOutputBytes) {}
 
     snow::image::Result<void> begin(const snow::image::DocumentInfo& document) override {
-        if (document.format != expectedDocumentFormat_) {
+        if (expectedDocumentFormat_ != snow::image::Format::unknown &&
+            document.format != expectedDocumentFormat_) {
             return snow::image::Status::error(
                 snow::image::ErrorCode::decode_failed,
                 "The decoded image format is not the expected format.");
@@ -1235,7 +1245,8 @@ int32_t decodePacked8(const uint8_t* encoded, uint64_t encodedSize, uint32_t exp
     try {
         snow::image::Format format = snow::image::Format::unknown;
         std::size_t inputSize = 0;
-        if (encoded == nullptr || encodedSize == 0 || !formatFromBridge(expectedFormat, &format) ||
+        if (encoded == nullptr || encodedSize == 0 ||
+            !decodeFormatFromBridge(expectedFormat, &format) ||
             !checkedSize(encodedSize, &inputSize)) {
             setError(error, errorCapacity, "The encoded image input is invalid.");
             return 0;
@@ -1246,7 +1257,8 @@ int32_t decodePacked8(const uint8_t* encoded, uint64_t encodedSize, uint32_t exp
                                          reinterpret_cast<const std::byte*>(encoded), inputSize)),
                                      nameHint(format)}
                 : snow::image::memory_input(ownedInput(encoded, inputSize), nameHint(format));
-        snow::image::DecodeOptions options;
+        auto options = firstFrameOnly ? snow_shot::image_codec::imageImportOptions()
+                                      : snow::image::DecodeOptions{};
         options.output_format = outputFormat;
         options.raster_layout = snow::image::RasterLayoutPolicy::packed;
         if (preferredIconExtent != 0) {
@@ -1274,7 +1286,9 @@ int32_t decodePacked8(const uint8_t* encoded, uint64_t encodedSize, uint32_t exp
             options.limits.maximum_height = 16384;
             options.limits.maximum_pixels = 64ULL * 1024 * 1024;
         }
-        PackedDecodeSink sink(format, outputFormat, firstFrameOnly);
+        PackedDecodeSink sink(format, outputFormat, firstFrameOnly,
+                              firstFrameOnly ? options.limits.maximum_owned_output_bytes
+                                             : std::numeric_limits<std::uint64_t>::max());
         snow::image::Result<void> decoded = service().decode_to_sink(input, sink, options);
         if (!decoded && !(firstFrameOnly && sink.hasImage() &&
                           decoded.error().code == snow::image::ErrorCode::cancelled)) {
@@ -1444,19 +1458,23 @@ int32_t inspectDimensions(const uint8_t* encoded, uint64_t encodedSize, uint32_t
         snow::image::Format format = snow::image::Format::unknown;
         std::size_t inputSize = 0;
         if (encoded == nullptr || encodedSize == 0 || output == nullptr ||
-            !formatFromBridge(expectedFormat, &format) || !checkedSize(encodedSize, &inputSize)) {
+            !decodeFormatFromBridge(expectedFormat, &format) ||
+            !checkedSize(encodedSize, &inputSize)) {
             setError(error, errorCapacity, "The encoded image input is invalid.");
             return 0;
         }
         const snow::image::Input input{std::make_shared<BorrowedByteSource>(std::span(
                                            reinterpret_cast<const std::byte*>(encoded), inputSize)),
                                        nameHint(format)};
-        snow::image::Result<snow::image::DocumentInfo> information = service().inspect(input);
+        snow::image::Result<snow::image::DocumentInfo> information =
+            service().inspect(input, canvas ? snow_shot::image_codec::imageImportOptions()
+                                            : snow::image::DecodeOptions{});
         if (!information) {
             setError(error, errorCapacity, information.error().message);
             return 0;
         }
-        if (information.value().format != format || information.value().frames.empty() ||
+        if ((format != snow::image::Format::unknown && information.value().format != format) ||
+            information.value().frames.empty() ||
             (!canvas && information.value().frames.size() != 1)) {
             setError(error, errorCapacity, "The image does not match the expected format.");
             return 0;

@@ -14,6 +14,8 @@
 #include "snow_shot/presentation/screenshotqrrecognitionservice.h"
 #include "snow_shot/presentation/screenshotrecognitionsessioncontroller.h"
 #include "snow_shot/presentation/screenshotimagefileservice.h"
+#include "snow_shot/presentation/screenshotselectionshadowrenderer.h"
+#include "snow_shot/image/screenshotlayoutcompaction.h"
 #include "snow_shot/runtime/runtimeactivitytracker.h"
 #include "snowimageqtcodec.h"
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
@@ -45,6 +47,7 @@
 
 using namespace snow_shot::app::mcp;
 void runMcpApplicationTests();
+void runMcpApplicationReplayTests();
 void runMcpTranslationTests();
 namespace {
 std::optional<double> currentThreadCpuMilliseconds() {
@@ -557,6 +560,81 @@ void documentReservations(const QString& directory) {
         service.shutdown();
     }
 }
+void documentSelectionStylesPreserveCanvasUnits() {
+    McpJobRegistry jobs;
+    McpDocumentService::Ports ports;
+    ports.jobs = &jobs;
+    ports.resolveSource = [](const ScreenshotMcpRequest&, auto done, auto budget) {
+        require(budget(200 * 120 * 4), "reserve border document pixels");
+        McpDocumentService::Source source;
+        source.image = QImage(200, 120, QImage::Format_ARGB32_Premultiplied);
+        source.image.fill(Qt::blue);
+        done(std::move(source), {});
+    };
+    McpDocumentService service(std::move(ports));
+    QString id;
+    quint64 sequence = 0, revision = 1;
+    const auto call = [&](const QString& method, QJsonObject params = {}) {
+        if (!id.isEmpty())
+            params.insert(QStringLiteral("document_id"), id);
+        ScreenshotMcpRequest request;
+        request.connectionId = 1;
+        request.requestId = QString::number(++sequence);
+        request.idempotencyKey = request.requestId;
+        request.expectedRevision = revision;
+        request.method = QStringLiteral("snow_shot_document_") + method;
+        request.params = std::move(params);
+        std::optional<ScreenshotMcpResponse> response;
+        service.request(request, [&](auto value) { response = std::move(value); });
+        QElapsedTimer timer;
+        timer.start();
+        while (!response && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(response.has_value(), "selection style document request completes");
+        if (response->ok && response->revision)
+            revision = *response->revision;
+        return *response;
+    };
+    const auto opened =
+        call(QStringLiteral("open"), {{QStringLiteral("source"), QStringLiteral("clipboard")}});
+    require(opened.ok, "open border document");
+    id = opened.result.value(QStringLiteral("document_id")).toString();
+    const auto changed = call(QStringLiteral("set_selection_style"),
+                              {{QStringLiteral("border_type"), QStringLiteral("border")},
+                               {QStringLiteral("border_width"), 48},
+                               {QStringLiteral("border_color"), QJsonArray{255, 0, 0, 255}},
+                               {QStringLiteral("shadow_width"), 9}});
+    require(changed.ok && changed.revision == 2 &&
+                changed.result.value(QStringLiteral("selection_style"))
+                        .toObject()
+                        .value(QStringLiteral("border_width")) == 48,
+            "document state reports editable canvas-unit border settings");
+    const auto rendered = call(QStringLiteral("render"), {{QStringLiteral("scale"), 2}});
+    const auto pixels = QImage::fromData(rendered.attachment);
+    require(rendered.ok && pixels.size() == QSize(592, 432) &&
+                pixels.pixelColor(0, 200) == QColor(Qt::red) &&
+                pixels.pixelColor(96, 200) == QColor(Qt::blue),
+            "document export scales a 48-unit border to 96 pixels without capping it");
+    require(!call(QStringLiteral("set_selection_style"),
+                  {{QStringLiteral("border_type"), QStringLiteral("outline")},
+                   {QStringLiteral("border_width"), 2}})
+                 .ok,
+            "invalid document styles fail atomically");
+    const auto unchanged = call(QStringLiteral("render"), {{QStringLiteral("scale"), 2}});
+    require(unchanged.ok && unchanged.revision == 2 && unchanged.attachment == rendered.attachment,
+            "a rejected patch preserves document revision and cached pixels");
+    require(call(QStringLiteral("set_selection_style"),
+                 {{QStringLiteral("border_type"), QStringLiteral("shadow")}})
+                .ok,
+            "switch document back to its saved shadow settings");
+    const auto shadow = call(QStringLiteral("render"), {{QStringLiteral("scale"), 2}});
+    require(shadow.ok && QImage::fromData(shadow.attachment).size() == QSize(436, 276),
+            "effect switching invalidates rendered pixels and restores the independent shadow");
+    service.shutdown();
+}
+
 void compactedDocumentsKeepEditingCoordinates(const QString& directory, int opacity = 0,
                                               bool annotations = false) {
     FixtureOcr ocr;
@@ -665,6 +743,127 @@ void compactedDocumentsKeepEditingCoordinates(const QString& directory, int opac
     require(QImage::fromData(call(QStringLiteral("render")).attachment) == pixels,
             "recognition must not contaminate the compacted image cache");
     service.shutdown();
+}
+
+void documentOutputReleasesThreadCaches(const QString& directory) {
+    McpDocumentService::Ports ports;
+    std::atomic_size_t retainedBytes = 0;
+    std::atomic_size_t retainedPaths = 0;
+    std::atomic_bool retainedPlan = false;
+    std::atomic_int observations = 0;
+    std::atomic_bool blockNextRender = false;
+    QSemaphore renderEntered;
+    QSemaphore renderRelease;
+    ports.workObserved = [&](const QString&, const QString& operation) {
+        if (operation == QStringLiteral("render") && blockNextRender.exchange(false)) {
+            renderEntered.release();
+            renderRelease.acquire();
+        }
+    };
+    ports.beforeWorkerRequest = [&](const ScreenshotMcpRequest& request) {
+        if (request.method != QStringLiteral("snow_shot_document_state"))
+            return;
+        const auto diagnostics = ScreenshotSelectionShadowRenderer::diagnosticsForCurrentThread();
+        retainedBytes = diagnostics.retainedBytes + diagnostics.regionCacheRetainedBytes;
+        retainedPaths = diagnostics.regionPathCacheElements;
+        retainedPlan = static_cast<bool>(screenshotLayoutCompactionCache.plan);
+        ++observations;
+    };
+    ports.resolveSource = [](const ScreenshotMcpRequest&, auto done, auto budget) {
+        require(budget(80 * 60 * 4), "thread-cache source reservation");
+        McpDocumentService::Source source;
+        source.image = QImage(80, 60, QImage::Format_ARGB32_Premultiplied);
+        source.image.fill(Qt::white);
+        ScreenshotSelectionParams selection;
+        selection.selection = QRect(5, 5, 70, 40);
+        selection.region = QRegion(5, 5, 20, 40).united(QRegion(55, 5, 20, 40));
+        selection.radius = 4;
+        selection.shadowWidth = 2;
+        selection.layoutCompaction = {true, 5};
+        source.selection = selection;
+        done(std::move(source), {});
+    };
+    McpDocumentService service(std::move(ports));
+    quint64 sequence = 0;
+    QString id;
+    const auto call = [&](const QString& method, QJsonObject params = {}) {
+        if (!id.isEmpty())
+            params.insert(QStringLiteral("document_id"), id);
+        ScreenshotMcpRequest request;
+        request.connectionId = 1;
+        request.requestId = QString::number(++sequence);
+        request.idempotencyKey = request.requestId;
+        request.method = QStringLiteral("snow_shot_document_") + method;
+        request.params = std::move(params);
+        request.expectedRevision = 1;
+        std::optional<ScreenshotMcpResponse> response;
+        service.request(request, [&](auto value) { response = std::move(value); });
+        QElapsedTimer timer;
+        timer.start();
+        while (!response && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(response.has_value(), "thread-cache document request completes");
+        return *response;
+    };
+    bool allReleased = true;
+    const auto checkReleased = [&](const char* checkpoint) {
+        const auto before = observations.load();
+        static_cast<void>(call(QStringLiteral("state")));
+        require(observations == before + 1, "inspect caches on the document's worker lane");
+        if (retainedBytes != 0 || retainedPaths != 0 || retainedPlan) {
+            allReleased = false;
+            std::cerr << "document worker after " << checkpoint
+                      << " retained compositor bytes=" << retainedBytes
+                      << " path elements=" << retainedPaths << " layout plan=" << retainedPlan
+                      << '\n';
+        }
+    };
+    const auto opened =
+        call(QStringLiteral("open"), {{QStringLiteral("source"), QStringLiteral("clipboard")}});
+    require(opened.ok, "open thread-cache document");
+    id = opened.result.value(QStringLiteral("document_id")).toString();
+    require(call(QStringLiteral("render")).ok, "thread-cache document renders");
+    checkReleased("render");
+    require(call(QStringLiteral("save"),
+                 {{QStringLiteral("path"), QDir(directory).filePath(QStringLiteral("cache.png"))}})
+                .ok,
+            "thread-cache document saves");
+    checkReleased("save");
+    const QString blocked = QDir(directory).filePath(QStringLiteral("blocked-cache-output.png"));
+    require(QDir().mkpath(blocked), "save failure fixture is an existing directory");
+    require(!call(QStringLiteral("save"),
+                  {{QStringLiteral("path"), blocked}, {QStringLiteral("scale"), 2}})
+                 .ok,
+            "thread-cache save reports the output failure");
+    checkReleased("failed save");
+    blockNextRender = true;
+    ScreenshotMcpRequest canceledRequest;
+    canceledRequest.connectionId = 1;
+    canceledRequest.requestId = QString::number(++sequence);
+    canceledRequest.idempotencyKey = canceledRequest.requestId;
+    canceledRequest.method = QStringLiteral("snow_shot_document_render");
+    canceledRequest.params = {{QStringLiteral("document_id"), id}, {QStringLiteral("scale"), 3}};
+    canceledRequest.expectedRevision = 1;
+    std::optional<ScreenshotMcpResponse> canceledResponse;
+    service.request(canceledRequest, [&](auto value) { canceledResponse = std::move(value); });
+    QElapsedTimer timer;
+    timer.start();
+    while (renderEntered.available() == 0 && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    require(renderEntered.available() == 1, "cancel while document output is running");
+    require(service.cancelRequest(1, canceledRequest.requestId), "running output is cancelable");
+    renderRelease.release();
+    require(canceledResponse && canceledResponse->errorCode == QStringLiteral("canceled"),
+            "canceled document output completes with cancellation");
+    checkReleased("canceled render");
+    require(call(QStringLiteral("close")).ok, "thread-cache document closes");
+    checkReleased("close");
+    service.shutdown();
+    require(allReleased, "completed document output releases thread-local compositor caches");
 }
 
 void documentCacheWork(const QString& directory) {
@@ -873,6 +1072,362 @@ void documentConcurrency() {
                  {{QStringLiteral("source"), QStringLiteral("clipboard")}}, 5)
                     .errorCode == QStringLiteral("resource_limit"),
             "adding worker lanes does not multiply the global document quota");
+    service.shutdown();
+}
+void canceledDocumentReplaysStayBounded() {
+    McpJobRegistry jobs;
+    McpDocumentService::Ports::SourceCompletion pendingSource;
+    McpDocumentService::Ports::SourceCompletion oldestSource;
+    int sourceCalls = 0;
+    McpDocumentService::Ports ports;
+    ports.jobs = &jobs;
+    ports.resolveSource = [&](const ScreenshotMcpRequest&, auto completion, auto budget) {
+        require(!pendingSource && budget(16 * 16 * 4), "reserve each delayed replay source once");
+        ++sourceCalls;
+        pendingSource = std::move(completion);
+    };
+    McpDocumentService service(std::move(ports));
+    const auto openRequest = [](int index) {
+        ScreenshotMcpRequest request;
+        request.connectionId = 1;
+        request.requestId = QStringLiteral("canceled-replay-%1").arg(index);
+        request.idempotencyKey = request.requestId;
+        request.method = QStringLiteral("snow_shot_document_open");
+        request.params = {{QStringLiteral("source"), QStringLiteral("clipboard")}};
+        return request;
+    };
+    constexpr int canceledRequests = 65;
+    for (int index = 0; index < canceledRequests; ++index) {
+        const auto request = openRequest(index);
+        int completions = 0;
+        std::optional<ScreenshotMcpResponse> result;
+        service.request(request, [&](auto response) {
+            ++completions;
+            result = std::move(response);
+        });
+        require(pendingSource && sourceCalls == index + 1 && completions == 0,
+                "a unique idempotent open waits for its asynchronous source");
+        require(service.cancelRequest(1, request.requestId) && completions == 1 && result &&
+                    result->errorCode == QStringLiteral("canceled"),
+                "cancel each asynchronous open on the same live connection");
+        auto lateSource = std::exchange(pendingSource, {});
+        if (index == 0)
+            oldestSource = std::move(lateSource);
+        else
+            lateSource({}, {});
+    }
+    auto recent = openRequest(canceledRequests - 1);
+    recent.requestId = QStringLiteral("recent-replay-retry");
+    std::optional<ScreenshotMcpResponse> recentResult;
+    service.request(recent, [&](auto response) { recentResult = std::move(response); });
+    require(recentResult && recentResult->errorCode == QStringLiteral("canceled") &&
+                sourceCalls == canceledRequests && !pendingSource,
+            "a recent canceled result remains available for idempotent replay");
+
+    auto oldest = openRequest(0);
+    oldest.requestId = QStringLiteral("oldest-replay-retry");
+    int retryCompletions = 0;
+    std::optional<ScreenshotMcpResponse> retried;
+    service.request(oldest, [&](auto response) {
+        ++retryCompletions;
+        retried = std::move(response);
+    });
+    require(sourceCalls == canceledRequests + 1 && pendingSource && retryCompletions == 0,
+            "the oldest canceled replay is evicted after the completed-entry limit");
+    std::exchange(oldestSource, {})({}, {});
+    require(retryCompletions == 0,
+            "late canceled source completion cannot complete a fresh request with the same key");
+    McpDocumentService::Source source;
+    source.image = QImage(16, 16, QImage::Format_ARGB32_Premultiplied);
+    source.image.fill(Qt::white);
+    std::exchange(pendingSource, {})(std::move(source), {});
+    QElapsedTimer timer;
+    timer.start();
+    while (!retried && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    require(retryCompletions == 1 && retried && retried->ok,
+            "retrying an evicted canceled key executes a fresh successful open");
+    service.shutdown();
+}
+void staleClipboardCallbacksPreserveReplacement() {
+    auto clipboard = std::make_shared<MemoryClipboard>();
+    clipboard->automatic = false;
+    McpDocumentService::Ports ports;
+    ports.clipboard = clipboard;
+    ports.resolveSource = [](const ScreenshotMcpRequest&, auto done, auto budget) {
+        require(budget(16 * 16 * 4), "reserve clipboard replacement source");
+        McpDocumentService::Source source;
+        source.image = QImage(16, 16, QImage::Format_ARGB32_Premultiplied);
+        source.image.fill(Qt::white);
+        done(std::move(source), {});
+    };
+    McpDocumentService service(std::move(ports));
+    const auto wait = [](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        while (!predicate() && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(predicate(), "clipboard replacement request settles");
+    };
+    ScreenshotMcpRequest request;
+    request.connectionId = 1;
+    request.requestId = request.idempotencyKey = QStringLiteral("clipboard-open");
+    request.method = QStringLiteral("snow_shot_document_open");
+    request.params = {{QStringLiteral("source"), QStringLiteral("clipboard")}};
+    std::optional<ScreenshotMcpResponse> opened;
+    service.request(request, [&](auto response) { opened = std::move(response); });
+    wait([&] { return opened.has_value(); });
+    require(opened->ok, "open clipboard replacement document");
+    request.method = QStringLiteral("snow_shot_document_copy");
+    request.requestId = request.idempotencyKey = QStringLiteral("reused-copy");
+    request.expectedRevision = 1;
+    request.params = {
+        {QStringLiteral("document_id"), opened->result.value(QStringLiteral("document_id"))}};
+    int completions = 0;
+    const auto completed = [&](auto response) {
+        require(response.errorCode == QStringLiteral("canceled"), "copy is canceled once");
+        ++completions;
+    };
+    service.request(request, completed);
+    wait([&] { return clipboard->pending.size() == 1; });
+    const auto stale = clipboard->pending.takeFirst();
+    require(service.cancelRequest(1, request.requestId) && stale->canceled && completions == 1,
+            "cancel the first copy before reusing its request ID");
+    request.idempotencyKey = QStringLiteral("replacement-copy");
+    service.request(request, completed);
+    wait([&] { return clipboard->pending.size() == 1; });
+    const auto replacement = clipboard->pending.first();
+    stale->completion({ScreenshotClipboardCommitFailure::Cancelled});
+    require(completions == 1 && service.cancelRequest(1, request.requestId) &&
+                replacement->canceled && completions == 2,
+            "a stale clipboard callback cannot remove the replacement's cancellation handle");
+    service.shutdown();
+}
+void documentChangeObserversMayDestroyService() {
+    McpDocumentService::Ports ports;
+    ports.resolveSource = [](const ScreenshotMcpRequest&, auto done, auto budget) {
+        require(budget(16 * 16 * 4), "reserve document change observer fixture");
+        McpDocumentService::Source source;
+        source.image = QImage(16, 16, QImage::Format_ARGB32_Premultiplied);
+        source.image.fill(Qt::white);
+        done(std::move(source), {});
+    };
+    auto service = std::make_unique<McpDocumentService>(std::move(ports));
+    QObject observer;
+    QObject::connect(service.get(), &McpDocumentService::changed, &observer,
+                     [&](quint64, const QString&) { service.reset(); });
+    ScreenshotMcpRequest request;
+    request.connectionId = 1;
+    request.requestId = request.idempotencyKey = QStringLiteral("change-observer");
+    request.method = QStringLiteral("snow_shot_document_open");
+    request.params = {{QStringLiteral("source"), QStringLiteral("clipboard")}};
+    int callbacks = 0;
+    service->request(request, [&](auto) { ++callbacks; });
+    QElapsedTimer timer;
+    timer.start();
+    while (service && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    require(!service && callbacks == 0,
+            "a change observer may destroy the service before response delivery");
+}
+void cancelingDocumentReplayWaitersPreservesOriginal() {
+    auto& activity = snow_shot::runtime::RuntimeActivityTracker::shared();
+    const auto wait = [](auto condition) {
+        QElapsedTimer timer;
+        timer.start();
+        while (!condition() && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QThread::msleep(1);
+        }
+        require(condition(), "idempotent document request did not settle");
+    };
+    wait([&] { return activity.snapshot().activeCount == 0; });
+    McpDocumentService::Ports::SourceCompletion pendingSource;
+    int sourceCalls = 0;
+    QStringList canceledSources;
+    McpDocumentService::Ports ports;
+    ports.resolveSource = [&](const ScreenshotMcpRequest&, auto completion, auto budget) {
+        require(!pendingSource && budget(16 * 16 * 4), "reserve the shared document source once");
+        ++sourceCalls;
+        pendingSource = std::move(completion);
+    };
+    ports.cancelSource = [&](quint64, const QString& id) { canceledSources.append(id); };
+    McpDocumentService service(std::move(ports));
+    ScreenshotMcpRequest original;
+    original.connectionId = 1;
+    original.requestId = QStringLiteral("shared-original");
+    original.idempotencyKey = QStringLiteral("shared-open");
+    original.method = QStringLiteral("snow_shot_document_open");
+    original.params = {{QStringLiteral("source"), QStringLiteral("clipboard")}};
+    int originalCompletions = 0;
+    std::optional<ScreenshotMcpResponse> opened;
+    service.request(original, [&](auto response) {
+        ++originalCompletions;
+        opened = std::move(response);
+    });
+    require(pendingSource && sourceCalls == 1 && originalCompletions == 0,
+            "the original idempotent request waits for one source");
+    auto independent = original;
+    independent.requestId = QStringLiteral("independent-read-only");
+    independent.method = QStringLiteral("snow_shot_document_state");
+    independent.params = {{QStringLiteral("document_id"), QStringLiteral("missing-document")}};
+    int independentCompletions = 0;
+    service.request(independent, [&](auto response) {
+        ++independentCompletions;
+        require(response.errorCode == QStringLiteral("canceled"),
+                "independent read-only cancellation keeps its own response");
+    });
+    require(service.cancelRequest(1, independent.requestId) && independentCompletions == 1 &&
+                canceledSources == QStringList{independent.requestId},
+            "a read-only request with a shared key retains its independent cancellation cleanup");
+    canceledSources.clear();
+    for (int index = 0; index < 12; ++index) {
+        auto waiter = original;
+        waiter.requestId = QStringLiteral("shared-waiter-%1").arg(index);
+        int completions = 0;
+        std::optional<ScreenshotMcpResponse> canceled;
+        service.request(waiter, [&](auto response) {
+            ++completions;
+            canceled = std::move(response);
+        });
+        require(completions == 0, "a fresh alias waits on the original shared operation");
+        require(service.cancelRequest(1, waiter.requestId) && completions == 1 && canceled &&
+                    canceled->requestId == waiter.requestId &&
+                    canceled->errorCode == QStringLiteral("canceled"),
+                "canceling a shared alias completes only that alias once");
+        require(originalCompletions == 0 && sourceCalls == 1 && canceledSources.isEmpty(),
+                "alias cancellation leaves the original source and response pending");
+    }
+    McpDocumentService::Source source;
+    source.image = QImage(16, 16, QImage::Format_ARGB32_Premultiplied);
+    source.image.fill(Qt::white);
+    std::exchange(pendingSource, {})(std::move(source), {});
+    wait([&] { return opened.has_value(); });
+    require(originalCompletions == 1 && opened->ok && opened->requestId == original.requestId &&
+                sourceCalls == 1 && !service.cancelRequest(1, original.requestId),
+            "the original completes once and retires its active request after canceled aliases");
+    wait([&] { return activity.snapshot().activeCount == 0; });
+    service.shutdown();
+}
+void documentReplayCallbacksAllowServiceDestruction(bool cancel) {
+    McpDocumentService::Ports::SourceCompletion pendingSource;
+    McpDocumentService::Ports ports;
+    ports.resolveSource = [&](const ScreenshotMcpRequest&, auto completion, auto budget) {
+        require(budget(16 * 16 * 4), "reserve a replay callback lifetime fixture");
+        pendingSource = std::move(completion);
+    };
+    auto service = std::make_unique<McpDocumentService>(std::move(ports));
+    ScreenshotMcpRequest original;
+    original.connectionId = 1;
+    original.requestId = QStringLiteral("replay-lifetime-original");
+    original.idempotencyKey = QStringLiteral("replay-lifetime");
+    original.method = QStringLiteral("snow_shot_document_open");
+    original.params = {{QStringLiteral("source"), QStringLiteral("clipboard")}};
+    int originalCompletions = 0;
+    int waiterCompletions = 0;
+    service->request(original, [&](auto response) {
+        ++originalCompletions;
+        require(cancel ? response.errorCode == QStringLiteral("canceled") : response.ok,
+                "the primary replay callback receives its terminal response");
+        service.reset();
+    });
+    auto waiter = original;
+    waiter.requestId = QStringLiteral("replay-lifetime-waiter");
+    service->request(waiter, [&](auto) { ++waiterCompletions; });
+    require(pendingSource && originalCompletions == 0 && waiterCompletions == 0,
+            "both replay requests await the shared operation");
+    if (cancel)
+        require(service->cancelRequest(1, original.requestId), "cancel the shared replay primary");
+    McpDocumentService::Source source;
+    source.image = QImage(16, 16, QImage::Format_ARGB32_Premultiplied);
+    source.image.fill(Qt::white);
+    std::exchange(pendingSource, {})(std::move(source), {});
+    QElapsedTimer timer;
+    timer.start();
+    while (service && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    require(!service && originalCompletions == 1 && waiterCompletions == 0,
+            "destroying the service in the primary response discards retired waiter callbacks");
+}
+void documentReplayCallbacksPreserveReusedRequestIds(bool cancel) {
+    McpDocumentService::Ports::SourceCompletion originalSource;
+    McpDocumentService::Ports::SourceCompletion replacementSource;
+    int sourceCalls = 0;
+    McpDocumentService::Ports ports;
+    ports.resolveSource = [&](const ScreenshotMcpRequest&, auto completion, auto budget) {
+        require(budget(16 * 16 * 4), "reserve each replay generation source once");
+        ++sourceCalls;
+        (sourceCalls == 1 ? originalSource : replacementSource) = std::move(completion);
+    };
+    McpDocumentService service(std::move(ports));
+    ScreenshotMcpRequest original;
+    original.connectionId = 1;
+    original.requestId = QStringLiteral("generation-original");
+    original.idempotencyKey = QStringLiteral("generation-shared");
+    original.method = QStringLiteral("snow_shot_document_open");
+    original.params = {{QStringLiteral("source"), QStringLiteral("clipboard")}};
+    auto waiter = original;
+    waiter.requestId = QStringLiteral("generation-reused-alias");
+    auto replacement = waiter;
+    replacement.idempotencyKey = QStringLiteral("generation-replacement");
+    int originalCompletions = 0;
+    int waiterCompletions = 0;
+    int replacementCompletions = 0;
+    std::optional<ScreenshotMcpResponse> replaced;
+    service.request(original, [&](auto response) {
+        ++originalCompletions;
+        require(cancel ? response.errorCode == QStringLiteral("canceled") : response.ok,
+                "the shared primary reaches its terminal response");
+        require(service.cancelRequest(1, waiter.requestId),
+                "cancel an alias already moved into shared response fanout");
+    });
+    service.request(waiter, [&](auto response) {
+        ++waiterCompletions;
+        require(response.errorCode == QStringLiteral("canceled"),
+                "the retired alias receives its own cancellation once");
+        service.request(replacement, [&](auto value) {
+            ++replacementCompletions;
+            replaced = std::move(value);
+        });
+    });
+    const auto source = [] {
+        McpDocumentService::Source value;
+        value.image = QImage(16, 16, QImage::Format_ARGB32_Premultiplied);
+        value.image.fill(Qt::white);
+        return value;
+    };
+    if (cancel)
+        require(service.cancelRequest(1, original.requestId),
+                "cancel the original replay generation");
+    std::exchange(originalSource, {})(source(), {});
+    QElapsedTimer timer;
+    timer.start();
+    while (originalCompletions == 0 && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    require(originalCompletions == 1 && waiterCompletions == 1 && sourceCalls == 2 &&
+                replacementSource && replacementCompletions == 0,
+            "retired fanout cannot complete a replacement request reusing the same request ID");
+    std::exchange(replacementSource, {})(source(), {});
+    timer.restart();
+    while (!replaced && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    require(replacementCompletions == 1 && replaced && replaced->ok &&
+                replaced->requestId == replacement.requestId &&
+                !service.cancelRequest(1, replacement.requestId),
+            "the replacement owns its completion and retires only after its own source resolves");
     service.shutdown();
 }
 void documentMemoryActivity() {
@@ -2764,6 +3319,11 @@ int main(int argc, char** argv) {
                 .success,
             "isolated application storage");
     const qsizetype serveIndex = application.arguments().indexOf(QStringLiteral("--serve"));
+    if (application.arguments().contains(QStringLiteral("--selection-style-only"))) {
+        documentSelectionStylesPreserveCanvasUnits();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
     if (serveIndex >= 0 && application.arguments().size() > serveIndex + 1) {
         const int result = serve(application, application.arguments().at(serveIndex + 1));
         snow_shot::storage::ApplicationStorage::instance().shutdown();
@@ -2774,7 +3334,51 @@ int main(int argc, char** argv) {
         compactedDocumentsKeepEditingCoordinates(temporary.path(), 50);
         compactedDocumentsKeepEditingCoordinates(temporary.path(), 0, true);
         compactedDocumentsKeepEditingCoordinates(temporary.path(), 50, true);
+        documentOutputReleasesThreadCaches(temporary.path());
         documentCacheWork(temporary.path());
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--render-cache-cleanup-only"))) {
+        documentOutputReleasesThreadCaches(temporary.path());
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--replay-cache-only"))) {
+        staleClipboardCallbacksPreserveReplacement();
+        documentChangeObserversMayDestroyService();
+        canceledDocumentReplaysStayBounded();
+        cancelingDocumentReplayWaitersPreservesOriginal();
+        documentReplayCallbacksAllowServiceDestruction(false);
+        documentReplayCallbacksAllowServiceDestruction(true);
+        documentReplayCallbacksPreserveReusedRequestIds(false);
+        documentReplayCallbacksPreserveReusedRequestIds(true);
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--clipboard-reused-id-only"))) {
+        staleClipboardCallbacksPreserveReplacement();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--replay-waiter-only"))) {
+        cancelingDocumentReplayWaitersPreservesOriginal();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--replay-destruction-normal-only"))) {
+        documentReplayCallbacksAllowServiceDestruction(false);
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--replay-destruction-cancel-only"))) {
+        documentReplayCallbacksAllowServiceDestruction(true);
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--replay-reused-id-only"))) {
+        documentReplayCallbacksPreserveReusedRequestIds(false);
+        documentReplayCallbacksPreserveReusedRequestIds(true);
         snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
@@ -2784,7 +3388,13 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--application-only"))) {
+        runMcpApplicationReplayTests();
         runMcpApplicationTests();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--application-replay-only"))) {
+        runMcpApplicationReplayTests();
         snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
@@ -2816,10 +3426,18 @@ int main(int argc, char** argv) {
     }
     orientedFileDocuments(temporary.path());
     documentReservations(temporary.path());
+    documentOutputReleasesThreadCaches(temporary.path());
     documentCacheWork(temporary.path());
     documentConcurrency();
+    canceledDocumentReplaysStayBounded();
+    cancelingDocumentReplayWaitersPreservesOriginal();
+    documentReplayCallbacksAllowServiceDestruction(false);
+    documentReplayCallbacksAllowServiceDestruction(true);
+    documentReplayCallbacksPreserveReusedRequestIds(false);
+    documentReplayCallbacksPreserveReusedRequestIds(true);
     documentMemoryActivity();
     documents(temporary.path());
+    documentSelectionStylesPreserveCanvasUnits();
     documentWorkflows();
     recognitionModelDocuments(temporary.path());
     recognitionServiceTeardown();

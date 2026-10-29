@@ -111,7 +111,7 @@ fn compile_shader_runtime_with_entry(entry: &[u8]) -> CaptureResult<Vec<u8>> {
 
     let source = include_str!("tonemap_cs.hlsl").as_bytes();
     let entry_pcstr = PCSTR::from_raw(entry.as_ptr());
-    let target = PCSTR::from_raw(b"cs_5_0\0".as_ptr());
+    let target = PCSTR::from_raw(c"cs_5_0".as_ptr().cast());
     let mut blob = None;
     let mut errors = None;
 

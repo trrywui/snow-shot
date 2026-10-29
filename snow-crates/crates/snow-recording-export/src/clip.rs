@@ -561,6 +561,8 @@ pub struct VideoReader {
     scaler: Option<ffmpeg::software::scaling::Context>,
     converted: ffmpeg::frame::Video,
     tone_mapper: crate::hdr::ToneMapper,
+    webcam: Option<crate::webcam::WebcamReplay>,
+    webcam_overlay: snow_recording_effects::webcam::WebcamOverlay,
     hardware: bool,
 }
 
@@ -597,7 +599,14 @@ impl VideoReader {
             },
             hardware,
         )?;
+        let webcam = if source.metadata.is_some() {
+            crate::webcam::WebcamReplay::open(&source.path, &CancellationToken::default())?
+        } else {
+            None
+        };
         Ok(Self {
+            webcam,
+            webcam_overlay: Default::default(),
             stream: stream.index(),
             time_base: stream.time_base(),
             source_offset_us,
@@ -665,6 +674,14 @@ impl VideoReader {
     }
 
     fn read_inner(&mut self, at: u64, token: &CancellationToken) -> Result<()> {
+        if let Some(webcam) = &mut self.webcam {
+            let image = webcam.frame_at(at / 1000, token)?;
+            self.webcam_overlay.prepare(
+                image.as_deref(),
+                webcam.style(),
+                (self.source.config.width, self.source.config.height),
+            );
+        }
         let seek =
             self.current.as_ref().is_some_and(|(current, _)| {
                 at < *current || at > current.saturating_add(1_000_000)
@@ -805,10 +822,15 @@ impl VideoReader {
             pixels[y * len..(y + 1) * len]
                 .copy_from_slice(&self.converted.data(0)[y * stride..y * stride + len]);
         }
+        self.webcam_overlay
+            .draw_to(&mut snow_recording_effects::surface::RgbaSurface {
+                pixels,
+                dimensions: (width, height),
+            });
     }
 }
 
-mod audio;
+pub(crate) mod audio;
 pub use audio::AudioReader;
 
 #[cfg(test)]

@@ -881,9 +881,8 @@ QImage compactedReference(SnowCanvasRuntime& runtime, const QRect& selection, co
                           const ScreenshotResultStyle& style, qreal scale,
                           ScreenshotLayoutCompaction options) {
     const auto full = runtime.renderToImage(selection, pixels, sources);
-    const auto plan = makeScreenshotLayoutCompactionPlan(
-        *style.region, pixels, scale, options,
-        screenshotSelectionRenderedShadowPixels(style.shadowWidth, scale));
+    const auto plan = makeScreenshotLayoutCompactionPlan(*style.region, pixels, scale, options,
+                                                         qRound(style.effectWidth() * scale));
     require(plan.isValid(), "reference plan");
     QImage content(plan.outputSize, QImage::Format_ARGB32_Premultiplied);
     content.fill(Qt::transparent);
@@ -894,10 +893,7 @@ QImage compactedReference(SnowCanvasRuntime& runtime, const QRect& selection, co
         for (const auto& tile : plan.tiles)
             painter.drawImage(tile.destination, full, tile.source);
     painter.end();
-    auto outputStyle = style;
-    outputStyle.regionScale *= scale;
-    outputStyle.cornerRadius = qRound(style.cornerRadius * scale);
-    outputStyle.shadowWidth = screenshotSelectionRenderedShadowPixels(style.shadowWidth, scale);
+    auto outputStyle = ScreenshotResultCompositor::scaledStyle(style, scale);
     outputStyle = compactedScreenshotResultStyle(outputStyle, plan);
     const auto background =
         renderScreenshotSelectionBackground(sources, selection, pixels, outputStyle, &plan);
@@ -922,8 +918,7 @@ void compactionOutputsAgree() {
                     fixture.runtime(), selection,
                     screenshotSelectionRenderedPixelSize(selection.size(), backing), sources, style,
                     backing, options);
-                const int shadow =
-                    screenshotSelectionRenderedShadowPixels(style.shadowWidth, backing);
+                const int shadow = qRound(style.effectWidth() * backing);
                 require(expected.size() == QSize(qRound((18 + spacing) * backing) + 4 * shadow,
                                                  qRound(20 * backing) + 2 * shadow),
                         "export spacing must separate the full rendered shadow footprints");

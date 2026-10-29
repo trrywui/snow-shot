@@ -1,4 +1,5 @@
 #include "recordingtrimtoolbar.h"
+#include "antd_icons.h"
 #include "snow_shot/presentation/components/icons/snowshoticons.h"
 #include "snow_shot/presentation/styles/thememanager.h"
 #include "widgets/button.h"
@@ -17,7 +18,7 @@ namespace {
 using namespace screenshot_action_toolbar;
 constexpr int HandleWidth = ControlSize / 2;
 constexpr int SpeedWidth = 72;
-constexpr int TrackGap = 8;
+constexpr int TrackGap = 4;
 constexpr qreal RailHeight = 4;
 constexpr qreal GripWidth = 10;
 constexpr qreal GripHeight = 20;
@@ -60,6 +61,17 @@ RecordingTrimToolbar::RecordingTrimToolbar(QWidget* parent) : ScreenshotToolbarP
     m_replay->setIconRef(snow_shot::presentation::icons::custom::outlined::RecordingReplay());
     m_replay->setReferenceIconSize({IconSize, IconSize});
     m_replay->setCursor(Qt::PointingHandCursor);
+    m_playPause = new adqt::widgets::AdButton(this);
+    m_playPause->setObjectName(QStringLiteral("screenRecordingTrimPlayPause"));
+    m_playPause->setButtonStyle(adqt::widgets::AdButton::ButtonStyle::Text);
+    m_playPause->setShape(adqt::widgets::AdButton::Shape::Rounded);
+    m_playPause->setFocusPolicy(Qt::StrongFocus);
+    m_playPause->setReferenceIconSize({IconSize, IconSize});
+    m_playPause->setCursor(Qt::PointingHandCursor);
+    connect(m_playPause, &adqt::widgets::AdButton::clicked, this, [this] {
+        if (playbackToggleRequested)
+            playbackToggleRequested();
+    });
     m_speed = new adqt::widgets::AdSelect(this);
     m_speed->setObjectName(QStringLiteral("screenRecordingTrimSpeed"));
     m_speed->setMode(adqt::widgets::AdSelect::Mode::Single);
@@ -111,12 +123,13 @@ RecordingTrimToolbar::RecordingTrimToolbar(QWidget* parent) : ScreenshotToolbarP
 }
 
 QSize RecordingTrimToolbar::sizeHint() const {
-    return {qRound(440 * m_scale), qRound(PanelHeight * m_scale)};
+    return {qRound(480 * m_scale), qRound(PanelHeight * m_scale)};
 }
 void RecordingTrimToolbar::commitControlScale(const adqt::widgets::AdControlScaleContext& context) {
     m_scale = context.logicalScale;
     setPanelScale(m_scale);
     m_replay->commitControlScale(context);
+    m_playPause->commitControlScale(context);
     m_speed->commitControlScale(context);
     m_speed->setPopupWidth(qRound(96 * m_scale));
     setFixedSize(sizeHint());
@@ -156,8 +169,25 @@ void RecordingTrimToolbar::setPosition(quint64 position) {
     m_position = std::min(position, m_duration);
     update();
 }
+void RecordingTrimToolbar::setPlaying(bool playing) {
+    if (m_playing == playing)
+        return;
+    m_playing = playing;
+    updatePlaybackControl();
+}
+void RecordingTrimToolbar::setPlaybackAvailable(bool available) {
+    m_playPause->setEnabled(available);
+}
+void RecordingTrimToolbar::updatePlaybackControl() {
+    m_playPause->setIconRef(m_playing ? adqt::icons::antd::outlined::PauseCircle()
+                                      : adqt::icons::antd::outlined::PlayCircle());
+    m_playPause->setToolTip(trimText(m_playing
+                                         ? QT_TRANSLATE_NOOP("RecordingTrimToolbar", "Pause")
+                                         : QT_TRANSLATE_NOOP("RecordingTrimToolbar", "Play")));
+    m_playPause->setAccessibleName(m_playPause->toolTip());
+}
 QRectF RecordingTrimToolbar::trackRect() const {
-    const qreal left = HorizontalMargin + ControlSize + SpeedWidth + 2 * TrackGap + HandleWidth;
+    const qreal left = HorizontalMargin + 2 * ControlSize + SpeedWidth + 3 * TrackGap + HandleWidth;
     const qreal right = HorizontalMargin + HandleWidth;
     return {left, (height() / m_scale - RailHeight) / 2.0, width() / m_scale - left - right,
             RailHeight};
@@ -189,7 +219,9 @@ void RecordingTrimToolbar::layoutHandles() {
     const int controlSize = qRound(ControlSize * m_scale);
     const int top = (height() - controlSize + 1) / 2;
     m_replay->setGeometry(qRound(HorizontalMargin * m_scale), top, controlSize, controlSize);
-    m_speed->setGeometry(qRound((HorizontalMargin + ControlSize + TrackGap) * m_scale), top,
+    m_playPause->setGeometry(qRound((HorizontalMargin + ControlSize + TrackGap) * m_scale), top,
+                             controlSize, controlSize);
+    m_speed->setGeometry(qRound((HorizontalMargin + 2 * ControlSize + 2 * TrackGap) * m_scale), top,
                          qRound(SpeedWidth * m_scale), controlSize);
     if (!m_boundary)
         return;
@@ -206,6 +238,7 @@ void RecordingTrimToolbar::resizeEvent(QResizeEvent*) {
     layoutHandles();
 }
 void RecordingTrimToolbar::retranslate() {
+    updatePlaybackControl();
     m_replay->setToolTip(trimText(QT_TRANSLATE_NOOP("RecordingTrimToolbar", "Replay")));
     m_replay->setAccessibleName(m_replay->toolTip());
     const quint32 percent = speedPercent() ? speedPercent() : 100;

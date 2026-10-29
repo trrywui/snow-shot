@@ -1,4 +1,5 @@
 #include "shell_context_menu_test_registry.h"
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/presentation/globalshortcutmanager.h"
 #include "snow_shot/presentation/languagemanager.h"
 #include "snow_shot/presentation/settings/settingsbackend.h"
@@ -6,8 +7,10 @@
 #include "snow_shot/presentation/settings/settingsruntimesession.h"
 #include "snow_shot/presentation/settings/settingssearchindex.h"
 #include "snow_shot/storage/configurationschema.h"
+#include "snow_shot/platform/windows/packagedcontextmenupreference.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -265,6 +268,64 @@ void settingsTransactions(const QString& configurationDirectory, const QString& 
 #endif
 }
 
+void portableSettingsTransactions(const QString& root) {
+    const QString executable = QDir(root).filePath(QStringLiteral("portable-bin"));
+    require(QDir().mkpath(executable), "create an isolated portable executable directory");
+    QFile marker(QDir(executable).filePath(snow_shot::app::edition::portableMarkerName()));
+    require(marker.open(QIODevice::WriteOnly) && marker.write("data") == 4,
+            "create the edition-specific portable marker");
+    marker.close();
+    auto& applicationStorage = storage::ApplicationStorage::instance();
+    require(
+        applicationStorage
+                .initialize({executable, QDir(root).filePath(QStringLiteral("fallback")), 60000})
+                .success &&
+            applicationStorage.status().effectiveMode == storage::StorageMode::Portable,
+        "initialize portable settings through the storage marker");
+    auto& configuration = applicationStorage.configuration();
+    const QString enabledKey = QStringLiteral("system/auto_start_at_boot");
+    Registry registry;
+    windows::ShellContextMenuRegistration registration(registry.options());
+    snow_shot::presentation::GlobalShortcutManager shortcuts;
+    settings::BuiltInSettingsBackend backend(
+        shortcuts, nullptr, nullptr, nullptr, nullptr, &registration,
+        [&](bool enabled, bool elevated) {
+            return windows::AdministratorResult{
+                configuration.setValues(
+                    {{enabledKey, enabled},
+                     {QStringLiteral("system/launch_as_administrator"), elevated}}),
+                false,
+                {}};
+        });
+    settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
+    const auto startupBinding = settings::SettingsSwitchBinding::AutoStartAtBoot;
+    require(!backend.switchValue(startupBinding) &&
+                session.state(kId).acceptedValue == QStringLiteral("disabled") &&
+                registration.setEnabled(false) && registry.keys.isEmpty(),
+            "portable settings expose both integrations as disabled on first launch");
+    const auto enableIntegrations = [&] {
+        return session.applySwitchValue(startupBinding, true) &&
+               session.applySelectValue(kBinding, QStringLiteral("image_files")) &&
+               backend.switchValue(startupBinding) && registry.keys.size() == 2;
+    };
+    require(enableIntegrations(), "portable settings allow explicitly enabling both integrations");
+    require(session.reset(settings::SettingsSectionReset::SystemGeneral) &&
+                !backend.switchValue(startupBinding) && registry.keys.isEmpty() &&
+                session.state(kId).acceptedValue == QStringLiteral("disabled") &&
+                !session.hasDirtyFields(),
+            "portable General reset disables both native integrations and accepts the defaults");
+    require(enableIntegrations(), "prepare enabled integrations for a portable import");
+    auto imported = configuration.snapshot();
+    imported.remove(enabledKey);
+    imported.remove(kKey);
+    require(backend.importConfigurationSnapshot(imported,
+                                                storage::ConfigurationSchema::currentVersion()) &&
+                !backend.switchValue(startupBinding) && registry.keys.isEmpty() &&
+                configuration.value(kKey) == QStringLiteral("disabled"),
+            "omitted imported preferences restore disabled portable native integrations");
+    applicationStorage.shutdown();
+}
+
 void accessKeyTransactions(const QString& configurationDirectory, const QString& blockedDirectory) {
     using snow_shot::shortcuts::ShortcutBinding;
     using snow_shot::shortcuts::ShortcutBindingList;
@@ -388,6 +449,155 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     QTemporaryDir temporary;
     require(temporary.isValid(), "create isolated settings test storage");
+    if (snow_shot::app::distribution::isStoreManaged()) {
+        using snow_shot::shortcuts::ShortcutBinding;
+        using snow_shot::shortcuts::ShortcutBindingList;
+        using snow_shot::shortcuts::shortcutBindingsToJson;
+        const ShortcutBindingList e{ShortcutBinding{QStringLiteral("E")}};
+        const ShortcutBindingList digit{ShortcutBinding{QStringLiteral("7")}};
+        auto& storage = storage::ApplicationStorage::instance();
+        require(storage.initialize({temporary.path(), temporary.path(), 60000}).success,
+                "initialize isolated Store settings");
+        Registry registry;
+        auto options = registry.options();
+        options.packagedPreferencePath = temporary.filePath(QStringLiteral("context-menu-enabled"));
+        const auto menuAccessKey = [&] {
+            return windows::packaged_context_menu::readPreference(
+                       options.packagedPreferencePath.toStdWString())
+                .accessKey;
+        };
+        const auto menuEnabled = [&] {
+            return windows::packaged_context_menu::isEnabled(
+                options.packagedPreferencePath.toStdWString());
+        };
+        windows::ShellContextMenuRegistration shell(options);
+        snow_shot::presentation::GlobalShortcutManager shortcuts;
+        int nativeStartupChanges = 0;
+        settings::BuiltInSettingsBackend backend(
+            shortcuts, nullptr, nullptr, nullptr, nullptr, &shell, [&](bool, bool) {
+                ++nativeStartupChanges;
+                return windows::AdministratorResult{true, false, {}};
+            });
+        settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
+        const auto* field = settings::builtInSettingsRegistry().field(kId);
+        require(field && backend.selectEnabled(kBinding) &&
+                    !settings::SettingsSearchIndex(settings::builtInSettingsRegistry())
+                         .search(QStringLiteral("Windows context menu"))
+                         .isEmpty(),
+                "Store exposes an enabled, searchable context menu setting");
+        const auto* shortcutField =
+            settings::builtInSettingsRegistry().fieldForLocalShortcut(kScope, kShortcutId);
+        require(shortcutField && shortcutField->configurationKey == kShortcutKey &&
+                    shortcutField->reset ==
+                        settings::SettingsSectionReset::WindowsContextMenuShortcuts &&
+                    std::get<settings::SettingsLocalShortcutDefinition>(
+                        shortcutField->definition->payload)
+                            .maximumShortcutCount == 1 &&
+                    !settings::SettingsSearchIndex(settings::builtInSettingsRegistry())
+                         .search(QStringLiteral("Edit with Snow Shot"))
+                         .isEmpty(),
+                "Store exposes the searchable classic menu access-key recorder and reset");
+        require(session.applySelectValue(kBinding, QStringLiteral("disabled")) && !menuEnabled() &&
+                    session.state(kId).acceptedValue == QStringLiteral("disabled") &&
+                    !session.hasDirtyFields(),
+                "Store Settings disables the Explorer command and accepts the saved value");
+        storage::ConfigurationStore persisted(
+            storage.configurationDirectory() + QStringLiteral("/config.json"), true, true, 60000);
+        require(persisted.value(kKey) == QStringLiteral("disabled"),
+                "Store context menu preference survives a configuration reload");
+        require(session.applySelectValue(kBinding, QStringLiteral("image_files")) && menuEnabled(),
+                "Store Settings reenables the Explorer command");
+        require(!backend.applySelectValue(kBinding, false) &&
+                    !backend.applySelectValue(kBinding, QStringLiteral("unknown")) && menuEnabled(),
+                "Store rejects invalid context menu values");
+        ShortcutBinding physical{QStringLiteral("e")};
+        physical.physicalKeys.insert(snow_shot::shortcuts::ShortcutPlatform::MacOS, 14);
+        require(session.applyLocalShortcuts(kScope, kShortcutId, {physical}) &&
+                    session.localShortcuts(kScope, kShortcutId) == e && menuAccessKey() == L'E' &&
+                    menuEnabled() && !session.hasDirtyFields(),
+                "Store recorder canonicalizes and persists a logical access key for Explorer");
+        storage::ConfigurationStore savedShortcut(
+            storage.configurationDirectory() + QStringLiteral("/config.json"), true, true, 60000);
+        require(savedShortcut.value(kShortcutKey) == shortcutBindingsToJson(e),
+                "Store access keys survive a configuration reload");
+        for (const auto& invalid : {QStringLiteral("Ctrl+E"), QStringLiteral("Alt+E"),
+                                    QStringLiteral("F1"), QStringLiteral("&")})
+            require(!backend.applyLocalShortcuts(kScope, kShortcutId, {ShortcutBinding{invalid}}) &&
+                        menuAccessKey() == L'E' && backend.localShortcuts(kScope, kShortcutId) == e,
+                    "Store rejects invalid menu access keys without changing the accepted key");
+        require(!backend.applyLocalShortcuts(kScope, kShortcutId, {e.first(), digit.first()}) &&
+                    !backend.applyLocalShortcuts(kScope, QStringLiteral("unknown"), e),
+                "Store rejects multiple access keys and unknown commands");
+        const auto previous = storage.configuration().snapshot();
+        auto imported = previous;
+        imported.insert(QStringLiteral("system/launch_as_administrator"), true);
+        imported.insert(QStringLiteral("system/auto_start_at_boot"), true);
+        imported.insert(kKey, QStringLiteral("disabled"));
+        imported.insert(kShortcutKey, shortcutBindingsToJson(digit));
+        imported.insert(QStringLiteral("updates/mode"), QStringLiteral("next_launch"));
+        require(backend.importConfigurationSnapshot(
+                    imported, storage::ConfigurationSchema::currentVersion()) &&
+                    nativeStartupChanges == 0 && registry.writes == 0 &&
+                    storage.configuration().value(kKey) == QStringLiteral("disabled") &&
+                    !menuEnabled() && menuAccessKey() == L'7' &&
+                    backend.localShortcuts(kScope, kShortcutId) == digit &&
+                    storage.configuration().value(QStringLiteral("updates/mode")) ==
+                        previous.value(QStringLiteral("updates/mode")) &&
+                    !storage.configuration()
+                         .value(QStringLiteral("system/launch_as_administrator"))
+                         .toBool(),
+                "Store imports apply context menu choices while preserving Windows-owned settings");
+        require(backend.resetSection(settings::SettingsSectionReset::SystemGeneral) &&
+                    nativeStartupChanges == 0 && registry.writes == 0 && menuEnabled() &&
+                    menuAccessKey() == L'7' &&
+                    storage.configuration().value(kKey) == QStringLiteral("image_files") &&
+                    !backend.applySelectValue(settings::SettingsSelectBinding::UpdateMode,
+                                              QStringLiteral("automatic")),
+                "Store reset restores the menu default without changing OS-managed integrations");
+        require(session.applySelectValue(kBinding, QStringLiteral("disabled")) &&
+                    session.reset(settings::SettingsSectionReset::WindowsContextMenuShortcuts) &&
+                    !menuEnabled() && menuAccessKey() == L'\0' &&
+                    backend.localShortcuts(kScope, kShortcutId).isEmpty(),
+                "Store shortcut reset clears the key without reenabling a disabled menu");
+        require(session.applyLocalShortcuts(kScope, kShortcutId, e) && !menuEnabled() &&
+                    menuAccessKey() == L'E' &&
+                    session.applySelectValue(kBinding, QStringLiteral("image_files")) &&
+                    menuEnabled() && menuAccessKey() == L'E',
+                "Store can assign access keys while disabled and keeps them when reenabled");
+        require(session.applyLocalShortcuts(kScope, kShortcutId, {}) && menuAccessKey() == L'\0' &&
+                    menuEnabled() && session.applyLocalShortcuts(kScope, kShortcutId, e),
+                "clearing a Store access key removes the mnemonic without changing menu mode");
+        storage.configuration().suspendWrites(true);
+        require(!session.applySelectValue(kBinding, QStringLiteral("disabled")) && menuEnabled() &&
+                    storage.configuration().value(kKey) == QStringLiteral("image_files"),
+                "read-only settings cannot change the Explorer preference");
+        storage.configuration().suspendWrites(false);
+        const auto originalDirectory = storage.configurationDirectory();
+        QFile blocker(temporary.filePath(QStringLiteral("blocked")));
+        require(blocker.open(QIODevice::WriteOnly), "create a configuration persistence blocker");
+        blocker.close();
+        storage.configuration().relocate(blocker.fileName());
+        require(!session.applyLocalShortcuts(kScope, kShortcutId, digit) &&
+                    menuAccessKey() == L'E' && backend.localShortcuts(kScope, kShortcutId) == e &&
+                    menuEnabled() &&
+                    !session.reset(settings::SettingsSectionReset::WindowsContextMenuShortcuts) &&
+                    menuAccessKey() == L'E',
+                "failed Store saves and resets roll back the native and accepted access key");
+        auto failedImport = storage.configuration().snapshot();
+        failedImport.insert(kKey, QStringLiteral("disabled"));
+        failedImport.insert(kShortcutKey, shortcutBindingsToJson(digit));
+        require(!backend.importConfigurationSnapshot(
+                    failedImport, storage::ConfigurationSchema::currentVersion()) &&
+                    menuEnabled() && menuAccessKey() == L'E' &&
+                    backend.localShortcuts(kScope, kShortcutId) == e,
+                "failed Store imports restore mode and access key together");
+        require(!session.applySelectValue(kBinding, QStringLiteral("disabled")) && menuEnabled() &&
+                    storage.configuration().value(kKey) == QStringLiteral("image_files"),
+                "a failed configuration save rolls back both the Store dropdown and Explorer");
+        storage.configuration().relocate(originalDirectory);
+        storage.shutdown();
+        return 0;
+    }
     catalogAndDefaults(temporary.filePath(QStringLiteral("existing.json")));
     accessKeySchemaValidation();
     auto& applicationStorage = storage::ApplicationStorage::instance();
@@ -403,6 +613,7 @@ int main(int argc, char** argv) {
     settingsTransactions(applicationStorage.configurationDirectory(), blocker.fileName());
     accessKeyTransactions(applicationStorage.configurationDirectory(), blocker.fileName());
     applicationStorage.shutdown();
+    portableSettingsTransactions(temporary.path());
     std::cout << "Shell context menu settings tests passed\n";
     return 0;
 }

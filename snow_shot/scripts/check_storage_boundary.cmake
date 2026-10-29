@@ -18,6 +18,14 @@ set(_snow_shot_boundary_allowlist
     "${SNOW_SHOT_SOURCE_DIR}/src/update/updatetransaction.cpp"
 )
 
+# Full and Mini editions share installation metadata. The edition descriptor
+# defines their portable marker names; ApplicationStorage still owns all marker
+# reads and writes. This exception covers only these names, not settings APIs or
+# application data files.
+set(_snow_shot_marker_metadata_sources
+    "${SNOW_SHOT_SOURCE_DIR}/include/snow_shot/app/edition.h"
+)
+
 foreach(_source IN LISTS _snow_shot_sources)
     file(TO_CMAKE_PATH "${_source}" _normalized_source)
     file(READ "${_source}" _contents)
@@ -43,9 +51,14 @@ foreach(_source IN LISTS _snow_shot_sources)
         foreach(_forbidden IN ITEMS
             "config.json"
             "__data_directory"
+            "__mini_data_directory"
             "canvas_history.json"
             "display_0.png"
         )
+            if(_forbidden MATCHES "^__(mini_)?data_directory$"
+               AND _normalized_source IN_LIST _snow_shot_marker_metadata_sources)
+                continue()
+            endif()
             string(FIND "${_contents}" "${_forbidden}" _position)
             if(NOT _position EQUAL -1)
                 message(FATAL_ERROR

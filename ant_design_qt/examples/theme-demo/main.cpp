@@ -48,6 +48,7 @@
 #include "popconfirm_docs_page.h"
 #include "popover_docs_page.h"
 #include "progress_docs_page.h"
+#include "result_docs_page.h"
 #include "radio_docs_page.h"
 #include "segmented_docs_page.h"
 #include "select_docs_page.h"
@@ -1115,6 +1116,7 @@ class DemoWindow final : public QWidget {
     Slider,
     Spin,
     Progress,
+    Result,
     Pagination,
     Tabs,
     Carousel,
@@ -1180,6 +1182,9 @@ class DemoWindow final : public QWidget {
     }
     if (kind == DocsKind::Progress) {
       return QStringLiteral("progress-docs");
+    }
+    if (kind == DocsKind::Result) {
+      return QStringLiteral("result-docs");
     }
     if (kind == DocsKind::Pagination) {
       return QStringLiteral("pagination-docs");
@@ -1255,6 +1260,8 @@ class DemoWindow final : public QWidget {
       prefix = QStringLiteral("spin");
     } else if (kind == DocsKind::Progress) {
       prefix = QStringLiteral("progress");
+    } else if (kind == DocsKind::Result) {
+      prefix = QStringLiteral("result");
     } else if (kind == DocsKind::Pagination) {
       prefix = QStringLiteral("pagination");
     } else if (kind == DocsKind::Tabs) {
@@ -1634,6 +1641,20 @@ class DemoWindow final : public QWidget {
       }
       return false;
     }
+    if (key.startsWith(QStringLiteral("result-section-"))) {
+      bool ok = false;
+      const int value = key.mid(QStringLiteral("result-section-").size()).toInt(&ok);
+      if (ok) {
+        if (kind) {
+          *kind = DocsKind::Result;
+        }
+        if (row) {
+          *row = value;
+        }
+        return true;
+      }
+      return false;
+    }
     if (key.startsWith(QStringLiteral("spin-section-"))) {
       bool ok = false;
       const int value = key.mid(QStringLiteral("spin-section-").size()).toInt(&ok);
@@ -1782,6 +1803,12 @@ class DemoWindow final : public QWidget {
       }
       return true;
     }
+    if (key == docsRootKey(DocsKind::Result)) {
+      if (kind) {
+        *kind = DocsKind::Result;
+      }
+      return true;
+    }
     if (key == docsRootKey(DocsKind::Pagination)) {
       if (kind) {
         *kind = DocsKind::Pagination;
@@ -1864,11 +1891,11 @@ class DemoWindow final : public QWidget {
           DocsKind::InputNumber, DocsKind::Switch,       DocsKind::Segmented,
           DocsKind::Menu,        DocsKind::Message,      DocsKind::Notification,
           DocsKind::Modal,       DocsKind::Select,       DocsKind::Slider,
-          DocsKind::Spin,        DocsKind::Progress,     DocsKind::Pagination,
-          DocsKind::Tabs,        DocsKind::Carousel,     DocsKind::ColorPicker,
-          DocsKind::DatePicker,  DocsKind::Image,        DocsKind::Popover,
-          DocsKind::Popconfirm,  DocsKind::Tooltip,      DocsKind::Radio,
-          DocsKind::Checkbox,    DocsKind::Tag}) {
+          DocsKind::Spin,        DocsKind::Progress,     DocsKind::Result,
+          DocsKind::Pagination,  DocsKind::Tabs,         DocsKind::Carousel,
+          DocsKind::ColorPicker, DocsKind::DatePicker,   DocsKind::Image,
+          DocsKind::Popover,     DocsKind::Popconfirm,   DocsKind::Tooltip,
+          DocsKind::Radio,       DocsKind::Checkbox,     DocsKind::Tag}) {
       if (key == docsGroupKey(candidate)) {
         if (kind) {
           *kind = candidate;
@@ -1931,6 +1958,9 @@ class DemoWindow final : public QWidget {
     }
     if (kind == DocsKind::Progress && progressPage_) {
       return progressPage_->sectionAnchors();
+    }
+    if (kind == DocsKind::Result && resultPage_) {
+      return resultPage_->sectionAnchors();
     }
     if (kind == DocsKind::Pagination && paginationPage_) {
       return paginationPage_->sectionAnchors();
@@ -2024,6 +2054,9 @@ class DemoWindow final : public QWidget {
     if (kind == DocsKind::Progress) {
       return progressPage_ ? progressPage_->sectionTitles()
                            : ProgressDocsPage::defaultSectionTitles();
+    }
+    if (kind == DocsKind::Result) {
+      return resultPage_ ? resultPage_->sectionTitles() : ResultDocsPage::defaultSectionTitles();
     }
     if (kind == DocsKind::Pagination && paginationPage_) {
       return paginationPage_->sectionTitles();
@@ -2119,6 +2152,9 @@ class DemoWindow final : public QWidget {
     }
     if (kind == DocsKind::Progress) {
       return progressPage_ != nullptr;
+    }
+    if (kind == DocsKind::Result) {
+      return resultPage_ != nullptr;
     }
     if (kind == DocsKind::Pagination) {
       return paginationPage_ != nullptr;
@@ -2312,6 +2348,8 @@ class DemoWindow final : public QWidget {
     appendRoot(DocsKind::Spin, QStringLiteral("Spin"), outlined_icons::Loading());
     appendRoot(DocsKind::Progress, QCoreApplication::translate("ProgressDocsPage", "Progress"),
                outlined_icons::Dashboard());
+    appendRoot(DocsKind::Result, QCoreApplication::translate("ResultDocsPage", "Result"),
+               outlined_icons::CheckCircle());
     appendRoot(DocsKind::Pagination, QStringLiteral("Pagination"), outlined_icons::More());
     appendRoot(DocsKind::Tabs, QStringLiteral("Tabs"), outlined_icons::FolderOpen());
     appendRoot(DocsKind::Carousel, QStringLiteral("Carousel"), outlined_icons::Picture());
@@ -2468,6 +2506,13 @@ class DemoWindow final : public QWidget {
         created = true;
       }
       target = progressPage_;
+    } else if (kind == DocsKind::Result) {
+      if (!resultPage_) {
+        resultPage_ = new ResultDocsPage();
+        docsStack_->addWidget(resultPage_);
+        created = true;
+      }
+      target = resultPage_;
     } else if (kind == DocsKind::Pagination) {
       if (!paginationPage_) {
         paginationPage_ = new PaginationDocsPage();
@@ -2668,6 +2713,7 @@ class DemoWindow final : public QWidget {
   SliderDocsPage* sliderPage_ = nullptr;
   SpinDocsPage* spinPage_ = nullptr;
   ProgressDocsPage* progressPage_ = nullptr;
+  ResultDocsPage* resultPage_ = nullptr;
   PaginationDocsPage* paginationPage_ = nullptr;
   TabsDocsPage* tabsPage_ = nullptr;
   CarouselDocsPage* carouselPage_ = nullptr;

@@ -1799,6 +1799,58 @@ void selectionDragPickerWorkIsDiscardedAtInteractionBoundaries() {
     }
 }
 
+void selectionDragsKeepTheColorPickerOpaque() {
+    for (const auto mode : {ScreenshotColorPickerDisplayMode::AlwaysShow,
+                            ScreenshotColorPickerDisplayMode::HideOutsideSelection,
+                            ScreenshotColorPickerDisplayMode::AlwaysHide}) {
+        Fixture fixture(QSize(1200, 800), false);
+        fixture.enableColorPicker(mode);
+        fixture.coordinator.setSelectionToolbarHidden(true);
+        auto* picker = fixture.coordinator.colorPicker();
+        const auto requirePickerPresentation = [&]() {
+            if (mode == ScreenshotColorPickerDisplayMode::AlwaysHide) {
+                require(picker->isHidden(), "always-hide must still hide the picker during drags");
+                return;
+            }
+            require(picker->isVisible(), "selection drags must keep the picker visible");
+            const QImage painted = picker->grab().toImage();
+            const QPoint sample(qRound(30 * painted.devicePixelRatio()),
+                                qRound(30 * painted.devicePixelRatio()));
+            require(painted.pixelColor(sample).alpha() == 255 && picker->windowOpacity() == 1.0,
+                    "selection drags must render the magnified pixels at full opacity");
+        };
+        for (const bool confirmedSelection : {false, true}) {
+            for (const auto dragMode :
+                 {ScreenshotSelectionDragMode::Marquee, ScreenshotSelectionDragMode::All,
+                  ScreenshotSelectionDragMode::TopLeft, ScreenshotSelectionDragMode::Top,
+                  ScreenshotSelectionDragMode::TopRight, ScreenshotSelectionDragMode::Right,
+                  ScreenshotSelectionDragMode::BottomRight, ScreenshotSelectionDragMode::Bottom,
+                  ScreenshotSelectionDragMode::BottomLeft, ScreenshotSelectionDragMode::Left}) {
+                fixture.interaction.returnToSelectionMode(false);
+                if (confirmedSelection)
+                    fixture.interaction.confirmSelection();
+                require(fixture.interaction.enterSelectionDrag(dragMode),
+                        "picker regression requires an active selection drag");
+                fixture.services->updateOverlayState();
+                const auto context = fixture.services->colorPickerContext();
+                const QPointF pointer = fixture.baseSelection().center();
+                fixture.colorPickerController->updateForOverlay(&fixture.overlay, pointer, context);
+                requirePickerPresentation();
+                fixture.colorPickerController->updateForSelectionDrag(pointer, context);
+                requirePickerPresentation();
+                require(picker->hasCurrentColor() &&
+                            fixture.colorPickerController->copyColorToClipboard(context),
+                        "selection drags must preserve color sampling in every display mode");
+                fixture.interaction.finishDrag();
+                fixture.colorPickerController->updateForOverlay(
+                    &fixture.overlay, fixture.baseSelection().center(),
+                    fixture.services->colorPickerContext());
+                requirePickerPresentation();
+            }
+        }
+    }
+}
+
 void queuedPickerInputSurvivesSelectionConfirmation() {
     for (const auto mode : {ScreenshotColorPickerDisplayMode::AlwaysShow,
                             ScreenshotColorPickerDisplayMode::HideOutsideSelection,
@@ -2104,6 +2156,10 @@ int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     application.setQuitOnLastWindowClosed(false);
     selection_presentation_test::IsolatedStorage storage;
+    if (application.arguments().contains(QStringLiteral("--picker-drag-only"))) {
+        selectionDragsKeepTheColorPickerOpaque();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--toolbar-presenter-lifetime-only"))) {
         deferredToolbarRaiseEndsWithItsPresenter();
         nativeToolbarRaiseAllowsPresenterDeletion();
@@ -2150,6 +2206,7 @@ int main(int argc, char* argv[]) {
     imageRebindingKeepsAcceptedPointerPrecisionForUnchangedGeometry();
     shortcutHintsFollowRegionOperationTransitions();
     shortcutContentStillRetranslatesOnLanguageChange();
+    selectionDragsKeepTheColorPickerOpaque();
     queuedPickerInputSurvivesSelectionConfirmation();
     queuedPickerHoverYieldsToSelectionDrag();
     externalSelectionInitializationCommitsTheCompleteHiddenStateOnce();

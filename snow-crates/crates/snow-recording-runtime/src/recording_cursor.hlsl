@@ -1,6 +1,5 @@
 Texture2D<float4> desktop : register(t0);
 Texture2D<float4> cursorImage : register(t1);
-RWTexture2D<float4> outputImage : register(u0);
 cbuffer Parameters : register(b0) {
     int2 outputSize;
     int2 origin;
@@ -11,11 +10,15 @@ cbuffer Parameters : register(b0) {
     int2 reserved;
 };
 
-[numthreads(16, 16, 1)]
-void main(uint3 id : SV_DispatchThreadID) {
-    if (any(id.xy >= (uint2)outputSize)) return;
-    uint4 background = (uint4)round(saturate(desktop.Load(int3(id.xy, 0))) * 255.0);
-    int2 position = int2(id.xy) - origin;
+float4 vertex(uint id : SV_VertexID) : SV_Position {
+    float2 corner = float2((id << 1) & 2, id & 2);
+    return float4(corner * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+
+float4 pixel(float4 screen : SV_Position) : SV_Target {
+    int2 coordinate = int2(screen.xy);
+    uint4 background = (uint4)round(saturate(desktop.Load(int3(coordinate, 0))) * 255.0);
+    int2 position = coordinate - origin;
     if (masked == 2) {
         float2 delta = float2(position) + 0.5;
         uint alpha = (uint)round(shapeSize.y * saturate(highlightRadius + 0.5 - length(delta)));
@@ -36,5 +39,5 @@ void main(uint3 id : SV_DispatchThreadID) {
             background.rgb = (pixel.rgb * pixel.a + background.rgb * (255 - pixel.a) + 127) / 255;
         }
     }
-    outputImage[id.xy] = float4(background.rgb / 255.0, 1.0);
+    return float4(background.rgb / 255.0, 1.0);
 }

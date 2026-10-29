@@ -2,12 +2,20 @@
 #include "snow_shot/presentation/screenshotrecognitionimage.h"
 #include "snow_shot/presentation/screenshotselectionbackground.h"
 #include "snow_shot/presentation/screenshotocrtextlayout.h"
+#include "snow_shot/presentation/screenshotselectionshadowrenderer.h"
 #include <QPainter>
+#include <QScopeGuard>
 #include <cmath>
 #include <utility>
 
 QImage renderScreenshotRecognitionImage(const ScreenshotRecognitionImageSnapshot& snapshot,
                                         const std::function<bool()>& cancelled) {
+    const auto releaseCaches = qScopeGuard([&] {
+        ScreenshotSelectionShadowRenderer::resetCacheForCurrentThread();
+        resetScreenshotLayoutCompactionCache();
+        if (snapshot.resultStyle.region)
+            snapshot.resultStyle.region->clearDerivedCache();
+    });
     const auto stopped = [&]() { return cancelled && cancelled(); };
     const QRectF rect = snapshot.canvasRect;
     if (snapshot.image.isNull() || !rect.isValid() || rect.isEmpty() || !std::isfinite(rect.x()) ||
@@ -46,19 +54,13 @@ QImage renderScreenshotRecognitionImage(const ScreenshotRecognitionImageSnapshot
         painter.restore();
     }
     painter.end();
-    auto style = snapshot.resultStyle;
-    if (style.region) {
-        const qreal scale = image.width() / rect.width();
-        style.regionScale *= scale;
-        style.cornerRadius = qRound(style.cornerRadius * scale);
-        style.shadowWidth = qRound(style.shadowWidth * scale);
-    }
+    auto style =
+        ScreenshotResultCompositor::scaledStyle(snapshot.resultStyle, image.width() / rect.width());
     std::shared_ptr<const ScreenshotLayoutCompactionPlan> backgroundPlan;
     const QSize sourcePixelSize = image.size();
     if (snapshot.layoutCompaction.enabled && style.region) {
-        const auto plan = screenshotLayoutCompactionPlan(
-            *style.region, image.size(), style.regionScale, snapshot.layoutCompaction,
-            ScreenshotResultCompositor::normalizedStyle(style).shadowWidth);
+        const auto plan = ScreenshotResultCompositor::layoutCompactionForContent(
+            image.size(), style, snapshot.layoutCompaction);
         backgroundPlan = plan;
         if (!plan->isValid())
             return {};

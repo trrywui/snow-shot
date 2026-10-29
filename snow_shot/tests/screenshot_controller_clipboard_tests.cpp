@@ -1,0 +1,257 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "canvas_automatic_selection_test_support.h"
+#include "snow_shot/presentation/screenshotoverlaywindow.h"
+#include "snow_shot/presentation/screenshotcontroller.h"
+#include "snow_shot/presentation/screenshotexportartifact.h"
+#include "snow_shot/presentation/screenshotpinnedwindow.h"
+#include "snow_shot/presentation/styles/thememanager.h"
+#include "snow_shot/presentation/collagewindow.h"
+#include "snow_shot/presentation/imagesplitwindow.h"
+#include "snow_shot/storage/applicationstorage.h"
+#include "snow_shot/storage/settingsadapters.h"
+#include "../src/presentation/pinned/screenshotclipboardplacementgeometry.h"
+
+#include "widgets/platform_compatibility.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QColorSpace>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QMimeData>
+#include <QScopeGuard>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QThread>
+#include <QUrl>
+
+#include <cstdlib>
+#include <iostream>
+
+namespace {
+void require(bool condition, const char* message) {
+    if (!condition) {
+        std::cerr << message << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+void waitUntil(const std::function<bool()>& ready, const char* message) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < 10000) {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(1);
+    }
+    require(ready(), message);
+}
+
+QList<ScreenshotPinnedWindow*> visiblePins() {
+    QList<ScreenshotPinnedWindow*> result;
+    for (auto* widget : QApplication::topLevelWidgets()) {
+        auto* pin = qobject_cast<ScreenshotPinnedWindow*>(widget);
+        if (pin && pin->isVisible() && !pin->persistenceSnapshot().image.isNull())
+            result.append(pin);
+    }
+    return result;
+}
+
+void closePins() {
+    for (auto* pin : visiblePins())
+        pin->close();
+    waitUntil([] { return visiblePins().isEmpty(); }, "clipboard pins must close");
+}
+
+QImage fixture() {
+    QImage image(120, 80, QImage::Format_RGBA8888);
+    image.fill(QColor(23, 117, 209, 127));
+    image.setPixelColor(0, 0, QColor(201, 19, 79, 43));
+    image.setColorSpace(QColorSpace::SRgb);
+    return image;
+}
+
+void combinedCopiesPreserveImagePlacementAndAppearance(ScreenshotController& controller) {
+    const QImage image = fixture();
+    const QRect geometry(40, 60, image.width(), image.height());
+    const auto placement = screenshotClipboardSelectionPlacement(geometry, image.size(),
+                                                                 QGuiApplication::primaryScreen());
+    require(placement.has_value(), "clipboard placement fixture must be valid");
+    ScreenshotClipboardAppearance appearance;
+    appearance.rasterSize = image.size();
+    appearance.checkerboardEnabled = true;
+    appearance.showBorder = false;
+    appearance.showShadow = true;
+    appearance.borderAppearance = snow_shot::storage::PinnedBorderAppearance{
+        image.size(), QRectF(4, 4, image.width() - 8, image.height() - 8), 6, true, {}};
+    QObject receiver;
+    for (const auto format : {ScreenshotImageFileFormat::Png, ScreenshotImageFileFormat::Jpeg,
+                              ScreenshotImageFileFormat::Pdf}) {
+        for (bool removeFile : {false, true}) {
+            ScreenshotExportArtifact artifact(
+                ScreenshotExportSource::fromImage(image, placement, appearance));
+            std::optional<ScreenshotExportClipboardResult> prepared;
+            require(artifact.requestClipboardFile(&receiver, format,
+                                                  QStringLiteral("clipboard-pin"), {},
+                                                  [&](ScreenshotExportClipboardResult result) {
+                                                      prepared.emplace(std::move(result));
+                                                  }),
+                    "combined clipboard export must start");
+            waitUntil([&] { return prepared.has_value(); }, "combined export must complete");
+            require(prepared->succeeded(), "combined clipboard export must succeed");
+            const QString path = prepared->payload.filePath();
+            const auto cleanup = qScopeGuard(
+                [&] { static_cast<void>(QDir(QFileInfo(path).path()).removeRecursively()); });
+            if (removeFile)
+                require(QFile::remove(path), "exported clipboard file must be removable");
+
+            // Publish the same representations through Qt so this exercises the real controller
+            // without requiring the native desktop clipboard in offscreen Windows tests.
+            auto* mime = new QMimeData;
+            mime->setData(QStringLiteral("image/png"), prepared->payload.pngBytes());
+            mime->setData(screenshotClipboardPlacementNativeMimeType(),
+                          prepared->payload.placementBytes());
+            mime->setData(screenshotClipboardAppearanceNativeMimeType(),
+                          prepared->payload.appearanceBytes());
+            mime->setUrls({QUrl::fromLocalFile(path)});
+            QApplication::clipboard()->setMimeData(mime);
+            controller.pinClipboardContentToScreen();
+            waitUntil([] { return visiblePins().size() == 1; }, "combined copy must create a pin");
+            const auto record = visiblePins().constFirst()->persistenceSnapshot();
+            require(record.nativeGeometry == geometry && record.initialWindowSize == image.size(),
+                    "combined clipboard pin must restore its image placement");
+            require(record.image.convertToFormat(QImage::Format_RGBA8888) == image &&
+                        record.sourceKind ==
+                            snow_shot::storage::PinnedWindowSourceKind::ImageData &&
+                        record.originalFilePath.isEmpty(),
+                    "combined clipboard pin must use the lossless image independently of its file");
+            require(record.borderAppearance == appearance.borderAppearance &&
+                        record.checkerboardEnabled == appearance.checkerboardEnabled &&
+                        !record.showBorder && record.showShadow,
+                    "combined clipboard pin must restore all image appearance settings");
+            closePins();
+        }
+    }
+}
+
+void fileOnlyClipboardStillPinsEveryFile(ScreenshotController& controller) {
+    QTemporaryDir directory;
+    require(directory.isValid(), "file-only clipboard fixtures need temporary storage");
+    const QString first = directory.filePath(QStringLiteral("first.png"));
+    const QString second = directory.filePath(QStringLiteral("second.png"));
+    require(fixture().save(first, "PNG") && fixture().save(second, "PNG"),
+            "file-only clipboard fixtures must be saved");
+    auto* mime = new QMimeData;
+    mime->setUrls({QUrl::fromLocalFile(first), QUrl::fromLocalFile(second)});
+    QApplication::clipboard()->setMimeData(mime);
+    controller.pinClipboardContentToScreen();
+    waitUntil([] { return visiblePins().size() == 2; }, "file-only clipboard must pin both files");
+    QStringList paths;
+    for (auto* pin : visiblePins()) {
+        const auto record = pin->persistenceSnapshot();
+        require(record.sourceKind == snow_shot::storage::PinnedWindowSourceKind::ClipboardImageFile,
+                "file-only clipboard must retain file provenance");
+        paths.append(record.originalFilePath);
+    }
+    require(paths.contains(first) && paths.contains(second),
+            "batch import must preserve both paths");
+    closePins();
+}
+
+void imageToolsPreferInlineClipboardPixels() {
+    const QImage image = fixture();
+    QImage fileImage(image.size(), image.format());
+    fileImage.fill(Qt::red);
+    QTemporaryDir directory;
+    require(directory.isValid(), "image tool clipboard fixture needs temporary storage");
+    const QString path = directory.filePath(QStringLiteral("export.png"));
+    require(fileImage.save(path, "PNG"), "image tool file fixture must be saved");
+    auto payload = ScreenshotClipboardService::prepareImage(image);
+    require(payload.isValid(), "image tool clipboard fixture must encode");
+    auto* mime = new QMimeData;
+    mime->setData(QStringLiteral("image/png"), payload.pngBytes());
+    mime->setUrls({QUrl::fromLocalFile(path)});
+    QApplication::clipboard()->setMimeData(mime);
+    const auto samePixels = [&image](const QImage& actual) {
+        return actual.convertToFormat(QImage::Format_ARGB32_Premultiplied) ==
+               image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    };
+    {
+        snow_shot::presentation::CollageWindow collage;
+        collage.present();
+        collage.paste();
+        waitUntil([&] { return !collage.loading() && collage.document()->items().size() == 1; },
+                  "collage must import the combined clipboard");
+        require(samePixels(collage.document()->items().constFirst().image),
+                "collage must use inline pixels instead of the exported file");
+        collage.shutdown();
+    }
+    {
+        snow_shot::presentation::ImageSplitWindowServices services;
+        services.confirm = [](QWidget*, bool, auto complete) { complete(true); };
+        snow_shot::presentation::ImageSplitWindow split(nullptr, services);
+        split.presentImage(fileImage);
+        waitUntil([&] { return !split.loading() && !split.document()->image().isNull(); },
+                  "image splitting must load its initial fixture");
+        split.paste();
+        waitUntil([&] { return !split.loading(); },
+                  "image splitting must finish its clipboard replacement");
+        require(samePixels(split.document()->image()),
+                "image splitting must use inline pixels instead of the exported file");
+        split.shutdown();
+    }
+}
+} // namespace
+
+int runScreenshotControllerClipboardTests(int argc, char** argv) {
+    QStandardPaths::setTestModeEnabled(true);
+    QApplication application(argc, argv);
+    QApplication::setQuitOnLastWindowClosed(false);
+    adqt::widgets::initializePlatformCompatibility(application);
+    QTemporaryDir directory;
+    auto& storage = snow_shot::storage::ApplicationStorage::instance();
+    require(directory.isValid() &&
+                storage.initialize({directory.path(), directory.path(), 60000}).success,
+            "clipboard controller tests need isolated storage");
+    const snow_shot::storage::PinToScreenSettings settings;
+    require(settings.setAutomaticTextRecognition(false) &&
+                settings.setDuplicateContentAction(QStringLiteral("repeat_action")) &&
+                settings.setShowBorderByDefault(true) && settings.setShowShadowByDefault(false),
+            "clipboard controller settings must be isolated and deterministic");
+    static_cast<void>(snow_shot::presentation::styles::ThemeManager::instance());
+    if (application.arguments().contains(QStringLiteral("--automatic-selection-tests"))) {
+        canvas_automatic_selection_test::exercise([](auto verify) {
+            ScreenshotController controller;
+            controller.prewarmResources();
+            SnowCanvasWidget* canvas = nullptr;
+            waitUntil(
+                [&] {
+                    for (auto* widget : QApplication::topLevelWidgets()) {
+                        if (auto* overlay = qobject_cast<ScreenshotOverlayWindow*>(widget)) {
+                            canvas = overlay->canvas();
+                            if (canvas)
+                                return true;
+                        }
+                    }
+                    return false;
+                },
+                "prewarmed screenshot controller owns a canvas");
+            verify(*canvas);
+        });
+        storage.shutdown();
+        return 0;
+    }
+    {
+        ScreenshotController controller;
+        combinedCopiesPreserveImagePlacementAndAppearance(controller);
+        fileOnlyClipboardStillPinsEveryFile(controller);
+    }
+    imageToolsPreferInlineClipboardPixels();
+    QApplication::clipboard()->clear();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    storage.shutdown();
+    return EXIT_SUCCESS;
+}

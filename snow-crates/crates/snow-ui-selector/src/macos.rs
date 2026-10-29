@@ -124,7 +124,10 @@ impl ElementRegionService {
                 path: Some(vec![fallback]),
                 reason: StopReason::Cancelled,
             }
-        } else if mode == HitTestMode::Window {
+        } else if mode == HitTestMode::Window || window.pid == std::process::id() as i32 {
+            // AX calls into our own process run synchronously on this worker,
+            // entering AppKit/Qt outside the GUI thread. Keep our windows in the
+            // snapshot, but never activate or traverse their accessibility trees.
             QueryResult {
                 path: Some(vec![fallback]),
                 reason: StopReason::Complete,

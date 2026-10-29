@@ -60,6 +60,8 @@ impl GpuCapturedFrame {
 #[derive(Clone)]
 pub(crate) struct GpuMonitorFrame {
     pub texture: Texture,
+    /// Native coordinates within the owned surface, after any capture-time crop.
+    pub source: Rect,
     pub rotation: u32,
     pub metadata: FrameMetadata,
 }
@@ -70,10 +72,10 @@ enum Source {
 }
 
 impl Source {
-    fn capture(&mut self) -> CaptureResult<GpuMonitorFrame> {
+    fn capture(&mut self, crop: Rect) -> CaptureResult<GpuMonitorFrame> {
         match self {
-            Self::Dxgi(source) => source.capture(),
-            Self::Wgc(source) => source.capture(),
+            Self::Dxgi(source) => source.capture(crop),
+            Self::Wgc(source) => source.capture(crop),
         }
     }
 }
@@ -196,17 +198,16 @@ impl GpuCaptureSession {
             ..Default::default()
         };
         for source in &mut self.sources {
-            let frame = source.source.capture()?;
             let crop = Rect {
                 x: source.intersection.x - source.desktop.x,
                 y: source.intersection.y - source.desktop.y,
                 width: source.intersection.width,
                 height: source.intersection.height,
             };
-            let native = native_crop(crop, frame.texture.dimensions(), frame.rotation)?;
+            let frame = source.source.capture(crop)?;
             layers.push(VideoLayer {
                 texture: frame.texture,
-                source: native,
+                source: frame.source,
                 destination: Rect {
                     x: source.intersection.x - self.region.x,
                     y: source.intersection.y - self.region.y,
@@ -303,7 +304,7 @@ fn intersect(region: CaptureRegion, desktop: Rect) -> CaptureResult<Option<Rect>
     convert().map(Some).ok_or(CaptureError::BufferOverflow)
 }
 
-fn native_crop(crop: Rect, size: (u32, u32), rotation: u32) -> CaptureResult<Rect> {
+pub(crate) fn native_crop(crop: Rect, size: (u32, u32), rotation: u32) -> CaptureResult<Rect> {
     let x = i64::from(crop.x);
     let y = i64::from(crop.y);
     let w = i64::from(crop.width);
@@ -319,7 +320,8 @@ fn native_crop(crop: Rect, size: (u32, u32), rotation: u32) -> CaptureResult<Rec
             ));
         }
     };
-    if x < 0 || y < 0 || x + w > i64::from(size.0) || y + h > i64::from(size.1) {
+    if x < 0 || y < 0 || w == 0 || h == 0 || x + w > i64::from(size.0) || y + h > i64::from(size.1)
+    {
         return Err(CaptureError::InvalidTarget(
             "display geometry changed during GPU capture".into(),
         ));
@@ -334,18 +336,31 @@ fn native_crop(crop: Rect, size: (u32, u32), rotation: u32) -> CaptureResult<Rec
 
 /// Copy while the acquisition/canonical source is still owned. The shared
 /// context orders this before later VideoProcessor operations and pool reuse.
+#[cfg(test)]
 pub(crate) fn copy_texture(
     device: &SharedDevice,
     pool: &mut snow_d3d11::TexturePool,
     source: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
 ) -> CaptureResult<Texture> {
+    let mut desc = windows::Win32::Graphics::Direct3D11::D3D11_TEXTURE2D_DESC::default();
+    unsafe { source.GetDesc(&mut desc) };
+    copy_texture_region(device, pool, source, Rect::full((desc.Width, desc.Height)))
+}
+
+pub(crate) fn copy_texture_region(
+    device: &SharedDevice,
+    pool: &mut snow_d3d11::TexturePool,
+    source: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+    crop: Rect,
+) -> CaptureResult<Texture> {
     use windows::Win32::Graphics::Direct3D11::*;
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { source.GetDesc(&mut desc) };
+    let crop = native_crop(crop, (desc.Width, desc.Height), 0)?;
     let texture = pool
         .acquire(
-            desc.Width,
-            desc.Height,
+            crop.width,
+            crop.height,
             desc.Format,
             (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET).0 as u32,
         )
@@ -353,7 +368,29 @@ pub(crate) fn copy_texture(
         .ok_or(CaptureError::Timeout)?;
     let src: ID3D11Resource = source.cast().map_err(CaptureError::platform)?;
     let dst: ID3D11Resource = texture.raw().cast().map_err(CaptureError::platform)?;
-    unsafe { device.context().CopyResource(&dst, &src) };
+    unsafe {
+        if crop == Rect::full((desc.Width, desc.Height)) {
+            device.context().CopyResource(&dst, &src);
+        } else {
+            device.context().CopySubresourceRegion(
+                &dst,
+                0,
+                0,
+                0,
+                0,
+                &src,
+                0,
+                Some(&D3D11_BOX {
+                    left: crop.x as u32,
+                    top: crop.y as u32,
+                    front: 0,
+                    right: crop.x as u32 + crop.width,
+                    bottom: crop.y as u32 + crop.height,
+                    back: 1,
+                }),
+            );
+        }
+    }
     Ok(texture)
 }
 
@@ -479,5 +516,101 @@ mod tests {
             }
         );
         assert!(native_crop(Rect::full((1000, 1000)), (200, 100), 0).is_err());
+        assert!(native_crop(Rect::full((0, 1)), (200, 100), 0).is_err());
+    }
+
+    #[test]
+    fn region_copies_preserve_pixels_and_bounded_immutable_leases() -> anyhow::Result<()> {
+        use windows::Win32::Graphics::Direct3D11::*;
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory4};
+        let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory1()? };
+        let adapter: IDXGIAdapter = unsafe { factory.EnumWarpAdapter()? };
+        let device = SharedDevice::create_compute(&adapter)?;
+        let _lock = device.lock();
+        let source = device.texture(
+            8,
+            6,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        )?;
+        let original: Vec<u8> = (0..48).flat_map(|i| [i, i + 1, i + 2, 255]).collect();
+        for rotation in 0..4 {
+            unsafe {
+                device.context().UpdateSubresource(
+                    source.raw(),
+                    0,
+                    None,
+                    original.as_ptr().cast(),
+                    32,
+                    0,
+                );
+            }
+            let crop = native_crop(
+                Rect {
+                    x: 1,
+                    y: 1,
+                    width: 3,
+                    height: 2,
+                },
+                (8, 6),
+                rotation,
+            )?;
+            let mut pool = snow_d3d11::TexturePool::new(device.clone(), 2);
+            let held = copy_texture_region(&device, &mut pool, source.raw(), crop)?;
+            assert_eq!(held.dimensions(), (crop.width, crop.height));
+            let changed = [99u8; 8 * 6 * 4];
+            unsafe {
+                device.context().UpdateSubresource(
+                    source.raw(),
+                    0,
+                    None,
+                    changed.as_ptr().cast(),
+                    32,
+                    0,
+                );
+            }
+            let next = copy_texture_region(&device, &mut pool, source.raw(), crop)?;
+            assert!(matches!(
+                copy_texture_region(&device, &mut pool, source.raw(), crop),
+                Err(CaptureError::Timeout)
+            ));
+            let mut desc = held.desc();
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            let mut staging = None;
+            unsafe {
+                device
+                    .device()
+                    .CreateTexture2D(&desc, None, Some(&mut staging))?
+            };
+            let staging = staging.unwrap();
+            for (texture, changed) in [(&held, false), (&next, true)] {
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    device.context().CopyResource(&staging, texture.raw());
+                    device
+                        .context()
+                        .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                    for y in 0..crop.height as usize {
+                        let row = std::slice::from_raw_parts(
+                            mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize),
+                            crop.width as usize * 4,
+                        );
+                        if changed {
+                            assert!(row.iter().all(|byte| *byte == 99));
+                        } else {
+                            let offset = ((crop.y as usize + y) * 8 + crop.x as usize) * 4;
+                            assert_eq!(row, &original[offset..offset + row.len()]);
+                        }
+                    }
+                    device.context().Unmap(&staging, 0);
+                }
+            }
+            drop(next);
+            assert!(copy_texture_region(&device, &mut pool, source.raw(), crop).is_ok());
+        }
+        Ok(())
     }
 }

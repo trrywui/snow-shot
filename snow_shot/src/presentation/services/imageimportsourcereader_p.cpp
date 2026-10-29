@@ -16,7 +16,8 @@ QImage readImageImportFile(const QString& path,
     auto file = snapshot;
     if (!file && ScreenshotClipboardContentReader::supportedImageFileExtensions().contains(
                      QFileInfo(path).suffix().toLower())) {
-        const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path}, cancelled);
+        const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles(
+            {path}, cancelled, ScreenshotClipboardContentReader::FilePurpose::ImageImport);
         if (!files.isEmpty())
             file = files.first();
     }

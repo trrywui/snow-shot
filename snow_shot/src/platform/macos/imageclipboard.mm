@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QUtiMimeConverter>
+#include <QUrl>
 #include <QVariant>
 
 #import <AppKit/AppKit.h>
@@ -186,7 +187,8 @@ bool imageClipboardBitmapIsDerivedFromPng() {
 }
 
 bool publishImageClipboard(QClipboard* clipboard, const QByteArray& png,
-                           const QByteArray& placement, const QByteArray& appearance) {
+                           const QByteArray& placement, const QByteArray& appearance,
+                           const QString& filePath) {
     if (clipboard == nullptr || png.isEmpty())
         return false;
     initializeImageClipboardConverter();
@@ -203,6 +205,8 @@ bool publishImageClipboard(QClipboard* clipboard, const QByteArray& png,
             [types addObject:@"com.snowshot.screenshot-placement"];
         if (!appearance.isEmpty())
             [types addObject:@"com.snowshot.screenshot-appearance"];
+        if (!filePath.isEmpty())
+            [types addObject:NSPasteboardTypeFileURL];
         owner->native->revision = [board declareTypes:types owner:owner->native];
         published = [board setData:png.toNSData() forType:NSPasteboardTypePNG];
         if (published && !placement.isEmpty())
@@ -211,6 +215,10 @@ bool publishImageClipboard(QClipboard* clipboard, const QByteArray& png,
         if (published && !appearance.isEmpty())
             published = [board setData:appearance.toNSData()
                                forType:@"com.snowshot.screenshot-appearance"];
+        if (published && !filePath.isEmpty())
+            published = [board
+                setString:QUrl::fromLocalFile(filePath).toString(QUrl::FullyEncoded).toNSString()
+                  forType:NSPasteboardTypeFileURL];
     }
     owner->published = published;
     // Synchronize Qt's native reader to retire any previously owned QMimeData.

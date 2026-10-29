@@ -5,6 +5,7 @@
 
 #include <QLineF>
 #include <QPainterPathStroker>
+#include <QPen>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -51,7 +52,7 @@ struct Options {
     double width = 0;
     double smallAxis = std::numeric_limits<double>::infinity();
     double roughnessCap = -1;
-    bool rectangle = false;
+    bool shapePattern = false;
     bool preserveVertices = true;
     bool ellipse = false;
     double ellipseAngle = 0;
@@ -240,21 +241,31 @@ void mergeCoverage(QPainterPath& destination, const QPainterPath& coverage) {
     destination.setFillRule(Qt::WindingFill);
 }
 
+template <typename Stroke> void configureShapeStroke(Stroke& stroke, SnowStrokeStyle style) {
+    stroke.setCapStyle(style == SNOW_STROKE_STYLE_DASHED || style == SNOW_STROKE_STYLE_DOTTED
+                           ? Qt::RoundCap
+                           : Qt::FlatCap);
+    if (style == SNOW_STROKE_STYLE_DASHED)
+        stroke.setDashPattern(QVector<qreal>{4.0, 4.0});
+    else if (style == SNOW_STROKE_STYLE_DOTTED)
+        stroke.setDashPattern(QVector<qreal>{0.01, 3.0});
+}
+
 void addStroke(Cache& cache, const QPainterPath& source, const Options& options) {
     if (source.isEmpty() || !(options.width > 0) || !std::isfinite(options.width))
         return;
     QPainterPathStroker stroker;
     stroker.setWidth(options.width);
-    stroker.setCapStyle(options.pattern == SNOW_STROKE_STYLE_SOLID && options.rectangle
-                            ? Qt::FlatCap
-                            : Qt::RoundCap);
     stroker.setJoinStyle(Qt::RoundJoin);
-    if (options.pattern == SNOW_STROKE_STYLE_DASHED)
-        stroker.setDashPattern(options.rectangle ? QVector<qreal>{4.0, 4.0}
-                                                 : QVector<qreal>{4.0, 2.0});
-    else if (options.pattern == SNOW_STROKE_STYLE_DOTTED)
-        stroker.setDashPattern(options.rectangle ? QVector<qreal>{0.01, 3.0}
-                                                 : QVector<qreal>{1.0, 2.0});
+    if (options.shapePattern) {
+        configureShapeStroke(stroker, options.pattern);
+    } else {
+        stroker.setCapStyle(Qt::RoundCap);
+        if (options.pattern == SNOW_STROKE_STYLE_DASHED)
+            stroker.setDashPattern(QVector<qreal>{4.0, 2.0});
+        else if (options.pattern == SNOW_STROKE_STYLE_DOTTED)
+            stroker.setDashPattern(QVector<qreal>{1.0, 2.0});
+    }
     const int passes = options.pattern == SNOW_STROKE_STYLE_SOLID &&
                                options.style != SNOW_STROKE_RENDERING_STYLE_ARCHITECT
                            ? 2
@@ -302,9 +313,11 @@ std::uint64_t geometryKey(const Item& item, bool rectangle, SnowStrokeStyle patt
     hash = append(hash, static_cast<std::uint64_t>(item.stroke_rendering_style));
     hash = append(hash, static_cast<std::uint64_t>(pattern));
     hash = append(hash, static_cast<std::uint64_t>(shape));
+    hash = append(hash, static_cast<std::uint64_t>(item.kind));
     hash = append(hash, rectangle);
     if (!rectangle) {
-        for (double value : {item.center_x, item.center_y, item.rotation, item.arrow_ratio})
+        for (double value : {item.center_x, item.center_y, item.rotation, item.arrow_ratio,
+                             item.arrow_outline_width})
             hash = appendDouble(hash, value);
         hash = append(hash, revision);
         hash = append(hash, pathRevision);
@@ -623,6 +636,25 @@ template <typename Item> void buildArrow(Cache& cache, const Item& item, QPainte
     }
 }
 
+void buildPathGeometry(Cache& cache, const SnowCanvasSceneItem& item, QPainterPath path) {
+    if (item.kind != SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE) {
+        buildArrow(cache, item, path);
+        return;
+    }
+    cache.originalFill =
+        localToCanvas(item.center_x, item.center_y, item.rotation).inverted().map(path);
+    cache.originalFill.setFillRule(Qt::WindingFill);
+    Options options{item.stroke_rendering_style, item.stroke_style, item.stroke_rendering_seed,
+                    item.stroke_width};
+    options.shapePattern = true;
+    options.smallAxis = std::min(item.width, item.height);
+    addStroke(cache, cache.originalFill, options);
+}
+
+void buildPathGeometry(Cache& cache, const SnowCanvasOverlayItem& item, QPainterPath path) {
+    buildArrow(cache, item, path);
+}
+
 template <typename Item>
 const Cache& prepare(const Item& item, bool rectangle, SnowStrokeStyle pattern,
                      SnowDisplayRectShape shape, std::uint64_t pathRevision,
@@ -643,7 +675,7 @@ const Cache& prepare(const Item& item, bool rectangle, SnowStrokeStyle pattern,
         cache.originalFill = rectanglePath(item.width, item.height, item.corner_radii, shape);
         Options options{item.stroke_rendering_style, pattern, item.stroke_rendering_seed,
                         item.stroke_width};
-        options.rectangle = true;
+        options.shapePattern = true;
         options.ellipse = shape == SNOW_DISPLAY_RECT_SHAPE_ELLIPSE;
         options.smallAxis = std::min(item.width, item.height);
         const bool rounded = item.corner_radii.top_left > 0 || item.corner_radii.top_right > 0 ||
@@ -654,9 +686,17 @@ const Cache& prepare(const Item& item, bool rectangle, SnowStrokeStyle pattern,
             item.stroke_rendering_style != SNOW_STROKE_RENDERING_STYLE_CARTOONIST;
         addStroke(cache, cache.originalFill, options);
     } else {
-        buildArrow(cache, item, buildPath(item));
+        buildPathGeometry(cache, item, buildPath(item));
     }
-    for (const QPainterPath* path : {&cache.originalFill, &cache.backgroundHeads, &cache.ink}) {
+    if (!rectangle && item.arrow_outline_width > 0.0 && !cache.ink.isEmpty()) {
+        QPainterPathStroker stroker;
+        stroker.setWidth(item.arrow_outline_width);
+        stroker.setCapStyle(Qt::RoundCap);
+        stroker.setJoinStyle(Qt::RoundJoin);
+        cache.arrowOutline = stroker.createStroke(cache.ink);
+    }
+    for (const QPainterPath* path :
+         {&cache.originalFill, &cache.backgroundHeads, &cache.ink, &cache.arrowOutline}) {
         if (!path->isEmpty())
             cache.paintBounds = cache.paintBounds.isEmpty()
                                     ? path->boundingRect()
@@ -666,6 +706,8 @@ const Cache& prepare(const Item& item, bool rectangle, SnowStrokeStyle pattern,
 }
 
 QPainterPath sceneArrowPath(const SnowCanvasSceneItem& item) {
+    if (item.kind == SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE && !item.aggregateClosedPath().isEmpty())
+        return item.aggregateClosedPath();
     if (item.pathChunks().empty())
         return arrowPath(item);
     QPainterPath path;
@@ -696,6 +738,11 @@ void recordCacheAllocation(bool detach) {
     diagnostics.cacheDetaches += detach ? 1 : 0;
 }
 
+void applyShapeStrokeStyle(QPen& pen, SnowStrokeStyle style) {
+    pen.setStyle(Qt::SolidLine);
+    configureShapeStroke(pen, style);
+}
+
 const Cache& geometry(const SnowCanvasSceneItem& item) {
     const bool serial = item.kind == SNOW_SCENE_DISPLAY_ITEM_SERIAL_NUMBER;
     const bool rectangle = item.kind == SNOW_SCENE_DISPLAY_ITEM_DRAW_RECT || serial;
@@ -703,8 +750,10 @@ const Cache& geometry(const SnowCanvasSceneItem& item) {
                                      ? SNOW_DISPLAY_RECT_SHAPE_RECTANGLE
                                      : SNOW_DISPLAY_RECT_SHAPE_ELLIPSE)
                               : static_cast<SnowDisplayRectShape>(item.rect_shape);
-    return prepare(item, rectangle, rectangle ? item.stroke_style : item.arrow_stroke_style, shape,
-                   0, sceneArrowPath);
+    const auto pattern = rectangle || item.kind == SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE
+                             ? item.stroke_style
+                             : item.arrow_stroke_style;
+    return prepare(item, rectangle, pattern, shape, 0, sceneArrowPath);
 }
 
 const Cache& geometry(const SnowCanvasOverlayItem& item) {
@@ -722,9 +771,11 @@ const Cache* cachedGeometry(const SnowCanvasSceneItem& item) {
                                      ? SNOW_DISPLAY_RECT_SHAPE_RECTANGLE
                                      : SNOW_DISPLAY_RECT_SHAPE_ELLIPSE)
                               : static_cast<SnowDisplayRectShape>(item.rect_shape);
+    const auto pattern = rectangle || item.kind == SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE
+                             ? item.stroke_style
+                             : item.arrow_stroke_style;
     const auto key =
-        geometryKey(item, rectangle, rectangle ? item.stroke_style : item.arrow_stroke_style,
-                    item.strokeRenderingGeometryRevision(), 0, shape);
+        geometryKey(item, rectangle, pattern, item.strokeRenderingGeometryRevision(), 0, shape);
     return cache->key == key ? cache : nullptr;
 }
 

@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QFocusEvent>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -79,8 +80,8 @@ void selectShape(SnowCanvasRuntime& runtime) {
                         .value(QStringLiteral("id"))
                         .toObject();
     SnowCanvasRuntimeEditor editor(runtime);
-    require(editor.select(id.value(QStringLiteral("index")).toInt(),
-                          id.value(QStringLiteral("generation")).toInt()),
+    require(editor.select(static_cast<quint32>(id.value(QStringLiteral("index")).toInt()),
+                          static_cast<quint32>(id.value(QStringLiteral("generation")).toInt())),
             "select shape");
 }
 
@@ -136,6 +137,74 @@ void assertConnectorExport(SnowCanvasRuntime& runtime) {
             "restore bound shape session");
     require(restored.renderToImage(region, size, {}) == image,
             "session roundtrip preserves text and connector export");
+}
+
+void enabledDeleteEditsShapeLabels() {
+    for (const bool existing : {false, true}) {
+        SnowCanvasRuntime runtime;
+        SnowCanvasWidget canvas(runtime);
+        canvas.setDeleteTextAfterCursor(true);
+        prepare(canvas, SnowCanvasRectangleShape::Rectangle);
+        selectShape(runtime);
+        const auto point = handle(canvas, runtime);
+        mouse(canvas, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton);
+        key(canvas, Qt::Key_A, Qt::NoModifier, QStringLiteral("abc"));
+        if (existing) {
+            key(canvas, Qt::Key_Return, Qt::ControlModifier);
+            const auto textPoint = canvas.canvasToViewTransform().map(
+                center(payload(runtime, QStringLiteral("Text"))));
+            mouse(canvas, QEvent::MouseButtonPress, textPoint, Qt::LeftButton, Qt::LeftButton);
+            mouse(canvas, QEvent::MouseButtonRelease, textPoint, Qt::LeftButton, Qt::NoButton);
+        }
+        const auto owner = payload(runtime, QStringLiteral("Rectangle"));
+        key(canvas, Qt::Key_Home);
+        key(canvas, Qt::Key_Right);
+        key(canvas, Qt::Key_Delete);
+        require(canvas.hasActiveTextEditing(), "Delete retains the bound shape label editor");
+        key(canvas, Qt::Key_Return, Qt::ControlModifier);
+        require(payload(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                        QStringLiteral("ac") &&
+                    payload(runtime, QStringLiteral("Rectangle")) == owner,
+                "forward Delete edits the label and preserves its shape and binding");
+    }
+}
+
+void pointerSelectionDisplaysBoundTextHandle() {
+    for (const auto kind : {SnowCanvasRectangleShape::Rectangle, SnowCanvasRectangleShape::Ellipse,
+                            SnowCanvasRectangleShape::Diamond}) {
+        for (const auto tool : {SnowCanvasTool::Select, SnowCanvasTool::Shape}) {
+            for (const auto button : {Qt::LeftButton, Qt::RightButton}) {
+                SnowCanvasRuntime runtime;
+                SnowCanvasWidget canvas(runtime);
+                prepare(canvas, kind);
+                require(canvas.setCanvasTool(tool), "set selection tool");
+                const auto original = payload(runtime, QStringLiteral("Rectangle"));
+                const auto start = handle(canvas, runtime);
+                const QRect handleArea(start.toPoint() - QPoint(6, 6), QSize(13, 13));
+                const QImage withoutHandle = canvas.grab(handleArea).toImage();
+                const QPointF shapeEdge(270, 150);
+                for (int repeat = 0; repeat < 2; ++repeat) {
+                    mouse(canvas, QEvent::MouseButtonPress, shapeEdge, button, button);
+                    require(runtime.selectedElementIds().size() == 1, "pointer selects shape");
+                    require(canvas.grab(handleArea).toImage() != withoutHandle,
+                            "pending selection displays the bound text control");
+                    mouse(canvas, QEvent::MouseButtonRelease, shapeEdge, button, Qt::NoButton);
+                    require(canvas.grab(handleArea).toImage() != withoutHandle,
+                            "release immediately displays the bound text control");
+                }
+                require(payload(runtime, QStringLiteral("Rectangle")) == original,
+                        "selection preserves shape geometry and styling");
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+                mouse(canvas, QEvent::MouseButtonRelease, start, Qt::LeftButton, Qt::NoButton);
+                require(canvas.hasActiveTextEditing() &&
+                            records(runtime, QStringLiteral("Text")).size() == 1,
+                        "displayed control starts bound text editing");
+                key(canvas, Qt::Key_A, Qt::NoModifier, QStringLiteral("Bound label"));
+                key(canvas, Qt::Key_Return, Qt::ControlModifier);
+            }
+        }
+    }
 }
 
 void clickDragEditAndReuse() {
@@ -400,6 +469,10 @@ void croppedExportPreservesConnectorToOffscreenLabel() {
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication application(argc, argv);
+    enabledDeleteEditsShapeLabels();
+    if (application.arguments().contains(QStringLiteral("--delete-text-only")))
+        return 0;
+    pointerSelectionDisplaysBoundTextHandle();
     clickDragEditAndReuse();
     cancellationAndEmptyCommit();
     connectorContourMatchesQtStroke();

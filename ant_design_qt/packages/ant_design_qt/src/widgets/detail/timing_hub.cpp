@@ -2,6 +2,7 @@
 
 #include "theme/theme.h"
 
+#include <QApplicationStatic>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QThread>
@@ -32,9 +33,18 @@ size_t qHash(const ContextKey& value, size_t seed) {
 
 class TimingHub final : public QObject {
  public:
-  static TimingHub& instance() {
-    static TimingHub hub;
-    return hub;
+  TimingHub() {
+    clock_.start();
+    deadlineTimer_.setSingleShot(true);
+    deadlineTimer_.setTimerType(Qt::PreciseTimer);
+    frameTimer_.setTimerType(Qt::PreciseTimer);
+
+    connect(&deadlineTimer_, &QTimer::timeout, this, [this]() { dispatchDueTasks(); });
+    connect(&frameTimer_, &QTimer::timeout, this, [this]() { dispatchFrameCallbacks(); });
+    connect(&theme::ThemeManager::instance(), &theme::ThemeManager::themeChanged, this,
+            [this]() { refreshTimingConfigFromTheme(); });
+
+    refreshTimingConfigFromTheme();
   }
 
   qint64 nowMs() const { return clock_.isValid() ? clock_.elapsed() : 0; }
@@ -130,20 +140,6 @@ class TimingHub final : public QObject {
       return lhs.order > rhs.order;
     }
   };
-
-  TimingHub() {
-    clock_.start();
-    deadlineTimer_.setSingleShot(true);
-    deadlineTimer_.setTimerType(Qt::PreciseTimer);
-    frameTimer_.setTimerType(Qt::PreciseTimer);
-
-    connect(&deadlineTimer_, &QTimer::timeout, this, [this]() { dispatchDueTasks(); });
-    connect(&frameTimer_, &QTimer::timeout, this, [this]() { dispatchFrameCallbacks(); });
-    connect(&theme::ThemeManager::instance(), &theme::ThemeManager::themeChanged, this,
-            [this]() { refreshTimingConfigFromTheme(); });
-
-    refreshTimingConfigFromTheme();
-  }
 
   bool ensureUiThread() const {
     if (!thread() || QThread::currentThread() != thread()) {
@@ -354,7 +350,9 @@ class TimingHub final : public QObject {
   QHash<const QObject*, QMetaObject::Connection> contextConnections_;
 };
 
-TimingHub& hub() { return TimingHub::instance(); }
+Q_APPLICATION_STATIC(TimingHub, timingHub)
+
+TimingHub& hub() { return *timingHub; }
 
 int resolveComponentDelay(int componentDelayMs, int themeDelayMs) {
   if (componentDelayMs >= 0) {
@@ -374,15 +372,22 @@ void deferTimingTask(QObject* context, const QString& key, DeadlineCallback call
   hub().scheduleTask(context, key, 0, std::move(callback));
 }
 
-void cancelTimingTask(QObject* context, const QString& key) { hub().cancelTask(context, key); }
+void cancelTimingTask(QObject* context, const QString& key) {
+  if (timingHub.exists()) {
+    timingHub->cancelTask(context, key);
+  }
+}
 
 void setFrameSubscription(QObject* context, const QString& key, bool enabled,
                           FrameCallback callback) {
+  if ((!enabled || !callback) && !timingHub.exists()) {
+    return;
+  }
   hub().setFrameSubscription(context, key, enabled, std::move(callback));
 }
 
 void clearFrameSubscription(QObject* context, const QString& key) {
-  hub().setFrameSubscription(context, key, false, {});
+  setFrameSubscription(context, key, false, {});
 }
 
 qint64 timingNowMs() { return hub().nowMs(); }

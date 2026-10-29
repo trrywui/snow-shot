@@ -32,6 +32,9 @@ class Observer final : public snow_canvas_runtime::Client {
     std::uint64_t runtimeViewportId() const override {
         return 1;
     }
+    bool observesRuntimeViewport(std::uint64_t id) const override {
+        return Client::observesRuntimeViewport(id) || (id != 0 && id == referenceViewportId);
+    }
     void detachRuntimeForReplacement() override {
         attachment = nullptr;
         if (detach)
@@ -64,6 +67,7 @@ class Observer final : public snow_canvas_runtime::Client {
     }
 
     int notifications = 0;
+    std::uint64_t referenceViewportId = 0;
     int refreshes = 0;
     int ownerDetaches = 0;
     std::function<void()> changed;
@@ -221,6 +225,24 @@ void registrationSnapshotsCancelRemovedObservers() {
     registry.syncChangedViewports({1});
     require(replacement.notifications == 1 && survivor.notifications == 2,
             "replacement registration must participate in subsequent publications");
+}
+
+void sourceViewportChangesNotifyTheirOwnerOnce() {
+    snow_canvas_runtime::ClientRegistry registry;
+    Observer retained;
+    Observer direct;
+    retained.referenceViewportId = 2;
+    registry.registerClient(&retained);
+    registry.registerClient(&direct);
+    registry.syncChangedViewports({2});
+    require(retained.notifications == 1 && retained.refreshes == 0 && direct.refreshes == 1,
+            "a source-only change must synchronize its owner without syncing unrelated viewports");
+    registry.syncChangedViewports({1, 2});
+    require(retained.notifications == 2 && retained.refreshes == 0,
+            "one mutation must notify a client once even when both its viewports changed");
+    retained.referenceViewportId = 0;
+    registry.syncChangedViewports({2});
+    require(retained.refreshes == 1, "retiring a source viewport must remove the dependency");
 }
 
 void registryDestructionCancelsPublication() {
@@ -782,6 +804,7 @@ int main(int argc, char** argv) {
     runtimeReplacementDrainsNewAndReregisteredClients();
     runtimeRetirementSupersedesPendingReplacement();
     registrationSnapshotsCancelRemovedObservers();
+    sourceViewportChangesNotifyTheirOwnerOnce();
     registryDestructionCancelsPublication();
     changedViewportSnapshotsSurviveSourceMutation();
     widgetSignalsPermitOwnerDeletion();

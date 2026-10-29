@@ -1,3 +1,4 @@
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/app/mcp/mcpedition.h"
 #include "snow_shot/platform/applicationqos.h"
 #include "snow_shot/app/mcp/screenshotmcpserver.h"
@@ -498,6 +499,8 @@ class ScreenshotMcpServer::SocketWorker final : public QObject {
 };
 
 QString ScreenshotMcpServer::defaultRuntimeDirectory() {
+    if (!edition::isMini && distribution::isStoreManaged())
+        return distribution::mcpRuntimeDirectory();
 #ifdef Q_OS_WIN
     return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
         .filePath(edition::registryName() + QStringLiteral("/mcp"));

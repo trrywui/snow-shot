@@ -112,7 +112,7 @@ inline SnowCanvasStyleDefaults screenshotCanvasStyleDefaults() {
     return defaults;
 }
 
-inline QSet<SnowCanvasTool> screenshotQuickSelectionDisabledTools(const QStringList& toolIds) {
+inline QSet<SnowCanvasTool> screenshotDrawingTools(const QStringList& toolIds) {
     QSet<SnowCanvasTool> tools;
     const QHash<QString, SnowCanvasTool> toolsById{
         {QStringLiteral("shape"), SnowCanvasTool::Shape},
@@ -140,6 +140,9 @@ inline QSet<SnowCanvasTool> screenshotQuickSelectionDisabledTools(const QStringL
         }
     }
     return tools;
+}
+inline QSet<SnowCanvasTool> screenshotQuickSelectionDisabledTools(const QStringList& toolIds) {
+    return screenshotDrawingTools(toolIds);
 }
 } // namespace snow_shot::presentation
 

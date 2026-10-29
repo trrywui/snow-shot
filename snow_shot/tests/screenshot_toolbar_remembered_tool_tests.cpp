@@ -87,6 +87,9 @@ class RecordingToolbarCommands : public ScreenshotToolbarCommandSink {
     void splitScrollingScreenshot() override {
         ++scrollingImageSplits;
     }
+    void editScrollingScreenshot() override {
+        ++scrollingImageEdits;
+    }
     void pinSelectionToScreen() override {}
     void cancelCapture() override {}
     void copySelectionToClipboard() override {}
@@ -110,6 +113,7 @@ class RecordingToolbarCommands : public ScreenshotToolbarCommandSink {
     }
     int interval = 0;
     int scrollingImageSplits = 0;
+    int scrollingImageEdits = 0;
     int intervalChanges = 0;
     int moveToolCount = 0;
     int selectToolCount = 0;
@@ -404,6 +408,12 @@ void scrollingIntervalRestoresAndReachesCommands() {
         splitButton->click();
         require(commands.scrollingImageSplits == 1,
                 "Image Splitting must reach the capture command exactly once");
+        auto* editingButton = palette->findChild<QAbstractButton*>(
+            QStringLiteral("screenshotScrollingImageEditingButton"));
+        require(editingButton != nullptr, "scrolling toolbar must expose Image Editing");
+        editingButton->click();
+        require(commands.scrollingImageEdits == 1,
+                "Image Editing must reach the capture command exactly once");
         auto* settingsButton = palette->findChild<QAbstractButton*>(
             QStringLiteral("screenshotScrollingSettingsButton"));
         require(settingsButton != nullptr, "scrolling toolbar must expose settings");

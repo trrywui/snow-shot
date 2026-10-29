@@ -22,11 +22,35 @@ impl Editor {
             return PrimaryPointerIntent::ToggleSelection { id };
         }
 
+        let hit = self.resolve_canvas_hit(document, policy, canvas_point, true);
+        if self.state.active_distance_value_owner.is_none()
+            && !modifiers.shift
+            && !modifiers.alt
+            && !modifiers.ctrl
+            && !modifiers.meta
+        {
+            let owner = match hit {
+                CanvasHit::EligibleElement(id, ElementKind::Distance) => Some(id),
+                CanvasHit::ArrowHandle(ArrowHitTarget::Move) => self.state.selection.primary,
+                CanvasHit::SelectionHandle(SelectionHitTarget::Move) => {
+                    match self.resolve_canvas_hit(document, policy, canvas_point, false) {
+                        CanvasHit::EligibleElement(id, ElementKind::Distance) => Some(id),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(id) = owner
+                && self.distance_value_hit(document, id, canvas_point)
+            {
+                return PrimaryPointerIntent::DistanceValueEdit { id };
+            }
+        }
         if matches!(
             self.state.active_tool,
             ActiveTool::Arrow | ActiveTool::Line | ActiveTool::Distance | ActiveTool::Angle
         ) {
-            return match self.resolve_canvas_hit(document, policy, canvas_point, true) {
+            return match hit {
                 CanvasHit::SelectionHandle(target) => {
                     PrimaryPointerIntent::BeginSelectionInteraction { target }
                 }
@@ -46,7 +70,7 @@ impl Editor {
             };
         }
 
-        match self.resolve_canvas_hit(document, policy, canvas_point, true) {
+        match hit {
             CanvasHit::MagnifierLens(id) => PrimaryPointerIntent::BeginMagnifierLens { id },
             CanvasHit::SelectionHandle(target) => {
                 if target == SelectionHitTarget::Move
@@ -120,7 +144,8 @@ impl Editor {
             PrimaryPointerIntent::BeginSelectedArrowInteraction { target } => {
                 (hover_cursor_for_arrow_target(target), None)
             }
-            PrimaryPointerIntent::TextEditCandidate { id } => (
+            PrimaryPointerIntent::TextEditCandidate { id }
+            | PrimaryPointerIntent::DistanceValueEdit { id } => (
                 CursorStyle::Text,
                 (!self.state.selection.contains(id)).then_some(id),
             ),

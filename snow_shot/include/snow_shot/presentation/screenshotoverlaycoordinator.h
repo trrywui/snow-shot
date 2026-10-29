@@ -145,7 +145,7 @@ class ScreenshotOverlayCoordinator final : public ScreenshotOverlayExclusionPort
                            const QRect& cursorPixelRect = {});
     void updateColorPicker(ScreenshotOverlayWindow* overlay, const QImage& image,
                            const QRect& physicalRect, const QPoint& physicalPoint,
-                           const QPointF& localPosition, qreal opacity,
+                           const QPointF& localPosition,
                            const ScreenshotCoordinateDisplayValues& displayValues,
                            const QImage& cursorPatch = {}, const QRect& cursorPixelRect = {});
     void hideColorPicker();

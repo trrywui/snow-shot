@@ -58,6 +58,10 @@ fn create(shape: HighlightShape, width: f64, height: f64) -> (Engine, ViewportId
     config.style_defaults.editor.speech_bubble.shape = shape;
     config.style_defaults.editor.speech_bubble.corner_radii = CornerRadii::splat(8.0);
     let mut engine = Engine::new(config);
+    engine
+        .set_automatically_select_newly_created_elements(true)
+        .unwrap();
+    engine.set_automatic_selection_excluded_tools(0).unwrap();
     let viewport = engine.create_viewport(ViewportConfig::default()).unwrap();
     engine
         .set_viewport_surface_size(viewport, 800, 600)
@@ -152,6 +156,7 @@ fn speech_bubble_requested_radii_survive_tiny_creation_style_and_manual_resize()
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let (mut tiny, viewport, owner) = create(shape, 1.0, 1.0);
         assert_eq!(
@@ -271,6 +276,7 @@ fn speech_bubble_creation_selects_owner_and_requests_edit_for_all_shapes() {
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let (mut engine, viewport, owner) = create(shape, 160.0, 80.0);
         assert_eq!(engine.selected_ids(), vec![owner]);
@@ -318,6 +324,7 @@ fn speech_bubble_new_text_centers_without_changing_other_text_defaults() {
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         for horizontal_align in [TextHorizontalAlign::Left, TextHorizontalAlign::Right] {
             for vertical_align in [TextVerticalAlign::Top, TextVerticalAlign::Bottom] {
@@ -377,6 +384,7 @@ fn speech_bubble_existing_text_keeps_explicit_alignment_when_reopened() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -397,6 +405,7 @@ fn speech_bubble_text_commit_fits_wrap_box_grows_without_shrink_and_restores_his
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let (mut engine, viewport, owner) = create(shape, 90.0, 40.0);
         let before = body(&engine, owner);
@@ -498,7 +507,15 @@ fn speech_bubble_draft_cancel_and_empty_commit_keep_body_and_history() {
 
 #[test]
 fn speech_bubble_add_tail_drag_delete_cancel_and_undo_are_single_gestures() {
-    let (mut engine, viewport, owner) = create(HighlightShape::Rectangle, 160.0, 90.0);
+    for shape in [HighlightShape::Rectangle, HighlightShape::ThoughtBubble] {
+        speech_bubble_add_tail_drag_delete_cancel_and_undo_are_single_gestures_for_shape(shape);
+    }
+}
+
+fn speech_bubble_add_tail_drag_delete_cancel_and_undo_are_single_gestures_for_shape(
+    shape: HighlightShape,
+) {
+    let (mut engine, viewport, owner) = create(shape, 160.0, 90.0);
     let before = body(&engine, owner);
     let add = handle(
         &mut engine,
@@ -560,7 +577,15 @@ fn speech_bubble_add_tail_drag_delete_cancel_and_undo_are_single_gestures() {
 
 #[test]
 fn speech_bubble_symmetric_base_drag_updates_both_contour_controls() {
-    let (mut engine, viewport, owner) = create(HighlightShape::Diamond, 160.0, 90.0);
+    for shape in [HighlightShape::Diamond, HighlightShape::ThoughtBubble] {
+        speech_bubble_symmetric_base_drag_updates_both_contour_controls_for_shape(shape);
+    }
+}
+
+fn speech_bubble_symmetric_base_drag_updates_both_contour_controls_for_shape(
+    shape: HighlightShape,
+) {
+    let (mut engine, viewport, owner) = create(shape, 160.0, 90.0);
     let add = handle(
         &mut engine,
         viewport,
@@ -599,7 +624,17 @@ fn speech_bubble_symmetric_base_drag_updates_both_contour_controls() {
 
 #[test]
 fn speech_bubble_duplicate_delete_and_serialization_keep_owned_labels_and_tails() {
-    let (mut engine, viewport, owner) = create(HighlightShape::Ellipse, 160.0, 90.0);
+    for shape in [HighlightShape::Ellipse, HighlightShape::ThoughtBubble] {
+        speech_bubble_duplicate_delete_and_serialization_keep_owned_labels_and_tails_for_shape(
+            shape,
+        );
+    }
+}
+
+fn speech_bubble_duplicate_delete_and_serialization_keep_owned_labels_and_tails_for_shape(
+    shape: HighlightShape,
+) {
+    let (mut engine, viewport, owner) = create(shape, 160.0, 90.0);
     let label = bind(&mut engine, viewport, owner, 30.0, 15.0, 2.0);
     let add = handle(
         &mut engine,
@@ -653,6 +688,7 @@ fn speech_bubble_rotated_growth_keeps_top_left_and_tail_canvas_positions() {
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let (mut engine, viewport, owner) = create(shape, 160.0, 90.0);
         let mut rotated = body(&engine, owner);
@@ -665,6 +701,7 @@ fn speech_bubble_rotated_growth_keeps_top_left_and_tail_canvas_positions() {
                 ApplyTransactionCommand {
                     transaction: tx,
                     history_undo_snapshot: None,
+                    created_selection_target: None,
                 },
             )
             .unwrap();
@@ -789,6 +826,7 @@ fn speech_bubble_text_measurement_cache_reuses_warm_frames_and_rebuilds_only_tou
             ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -803,6 +841,7 @@ fn speech_bubble_manual_resize_enforces_accepted_grapheme_and_text_height_minimu
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let (mut engine, viewport, owner) = create(shape, 160.0, 90.0);
         let label = bind(&mut engine, viewport, owner, 30.0, 55.0, 3.0);
@@ -1018,6 +1057,7 @@ fn bubble_group_fixture(
         ));
     let other = engine.model.peek_next_element_id();
     let mut rect = bubble.body;
+    rect.highlight_shape = HighlightShape::Rectangle;
     rect.center = Point::new(180.0, 0.0);
     rect.width = 40.0;
     rect.height = 60.0;
@@ -1031,6 +1071,7 @@ fn bubble_group_fixture(
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1071,6 +1112,7 @@ fn speech_bubble_move_rotate_and_resize_keep_canvas_tips_in_preview_commit_and_h
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         for rotation in [0.0, 0.57] {
             for gesture in 0..3 {
@@ -1097,6 +1139,7 @@ fn speech_bubble_move_rotate_and_resize_keep_canvas_tips_in_preview_commit_and_h
                         EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                             transaction: tx,
                             history_undo_snapshot: None,
+                            created_selection_target: None,
                         }),
                     )
                     .unwrap();
@@ -1252,6 +1295,7 @@ fn speech_bubble_alignment_keeps_canvas_tail_tip_and_replays_history() {
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let (mut engine, viewport, ids) = bubble_group_fixture(shape, 0.37);
         let original = body(&engine, ids[0]);
@@ -1274,6 +1318,7 @@ fn speech_bubble_group_frame_encloses_tails_single_frame_stays_on_body() {
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         for rotation in [0.0, 0.37] {
             let (mut engine, viewport, ids) = bubble_group_fixture(shape, rotation);
@@ -1375,6 +1420,7 @@ fn speech_bubble_group_tail_only_update_refreshes_frame_and_history() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1408,6 +1454,7 @@ fn speech_bubble_group_bounds_change_preserves_other_groups_rotated_preview_fram
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1426,4 +1473,57 @@ fn speech_bubble_group_bounds_change_preserves_other_groups_rotated_preview_fram
     assert!((preview.rotation - std::f64::consts::FRAC_PI_2).abs() < 1e-7);
     pointer(&mut engine, viewport, PointerEventType::Cancel, target);
     assert_eq!(bubble_group_bounds(&engine, viewport), original);
+}
+
+#[test]
+fn thought_bubble_styles_are_restricted_and_corner_handles_are_hidden() {
+    use snow_draw_engine_editor::{
+        SHAPE_STYLE_MIXED_SHAPE, ShapeKind, ShapeStyle, ShapeStylePatch,
+    };
+    let (mut engine, viewport, owner) = create(HighlightShape::ThoughtBubble, 200.0, 120.0);
+    let original = body(&engine, owner);
+    let mut style = ShapeStyle::from_rectangle_shape_style(
+        EngineConfig::default().style_defaults.editor.speech_bubble,
+    );
+    style.shape = HighlightShape::ThoughtBubble;
+    for kind in [
+        ShapeKind::Rectangle,
+        ShapeKind::Spotlight,
+        ShapeKind::Arrow,
+        ShapeKind::Line,
+        ShapeKind::FreeDraw,
+        ShapeKind::RectangleHighlight,
+        ShapeKind::PenHighlight,
+    ] {
+        assert!(
+            engine
+                .set_viewport_shape_style_patch(
+                    viewport,
+                    ShapeStylePatch {
+                        kind,
+                        style,
+                        properties: SHAPE_STYLE_MIXED_SHAPE
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(body(&engine, owner), original);
+    }
+    let patch = engine.acquire_patch(viewport, None).unwrap();
+    assert!(
+        !patch
+            .overlay
+            .ops
+            .iter()
+            .flat_map(|op| &op.insert_items)
+            .any(|item| {
+                matches!(item, OverlayDisplayItem::Rectangle(rect)
+            if rect.kind == UiShapeKind::SelectionCornerRadiusHandle)
+            })
+    );
+    let mut defaults = EngineConfig::default().style_defaults.editor;
+    defaults.speech_bubble.shape = HighlightShape::ThoughtBubble;
+    assert!(snow_draw_engine_editor::validate_editor_style_defaults(&defaults).is_ok());
+    defaults.rectangle.shape = HighlightShape::ThoughtBubble;
+    assert!(snow_draw_engine_editor::validate_editor_style_defaults(&defaults).is_err());
 }

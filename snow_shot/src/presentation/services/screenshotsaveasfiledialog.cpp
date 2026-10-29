@@ -8,6 +8,8 @@
 #include "snow_shot/storage/settingsadapters.h"
 #include "snow_shot/storage/exportfilename.h"
 #include "screenshotsaveexportpipeline.h"
+#include "screenshotsavefooter.h"
+#include "screenshotsaveresult.h"
 #include "widgets/button.h"
 #include "widgets/context_menu.h"
 #include "widgets/detail/flow_layout.h"
@@ -37,7 +39,9 @@
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStandardPaths>
+#include <QStackedWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -94,12 +98,17 @@ void configureForm(AdForm* form) {
 
 class SaveContent final : public QWidget {
     Q_DECLARE_TR_FUNCTIONS(ScreenshotSaveAsFileDialog)
+    enum class Phase { Editing, Saving, Result, Closed };
+
   public:
     SaveContent(AdModal* modal, std::shared_ptr<ScreenshotExportArtifact> artifact,
                 ScreenshotSaveAsFileDialog::Saved saved)
         : m_modal(modal), m_artifact(std::move(artifact)), m_saved(std::move(saved)),
           m_windowNames(m_artifact->windowNames()) {
         setObjectName(QStringLiteral("saveDialogContent"));
+        setMinimumHeight(240);
+        setMaximumHeight(540);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         m_renderTimer.setSingleShot(true);
         m_renderTimer.setInterval(100);
         connect(&m_renderTimer, &QTimer::timeout, this, [this] { startRender(); });
@@ -127,7 +136,21 @@ class SaveContent final : public QWidget {
         m_form->setContentsMargins(0, 0, 12, 0);
         scroll->setContentWidget(m_form);
         m_form->setAutoFillBackground(false);
-        layout->addWidget(scroll);
+        m_rightPanel = new QStackedWidget(this);
+        m_rightPanel->setFixedWidth(340);
+        m_rightPanel->addWidget(scroll);
+        if (m_showSaveResult) {
+            m_result = new ScreenshotSaveResult(
+                this,
+                [this] {
+                    setPhase(Phase::Editing);
+                    validateFields();
+                    m_filename->setFocus();
+                },
+                [this] { m_modal->accept(); });
+            m_rightPanel->addWidget(m_result->view());
+        }
+        layout->addWidget(m_rightPanel);
 
         auto* directory = new QWidget(m_form);
         directory->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -287,10 +310,10 @@ class SaveContent final : public QWidget {
     }
 
     ~SaveContent() override {
-        cancel(!m_closed);
+        cancel(!closed());
     }
     void cancel(bool cancelSource = false) {
-        m_closed = true;
+        m_phase = Phase::Closed;
         ++m_generation;
         m_renderTimer.stop();
         if (m_menu)
@@ -298,26 +321,62 @@ class SaveContent final : public QWidget {
         m_job.cancel();
         cancelDecode();
         m_saveJob.cancel();
+        if (m_result)
+            m_result->cancel();
         if (cancelSource)
             m_artifact->cancel();
     }
     bool saving() const {
-        return m_saving;
+        return m_phase == Phase::Saving;
+    }
+    bool closed() const {
+        return m_phase == Phase::Closed;
+    }
+    void finish(ScreenshotSaveAsFileDialog::Finished finished) {
+        if (closed())
+            return;
+        const QString path = m_lastSavedPath;
+        auto saved = std::move(m_saved);
+        cancel(path.isEmpty());
+        // Completion can destroy the owner and this content. Keep both callbacks and the
+        // successful path locally, preserving the existing Finished-before-Saved ordering.
+        if (finished)
+            finished(!path.isEmpty());
+        if (!path.isEmpty() && saved)
+            saved(path);
+    }
+    void acceptAction() {
+        if (m_phase == Phase::Result)
+            m_result->activateDefaultAction();
+        else if (m_phase == Phase::Editing)
+            save();
+    }
+    QSize sizeHint() const override {
+        // Prefer the full preview height. The modal's layout may shrink the content
+        // to fit its measured header and footer inside the available screen.
+        return {QWidget::sizeHint().width(), maximumHeight()};
     }
     void installFooter() {
-        auto* footer = new QWidget;
-        footer->setObjectName(QStringLiteral("saveDialogFooter"));
-        footer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        auto* layout = new QHBoxLayout(footer);
+        auto closePolicy = m_modal->closeButton()->sizePolicy();
+        closePolicy.setRetainSizeWhenHidden(true);
+        m_modal->closeButton()->setSizePolicy(closePolicy);
+        auto* editing = new QWidget;
+        auto* editingLayout = new QVBoxLayout(editing);
+        editingLayout->setContentsMargins(0, 0, 0, 0);
+        editingLayout->addStretch();
+        auto* layout = new QHBoxLayout;
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(8);
         layout->addWidget(m_outputDescription, 1, Qt::AlignVCenter);
         layout->addWidget(m_modal->rejectButton(), 0, Qt::AlignVCenter);
         layout->addWidget(m_modal->acceptButton(), 0, Qt::AlignVCenter);
-        m_modal->setFooterWidget(footer);
+        editingLayout->addLayout(layout);
+        m_footer = new ScreenshotSaveFooter(editing, m_result ? m_result->actions() : nullptr);
+        m_modal->setFooterWidget(m_footer);
+        updatePresentation();
     }
     void save() {
-        if (m_saving || !m_source.rows.isValid())
+        if (m_phase != Phase::Editing || !m_source.rows.isValid())
             return;
         commitDimensionEdit();
         m_state.directory = m_directory->text();
@@ -373,6 +432,25 @@ class SaveContent final : public QWidget {
     }
 
   private:
+    void setPhase(Phase phase) {
+        m_phase = phase;
+        updatePresentation();
+    }
+    void updatePresentation() {
+        const bool editing = m_phase == Phase::Editing;
+        const bool result = m_phase == Phase::Result;
+        m_form->setEnabled(editing && m_source.rows.isValid());
+        m_modal->setAcceptButtonBusy(saving());
+        m_modal->setCloseButtonVisible(!saving());
+        m_modal->setCloseOnEscape(!saving());
+        m_modal->rejectButton()->setEnabled(editing);
+        m_modal->acceptButton()->setEnabled(editing && m_source.rows.isValid() &&
+                                            m_state.validationError().isEmpty());
+        m_modal->acceptButton()->setDefault(!result);
+        m_rightPanel->setCurrentIndex(result ? 1 : 0);
+        if (m_footer)
+            m_footer->setResultVisible(result);
+    }
     AdInputNumber* number(const char* name) {
         auto* input = new AdInputNumber;
         input->setObjectName(QString::fromLatin1(name));
@@ -464,7 +542,8 @@ class SaveContent final : public QWidget {
                                                 : AdInputNumber::Status::Error);
         m_height->setStatus(imageError.isEmpty() ? AdInputNumber::Status::None
                                                  : AdInputNumber::Status::Error);
-        m_modal->acceptButton()->setEnabled(!m_saving && error.isEmpty());
+        m_modal->acceptButton()->setEnabled(m_phase == Phase::Editing && m_source.rows.isValid() &&
+                                            error.isEmpty());
     }
     void showError(const QString& message) {
         m_error->setText(message);
@@ -869,7 +948,7 @@ class SaveContent final : public QWidget {
                 ? screenshot_pdf::layout(m_state.output.size, m_state.output.pdfPageSize)
                 : screenshot_pdf::Layout{});
         updateControls();
-        if (m_closed || m_saving || !m_source.rows.isValid())
+        if (m_phase != Phase::Editing || !m_source.rows.isValid())
             return;
         validateFields();
         const QString error = m_state.imageValidationError();
@@ -902,7 +981,7 @@ class SaveContent final : public QWidget {
     void loadSource() {
         const bool started = m_artifact->requestRowSource(
             this, [this](ScreenshotImageRowSource rows, QString error) {
-                if (m_closed)
+                if (closed())
                     return;
                 if (!error.isEmpty() || !rows.isValid()) {
                     sourceFailed(error);
@@ -920,7 +999,7 @@ class SaveContent final : public QWidget {
                     },
                     [this, result](ScreenshotExportTaskResult status) {
                         m_job = {};
-                        if (m_closed)
+                        if (closed())
                             return;
                         if (!status.succeeded() || !result->rows.isValid()) {
                             sourceFailed(status.error);
@@ -930,8 +1009,7 @@ class SaveContent final : public QWidget {
                         m_state.sourceSize = result->rows.size;
                         m_state.output.size = m_state.sourceSize;
                         syncDimensionInputs();
-                        m_form->setDisabled(false);
-                        m_modal->acceptButton()->setEnabled(true);
+                        updatePresentation();
                         m_preview->setSource(
                             m_source.preview, m_state.sourceSize,
                             [rows = m_source.rows](QRect region,
@@ -953,11 +1031,11 @@ class SaveContent final : public QWidget {
         showError(tr("The screenshot could not be prepared: %1").arg(error));
     }
     void startRender() {
-        if (m_closed || !m_source.rows.isValid() || !m_requestedOptions)
+        if (closed() || !m_source.rows.isValid() || !m_requestedOptions)
             return;
         if (m_encoded && m_encoded->options == *m_requestedOptions) {
             updateOutputDescription();
-            if (m_saving)
+            if (saving())
                 writeFile();
             else
                 startDecode();
@@ -977,7 +1055,7 @@ class SaveContent final : public QWidget {
             const bool started = m_artifact->requestPng(
                 this, options.compressionLevel,
                 [this, generation, options](ScreenshotExportEncodingResult result) {
-                    if (m_closed || generation != m_generation)
+                    if (closed() || generation != m_generation)
                         return;
                     if (!result.succeeded()) {
                         m_renderGeneration.reset();
@@ -1016,7 +1094,7 @@ class SaveContent final : public QWidget {
                 return result;
             },
             [this, generation, encoded](ScreenshotExportTaskResult result) {
-                if (m_closed || generation != m_generation)
+                if (closed() || generation != m_generation)
                     return;
                 m_renderGeneration.reset();
                 m_job = {};
@@ -1058,7 +1136,7 @@ class SaveContent final : public QWidget {
         setProperty("previewGeneration", QVariant::fromValue(m_generation));
     }
     void startDecode() {
-        if (m_closed || m_saving || !m_encoded || !m_requestedOptions ||
+        if (closed() || saving() || !m_encoded || !m_requestedOptions ||
             m_encoded->options != *m_requestedOptions)
             return;
         if (m_renderedPreviewOptions &&
@@ -1101,7 +1179,7 @@ class SaveContent final : public QWidget {
                 return result;
             },
             [this, generation, serial, options](ScreenshotExportTaskResult result) {
-                if (m_closed || serial != m_decodeSerial || generation != m_generation || m_saving)
+                if (closed() || serial != m_decodeSerial || generation != m_generation || saving())
                     return;
                 m_decodeJob = {};
                 m_preview->setBusy(false);
@@ -1118,33 +1196,21 @@ class SaveContent final : public QWidget {
         }
     }
     void beginSave() {
-        if (m_saving || m_closed)
+        if (m_phase != Phase::Editing)
             return;
         rememberCurrentFormatOptions();
         static_cast<void>(snow_shot::storage::ScreenshotSettings().setLastManualSaveState(
             ScreenshotImageFileService::formatKey(m_state.output.format),
             serializedFormatOptions()));
-        m_saving = true;
+        setPhase(Phase::Saving);
         m_renderTimer.stop();
         m_savePath = m_state.outputPath();
-        m_form->setDisabled(true);
-        m_modal->setAcceptButtonBusy(true);
-        m_modal->setCloseButtonVisible(false);
-        m_modal->setCloseOnEscape(false);
-        if (m_modal->rejectButton())
-            m_modal->rejectButton()->setEnabled(false);
         cancelDecode();
         startRender();
     }
     void saveFailed(const QString& error) {
-        m_saving = false;
+        setPhase(Phase::Editing);
         m_preview->setBusy(false);
-        m_form->setDisabled(false);
-        m_modal->setAcceptButtonBusy(false);
-        m_modal->setCloseButtonVisible(true);
-        m_modal->setCloseOnEscape(true);
-        if (m_modal->rejectButton())
-            m_modal->rejectButton()->setEnabled(true);
         validateFields();
         showError(error);
         startDecode();
@@ -1178,7 +1244,7 @@ class SaveContent final : public QWidget {
             },
             [this](ScreenshotExportTaskResult result) {
                 m_saveJob = {};
-                if (m_closed)
+                if (closed())
                     return;
                 if (!result.succeeded()) {
                     saveFailed(tr("The screenshot could not be saved: %1").arg(result.error));
@@ -1187,12 +1253,19 @@ class SaveContent final : public QWidget {
                 static_cast<void>(
                     snow_shot::storage::ScreenshotSettings().setLastManualSaveDirectory(
                         QFileInfo(result.savedPath).absolutePath()));
-                m_saving = false;
-                const auto saved = m_saved;
-                const auto path = result.savedPath;
-                m_modal->accept();
-                if (saved)
-                    saved(path);
+                m_lastSavedPath = result.savedPath;
+                if (!m_showSaveResult) {
+                    m_modal->accept();
+                    return;
+                }
+                showError({});
+                m_result->present(
+                    {m_lastSavedPath,
+                     m_encoded->pixels,
+                     {m_encoded->options.quality, m_encoded->options.compressionLevel}});
+                setPhase(Phase::Result);
+                startDecode();
+                m_result->focusDefaultAction();
             });
         if (!m_saveJob.isValid())
             saveFailed(tr("The screenshot export queue is full"));
@@ -1201,6 +1274,11 @@ class SaveContent final : public QWidget {
     AdModal* m_modal;
     std::shared_ptr<ScreenshotExportArtifact> m_artifact;
     ScreenshotSaveAsFileDialog::Saved m_saved;
+    const bool m_showSaveResult = snow_shot::storage::ScreenshotSettings().showSaveResult();
+    QString m_lastSavedPath;
+    ScreenshotSaveFooter* m_footer = nullptr;
+    QStackedWidget* m_rightPanel = nullptr;
+    ScreenshotSaveResult* m_result = nullptr;
     const snow_shot::storage::ScreenshotWindowNames m_windowNames;
     const QDateTime m_timestamp = QDateTime::currentDateTime();
     ScreenshotSaveDialogState m_state;
@@ -1216,8 +1294,7 @@ class SaveContent final : public QWidget {
     QTimer m_renderTimer;
     quint64 m_generation = 0;
     quint64 m_decodeSerial = 0;
-    bool m_closed = false;
-    bool m_saving = false;
+    Phase m_phase = Phase::Editing;
     std::optional<quint64> m_renderGeneration;
     ScreenshotSavePreviewCanvas* m_preview = nullptr;
     QLabel* m_outputDescription = nullptr;
@@ -1373,22 +1450,19 @@ bool ScreenshotSaveAsFileDialog::open(QObject* lifetime, QWidget* owner,
     const QRect available = owner->screen()->availableGeometry();
     modal->setPreferredWidth(std::min(1080, available.width() - 40));
     auto* content = new SaveContent(modal, std::move(source), std::move(saved));
-    content->setFixedHeight(std::max(240, std::min(540, available.height() - 180)));
     modal->setContentWidget(content);
     QObject::connect(modal, &AdModal::closeRequested, content,
                      [modal, content](AdModal::CloseReason reason) {
                          if (content->saving())
                              return;
                          if (reason == AdModal::CloseReason::OkAction)
-                             content->save();
+                             content->acceptAction();
                          else
                              modal->reject();
                      });
     QObject::connect(modal, &AdModal::finished, content,
-                     [content, finished = std::move(finished)](AdModal::DialogCode code) {
-                         content->cancel(code != AdModal::DialogCode::Accepted);
-                         if (finished)
-                             finished(code == AdModal::DialogCode::Accepted);
+                     [content, finished = std::move(finished)](AdModal::DialogCode) {
+                         content->finish(finished);
                      });
     QObject::connect(modal, &AdModal::finished, modal, &QObject::deleteLater);
     if (lifetime != owner)

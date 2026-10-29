@@ -23,6 +23,9 @@ struct RenderDiagnostics {
 
 RenderDiagnostics diagnosticsForCurrentThread();
 void resetDiagnosticsForCurrentThread();
+// Style visibility is shared by painting and consumers of the backdrop. Geometry
+// and exposure are checked separately when painting.
+bool isVisible(const SpotlightDisplayInfo& spotlightInfo);
 void render(QPainter& painter, const SceneDisplayInfo& sceneInfo,
             const SpotlightDisplayInfo& spotlightInfo, const SnowSpotlightCutout* cutouts,
             std::uint32_t cutoutCount, const QRectF& renderArea, const QRegion& exposedRegion);

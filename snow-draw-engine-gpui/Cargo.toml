@@ -1,0 +1,86 @@
+[package]
+name = "snow-draw-engine-gpui"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Native GPUI canvas adapter for the shared Snow Draw Engine"
+
+[features]
+native-capture = ["gpui/test-support", "gpui_platform/test-support"]
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+gpui = { git = "https://github.com/mg-chao/gpui.git", rev = "2c0bf70b54c018f99419f386d1cf1105dca57661", default-features = false, features = ["gpu-extensions"] }
+lyon = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+png = "=0.18.1"
+usvg = "=0.45.1"
+tiny-skia = "=0.11.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+snow-draw-engine = { path = "../snow_draw_engine_qt/crates/snow-draw-engine" }
+snow-draw-engine-core = { path = "../snow_draw_engine_qt/crates/snow-draw-engine-core" }
+snow-draw-engine-document = { path = "../snow_draw_engine_qt/crates/snow-draw-engine-document" }
+snow-draw-engine-editor = { path = "../snow_draw_engine_qt/crates/snow-draw-engine-editor" }
+unicode-segmentation = "1"
+unicode-bidi = "0.3"
+rustybuzz = "=0.20.1"
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+gpui_platform = { git = "https://github.com/mg-chao/gpui.git", rev = "2c0bf70b54c018f99419f386d1cf1105dca57661", features = ["font-kit", "x11", "wayland", "runtime_shaders", "gpu-extensions"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_windows = { git = "https://github.com/mg-chao/gpui.git", rev = "2c0bf70b54c018f99419f386d1cf1105dca57661", default-features = false, features = ["gpu-extensions"] }
+windows = { version = "0.62", features = ["Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_System_Threading", "Win32_Security"] }
+windows-numerics = "0.3"
+windows-core = "0.62"
+
+[dev-dependencies]
+gpui = { git = "https://github.com/mg-chao/gpui.git", rev = "2c0bf70b54c018f99419f386d1cf1105dca57661", default-features = false, features = ["test-support", "gpu-extensions"] }
+
+[target.'cfg(windows)'.build-dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_Direct3D_Fxc"] }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dev-dependencies]
+gpui_platform = { git = "https://github.com/mg-chao/gpui.git", rev = "2c0bf70b54c018f99419f386d1cf1105dca57661", features = ["test-support", "gpu-extensions"] }
+
+[[bin]]
+name = "snow-draw-demo"
+path = "src/main.rs"
+
+[[bench]]
+name = "teardown"
+harness = false
+
+[[bench]]
+name = "gpu_profile"
+harness = false
+
+[[bench]]
+name = "native_input"
+harness = false
+
+[[bench]]
+name = "gpu_workloads"
+harness = false
+
+[[bench]]
+name = "bound_text_drag"
+harness = false
+
+[[bench]]
+name = "smart_erase"
+harness = false
+
+[profile.canvas-perf]
+inherits = "release"
+opt-level = 3
+debug = "line-tables-only"
+
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false

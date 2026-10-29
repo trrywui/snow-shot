@@ -13,12 +13,22 @@ try {
     foreach ($name in @('bin/snow_shot_mini.exe', 'bin/snow-shot-mini-updater.exe',
             'bin/snow-shot-mini-mcp.exe', 'bin/crashpad_handler.exe',
             'bin/assets/ocr/asset-manifest.json', 'bin/audios/camera_shutter.mp3',
-            'bin/__mini_data_directory', 'share/snow-shot-mini/licenses/LICENSE')) {
+            'bin/__mini_data_directory', 'share/snow-shot-mini/licenses/LICENSES.txt')) {
         $path = Join-Path $fixture $name
         $null = New-Item -ItemType Directory -Force (Split-Path $path)
         [IO.File]::WriteAllText($path, 'fixture')
     }
     Assert-SnowShotMiniPayload $fixture
+    $license = Join-Path $fixture 'share/snow-shot-mini/licenses/LICENSES.txt'
+    [IO.File]::WriteAllText($license, '')
+    Must-Fail { Assert-SnowShotMiniPayload $fixture }
+    Remove-Item -LiteralPath $license
+    Must-Fail { Assert-SnowShotMiniPayload $fixture }
+    [IO.File]::WriteAllText($license, 'fixture')
+    $legacyLicense = Join-Path $fixture 'share/snow-shot-mini/licenses/LICENSE'
+    [IO.File]::WriteAllText($legacyLicense, 'legacy loose notice')
+    Must-Fail { Assert-SnowShotMiniPayload $fixture }
+    Remove-Item -LiteralPath $legacyLicense
     $forbidden = Join-Path $fixture 'bin/assets/ocr/models/engine.onnx'
     $null = New-Item -ItemType Directory -Force (Split-Path $forbidden)
     [IO.File]::WriteAllText($forbidden, 'forbidden')

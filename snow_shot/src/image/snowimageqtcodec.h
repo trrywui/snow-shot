@@ -128,8 +128,11 @@ struct ResizeResourceEstimate final {
 [[nodiscard]] QByteArray encodeWebp(const QImage& image, int quality = 75);
 // Decoded RGB images retain their source color space. Convert to sRGB at the
 // rendering/encoding boundary; merely assigning an sRGB tag changes their meaning.
+// Decode/inspect functions accept Format::unknown to detect content without a format constraint.
+// Explicit formats remain strict, e.g. when validating an application's own stored PNG payload.
 [[nodiscard]] QImage decode(const QByteArray& encoded, snow::image::Format expectedFormat,
                             const char* nameHint);
+[[nodiscard]] QImage decodeBgra(const QByteArray& encoded, snow::image::Format expectedFormat);
 [[nodiscard]] QImage decodeFirstFrame(const QByteArray& encoded,
                                       snow::image::Format expectedFormat);
 // Retains Qt's decoding, metadata and transformation behavior while putting

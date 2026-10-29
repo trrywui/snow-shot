@@ -86,6 +86,7 @@ MutationResult undo(SnowRuntime runtime);
 MutationResult redo(SnowRuntime runtime);
 MutationResult resetEditingState(SnowRuntime runtime, SnowViewport viewport);
 MutationResult selectElement(SnowRuntime runtime, SnowViewport viewport, SnowElementId id);
+MutationResult clearSelection(SnowRuntime runtime, SnowViewport viewport);
 MutationResult deleteSelected(SnowRuntime runtime, SnowViewport viewport);
 MutationResult deleteAllElements(SnowRuntime runtime, SnowViewport viewport);
 MutationResult duplicateSelected(SnowRuntime runtime, SnowViewport viewport, double offsetX,

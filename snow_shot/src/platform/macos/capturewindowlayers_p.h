@@ -8,6 +8,9 @@
 #include <array>
 
 class QWidget;
+#ifdef __OBJC__
+@class NSWindow;
+#endif
 
 namespace snow_shot::platform::detail {
 inline constexpr auto kScreenshotLayer = "snowScreenshotWindowLayer";
@@ -58,6 +61,10 @@ inline CGWindowLevel pinnedWindowLevel() {
 // PinnedWindowPlatform retains geometry/input responsibilities; stacking and
 // transient descendants use the same policy as recording and screenshots.
 void setPinnedWindowLayer(QWidget* widget, bool enabled);
+#ifdef __OBJC__
+// A replaced view can no longer resolve the old window through QWidget.
+void releaseNativeWindowLayer(NSWindow* window);
+#endif
 
 // Explicit roles survive on QWidget; inherited roles follow the current Qt
 // transient owner, including pooled popups moving between capture families.

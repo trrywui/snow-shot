@@ -2,20 +2,19 @@
 use crate::{MacError, MacResult, audio::AudioSamples};
 use block2::RcBlock;
 use crossbeam_channel::Receiver;
-use objc2::{RefEncode, encode::Encoding, msg_send, rc::Retained};
-use objc2_audio_toolbox::{
-    AudioUnitSetProperty, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
-};
+use objc2::rc::Retained;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-use objc2_avf_audio::{AVAudioEngine, AVAudioIONode, AVAudioPCMBuffer, AVAudioTime};
+use objc2_avf_audio::{AVAudioPCMBuffer, AVAudioTime};
 use objc2_core_audio::*;
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_media::CMClock;
+use objc2_foundation::NSError;
 use snow_media::time::{ClockDomain, MediaTime};
 use std::{
+    ffi::c_void,
     ptr::NonNull,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -141,32 +140,95 @@ pub fn request_microphone_access(completion: impl Fn(bool) + Send + 'static) {
     }
 }
 
-// AVFAudio on macOS uses the legacy ComponentInstanceRecord pointer encoding.
-// objc2-avf-audio 0.3.2 declares OpaqueAudioComponentInstance instead, which
-// causes objc2's debug signature validation to panic before capture can start.
-// Keep the native encoding at the message boundary, then cast the opaque handle
-// to AudioToolbox's equivalent pointer type for its C APIs.
-#[repr(C)]
-struct ComponentInstanceRecord {
-    _opaque: [u8; 0],
-}
-// SAFETY: This type is only used behind a pointer; it is never dereferenced.
-// The struct name matches AVAudioIONode's native macOS method signature.
-unsafe impl RefEncode for ComponentInstanceRecord {
-    const ENCODING_REF: Encoding =
-        Encoding::Pointer(&Encoding::Struct("ComponentInstanceRecord", &[]));
-}
-type NativeAudioUnit = *mut ComponentInstanceRecord;
+/// Called synchronously on the capture worker. Copy the UTF-8 message before
+/// returning. The callback must remain valid for the process lifetime.
+pub type MicrophoneDiagnosticCallback = extern "C" fn(*const u8, usize);
+static DIAGNOSTICS: Mutex<Option<MicrophoneDiagnosticCallback>> = Mutex::new(None);
 
-fn audio_unit(node: &AVAudioIONode) -> NativeAudioUnit {
-    // SAFETY: audioUnit takes no arguments and returns a borrowed opaque handle.
-    // The engine owns the handle for the lifetime of its input node.
-    unsafe { msg_send![node, audioUnit] }
+pub fn set_diagnostic_callback(callback: Option<MicrophoneDiagnosticCallback>) {
+    *DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner()) = callback;
+}
+
+fn report_native_error(error: &MacError) {
+    let callback = *DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner());
+    let message = error.to_string();
+    if let Some(callback) = callback {
+        callback(message.as_ptr(), message.len());
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct MicrophoneFormat {
+    sample_rate: f64,
+    channels: u32,
+}
+
+unsafe extern "C" {
+    fn snow_microphone_create(
+        device: u32,
+        format: *mut MicrophoneFormat,
+        error: *mut *mut NSError,
+    ) -> *mut c_void;
+    fn snow_microphone_start(
+        capture: *mut c_void,
+        tap: *const c_void,
+        error: *mut *mut NSError,
+    ) -> bool;
+    fn snow_microphone_is_running(capture: *mut c_void, error: *mut *mut NSError) -> bool;
+    fn snow_microphone_destroy(capture: *mut c_void, error: *mut *mut NSError);
+}
+
+// Owns the native engine and tracks its installed tap even if prepare/start
+// fails. All throwing operations and cleanup stay inside the native boundary.
+struct NativeCapture(NonNull<c_void>);
+
+fn native_result(error: *mut NSError) -> MacResult<()> {
+    // SAFETY: the bridge transfers a retained NSError, or null on success.
+    let Some(error) = (unsafe { Retained::from_raw(error) }) else {
+        return Ok(());
+    };
+    let error = MacError::from_native(&error);
+    report_native_error(&error);
+    Err(error)
+}
+
+impl NativeCapture {
+    fn create(device: u32) -> MacResult<(Self, MicrophoneFormat)> {
+        let mut format = MicrophoneFormat::default();
+        let mut error = std::ptr::null_mut();
+        let capture = unsafe { snow_microphone_create(device, &mut format, &mut error) };
+        native_result(error)?;
+        let capture = NonNull::new(capture).ok_or(MacError::TargetUnavailable)?;
+        Ok((Self(capture), format))
+    }
+
+    fn start(&self, tap: *const c_void) -> MacResult<()> {
+        let mut error = std::ptr::null_mut();
+        unsafe { snow_microphone_start(self.0.as_ptr(), tap, &mut error) };
+        native_result(error)
+    }
+
+    fn is_running(&self) -> bool {
+        let mut error = std::ptr::null_mut();
+        let running = unsafe { snow_microphone_is_running(self.0.as_ptr(), &mut error) };
+        native_result(error).is_ok() && running
+    }
+}
+
+impl Drop for NativeCapture {
+    fn drop(&mut self) {
+        let mut error = std::ptr::null_mut();
+        unsafe { snow_microphone_destroy(self.0.as_ptr(), &mut error) };
+        let _ = native_result(error);
+    }
 }
 
 pub struct MicrophoneStream {
     uid: String,
-    engine: Retained<AVAudioEngine>,
+    capture: NativeCapture,
     samples: Receiver<AudioSamples>,
     dropped: Arc<AtomicU64>,
 }
@@ -193,31 +255,9 @@ impl MicrophoneStream {
         if cancellation.is_canceled() {
             return Err(MacError::Canceled);
         }
-        let engine = unsafe { AVAudioEngine::new() };
-        let node = unsafe { engine.inputNode() };
-        let unit = audio_unit(&node);
-        if unit.is_null() {
-            return Err(MacError::TargetUnavailable);
-        }
-        let status = unsafe {
-            AudioUnitSetProperty(
-                unit.cast(),
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                (&raw const device.id).cast(),
-                size_of::<u32>() as u32,
-            )
-        };
-        if status != 0 {
-            return Err(MacError::TargetUnavailable);
-        }
-        let format = unsafe { node.outputFormatForBus(0) };
-        let channels = unsafe { format.channelCount() } as usize;
-        let rate = unsafe { format.sampleRate() };
-        if channels == 0 || channels > 8 || !rate.is_finite() || rate <= 0.0 {
-            return Err(MacError::Unsupported("invalid microphone format".into()));
-        }
+        let (capture, format) = NativeCapture::create(device.id)?;
+        let channels = format.channels as usize;
+        let rate = format.sample_rate;
         let (sender, samples) = crossbeam_channel::bounded(8);
         let (recycle, available) = crossbeam_channel::bounded(8);
         for _ in 0..8 {
@@ -270,25 +310,16 @@ impl MicrophoneStream {
                 }
             },
         );
-        unsafe {
-            node.installTapOnBus_bufferSize_format_block(
-                0,
-                1024,
-                Some(&format),
-                RcBlock::as_ptr(&tap),
-            );
-            engine.prepare();
-        }
         let result = Self {
             uid: device.uid,
-            engine,
+            capture,
             samples,
             dropped,
         };
         if cancellation.is_canceled() {
             return Err(MacError::Canceled);
         }
-        unsafe { result.engine.startAndReturnError() }.map_err(|e| MacError::from_native(&e))?;
+        result.capture.start(RcBlock::as_ptr(&tap).cast())?;
         if cancellation.is_canceled() {
             return Err(MacError::Canceled);
         }
@@ -298,7 +329,7 @@ impl MicrophoneStream {
         &self.uid
     }
     pub fn is_running(&self) -> bool {
-        unsafe { self.engine.isRunning() }
+        self.capture.is_running()
     }
     pub fn next_samples(&self, timeout: Duration) -> MacResult<AudioSamples> {
         let mut result = self
@@ -309,28 +340,40 @@ impl MicrophoneStream {
         Ok(result)
     }
 }
-impl Drop for MicrophoneStream {
-    fn drop(&mut self) {
-        unsafe {
-            self.engine.stop();
-            self.engine.inputNode().removeTapOnBus(0);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::NativeAudioUnit;
-    use objc2::{ClassType, sel};
-    use objc2_avf_audio::AVAudioIONode;
-
     #[test]
-    fn audio_unit_return_type_matches_macos_runtime() {
-        // Check the native method without opening a device or requesting permission.
-        // A mismatch here panics at message dispatch in debug recording builds.
-        AVAudioIONode::class()
-            .verify_sel::<(), NativeAudioUnit>(sel!(audioUnit))
-            .expect("microphone audioUnit binding must match the macOS runtime");
+    fn microphone_native_reason_reaches_diagnostics_and_error() {
+        use objc2::rc::Retained;
+        use objc2_foundation::{NSDictionary, NSError, NSLocalizedDescriptionKey, NSString};
+        static MESSAGES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        extern "C" fn receive(bytes: *const u8, length: usize) {
+            let message = unsafe { std::slice::from_raw_parts(bytes, length) };
+            MESSAGES
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(message).into_owned());
+            // The diagnostic callback runs outside the registration lock.
+            super::set_diagnostic_callback(None);
+        }
+        let reason =
+            NSString::from_str("microphone install-tap: hardware format — 音频; device=123");
+        let reason_object: &objc2::runtime::AnyObject = &reason;
+        let info =
+            NSDictionary::from_slices(&[unsafe { NSLocalizedDescriptionKey }], &[reason_object]);
+        let error = unsafe {
+            NSError::errorWithDomain_code_userInfo(
+                &NSString::from_str("com.apple.coreaudio.avfaudio"),
+                0,
+                Some(&info),
+            )
+        };
+        super::set_diagnostic_callback(Some(receive));
+        let result = super::native_result(Retained::into_raw(error));
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("com.apple.coreaudio.avfaudio"));
+        assert!(message.contains("install-tap: hardware format — 音频; device=123"));
+        assert_eq!(*MESSAGES.lock().unwrap(), [message]);
     }
 
     #[test]

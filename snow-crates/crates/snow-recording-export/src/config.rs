@@ -164,6 +164,8 @@ pub struct ExportRequest {
     #[serde(default)]
     pub codec: VideoCodec,
     #[serde(default)]
+    /// Prefer hardware for the selected codec, including H.265. The historical
+    /// field name is retained for Rust and serialized configuration compatibility.
     pub prefer_hardware_h264: bool,
     pub performance: ExportPerformanceConfig,
     #[serde(default)]

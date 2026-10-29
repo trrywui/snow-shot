@@ -80,6 +80,7 @@ class ScreenshotToolPaletteHost final : public QWidget {
     QSize m_frameSize;
     bool m_anchorPaletteToBottom = false;
     bool m_dragging = false;
+    bool m_preserveParentBackground = false;
 
 #if defined(SNOW_SHOT_TEST_HOOKS)
     quint64 m_sizeSynchronizationCount = 0;

@@ -74,7 +74,16 @@ pub struct GpuInputConfig {
     pub device: SharedDevice,
 }
 
+/// Select an encoder on the capture adapter without transferring its surfaces.
+pub fn encoder_name(vendor: u32, codec: crate::VideoCodec) -> Option<&'static str> {
+    match codec {
+        crate::VideoCodec::H264 => snow_d3d11::h264_encoder(vendor),
+        crate::VideoCodec::H265 => snow_d3d11::hevc_encoder(vendor),
+    }
+}
+
 pub(crate) struct HardwareFrames {
+    codec_name: &'static str,
     pub device: SharedDevice,
     device_ref: Buffer,
     native: Buffer,
@@ -96,9 +105,14 @@ impl HardwareFrames {
     /// disables lookahead/B-frames, so capacity cannot grow with recording duration.
     pub(crate) const LIVE_CAPACITY: usize = 5;
 
-    pub(crate) fn new(config: GpuInputConfig, size: (u32, u32), capacity: usize) -> Result<Self> {
+    pub(crate) fn new(
+        config: GpuInputConfig,
+        codec: crate::VideoCodec,
+        size: (u32, u32),
+        capacity: usize,
+    ) -> Result<Self> {
         let device = config.device;
-        let native_encoder = snow_d3d11::h264_encoder(device.identity().vendor)
+        let native_encoder = encoder_name(device.identity().vendor, codec)
             .ok_or_else(|| failure("capture adapter has no supported hardware encoder"))?;
         let device_ref = Buffer::new(unsafe {
             av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA)
@@ -122,14 +136,18 @@ impl HardwareFrames {
             (*context).format = AVPixelFormat::AV_PIX_FMT_D3D11;
             (*context).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
             (*context).width = i32::try_from(size.0.div_ceil(16) * 16).map_err(failure)?;
-            (*context).height = i32::try_from(size.1.div_ceil(16) * 16).map_err(failure)?;
+            // QSV HEVC requires 32-row aligned progressive surfaces. Keep the
+            // visible crop at the requested dimensions; no CPU padding/copy.
+            let height_alignment = if native_encoder == "hevc_qsv" { 32 } else { 16 };
+            (*context).height = i32::try_from(size.1.div_ceil(height_alignment) * height_alignment)
+                .map_err(failure)?;
             // Separate textures avoid mutable AMF array-index metadata sharing.
             (*context).initial_pool_size = 0;
             let d3d = (*context).hwctx.cast::<AVD3D11VAFramesContext>();
             (*d3d).BindFlags = D3D11_BIND_RENDER_TARGET.0 as u32;
             check(av_hwframe_ctx_init(native.0))?;
         }
-        let (qsv_device, mapped) = if native_encoder == "h264_qsv" {
+        let (qsv_device, mapped) = if native_encoder.ends_with("_qsv") {
             let mut qsv = ptr::null_mut();
             check(unsafe {
                 av_hwdevice_ctx_create_derived(
@@ -155,6 +173,7 @@ impl HardwareFrames {
             (None, None)
         };
         Ok(Self {
+            codec_name: native_encoder,
             device,
             device_ref,
             native,
@@ -167,7 +186,7 @@ impl HardwareFrames {
     }
 
     pub(crate) fn codec_name(&self) -> &'static str {
-        snow_d3d11::h264_encoder(self.device.identity().vendor).expect("validated hardware adapter")
+        self.codec_name
     }
 
     pub(crate) fn pixel_format(&self) -> ffmpeg::format::Pixel {
@@ -305,6 +324,7 @@ mod tests {
             GpuInputConfig {
                 device: device.clone(),
             },
+            crate::VideoCodec::H264,
             (32, 32),
             2,
         )?;
@@ -333,7 +353,12 @@ mod tests {
         );
         drop(encoder_reference);
         assert!(pool.allocate()?.is_some());
-        let other = HardwareFrames::new(GpuInputConfig { device }, (32, 32), 1)?;
+        let other = HardwareFrames::new(
+            GpuInputConfig { device },
+            crate::VideoCodec::H264,
+            (32, 32),
+            1,
+        )?;
         assert!(
             other.encode_frame(second).is_err(),
             "a different encoder pool must be rejected"

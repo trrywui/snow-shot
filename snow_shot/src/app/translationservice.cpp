@@ -165,6 +165,11 @@ void TranslationService::publishModels(bool resolveSelection) {
     const QString selectedModel =
         m_settings != nullptr ? m_settings->value(modelKey).toString() : m_preferences.modelId;
     const int index = translationModelIndex(m_models, selectedModel);
+    const bool unresolvedLegacy =
+        snowShotLegacyAiModelId(selectedModel) &&
+        snowShotResolvedBuiltInModelId(m_models, selectedModel) == selectedModel &&
+        std::none_of(m_models.cbegin(), m_models.cend(),
+                     [&selectedModel](const auto& model) { return model.id == selectedModel; });
     const bool missingCustom = (selectedModel.startsWith(QStringLiteral("custom:")) &&
                                 !m_client->isCustomModel(selectedModel)) ||
                                (selectedModel.startsWith(QStringLiteral("translation:")) &&
@@ -172,7 +177,8 @@ void TranslationService::publishModels(bool resolveSelection) {
     const bool localDefault = selectedModel.isEmpty() && index >= 0 &&
                               (m_client->isCustomModel(m_models.at(index).id) ||
                                m_client->isTextTranslation(m_models.at(index).id));
-    if ((resolveSelection || missingCustom || localDefault) && (index >= 0 || missingCustom)) {
+    if (!unresolvedLegacy && (resolveSelection || missingCustom || localDefault) &&
+        (index >= 0 || missingCustom)) {
         const QString resolved = index >= 0 ? m_models.at(index).id : QString();
         if (resolved != selectedModel && m_settings != nullptr) {
             if (!writePreferences({{modelKey, resolved}}, reason).has_value())
@@ -351,6 +357,7 @@ void TranslationJob::prepare() {
         return;
     }
     const auto& models = m_service->models();
+    m_preferences.modelId = snowShotResolvedBuiltInModelId(models, m_preferences.modelId);
     const auto it = std::find_if(models.cbegin(), models.cend(), [this](const auto& model) {
         return model.id == m_preferences.modelId;
     });
@@ -385,7 +392,7 @@ void TranslationJob::pump() {
     const auto generation = m_generation;
     for (int group = 0;
          group < m_unitGroups.size() &&
-         m_requests.size() < (m_client->isTextTranslation(m_preferences.modelId) ? 16 : 4) &&
+         m_requests.size() < (m_client->isTextTranslation(m_preferences.modelId) ? 16 : 8) &&
          !m_rateLimited;
          ++group) {
         const auto indices = m_unitGroups[group];
@@ -427,11 +434,14 @@ void TranslationJob::pump() {
                     m_result = result;
                 if (result.httpStatus == 429) {
                     m_rateLimited = true;
-                    if (m_client->isTextTranslation(m_preferences.modelId)) {
-                        // Requests waiting in the provider queue must not continue spending
-                        // quota after this job is throttled. Retry preserves completed units.
-                        const auto requests = std::exchange(m_requests, {});
-                        for (auto it = requests.cbegin(); it != requests.cend(); ++it) {
+                    // A terminal limit must also retire requests in the shared built-in
+                    // queue. Already dispatched chat streams can finish without losing
+                    // their partial output or incurring a duplicate provider call.
+                    const auto requests = m_requests;
+                    for (auto it = requests.cbegin(); it != requests.cend(); ++it) {
+                        if (m_client->isTextTranslation(m_preferences.modelId) ||
+                            m_client->isQueued(it.value())) {
+                            m_requests.remove(it.key());
                             m_client->cancel(it.value());
                             for (const int index : m_unitGroups[it.key()])
                                 m_units[index].state = State::Failed;

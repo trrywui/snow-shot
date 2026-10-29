@@ -30,7 +30,7 @@ class ToolbarCommands final : public ScreenshotSelectionToolbarCommandSink {
     void adjustSelectionEffectsFromWheel(int, int) override {}
 #endif
     void setSelectionCornerRadiusFromToolbar(int) override {}
-    void setSelectionShadowWidthFromToolbar(int) override {}
+    void setSelectionEffectWidthFromToolbar(int) override {}
     void setSelectionToolbarHovered(bool) override {}
 };
 

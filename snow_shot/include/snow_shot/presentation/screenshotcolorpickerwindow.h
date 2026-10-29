@@ -11,7 +11,6 @@
 #include <QRect>
 #include <QWidget>
 
-class QGraphicsOpacityEffect;
 class QPaintEvent;
 class QPainter;
 
@@ -26,7 +25,7 @@ class ScreenshotColorPickerWindow final : public QWidget {
                          const QImage& cursorPatch = {}, const QRect& cursorPixelRect = {});
     [[nodiscard]] bool updateColorSample(const QPoint& physicalPoint);
     void
-    updatePicker(const QPoint& physicalPoint, const QPointF& overlayLocalPosition, qreal opacity,
+    updatePicker(const QPoint& physicalPoint, const QPointF& overlayLocalPosition, bool visible,
                  std::optional<ScreenshotCoordinateDisplayValues> displayValues = std::nullopt);
     void hidePicker();
     void setCenterGuideLineColor(const QColor& color);
@@ -92,7 +91,6 @@ class ScreenshotColorPickerWindow final : public QWidget {
     QColor m_panelBackground;
     QColor m_panelTextColor;
     QColor m_centerGuideLineColor = QColor(0, 0, 0, 0);
-    QGraphicsOpacityEffect* m_opacityEffect = nullptr;
     ColorFormat m_colorFormat = ColorFormat::Hex;
     bool m_relativeCoordinates = false;
     bool m_hasCurrentColor = false;

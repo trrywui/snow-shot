@@ -2,7 +2,7 @@
 #define SNOW_SHOT_PRESENTATION_SCREENSHOTPINNEDWINDOW_H
 
 #include "snow_shot/presentation/screenshotclouduploadservice.h"
-#include "snow_shot/presentation/editionfeatures.h"
+#include "snow_shot/app/editionfeatures.h"
 
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
@@ -47,6 +47,7 @@ class AdModal;
 class AdSlider;
 } // namespace adqt::widgets
 namespace snow_shot::presentation {
+struct ImageEditingSource;
 class WindowShortcutManager;
 class PinnedWindowGroupManager;
 class PinnedWindowSelectionController;
@@ -91,6 +92,8 @@ class ScreenshotExportArtifact;
 class ScreenshotExportSource;
 struct ScreenshotPinnedViewportExportSource;
 class ScreenshotPrintService;
+class ScreenshotAirDropService;
+struct ScreenshotExportImageResult;
 class ScreenshotPinnedDragExport;
 class ScreenshotAnimationPlayback;
 class ScreenshotPinnedHideToTopController;
@@ -157,6 +160,7 @@ class ScreenshotPinnedWindow final : public QWidget {
         QTransform initialPreparedAnimationTransform;
         ScreenshotImageLoader imageLoader;
         ScreenshotPrintService* printService = nullptr;
+        ScreenshotAirDropService* airDropService = nullptr;
         QScreen* screen = nullptr;
         bool enableEditing = true;
         bool automaticTextRecognition = !snow_shot::app::edition::isMini;
@@ -223,6 +227,8 @@ class ScreenshotPinnedWindow final : public QWidget {
     bool prewarm(QScreen* screen = nullptr);
     QRect currentNativeGeometry() const;
     [[nodiscard]] snow_shot::storage::PinnedWindowRecord persistenceSnapshot() const;
+    [[nodiscard]] snow_shot::presentation::ImageEditingSource imageEditingSnapshot() const;
+    void checkpointStorage();
     [[nodiscard]] ScreenshotPinnedImageSnapshot stitchingSnapshot();
     [[nodiscard]] ScreenshotPinnedImageSnapshot splittingSnapshot();
     void suspendStorageWrites();
@@ -276,6 +282,7 @@ class ScreenshotPinnedWindow final : public QWidget {
     void automationWorkflowStateChanged() const;
     void showMainWindowRequested();
     void splitRequested(const ScreenshotPinnedImageSnapshot& snapshot);
+    void imageEditingRequested(const QString& recordId);
     void closingForPersistence(const snow_shot::storage::PinnedWindowRecord& snapshot,
                                snow_shot::storage::PinnedWindowCloseIntent intent);
 
@@ -380,6 +387,7 @@ class ScreenshotPinnedWindow final : public QWidget {
     void beginAuxiliaryWindowInteraction();
     void endAuxiliaryWindowInteraction();
     void activateRecognitionMode(int mode, bool showToolbar = true);
+    void toggleTextRecognitionResults();
     void ensureRecognitionProviders();
     void deactivateRecognition();
     void updateRecognitionToolbarState();
@@ -409,6 +417,8 @@ class ScreenshotPinnedWindow final : public QWidget {
     void finishQueuedContentReplacement();
     void cancelContentReplacement();
     void printContent();
+    void airDropContent();
+    void requestVisibleContentSnapshot(std::function<void(ScreenshotExportImageResult)> ready);
     void saveAsFile();
     void uploadToCloud();
     void cancelCloudUpload();
@@ -574,9 +584,11 @@ class ScreenshotPinnedWindow final : public QWidget {
     std::shared_ptr<ScreenshotExportArtifact> m_exportArtifact;
     struct PinnedRenderCache;
     std::unique_ptr<PinnedRenderCache> m_pinnedRenderCache;
-    std::shared_ptr<ScreenshotExportArtifact> m_printArtifact;
+    std::shared_ptr<ScreenshotExportArtifact> m_nativeExportArtifact;
     QPointer<ScreenshotPrintService> m_printService;
     bool m_printPending = false;
+    QPointer<ScreenshotAirDropService> m_airDropService;
+    bool m_airDropPending = false;
     ScreenshotExportJobHandle m_materializationJob;
     ScreenshotExportJobHandle m_contentReplacementJob;
     quint64 m_contentReplacementGeneration = 0;
@@ -635,6 +647,7 @@ class ScreenshotPinnedWindow final : public QWidget {
     QPointer<QAction> m_closeAction;
     QPointer<QAction> m_loadContentAction;
     QPointer<QAction> m_splitImageAction;
+    QPointer<QAction> m_imageEditingAction;
     QPointer<QActionGroup> m_opacityActions;
     QPointer<QActionGroup> m_scaleActions;
     QPointer<QAction> m_scaleMenuAction;

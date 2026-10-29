@@ -1008,8 +1008,9 @@ void ImageSplitWindowCoordinator::presentSelectedFiles(
                     if (extensions.contains(QFileInfo(path).suffix().toLower()))
                         images.append(path);
                 }
-                for (const auto& file :
-                     ScreenshotClipboardContentReader::snapshotLocalFiles(images, cancelled))
+                for (const auto& file : ScreenshotClipboardContentReader::snapshotLocalFiles(
+                         images, cancelled,
+                         ScreenshotClipboardContentReader::FilePurpose::ImageImport))
                     paths->append(file.absolutePath);
             }
             return cancelled() ? ScreenshotExportTaskResult::failure(

@@ -1,5 +1,6 @@
 #include "snow_shot/presentation/crosshaircursor.h"
 #include "snow_draw_engine_qt/snow_canvas_widget.h"
+#include "../src/presentation/overlay/screenshotoverlaycursor.h"
 
 #include <QApplication>
 #include <QImage>
@@ -75,6 +76,66 @@ void canvasLayers() {
     require(canvas.cursor() == expected, "host crosshairs use the same artwork as tool cursors");
 }
 
+void mixedDpiOverlayRevealsKeepThePointerCursor() {
+    const QRect displays[]{QRect(-1920, 0, 1920, 1080), QRect(0, 0, 2560, 1440)};
+    const qreal scales[]{1.0, 1.5};
+    QCursor displayedCursor(Qt::ArrowCursor);
+    QPoint cursorPosition;
+    int commits = 0;
+    const auto revealOrFocus = [&](int display) {
+        snow_shot::presentation::detail::commitOverlayCursor(
+            displays[display], cursorPosition, [&]() {
+                ++commits;
+                displayedCursor = snow_shot::presentation::crosshairCursor(scales[display]);
+            });
+    };
+    const auto requirePointerCursor = [&](int owner) {
+        require(displayedCursor == snow_shot::presentation::crosshairCursor(scales[owner]),
+                "revealing or focusing another display must preserve the pointer's cursor scale");
+    };
+
+    for (int owner : {0, 1}) {
+        cursorPosition = displays[owner].center();
+        const int other = 1 - owner;
+        revealOrFocus(owner);
+        requirePointerCursor(owner);
+        const int initialCommits = commits;
+        // The pointer's overlay reveals first. The other display reveals on a
+        // queued callback, interleaved with activation/focus callbacks.
+        revealOrFocus(other);
+        requirePointerCursor(owner);
+        require(commits == initialCommits,
+                "a secondary reveal must not install a native cursor for the wrong display");
+        revealOrFocus(owner);
+        revealOrFocus(other);
+        requirePointerCursor(owner);
+
+        // A queued activation must use the live pointer after it crosses displays.
+        cursorPosition = displays[other].center();
+        revealOrFocus(other);
+        const int movedCommits = commits;
+        revealOrFocus(owner);
+        requirePointerCursor(other);
+        require(commits == movedCommits,
+                "an old keyboard owner must not replace the new pointer owner's cursor");
+    }
+
+    for (const QPoint& position : {QPoint(-1, 0), QPoint(0, 0), QPoint(2559, 1439)}) {
+        cursorPosition = position;
+        const int before = commits;
+        revealOrFocus(0);
+        revealOrFocus(1);
+        const int owner = position.x() < 0 ? 0 : 1;
+        requirePointerCursor(owner);
+        require(commits == before + 1, "display boundaries must have exactly one cursor owner");
+    }
+    cursorPosition = QPoint(2560, 1440);
+    const int before = commits;
+    revealOrFocus(0);
+    revealOrFocus(1);
+    require(commits == before, "overlays must not install a cursor outside their capture geometry");
+}
+
 #ifdef Q_OS_WIN
 void initialNativeCursor() {
     for (qreal dpr : {1.0, 1.08, 1.1, 1.25, 1.5, 1.52, 2.0}) {
@@ -113,5 +174,6 @@ int main(int argc, char** argv) {
 #endif
     artworkAndScaling();
     canvasLayers();
+    mixedDpiOverlayRevealsKeepThePointerCursor();
     return 0;
 }

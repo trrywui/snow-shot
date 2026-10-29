@@ -14,6 +14,7 @@ use crossbeam_channel::{Receiver, Sender, bounded, select_biased};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct PreviewConfig {
+    pub webcam: Option<snow_webcam::Config>,
     /// Native desktop units: points on macOS, physical pixels on Windows.
     pub region: (i32, i32, u32, u32),
     /// Physical display pixels used to rasterize fixed-size preview styles.
@@ -25,12 +26,30 @@ pub struct PreviewConfig {
     pub highlight_radius: u32,
     pub highlight: [u8; 4],
     pub record_mouse_clicks: bool,
+    pub record_mouse_scrolling: bool,
     pub show_keyboard: bool,
     pub keyboard: Option<KeyboardOverlayConfig>,
     pub generation: u64,
 }
 
 impl PreviewConfig {
+    fn same_scene(&self, next: &Self) -> bool {
+        self.region == next.region
+            && self.canvas == next.canvas
+            && self.output == next.output
+            && self.trail == next.trail
+            && self.trail_duration_ms == next.trail_duration_ms
+            && self.click == next.click
+            && self.highlight_radius == next.highlight_radius
+            && self.highlight == next.highlight
+            && self.record_mouse_clicks == next.record_mouse_clicks
+            && self.record_mouse_scrolling == next.record_mouse_scrolling
+            && self.show_keyboard == next.show_keyboard
+            && self.keyboard == next.keyboard
+            && self.generation == next.generation
+            && self.webcam.as_ref().map(|w| &w.source) == next.webcam.as_ref().map(|w| &w.source)
+    }
+
     fn effects_output(&self) -> (u32, u32) {
         // Preview styles belong to the desktop capture canvas. Export dimensions
         // only affect saved video and must not rescale live effects.
@@ -38,6 +57,9 @@ impl PreviewConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(webcam) = &self.webcam {
+            webcam.style.validate()?;
+        }
         if !snow_recording_model::render::MOUSE_HIGHLIGHT_RADIUS_RANGE
             .contains(&self.highlight_radius)
         {
@@ -100,6 +122,7 @@ pub struct EffectsPreview {
     keyboard_surface: TileSurface,
     position: Option<(i32, i32)>,
     continuity: u64,
+    webcam: crate::webcam::WebcamOverlay,
 }
 
 impl std::ops::Deref for EffectsPreview {
@@ -115,6 +138,15 @@ impl std::ops::DerefMut for EffectsPreview {
 }
 
 impl EffectsPreview {
+    fn update_webcam_layout(&mut self, next: &PreviewConfig) -> bool {
+        if !self.config.same_scene(next) {
+            return false;
+        }
+        // Retain observers, input animations, surfaces and camera pixels during a gesture.
+        self.config.webcam = next.webcam.clone();
+        true
+    }
+
     pub fn new(config: PreviewConfig, rasterizer: Option<Box<dyn KeycapRasterizer>>) -> Self {
         let output = config.effects_output();
         let keycap_size = config
@@ -122,8 +154,11 @@ impl EffectsPreview {
             .as_ref()
             .map_or(64, |style| style.keycap_size);
         let input_effects = InputEffectsState {
-            keyboard: rasterizer
-                .map(|r| KeyboardOverlay::new(output, r).with_keycap_size(keycap_size)),
+            keyboard: rasterizer.map(|r| {
+                KeyboardOverlay::new(output, r)
+                    .with_keycap_size(keycap_size)
+                    .with_icon_color(config.keyboard.as_ref().map_or([255; 4], |s| s.text_rgba))
+            }),
             ..InputEffectsState::new(config.trail_duration_ms)
         };
         Self {
@@ -133,6 +168,7 @@ impl EffectsPreview {
             keyboard_surface: TileSurface::new(output),
             position: None,
             continuity: 0,
+            webcam: Default::default(),
         }
     }
     pub fn observe(&mut self, position: Option<(i32, i32)>, at: u64) {
@@ -164,6 +200,15 @@ impl EffectsPreview {
         self.input_effects.reset_keyboard(now);
     }
     pub fn mouse_event(&mut self, event: &MouseClickObservation, at_ms: u64) {
+        if event.button.scroll_direction().is_some() {
+            if self.config.record_mouse_scrolling
+                && let Some(style) = &self.config.keyboard
+            {
+                let key = event.event(at_ms, style, false);
+                self.key_event(key);
+            }
+            return;
+        }
         if event.down && event.button.has_ring() && self.config.click[3] != 0 {
             self.click(RenderClick {
                 timestamp_ms: at_ms,
@@ -181,6 +226,15 @@ impl EffectsPreview {
     pub fn render(&mut self, now: u64) -> Result<PreviewLayers, String> {
         self.surface.clear();
         self.keyboard_surface.clear();
+        if let Some(webcam) = &self.config.webcam {
+            let frame = webcam.source.snapshot(Instant::now());
+            self.webcam.prepare(
+                frame.frame.as_deref(),
+                webcam.style,
+                self.config.effects_output(),
+            );
+            self.webcam.draw_to(&mut self.surface);
+        }
         self.observe(self.position, now);
         if let Some(position) = self.position {
             let center = crate::mouse_effects::scale_point(
@@ -212,17 +266,17 @@ impl EffectsPreview {
             keyboard: self.keyboard_surface.snapshot(),
         })
     }
-    pub fn next_frame_at(&self, now: u64) -> Option<u64> {
-        if !self.pending_keys.is_empty()
-            || self.trail.has_active_animation(now)
-            || !self.clicks.is_empty()
-        {
-            Some(now.saturating_add(16))
-        } else {
-            self.keyboard
-                .as_ref()
-                .and_then(|k| k.model.next_frame_at(now))
-        }
+    pub fn next_frame_at(&mut self, now: u64) -> Option<u64> {
+        let keyboard = self.input_effects.next_key_frame_at(now);
+        let motion = (self.trail.has_active_animation(now) || !self.clicks.is_empty())
+            .then(|| now.saturating_add(16));
+        let camera = self
+            .config
+            .webcam
+            .as_ref()
+            .is_some_and(|webcam| webcam.source.snapshot(Instant::now()).error.is_none())
+            .then(|| now.saturating_add(33));
+        [keyboard, motion, camera].into_iter().flatten().min()
     }
     pub fn allocated_bytes(&self) -> usize {
         self.surface.allocated_bytes() + self.keyboard_surface.allocated_bytes()
@@ -337,6 +391,7 @@ fn initialize(config: &PreviewConfig) -> Result<(Input, EffectsPreview), String>
         || config.highlight[3] != 0
         || config.click[3] != 0
         || config.record_mouse_clicks
+        || config.record_mouse_scrolling
     {
         Some(MouseHookObserver::start_with_movement(
             config.region,
@@ -407,7 +462,9 @@ fn run(
         } else {
             &no_mouse
         };
-        let clicks = if config.click[3] != 0 || config.record_mouse_clicks {
+        // An active mouse observer also reports disabled button/wheel categories.
+        // Drain them without invalidating pixels so they cannot overflow its queue.
+        let clicks = if input._mouse.is_some() {
             &input.clicks
         } else {
             &no_clicks
@@ -429,22 +486,29 @@ fn run(
                 effects.reset_inputs(now);
                 dirty = true;
             }
+            let generation = input
+                .keyboard
+                .as_ref()
+                .map_or(0, |input| input.generation.load(Ordering::Acquire));
+            if generation != keyboard_generation {
+                effects.reset_inputs(now);
+                keyboard_generation = generation;
+            }
+            // Collect both observers before advancing their shared source clock.
+            // In particular, a scroll cannot overtake an earlier keyboard event
+            // that is still waiting in the other observer's channel.
+            for event in input.clicks.try_iter() {
+                effects.mouse_event(&event, elapsed(event.at));
+            }
+            if let (Some(input), Some(style)) = (&input.keyboard, &config.keyboard) {
+                for event in input.receiver.try_iter() {
+                    if event.generation == keyboard_generation {
+                        effects.key_event(event.event(elapsed(event.at), style));
+                    }
+                }
+            }
+            dirty |= effects.input_effects.keyboard_needs_frame(now) || !effects.clicks.is_empty();
             if dirty && now >= next_frame {
-                for event in input.clicks.try_iter() {
-                    effects.mouse_event(&event, elapsed(event.at));
-                }
-                if let (Some(input), Some(style)) = (&input.keyboard, &config.keyboard) {
-                    let generation = input.generation.load(Ordering::Acquire);
-                    if generation != keyboard_generation {
-                        effects.reset_inputs(now);
-                        keyboard_generation = generation;
-                    }
-                    for event in input.receiver.try_iter() {
-                        if event.generation == generation {
-                            effects.key_event(event.event(elapsed(event.at), style));
-                        }
-                    }
-                }
                 if let Some(movement) = pending_position.take() {
                     effects.observe_input(
                         movement.position,
@@ -487,14 +551,22 @@ fn run(
             let timer = deadline
                 .map(|at| crossbeam_channel::after(Duration::from_millis(at.saturating_sub(now))))
                 .unwrap_or_else(crossbeam_channel::never);
-            let reset_timer = if config.record_mouse_clicks {
+            let reset_timer = if config.record_mouse_clicks || config.record_mouse_scrolling {
                 crossbeam_channel::after(Duration::from_millis(50))
             } else {
                 crossbeam_channel::never()
             };
             select_biased! {
                 recv(receiver) -> command => match command {
-                    Ok(Command::Configure(next)) => { config = next; continue 'configure; }
+                    Ok(Command::Configure(next)) => {
+                        let layout_only = effects.update_webcam_layout(&next);
+                        config = next;
+                        if layout_only {
+                            dirty = true;
+                        } else {
+                            continue 'configure;
+                        }
+                    }
                     _ => return,
                 },
                 recv(mouse) -> event => if let Ok(event) = event {
@@ -503,7 +575,6 @@ fn run(
                 },
                 recv(clicks) -> event => if let Ok(event) = event {
                     effects.mouse_event(&event, elapsed(event.at));
-                    dirty = true;
                 },
                 recv(keys) -> event => if let Ok(event) = event
                     && let (Some(input), Some(style)) = (&input.keyboard, &config.keyboard) {
@@ -513,7 +584,6 @@ fn run(
                             keyboard_generation = generation;
                         }
                         if event.generation == generation { effects.key_event(event.event(elapsed(event.at), style)); }
-                        dirty = true;
                 },
                 recv(reset_timer) -> _ => {},
                 recv(timer) -> _ => { dirty = true; },
@@ -538,6 +608,179 @@ fn publish(latest: &Mutex<Option<Arc<PreviewFrame>>>, notify: &dyn Fn(), frame: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_keycap_batches_match_chronological_input_before_and_after_admission() {
+        use crate::recorded::RecordedEffects;
+        use snow_recording_model::{
+            EffectsConfig, InputMouseButton, PlaybackOverlay, RecordedInput, RecordedInputEvent,
+            RecordedMouseClick, RenderConfig,
+        };
+
+        struct Colored;
+        impl KeycapRasterizer for Colored {
+            fn rasterize(
+                &mut self,
+                label: &str,
+                _: f32,
+            ) -> Result<crate::keyboard_overlay::Keycap, String> {
+                let color = match label {
+                    "A" => [200, 0, 0, 255],
+                    "B" => [0, 200, 0, 255],
+                    _ => [0, 0, 200, 255],
+                };
+                Ok(crate::keyboard_overlay::Keycap {
+                    width: 120,
+                    height: 64,
+                    pixels: color.repeat(120 * 64),
+                })
+            }
+        }
+        let style = KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0; 4],
+            text_rgba: [255; 4],
+            border_rgba: [0; 4],
+            labels: Default::default(),
+        };
+        let key = |at_ms, key, down, label: &str| crate::keyboard_overlay::KeyEvent {
+            at_ms,
+            key,
+            down,
+            label: label.into(),
+            modifiers: vec![],
+        };
+        let events = [
+            key(10, 65, true, "A"),
+            key(20, 0x200, true, "Left"),
+            key(30, 0x205, true, "Scroll up"),
+            key(40, 0x200, false, "Left"),
+            key(50, 65, false, "A"),
+            key(60, 66, true, "B"),
+            key(70, 66, false, "B"),
+            key(80, 0x206, true, "Scroll down"),
+        ];
+        let orders = [
+            [0, 1, 2, 3, 4, 5, 6, 7],
+            [1, 2, 3, 7, 0, 4, 5, 6],
+            [0, 4, 5, 6, 1, 2, 3, 7],
+            [7, 6, 5, 4, 3, 2, 1, 0],
+        ];
+        let assert_tiles = |actual: Vec<Tile>, expected: &[Tile], description: &str| {
+            assert_eq!(actual.len(), expected.len(), "{description}: tile count");
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert_eq!(
+                    (actual.x, actual.y, &actual.pixels),
+                    (expected.x, expected.y, &expected.pixels),
+                    "{description}"
+                );
+            }
+        };
+        for admission_ms in [0, 100] {
+            for order in orders {
+                let mut cfg = config();
+                cfg.region = (0, 0, 640, 480);
+                cfg.canvas = (640, 480);
+                cfg.output = cfg.canvas;
+                cfg.trail = [0; 4];
+                cfg.click = [0; 4];
+                cfg.record_mouse_clicks = true;
+                cfg.record_mouse_scrolling = true;
+                cfg.keyboard = Some(style.clone());
+                let mut preview = EffectsPreview::new(cfg, Some(Box::new(Colored)));
+                let mut replay = RecordedEffects::new(
+                    RenderConfig {
+                        output_width: 640,
+                        output_height: 480,
+                        output_fps: 30,
+                        playback_overlay: PlaybackOverlay::None,
+                        effects: EffectsConfig {
+                            show_cursor: false,
+                            show_keyboard: true,
+                            record_mouse_clicks: true,
+                            record_mouse_scrolling: true,
+                            keyboard: Some(style.clone()),
+                            ..Default::default()
+                        },
+                    },
+                    (640, 480),
+                    Some(Box::new(Colored)),
+                )
+                .unwrap();
+                let mut reference = KeyboardOverlay::new((640, 480), Box::new(Colored));
+                for (sequence, index) in order.into_iter().enumerate() {
+                    let key = events[index].clone();
+                    let button = match key.key {
+                        0x200 => Some(ObservedMouseButton::Left),
+                        0x205 => Some(ObservedMouseButton::ScrollUp),
+                        0x206 => Some(ObservedMouseButton::ScrollDown),
+                        _ => None,
+                    };
+                    let record = if let Some(button) = button {
+                        preview.mouse_event(
+                            &MouseClickObservation {
+                                at: Instant::now(),
+                                x: 0,
+                                y: 0,
+                                button,
+                                down: key.down,
+                                modifiers: [false; 8],
+                            },
+                            key.at_ms,
+                        );
+                        if button.scroll_direction().is_some() {
+                            RecordedInput::Scroll(key)
+                        } else {
+                            RecordedInput::Click(RecordedMouseClick {
+                                x: 0,
+                                y: 0,
+                                button: InputMouseButton::Left,
+                                down: key.down,
+                                key,
+                            })
+                        }
+                    } else {
+                        preview.key_event(key.clone());
+                        RecordedInput::Key(key)
+                    };
+                    replay
+                        .observe(&RecordedInputEvent {
+                            timestamp_ms: admission_ms,
+                            sequence: sequence as u64,
+                            event: record,
+                        })
+                        .unwrap();
+                }
+                let mut next = 0;
+                for now in [0, 9, 10, 20, 30, 50, 60, 80, 100, 280, 1300, 1600, 2000] {
+                    if now < admission_ms {
+                        continue;
+                    }
+                    while next < events.len() && events[next].at_ms <= now {
+                        reference.model.event(events[next].clone());
+                        next += 1;
+                    }
+                    let mut expected = TileSurface::new((640, 480));
+                    reference.draw_to(&mut expected, now).unwrap();
+                    let expected = expected.snapshot();
+                    let description =
+                        format!("admission {admission_ms}, order {order:?}, frame {now}");
+                    assert_tiles(
+                        preview.render(now).unwrap().keyboard,
+                        &expected,
+                        &description,
+                    );
+                    let mut actual = TileSurface::new((640, 480));
+                    replay
+                        .input_effects
+                        .draw_keyboard_to(&mut actual, now)
+                        .unwrap();
+                    assert_tiles(actual.snapshot(), &expected, &description);
+                }
+            }
+        }
+    }
     use crate::keyboard_overlay::{KeyEvent, Keycap};
     use crate::laser_trail::LaserTrail;
     use crate::mouse_effects::draw_clicks_to;
@@ -547,6 +790,7 @@ mod tests {
 
     fn config() -> PreviewConfig {
         PreviewConfig {
+            webcam: None,
             region: (-400, -200, 1920, 1080),
             canvas: (1920, 1080),
             output: (1920, 1080),
@@ -556,9 +800,339 @@ mod tests {
             highlight_radius: snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
             highlight: [0; 4],
             record_mouse_clicks: false,
+            record_mouse_scrolling: false,
             show_keyboard: true,
             keyboard: None,
             generation: 7,
+        }
+    }
+
+    #[test]
+    fn scrolling_preview_matches_replay_and_unchanged_bursts_do_not_publish() {
+        use crate::recorded::RecordedEffects;
+        use snow_recording_model::{
+            EffectsConfig, PlaybackOverlay, RecordedInput, RecordedInputEvent, RenderConfig,
+        };
+        struct Blank;
+        impl KeycapRasterizer for Blank {
+            fn rasterize(&mut self, _: &str, _: f32) -> Result<Keycap, String> {
+                Ok(Keycap {
+                    width: 240,
+                    height: 64,
+                    pixels: [10, 20, 30, 200].repeat(240 * 64),
+                })
+            }
+        }
+        let style = KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0, 0, 0, 200],
+            text_rgba: [255; 4],
+            border_rgba: [0; 4],
+            labels: [
+                (0x205, "Localized up".into()),
+                (0x206, "Localized down".into()),
+            ]
+            .into(),
+        };
+        let mut cfg = config();
+        cfg.trail = [0; 4];
+        cfg.click = [0; 4];
+        cfg.show_keyboard = false;
+        cfg.record_mouse_scrolling = true;
+        cfg.keyboard = Some(style.clone());
+        let mut preview = EffectsPreview::new(cfg.clone(), Some(Box::new(Blank)));
+        let policy = RenderConfig {
+            output_width: cfg.canvas.0,
+            output_height: cfg.canvas.1,
+            output_fps: 30,
+            playback_overlay: PlaybackOverlay::None,
+            effects: EffectsConfig {
+                show_cursor: false,
+                record_mouse_scrolling: true,
+                keyboard: Some(style.clone()),
+                ..EffectsConfig::default()
+            },
+        };
+        let mut replay =
+            RecordedEffects::new(policy.clone(), cfg.canvas, Some(Box::new(Blank))).unwrap();
+        let mut records = Vec::new();
+        let mut revision = 0;
+        for (sequence, (at_ms, button, changed)) in [
+            (0, ObservedMouseButton::ScrollUp, true),
+            (200, ObservedMouseButton::ScrollUp, false),
+            (450, ObservedMouseButton::ScrollUp, false),
+            (500, ObservedMouseButton::ScrollDown, true),
+            (751, ObservedMouseButton::ScrollDown, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let observation = MouseClickObservation {
+                at: Instant::now(),
+                x: 20,
+                y: 20,
+                button,
+                down: true,
+                modifiers: [true; 8],
+            };
+            preview.mouse_event(&observation, at_ms);
+            let record = RecordedInputEvent {
+                timestamp_ms: at_ms,
+                sequence: sequence as u64,
+                event: RecordedInput::Scroll(observation.event(at_ms, &style, true)),
+            };
+            if let RecordedInput::Scroll(key) = &record.event {
+                assert!(key.modifiers.is_empty());
+            }
+            replay.observe(&record).unwrap();
+            records.push(record);
+            assert_eq!(replay.observation_revision(), revision);
+            assert_eq!(preview.input_effects.keyboard_needs_frame(at_ms), changed);
+            assert_eq!(replay.needs_frame(at_ms), changed);
+            revision = replay.observation_revision();
+            let live = preview.render(at_ms + 180).unwrap();
+            let mut surface = TileSurface::new(cfg.canvas);
+            replay
+                .input_effects
+                .draw_keyboard_to(&mut surface, at_ms + 180)
+                .unwrap();
+            let saved = surface.snapshot();
+            assert_eq!(live.keyboard.len(), saved.len());
+            for (a, b) in live.keyboard.iter().zip(saved.iter()) {
+                assert_eq!((a.x, a.y, &a.pixels), (b.x, b.y, &b.pixels));
+            }
+        }
+        // Seeking reconstructs the same burst history from original observation timestamps.
+        let mut seek = RecordedEffects::new(policy, cfg.canvas, Some(Box::new(Blank))).unwrap();
+        for record in &records {
+            seek.observe(record).unwrap();
+        }
+        let mut a = TileSurface::new(cfg.canvas);
+        let mut b = TileSurface::new(cfg.canvas);
+        replay.input_effects.draw_keyboard_to(&mut a, 1000).unwrap();
+        seek.input_effects.draw_keyboard_to(&mut b, 1000).unwrap();
+        for (a, b) in a.snapshot().iter().zip(b.snapshot().iter()) {
+            assert_eq!(a.pixels, b.pixels);
+        }
+        // A reversal admitted on an earlier output slot cannot change current pixels.
+        let future = KeyEvent {
+            at_ms: 1100,
+            key: 0x205,
+            down: true,
+            label: "Localized up".into(),
+            modifiers: vec![],
+        };
+        replay
+            .observe(&RecordedInputEvent {
+                timestamp_ms: 1000,
+                sequence: 99,
+                event: RecordedInput::Scroll(future.clone()),
+            })
+            .unwrap();
+        a.clear();
+        b.clear();
+        replay.input_effects.draw_keyboard_to(&mut a, 1050).unwrap();
+        seek.input_effects.draw_keyboard_to(&mut b, 1050).unwrap();
+        assert_eq!(a.snapshot().len(), b.snapshot().len());
+        for (a, b) in a.snapshot().iter().zip(b.snapshot().iter()) {
+            assert_eq!(a.pixels, b.pixels);
+        }
+        seek.observe(&RecordedInputEvent {
+            timestamp_ms: 1100,
+            sequence: 99,
+            event: RecordedInput::Scroll(future),
+        })
+        .unwrap();
+        a.clear();
+        b.clear();
+        replay.input_effects.draw_keyboard_to(&mut a, 1280).unwrap();
+        seek.input_effects.draw_keyboard_to(&mut b, 1280).unwrap();
+        assert_eq!(a.snapshot().len(), b.snapshot().len());
+        for (a, b) in a.snapshot().iter().zip(b.snapshot().iter()) {
+            assert_eq!(a.pixels, b.pixels);
+        }
+        preview.reset_inputs(1000);
+        preview.mouse_event(
+            &MouseClickObservation {
+                at: Instant::now(),
+                x: 20,
+                y: 20,
+                button: ObservedMouseButton::ScrollUp,
+                down: true,
+                modifiers: [false; 8],
+            },
+            1010,
+        );
+        assert!(preview.input_effects.keyboard_needs_frame(1010));
+        preview.render(1010).unwrap();
+        let pending = preview.pending_keys.len();
+        preview.config.record_mouse_scrolling = false;
+        preview.mouse_event(
+            &MouseClickObservation {
+                at: Instant::now(),
+                x: 20,
+                y: 20,
+                button: ObservedMouseButton::ScrollUp,
+                down: true,
+                modifiers: [false; 8],
+            },
+            1020,
+        );
+        assert_eq!(preview.pending_keys.len(), pending);
+    }
+    #[test]
+    fn webcam_session_keeps_presenting_during_live_layout_changes() {
+        struct OneFrame(Option<snow_webcam::RawFrame>);
+        impl snow_webcam::CameraBackend for OneFrame {
+            fn poll(&mut self, timeout: Duration) -> Result<Option<snow_webcam::RawFrame>, String> {
+                if self.0.is_none() {
+                    std::thread::sleep(timeout);
+                }
+                Ok(self.0.take())
+            }
+        }
+        let source = snow_webcam::Source::with_backend(
+            snow_webcam::CaptureOptions { size: 150, fps: 30 },
+            |_| {
+                Ok(Box::new(OneFrame(Some(snow_webcam::RawFrame {
+                    width: 150,
+                    height: 150,
+                    stride: 600,
+                    rgba: [220, 20, 10, 255].repeat(150 * 150),
+                    at: Instant::now(),
+                }))))
+            },
+        )
+        .unwrap();
+        source.set_active(true);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while source.snapshot(Instant::now()).frame.is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let mut cfg = config();
+        cfg.region = (-400, -200, 640, 480);
+        cfg.canvas = (640, 480);
+        cfg.output = (640, 480);
+        cfg.trail = [0; 4];
+        cfg.click = [0; 4];
+        cfg.show_keyboard = false;
+        cfg.webcam = Some(snow_webcam::Config {
+            source: source.clone(),
+            style: Default::default(),
+        });
+        let (notifications, received) = bounded(1);
+        let mut session = PreviewSession::start(
+            cfg.clone(),
+            Arc::new(move || {
+                let _ = notifications.try_send(());
+            }),
+        )
+        .unwrap();
+        for step in 0..8 {
+            let style = &mut cfg.webcam.as_mut().unwrap().style;
+            style.offset_left = 20 + step * 20;
+            style.offset_bottom = 30 + step * 10;
+            style.size = 100 + step * 20;
+            source
+                .configure(snow_webcam::CaptureOptions {
+                    size: style.size,
+                    fps: 30,
+                })
+                .unwrap();
+            let (x, y, side) = style.placement(cfg.canvas);
+            let expected = (x, y, x + side - 1, y + side - 1);
+            session.configure(cfg.clone()).unwrap();
+            loop {
+                received.recv_timeout(Duration::from_secs(1)).unwrap();
+                let frame = session.latest().unwrap();
+                assert!(frame.error.is_none());
+                let mut bounds = (u32::MAX, u32::MAX, 0, 0);
+                for tile in &frame.tiles {
+                    for (i, pixel) in tile.pixels.chunks_exact(4).enumerate() {
+                        if pixel[3] != 0 {
+                            let (px, py) =
+                                (tile.x + i as u32 % TILE_SIZE, tile.y + i as u32 / TILE_SIZE);
+                            bounds = (
+                                bounds.0.min(px),
+                                bounds.1.min(py),
+                                bounds.2.max(px),
+                                bounds.3.max(py),
+                            );
+                        }
+                    }
+                }
+                assert_ne!(
+                    bounds.0,
+                    u32::MAX,
+                    "layout changes never publish a blank camera frame"
+                );
+                if bounds == expected {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "latest webcam layout must reach the preview"
+                );
+            }
+        }
+        session.stop();
+        source.set_active(false);
+    }
+
+    #[test]
+    fn webcam_layout_updates_preserve_input_animation_and_scene_boundaries() {
+        let source = snow_webcam::Source::with_backend(
+            snow_webcam::CaptureOptions { size: 150, fps: 30 },
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let mut cfg = config();
+        cfg.webcam = Some(snow_webcam::Config {
+            source,
+            style: Default::default(),
+        });
+        let mut preview = EffectsPreview::new(cfg, None);
+        preview.observe(Some((40, 50)), 10);
+        preview.observe(Some((80, 70)), 20);
+        preview.key_event(key(20, true));
+        let pending = preview.pending_keys.len();
+        let render_trail = |preview: &mut EffectsPreview| {
+            let mut surface = TileSurface::new(preview.config.canvas);
+            preview.trail.draw_to(&mut surface, 20, [255, 0, 0, 128]);
+            surface
+                .snapshot()
+                .into_iter()
+                .map(|tile| (tile.x, tile.y, tile.pixels))
+                .collect::<Vec<_>>()
+        };
+        let trail = render_trail(&mut preview);
+        assert!(!trail.is_empty());
+        let mut next = preview.config.clone();
+        let style = &mut next.webcam.as_mut().unwrap().style;
+        style.offset_left = 310;
+        style.offset_bottom = 120;
+        style.size = 260;
+        style.shape = snow_webcam::WebcamShape::Circle;
+        style.orientation = snow_webcam::WebcamOrientation::MirroredClockwise90;
+        assert!(preview.update_webcam_layout(&next));
+        assert!(preview.config == next);
+        assert_eq!(preview.pending_keys.len(), pending);
+        assert_eq!(render_trail(&mut preview), trail);
+        assert_eq!(preview.position, Some((80, 70)));
+        // Real scene changes must still reconstruct observers and invalidate old frames.
+        for change in 0..5 {
+            let mut changed = next.clone();
+            match change {
+                0 => changed.region.0 += 1,
+                1 => changed.canvas.0 += 1,
+                2 => changed.show_keyboard = !changed.show_keyboard,
+                3 => changed.generation += 1,
+                _ => changed.webcam = None,
+            }
+            assert!(!preview.update_webcam_layout(&changed));
+            assert!(preview.config == next);
         }
     }
 
@@ -719,6 +1293,92 @@ mod tests {
             };
             assert_eq!(alpha(400 + radius - 2, 200), 255);
             assert_eq!(alpha(400 + radius, 200), 0);
+        }
+    }
+    #[test]
+    fn webcam_preview_keeps_physical_pixels_at_every_dpi_and_clears_failure_without_input() {
+        struct OneFrame(Option<snow_webcam::RawFrame>);
+        impl snow_webcam::CameraBackend for OneFrame {
+            fn poll(&mut self, timeout: Duration) -> Result<Option<snow_webcam::RawFrame>, String> {
+                if self.0.is_none() {
+                    std::thread::sleep(timeout);
+                }
+                Ok(self.0.take())
+            }
+        }
+        let source = snow_webcam::Source::with_backend(
+            snow_webcam::CaptureOptions { size: 150, fps: 30 },
+            |_| {
+                Ok(Box::new(OneFrame(Some(snow_webcam::RawFrame {
+                    width: 150,
+                    height: 150,
+                    stride: 600,
+                    rgba: [220, 20, 10, 255].repeat(150 * 150),
+                    at: Instant::now(),
+                }))))
+            },
+        )
+        .unwrap();
+        source.set_active(true);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while source.snapshot(Instant::now()).frame.is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        for canvas in [(640, 480), (1280, 960), (1920, 1440)] {
+            for output in [(320, 240), (1920, 1080)] {
+                let mut cfg = config();
+                cfg.region = (0, 0, 640, 480);
+                cfg.canvas = canvas;
+                cfg.output = output;
+                cfg.trail = [0; 4];
+                cfg.click = [0; 4];
+                cfg.highlight = [0; 4];
+                cfg.keyboard = None;
+                cfg.show_keyboard = false;
+                cfg.webcam = Some(snow_webcam::Config {
+                    source: source.clone(),
+                    style: snow_webcam::WebcamStyle {
+                        offset_left: 123,
+                        offset_bottom: 67,
+                        ..Default::default()
+                    },
+                });
+                let mut preview = EffectsPreview::new(cfg, None);
+                let frame = preview.render(0).unwrap();
+                let mut bounds = (u32::MAX, u32::MAX, 0, 0);
+                let mut count = 0;
+                for tile in frame.mouse {
+                    for (i, pixel) in tile.pixels.chunks_exact(4).enumerate() {
+                        if pixel[3] == 0 {
+                            continue;
+                        }
+                        let (x, y) = (tile.x + i as u32 % TILE_SIZE, tile.y + i as u32 / TILE_SIZE);
+                        bounds.0 = bounds.0.min(x);
+                        bounds.1 = bounds.1.min(y);
+                        bounds.2 = bounds.2.max(x);
+                        bounds.3 = bounds.3.max(y);
+                        count += 1;
+                    }
+                }
+                assert_eq!(bounds, (123, canvas.1 - 217, 272, canvas.1 - 68));
+                assert_eq!(count, 150 * 150);
+                assert_eq!(preview.next_frame_at(0), Some(33));
+                source.report_error("disconnected".into());
+                assert!(preview.render(33).unwrap().is_empty());
+                assert_eq!(
+                    preview.next_frame_at(33),
+                    None,
+                    "a failed camera must not keep notifying the UI"
+                );
+                source.retry_failed();
+                source.set_active(true);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while source.snapshot(Instant::now()).frame.is_none() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+            }
         }
     }
     struct Solid;

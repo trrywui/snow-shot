@@ -131,6 +131,7 @@ pub(crate) fn run() -> Result<()> {
         _ => bail!("audio must be none, system, mixed, or separate"),
     };
     let config = DirectRecordingConfig {
+        webcam: None,
         loop_animated_images: false,
         region,
         capture_backend: backend,
@@ -160,6 +161,7 @@ pub(crate) fn run() -> Result<()> {
         }),
         show_keyboard: effects,
         record_mouse_clicks: effects,
+        record_mouse_scrolling: effects,
         mouse_trail_rgba: if effects { [255, 85, 0, 255] } else { [0; 4] },
         mouse_trail_duration_ms: 500,
         mouse_click_rgba: if effects { [255, 0, 0, 255] } else { [0; 4] },

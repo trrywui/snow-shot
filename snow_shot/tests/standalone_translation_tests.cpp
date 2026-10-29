@@ -1,6 +1,7 @@
 #include "window_close_shortcut_test_support.h"
 #include "translation_test_support.h"
 #include "snow_shot/network/snowshotapiclient.h"
+#include "snow_shot/presentation/components/standalonetranslationwindow.h"
 #include "snow_shot/presentation/selectedtexttranslationcoordinator.h"
 #include "snow_shot/presentation/selectedtexttranslationcontroller.h"
 #include "snow_shot/presentation/components/translationpagewidget.h"
@@ -12,6 +13,8 @@
 #include "widgets/modal.h"
 #include "widgets/input_text_edit.h"
 #include "widgets/select.h"
+#include "widgets/button.h"
+#include "widgets/context_menu.h"
 
 #include <QAction>
 #include <QApplication>
@@ -60,6 +63,26 @@ class FakeCaptureBackend final : public SelectedTextCaptureBackend {
 void flushEvents() {
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     QCoreApplication::processEvents();
+}
+
+void triggerTranslationMenuAction(TranslationPageWidget& page, const QString& actionName) {
+    auto* trigger = page.findChild<adqt::widgets::AdButton*>(QStringLiteral("translationActions"));
+    require(trigger != nullptr && trigger->isVisible(),
+            "the translation action trigger is visible");
+    trigger->click();
+    adqt::widgets::AdContextMenu* activeMenu = nullptr;
+    for (auto* menu : page.findChildren<adqt::widgets::AdContextMenu*>(
+             QStringLiteral("translationActionsMenu"))) {
+        if (menu->isPopupVisible() && !menu->isRetiring()) {
+            activeMenu = menu;
+            break;
+        }
+    }
+    require(activeMenu != nullptr, "opening translation actions creates a live popup session");
+    auto* action = activeMenu->findChild<QAction*>(actionName);
+    require(action != nullptr && action->isEnabled(),
+            "the live translation copy action is enabled");
+    action->trigger();
 }
 
 int visibleTranslationWindows() {
@@ -322,10 +345,12 @@ void pageActionsAndLifecycle() {
     SnowShotApiClient client(server.url());
     auto state = std::make_shared<CaptureState>();
     const storage::ExtendedFeaturesSettings settings;
-    // Earlier suites in this binary close windows, which now persists their size.
+    // Earlier suites in this binary close windows and persist their geometry.
     require(storage::ApplicationStorage::instance().configuration().setValue(
-                QStringLiteral("interface/translation_window_size"), QJsonObject()),
-            "clear remembered standalone window size");
+                QStringLiteral("interface/translation_window_size"), QJsonObject()) &&
+                storage::ApplicationStorage::instance().configuration().setValue(
+                    QStringLiteral("interface/translation_window_geometry"), QJsonObject()),
+            "clear remembered standalone window geometry");
     require(settings.setTranslationPageEnabled(true) &&
                 settings.setStandaloneTranslationWindow(true),
             "enable standalone page behavior");
@@ -371,8 +396,8 @@ void pageActionsAndLifecycle() {
     auto* controller = page->findChild<TranslationPageController*>();
     auto* result =
         page->findChild<adqt::widgets::AdTextEdit*>(QStringLiteral("translationResultText"));
-    auto* copy = page->findChild<QAction*>(QStringLiteral("translationCopy"));
-    auto* copyClose = page->findChild<QAction*>(QStringLiteral("translationCopyAndClose"));
+    auto* copy = page->findChild<adqt::widgets::AdButton*>(QStringLiteral("translationResultCopy"));
+    require(copy != nullptr, "standalone page exposes the inline copy control");
     waitUntil([&] { return server.streams.size() == 1; }, "standalone starts translation");
     server.delta(0, QStringLiteral("translated result"));
     waitUntil([&] { return result->toPlainText() == QStringLiteral("translated result"); },
@@ -385,9 +410,13 @@ void pageActionsAndLifecycle() {
                     QDir(snapshotDirectory).filePath(QStringLiteral("standalone-translation.png"))),
                 "save standalone page rendering");
     }
-    copy->trigger();
+    copy->click();
     require(qApp->clipboard()->text() == QStringLiteral("translated result") && modal->isOpen(),
-            "copy preserves standalone window");
+            "inline copy preserves standalone window");
+    qApp->clipboard()->setText(QStringLiteral("stale clipboard"));
+    triggerTranslationMenuAction(*page, QStringLiteral("translationCopy"));
+    require(qApp->clipboard()->text() == QStringLiteral("translated result") && modal->isOpen(),
+            "menu copy preserves standalone window");
     styles::ThemeManager::instance().setThemeMode(styles::ThemeMode::Dark);
     flushEvents();
     bool themedLabel = false;
@@ -410,7 +439,7 @@ void pageActionsAndLifecycle() {
     LanguageManager::instance().languageChanged(QStringLiteral("en_US"), QLocale(QLocale::English));
     flushEvents();
     QPointer<TranslationPageWidget> oldPage = page;
-    copyClose->trigger();
+    triggerTranslationMenuAction(*page, QStringLiteral("translationCopyAndClose"));
     require(!modal->isOpen() && existingMain.isVisible() && !controller->active(),
             "copy-and-close closes only standalone and deactivates streaming page");
     waitUntil([&] { return server.disconnected(0); }, "closing cancels translation stream");
@@ -422,8 +451,8 @@ void pageActionsAndLifecycle() {
             "reopening creates fresh content in the same modal surface");
     require(page->window()->size() == QSize(680, 460).boundedTo(available.size()),
             "reopen restores the remembered size instead of the default");
-    require((page->window()->geometry().center() - available.center()).manhattanLength() <= 2,
-            "reopen keeps centering on the trigger screen at the remembered size");
+    require(page->window()->geometry() == geometry,
+            "reopen restores the remembered position and size");
     controller = page->findChild<TranslationPageController*>();
     waitUntil([&] { return server.streams.size() == 2; }, "reopened page translates");
     server.fail(1);
@@ -461,6 +490,130 @@ void pageActionsAndLifecycle() {
     flushEvents();
     styles::ThemeManager::instance().setThemeMode(styles::ThemeMode::Light);
 }
+
+void windowGeometryMemory() {
+    Server server;
+    SnowShotApiClient client(server.url());
+    auto& configuration = storage::ApplicationStorage::instance().configuration();
+    const storage::WindowMemorySettings settings;
+    const QRect available = qApp->primaryScreen()->availableGeometry().adjusted(16, 16, -16, -16);
+    const auto clearGeometry = [&] {
+        require(configuration.setValue(QStringLiteral("interface/translation_window_geometry"),
+                                       QJsonObject()),
+                "clear translation geometry");
+    };
+    const auto surfaceFor = [](StandaloneTranslationWindow& window) {
+        auto* modal = window.findChild<AdModal*>();
+        require(modal && modal->isOpen() && modal->contentWidget(),
+                "translation modal has visible content");
+        return modal->contentWidget()->window();
+    };
+    clearGeometry();
+    require(
+        configuration.setValue(QStringLiteral("interface/translation_window_size"), QJsonObject()),
+        "clear legacy translation size");
+    QRect remembered;
+    {
+        StandaloneTranslationWindow window(&client);
+        window.showTranslation(QStringLiteral("first"), qApp->primaryScreen());
+        flushEvents();
+        QWidget* surface = surfaceFor(window);
+        require(surface->size() == QSize(720, 500).boundedTo(available.size()) &&
+                    (surface->geometry().center() - available.center()).manhattanLength() <= 2,
+                "fresh translation window uses the default centered geometry");
+        surface->setGeometry(QRect(available.topLeft() + QPoint(23, 31),
+                                   QSize(681, 461).boundedTo(available.size())));
+        flushEvents();
+        remembered = surface->geometry();
+        window.findChild<AdModal*>()->rejectButton()->click();
+        const auto saved = settings.translationWindowGeometry();
+        require(saved && saved->normalGeometry == remembered,
+                "footer close saves the last visible position and size");
+        flushEvents();
+        for (int reopen = 0; reopen < 3; ++reopen) {
+            window.showTranslation(QStringLiteral("reopen"), qApp->primaryScreen());
+            flushEvents();
+            require(surfaceFor(window)->geometry() == remembered,
+                    "repeated reopening restores geometry without position drift");
+            window.showTranslation(QStringLiteral("replace while open"), qApp->primaryScreen());
+            require(surfaceFor(window)->geometry() == remembered,
+                    "another translation preserves the current open window geometry");
+            window.close();
+            flushEvents();
+        }
+    }
+    {
+        StandaloneTranslationWindow window(&client);
+        window.showTranslation(QStringLiteral("recreated"), qApp->primaryScreen());
+        flushEvents();
+        QWidget* surface = surfaceFor(window);
+        require(surface->geometry() == remembered,
+                "recreated translation window restores the persisted geometry");
+        surface->move(remembered.topLeft() + QPoint(7, 9));
+        flushEvents();
+        remembered = surface->geometry();
+        // Destruction must capture the latest placement even without an explicit close.
+    }
+    require(settings.translationWindowGeometry()->normalGeometry == remembered,
+            "destroying an open translation window saves its position");
+    flushEvents();
+    {
+        StandaloneTranslationWindow window(&client);
+        window.showTranslation(QStringLiteral("minimized"), qApp->primaryScreen());
+        flushEvents();
+        QWidget* surface = surfaceFor(window);
+        require(surface->geometry() == remembered, "destructor geometry is restored");
+        surface->showMinimized();
+        flushEvents();
+        window.close();
+        require(settings.translationWindowGeometry()->normalGeometry == remembered,
+                "closing while minimized saves the normal position and size");
+        flushEvents();
+        window.showTranslation(QStringLiteral("restore minimized"), qApp->primaryScreen());
+        flushEvents();
+        require(surfaceFor(window)->geometry() == remembered && !surfaceFor(window)->isMinimized(),
+                "reopening after minimizing restores a visible normal window");
+    }
+    flushEvents();
+    clearGeometry();
+    require(settings.setTranslationWindowSize(QSize(680, 460)), "seed legacy translation size");
+    {
+        StandaloneTranslationWindow window(&client);
+        window.showTranslation(QStringLiteral("legacy"), qApp->primaryScreen());
+        flushEvents();
+        QWidget* surface = surfaceFor(window);
+        require(surface->size() == QSize(680, 460).boundedTo(available.size()) &&
+                    (surface->geometry().center() - available.center()).manhattanLength() <= 2,
+                "legacy size preferences remain centered until a position is saved");
+    }
+    flushEvents();
+    require(configuration.setValue(QStringLiteral("interface/translation_window_geometry"),
+                                   QJsonObject{{QStringLiteral("x"), QStringLiteral("invalid")}}),
+            "seed malformed translation geometry");
+    {
+        StandaloneTranslationWindow window(&client);
+        window.showTranslation(QStringLiteral("invalid geometry"), qApp->primaryScreen());
+        flushEvents();
+        require(surfaceFor(window)->size() == QSize(680, 460).boundedTo(available.size()),
+                "malformed geometry falls back to the legacy size");
+    }
+    flushEvents();
+    for (const QRect& saved :
+         {QRect(50000, 40000, 681, 461), QRect(available.topLeft(), QSize(10000, 10000)),
+          QRect(available.topLeft(), QSize(40, 40))}) {
+        require(settings.setTranslationWindowGeometry(saved), "seed geometry to fit to display");
+        StandaloneTranslationWindow window(&client);
+        window.showTranslation(QStringLiteral("fit geometry"), qApp->primaryScreen());
+        flushEvents();
+        QWidget* surface = surfaceFor(window);
+        require(available.contains(surface->geometry()) &&
+                    surface->size() ==
+                        saved.size().expandedTo(QSize(650, 400)).boundedTo(available.size()),
+                "remembered geometry fits the current screen and minimum window size");
+        window.close();
+        flushEvents();
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -483,6 +636,7 @@ int main(int argc, char** argv) {
     directTextRouting();
     routingAndCancellation();
     pageActionsAndLifecycle();
+    windowGeometryMemory();
     storage.shutdown();
     return 0;
 }

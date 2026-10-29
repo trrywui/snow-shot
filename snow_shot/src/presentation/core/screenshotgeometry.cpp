@@ -2,7 +2,6 @@
 
 #include "snow_shot/platform/windows/monitorgeometry.h"
 #include "snow_shot/presentation/screenshotdisplaysession.h"
-#include "snow_shot/presentation/screenshotselectionlimits.h"
 
 #include <QGuiApplication>
 #include <QScreen>
@@ -42,18 +41,6 @@ QSize scaledSelectionPixelSize(const QSize& selection, qreal scale) {
 
 QSize screenshotSelectionRenderedPixelSize(const QSize& selection, qreal scale) {
     return scaledSelectionPixelSize(selection, scale);
-}
-
-int screenshotSelectionRenderedShadowPixels(int shadowWidth, qreal scale) {
-    if (shadowWidth <= 0 || !std::isfinite(scale) || scale <= 0.0) {
-        return 0;
-    }
-    const double scaled = static_cast<double>(shadowWidth) * scale;
-    if (!std::isfinite(scaled)) {
-        return 0;
-    }
-    return std::clamp(qRound(scaled), 0,
-                      snow_shot::presentation::kScreenshotSelectionShadowWidthMax);
 }
 
 ScreenshotSelectionRenderSpec

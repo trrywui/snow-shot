@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 
 class QWidget;
 
@@ -13,6 +14,7 @@ class MacModalSession {
   virtual void beginHide() = 0;
 };
 
-std::unique_ptr<MacModalSession> createMacModalSession(QWidget* surface, QWidget* blocker);
+std::unique_ptr<MacModalSession> createMacModalSession(
+    QWidget* surface, QWidget* blocker, std::function<void(bool)> interactionChanged);
 
 }  // namespace adqt::widgets::detail

@@ -89,7 +89,7 @@ ScreenshotOverlayInputHandler::effectHandleAt(const ScreenshotOverlayWindow* ove
     if (!layout.available || m_context.interaction.dragging())
         return ScreenshotSelectionEffectHandle::None;
     if (QLineF(localPosition, layout.shadow).length() <= kScreenshotSelectionShadowControlHitRadius)
-        return ScreenshotSelectionEffectHandle::Shadow;
+        return ScreenshotSelectionEffectHandle::Width;
     const auto hovered = m_context.interaction.hoveredEffectHandle();
     if (screenshotSelectionRadiusHandle(hovered) &&
         QLineF(localPosition, layout.position(hovered)).length() <= 8)
@@ -110,7 +110,7 @@ bool ScreenshotOverlayInputHandler::updateEffectHover(ScreenshotOverlayWindow* o
             handle = layout.nearestCorner(localPosition, 18);
         if (QLineF(localPosition, layout.shadow).length() <=
             kScreenshotSelectionShadowControlHitRadius)
-            handle = ScreenshotSelectionEffectHandle::Shadow;
+            handle = ScreenshotSelectionEffectHandle::Width;
     }
     if (m_context.interaction.hoveredEffectHandle() != handle) {
         m_context.interaction.setHoveredEffectHandle(handle);
@@ -130,8 +130,8 @@ bool ScreenshotOverlayInputHandler::beginEffectDrag(ScreenshotOverlayWindow* ove
     if (handle == ScreenshotSelectionEffectHandle::None)
         return false;
     const auto layout = effectLayout(overlay);
-    const int original = handle == ScreenshotSelectionEffectHandle::Shadow
-                             ? m_context.selection.shadowWidth()
+    const int original = handle == ScreenshotSelectionEffectHandle::Width
+                             ? m_context.selection.effectWidth()
                              : m_context.selection.cornerRadius();
     QPointer<SnowCanvasWidget> grab = m_context.actions.effectCanvas(overlay);
     auto* selection = &m_context.selection;
@@ -141,8 +141,8 @@ bool ScreenshotOverlayInputHandler::beginEffectDrag(ScreenshotOverlayWindow* ove
              [this, selection, handle, original, grab] {
                  m_consumeEffectRelease = true;
                  m_effectMouseGrab.clear();
-                 if (handle == ScreenshotSelectionEffectHandle::Shadow)
-                     static_cast<void>(selection->setShadowWidth(original));
+                 if (handle == ScreenshotSelectionEffectHandle::Width)
+                     static_cast<void>(selection->setEffectWidth(original));
                  else
                      static_cast<void>(selection->setCornerRadius(original));
                  if (grab != nullptr) {
@@ -167,7 +167,7 @@ void ScreenshotOverlayInputHandler::updateEffectDrag(const QPointF& canvasPositi
     const auto gesture = *m_context.interaction.effectGesture();
     const QPointF delta = canvasPosition - gesture.pressPosition;
     int value = gesture.originalValue;
-    if (gesture.handle == ScreenshotSelectionEffectHandle::Shadow) {
+    if (gesture.handle == ScreenshotSelectionEffectHandle::Width) {
         value = qRound(std::clamp(
             value + delta.x() * gesture.shadowDragDirection, 0.0,
             static_cast<qreal>(snow_shot::presentation::kScreenshotSelectionShadowWidthMax)));
@@ -181,8 +181,8 @@ void ScreenshotOverlayInputHandler::updateEffectDrag(const QPointF& canvasPositi
     if (m_context.actions.previewSelectionEffect)
         m_context.actions.previewSelectionEffect(gesture.handle, value);
     else {
-        const bool changed = gesture.handle == ScreenshotSelectionEffectHandle::Shadow
-                                 ? m_context.selection.setShadowWidth(value)
+        const bool changed = gesture.handle == ScreenshotSelectionEffectHandle::Width
+                                 ? m_context.selection.setEffectWidth(value)
                                  : m_context.selection.setCornerRadius(value);
         if (changed)
             m_context.actions.updateOverlayState();
@@ -193,8 +193,8 @@ void ScreenshotOverlayInputHandler::finishEffectDrag(ScreenshotOverlayWindow* ov
                                                      const QPointF& localPosition) {
     const auto gesture = *m_context.interaction.effectGesture();
     updateEffectDrag(virtualPositionForOverlay(overlay, localPosition));
-    const int value = gesture.handle == ScreenshotSelectionEffectHandle::Shadow
-                          ? m_context.selection.shadowWidth()
+    const int value = gesture.handle == ScreenshotSelectionEffectHandle::Width
+                          ? m_context.selection.effectWidth()
                           : m_context.selection.cornerRadius();
     m_context.interaction.finishEffectDrag();
     if (m_effectMouseGrab != nullptr && QWidget::mouseGrabber() == m_effectMouseGrab)
@@ -1400,6 +1400,10 @@ void ScreenshotOverlayInputHandler::executeConfiguredCompletionAction(const QStr
         actionId = QStringLiteral("quick_save");
     } else if (action == QStringLiteral("pin")) {
         actionId = QStringLiteral("pin_to_screen");
+    } else if (action == QStringLiteral("ocr")) {
+        actionId = QStringLiteral("text_recognition");
+    } else if (action == QStringLiteral("ocr_copy")) {
+        actionId = QStringLiteral("text_recognition_copy");
     } else {
         return;
     }

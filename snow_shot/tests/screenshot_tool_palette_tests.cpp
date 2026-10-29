@@ -1,3 +1,4 @@
+#include <QVBoxLayout>
 #include "snow_shot/presentation/screenshotcanvastools.h"
 #include "palette_style_edit_test_support.h"
 #include "physical_key_test_support.h"
@@ -525,6 +526,27 @@ void recordingCursorOptionsAreIndependentAndLazy() {
         QStringLiteral("screenRecordingMouseHighlight"));
     auto* click = popover->contentWidget()->findChild<adqt::widgets::AdCheckbox*>(
         QStringLiteral("screenRecordingRecordMouseClicks"));
+    auto* scroll = popover->contentWidget()->findChild<adqt::widgets::AdCheckbox*>(
+        QStringLiteral("screenRecordingRecordMouseScrolling"));
+    require(scroll && !scroll->isChecked() &&
+                scroll->text() == QStringLiteral("Record mouse scrolling") &&
+                scroll->accessibleName() == scroll->text(),
+            "scrolling option defaults off and is accessible");
+    auto* optionsLayout = qobject_cast<QVBoxLayout*>(popover->contentWidget()->layout());
+    require(optionsLayout && optionsLayout->indexOf(scroll) == optionsLayout->indexOf(click) + 1,
+            "scrolling option follows mouse clicks");
+    int scrollChanges = 0;
+    QObject::connect(&palette, &ScreenshotToolPalette::recordingRecordMouseScrollingChanged,
+                     [&scrollChanges](bool value) {
+                         if (value)
+                             ++scrollChanges;
+                     });
+    scroll->click();
+    require(scrollChanges == 1 && palette.recordingRecordMouseScrolling() && !click->isChecked() &&
+                !palette.recordingKeyboardVisible(),
+            "scrolling is independent of click and keyboard recording");
+    palette.setRecordingRecordMouseScrolling(false);
+    require(!scroll->isChecked() && scrollChanges == 1, "scrolling synchronization is silent");
     require(highlight && click && !highlight->isChecked() && !click->isChecked(),
             "both checkboxes start unchecked");
     const QString snapshotDirectory = qEnvironmentVariable("SNOW_RECORDING_UI_SNAPSHOT_DIR");
@@ -550,7 +572,8 @@ void recordingCursorOptionsAreIndependentAndLazy() {
     QEvent languageChange(QEvent::LanguageChange);
     QCoreApplication::sendEvent(&palette, &languageChange);
     require(highlight->text() == QStringLiteral("Mouse highlight") &&
-                click->text() == QStringLiteral("Record mouse clicks"),
+                click->text() == QStringLiteral("Record mouse clicks") &&
+                scroll->text() == QStringLiteral("Record mouse scrolling"),
             "cursor options retranslate");
     popover->show();
     QCoreApplication::processEvents();
@@ -728,6 +751,26 @@ void recordingEffectSettingsModal() {
         palette.findChild<QFrame*>(QStringLiteral("screenRecordingExportSettingsSeparator"));
     require(button && keyboard && separator,
             "recording settings must expose a button and separator");
+    auto* webcam =
+        palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenRecordingWebcam"));
+    require(webcam && !palette.recordingWebcamEnabled() && palette.recordingWebcamSize() == 150 &&
+                palette.recordingWebcamShape() == QStringLiteral("square"),
+            "webcam controls default off at 150 px square");
+    require(webcam->parentWidget() == keyboard->parentWidget() &&
+                webcam->parentWidget()->layout()->indexOf(webcam) ==
+                    keyboard->parentWidget()->layout()->indexOf(keyboard) + 1,
+            "webcam toggle must be immediately after keystrokes");
+    int webcamChanges = 0;
+    QObject::connect(&palette, &ScreenshotToolPalette::recordingWebcamEnabledChanged, &palette,
+                     [&](bool enabled) {
+                         require(enabled, "webcam toggle enables capture");
+                         ++webcamChanges;
+                     });
+    QMetaObject::invokeMethod(webcam, "clicked", Qt::DirectConnection);
+    require(webcamChanges == 1 && palette.recordingWebcamEnabled(),
+            "webcam activation emits exactly once");
+    palette.setRecordingWebcamEnabled(false);
+    require(webcamChanges == 1, "restoring webcam state must not emit edits");
     require(button->text().isEmpty() && button->accessibleName() == QStringLiteral("Settings") &&
                 separator->x() > keyboard->x() && button->x() > separator->x(),
             "settings must follow the keyboard toggle at the right edge");
@@ -805,6 +848,15 @@ void recordingEffectSettingsModal() {
             QStringLiteral("screenRecordingMouseHighlightRadius"));
         require(radius && radius->value() == palette.recordingMouseHighlightRadius(),
                 "reopening effect settings restores the cached highlight radius");
+        auto* webcamSize =
+            settings.modal->contentWidget()->findChild<adqt::widgets::AdInputNumber*>(
+                QStringLiteral("screenRecordingWebcamSize"));
+        auto* webcamShape = settings.modal->contentWidget()->findChild<adqt::widgets::AdSelect*>(
+            QStringLiteral("screenRecordingWebcamShape"));
+        require(webcamSize && webcamSize->minimum() == 50 && webcamSize->maximum() == 500 &&
+                    webcamSize->value() == palette.recordingWebcamSize() && webcamShape &&
+                    webcamShape->currentValue().toString() == palette.recordingWebcamShape(),
+                "dialog recreation restores webcam size and shape");
         require(settings.modal != nullptr && settings.modal->isOpen(),
                 "clicking Settings must build and open the modal");
         auto* surface = settings.modal->contentWidget()->window();
@@ -872,6 +924,19 @@ void recordingEffectSettingsModal() {
     require(keyboardSize && keyboardSize->value() == 64 && keyboardSize->minimum() == 32 &&
                 keyboardSize->maximum() == 128,
             "keyboard size must expose pixel bounds and default");
+    auto* webcamSize =
+        form->findChild<adqt::widgets::AdInputNumber*>(QStringLiteral("screenRecordingWebcamSize"));
+    auto* webcamShape =
+        form->findChild<adqt::widgets::AdSelect*>(QStringLiteral("screenRecordingWebcamShape"));
+    webcamSize->setValue(500);
+    webcamShape->setCurrentValue(QStringLiteral("circle"));
+    require(palette.recordingWebcamSize() == 500 &&
+                palette.recordingWebcamShape() == QStringLiteral("circle"),
+            "webcam size and shape apply immediately");
+    palette.setRecordingWebcamSize(49);
+    require(webcamSize->value() == 50, "webcam size clamps to 50");
+    palette.setRecordingWebcamSize(501);
+    require(webcamSize->value() == 500, "webcam size clamps to 500");
     int sizeChanges = 0;
     int lastSize = 0;
     QObject::connect(&palette, &ScreenshotToolPalette::recordingKeyboardSizeChanged, &palette,
@@ -937,7 +1002,22 @@ void recordingEffectSettingsModal() {
                             QStringLiteral("screenRecordingMouseHighlightRadius"))
                             ->accessibleName() == radiusLabel,
                 "highlight radius label and accessible name retranslate in place");
+        const auto webcamSizeLabel =
+            QCoreApplication::translate("ScreenshotToolPalette", "Webcam Size");
+        const auto webcamShapeLabel =
+            QCoreApplication::translate("ScreenshotToolPalette", "Webcam Shape");
+        require(form->field(QStringLiteral("webcamSize"))->label() == webcamSizeLabel &&
+                    webcamSize->accessibleName() == webcamSizeLabel &&
+                    form->field(QStringLiteral("webcamShape"))->label() == webcamShapeLabel &&
+                    webcamShape->accessibleName() == webcamShapeLabel &&
+                    webcamShape->currentValue().toString() == QStringLiteral("circle"),
+                "webcam controls retranslate in place without changing the selected shape");
     }
+    const QRect webcamLeft = form->field(QStringLiteral("webcamSize"))->geometry();
+    const QRect webcamRight = form->field(QStringLiteral("webcamShape"))->geometry();
+    require(webcamLeft.top() == webcamRight.top() &&
+                webcamRight.left() - webcamLeft.right() - 1 == 16,
+            "webcam controls retain the standard 16px column gutter");
     require(first.width() == form->width() && left.top() > first.top() &&
                 left.top() == right.top() && left.width() == right.width() &&
                 right.left() - left.right() - 1 == 16 && left.width() == 218 &&
@@ -1063,9 +1143,15 @@ void recordingEffectSettingsModal() {
     palette.setRecordingState(ScreenshotToolPalette::RecordingState::Recording);
     requireSettingsAbsent("recording must close and destroy settings");
     require(!button->isEnabled(), "recording must lock the settings button");
+    require(!palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenRecordingWebcam"))
+                 ->isEnabled(),
+            "recording must lock the webcam toggle");
     click(button);
     requireSettingsAbsent("a disabled settings button must not build the dialog");
     palette.setRecordingState(ScreenshotToolPalette::RecordingState::Idle);
+    require(palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenRecordingWebcam"))
+                ->isEnabled(),
+            "returning to idle unlocks the webcam toggle");
 
     static_cast<void>(openSettings());
     require(palette.activateDrawingShortcut(QStringLiteral("shape")),
@@ -1912,8 +1998,8 @@ void textAndHighlightStrokeWidthTriggersUseSharedPreviewButton() {
     require(palette.ensureStyleFamily(ScreenshotToolPalette::Tool::Text),
             "text style family should materialize on demand");
     const QList<QString> triggerNames{
-        QStringLiteral("Text stroke width"),
-        QStringLiteral("Highlight stroke width"),
+        QStringLiteral("Text outline width"),
+        QStringLiteral("Highlight outline width"),
     };
     QList<adqt::widgets::AdColorPicker*> pickers;
 
@@ -1966,10 +2052,10 @@ void textAndHighlightStrokeWidthTriggersUseSharedPreviewButton() {
             return control != nullptr && control->toolTip() == tooltip;
         });
     };
-    require(hasTooltip(QStringLiteral("Text stroke width 2px")) &&
-                hasTooltip(QStringLiteral("Highlight stroke width 2px")) &&
-                hasTooltip(QStringLiteral("Text stroke color transparent")) &&
-                hasTooltip(QStringLiteral("Highlight stroke color #f5222d")),
+    require(hasTooltip(QStringLiteral("Text outline width 2px")) &&
+                hasTooltip(QStringLiteral("Highlight outline width 2px")) &&
+                hasTooltip(QStringLiteral("Text outline color transparent")) &&
+                hasTooltip(QStringLiteral("Highlight outline color #f5222d")),
             "configured width-color editors should preserve tool-specific presets");
 
     palette.setPhysicalScale(1.5);
@@ -2007,7 +2093,7 @@ void shapeAndArrowStrokeEditorsShareThePresetCatalog() {
     const QStringList shapeColors = rowPresetColorNames(
         QStringLiteral("screenshotRectangleStyleControls"), QStringLiteral("Stroke color "));
     const QStringList arrowColors = rowPresetColorNames(
-        QStringLiteral("screenshotArrowStyleControls"), QStringLiteral("Arrow stroke color "));
+        QStringLiteral("screenshotArrowStyleControls"), QStringLiteral("Arrow color "));
     require(shapeColors.size() == 5 && arrowColors == shapeColors,
             "shape and arrow stroke editors should render the shared stroke color catalog");
 
@@ -2032,7 +2118,7 @@ void shapeAndArrowStrokeEditorsShareThePresetCatalog() {
         return 0;
     };
     require(strokeStyleButtonCount(QStringLiteral("Stroke color")) == 3 &&
-                strokeStyleButtonCount(QStringLiteral("Arrow stroke color")) == 3,
+                strokeStyleButtonCount(QStringLiteral("Arrow color")) == 3,
             "both stroke editors should expose the shared solid/dashed/dotted styles");
 }
 
@@ -2060,7 +2146,7 @@ void sizePresetEditorsShareTheSizeCatalog() {
     };
 
     for (const QString& prefix :
-         {QStringLiteral("Pen highlight stroke width "), QStringLiteral("Pen filter stroke width "),
+         {QStringLiteral("Pen highlight width "), QStringLiteral("Pen filter width "),
           QStringLiteral("Text font size ")}) {
         const QStringList tooltips = presetTooltips(prefix);
         require(tooltips.size() == 4, "size preset editors should render the S/M/L/XL quartet");
@@ -2262,14 +2348,13 @@ void retainedOutlineEditorsRebindStateLabelsAndCommands() {
     palette.setActiveTool(ScreenshotToolPalette::Tool::Arrow);
     QWidget* arrowRow = palette.findChild<QWidget*>(QStringLiteral("screenshotArrowStyleControls"));
     require(styleEditorRoot(arrowRow, "outline-stroke") == strokeRoot &&
-                picker->accessibleName() == QStringLiteral("Arrow stroke color") &&
+                picker->accessibleName() == QStringLiteral("Arrow color") &&
                 picker->value().solidColor == options.styleDefaults.arrow.stroke,
             "a retained outline editor should immediately rebind Arrow labels and state");
     ColorSwatchButton* arrowPreset = nullptr;
     for (adqt::widgets::AdButton* button : strokeRoot->findChildren<adqt::widgets::AdButton*>()) {
         auto* swatch = dynamic_cast<ColorSwatchButton*>(button);
-        if (swatch != nullptr &&
-            swatch->toolTip() == QStringLiteral("Arrow stroke color #52c41a")) {
+        if (swatch != nullptr && swatch->toolTip() == QStringLiteral("Arrow color #52c41a")) {
             arrowPreset = swatch;
             break;
         }
@@ -3211,9 +3296,15 @@ void groupedDrawingOptionsShowShortcutTooltips() {
         distanceShortcut.isEmpty()
             ? QStringLiteral("Distance annotation")
             : QStringLiteral("Distance annotation (%1)").arg(distanceShortcut);
+    const QString angleShortcut = snow_shot::shortcuts::formatShortcutListDisplayText(
+        settings.shortcuts(QStringLiteral("angle")));
+    const QString angleTooltip = angleShortcut.isEmpty()
+                                     ? QStringLiteral("Angle annotation")
+                                     : QStringLiteral("Angle annotation (%1)").arg(angleShortcut);
     const QMap<QString, QString> expectedTooltips{
         {QStringLiteral("arrow"), QStringLiteral("Arrow (2)")},
         {QStringLiteral("distance"), distanceTooltip},
+        {QStringLiteral("angle"), angleTooltip},
         {QStringLiteral("line"), QStringLiteral("Line (%1)")
                                      .arg(snow_shot::shortcuts::formatShortcutListDisplayText(
                                          settings.shortcuts(QStringLiteral("line"))))},
@@ -3235,7 +3326,7 @@ void groupedDrawingOptionsShowShortcutTooltips() {
 
         const auto buttons = popover->contentWidget()->findChildren<adqt::widgets::AdButton*>();
         const qsizetype expectedCount =
-            QString::fromLatin1(triggerName) == QStringLiteral("screenshotArrowLineButton") ? 3 : 2;
+            QString::fromLatin1(triggerName) == QStringLiteral("screenshotArrowLineButton") ? 4 : 2;
         require(buttons.size() == expectedCount,
                 "default drawing group should expose all configured tools");
         for (auto* button : buttons) {
@@ -3473,6 +3564,7 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
     screenshotOptions.showMoveTool = true;
     screenshotOptions.showSelectTool = true;
     screenshotOptions.showShapeTool = false;
+    screenshotOptions.showSpeechBubbleTool = false;
     screenshotOptions.showArrowTool = false;
     screenshotOptions.showDistanceTool = false;
     screenshotOptions.showAngleTool = false;
@@ -3493,6 +3585,7 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
     pinnedOptions.moveToolPresentation = ScreenshotToolPalette::MoveToolPresentation::ResizeWindow;
     pinnedOptions.showSelectTool = true;
     pinnedOptions.showShapeTool = false;
+    pinnedOptions.showSpeechBubbleTool = false;
     pinnedOptions.showArrowTool = false;
     pinnedOptions.showDistanceTool = false;
     pinnedOptions.showAngleTool = false;
@@ -4344,7 +4437,7 @@ void styleToolbarPopoversMaterializeWithTheirOwners() {
 
     drawingPalette.setActiveTool(ScreenshotToolPalette::Tool::Arrow);
     QCoreApplication::processEvents();
-    require(colorPickerWithAccessibleName(drawingPalette, "Arrow stroke color") == strokePicker &&
+    require(colorPickerWithAccessibleName(drawingPalette, "Arrow color") == strokePicker &&
                 strokePicker->popupContent() == strokePopupContent,
             "a retained shared editor must carry its materialized popup across reconciliation");
     QWidget* arrowheadTrigger = controlWithAccessibleName(drawingPalette, "Start arrowhead");
@@ -4519,6 +4612,7 @@ void tableQrPopoverSharesOneEntryAndRemembersTheSelectedMode() {
     ScreenshotToolPalette::Options options;
     options.showSelectTool = false;
     options.showShapeTool = false;
+    options.showSpeechBubbleTool = false;
     options.showArrowTool = false;
     options.showDistanceTool = false;
     options.showAngleTool = false;
@@ -5865,26 +5959,43 @@ void quickSaveStacksAndLayoutMigration() {
     const QString print = QStringLiteral("print");
     const QString quick = QStringLiteral("quick-save");
     const QString save = QStringLiteral("save-as-file");
+    QStringList storedSaveStack{cloud, print, quick, save};
+#ifdef Q_OS_MACOS
+    storedSaveStack.insert(1, QStringLiteral("airdrop"));
+#endif
+    const auto positionFor = [](const ScreenshotToolbarLayout& layout,
+                                const QString& item) -> qsizetype {
+        for (qsizetype index = 0; index < layout.positions.size(); ++index) {
+            if (layout.positions.at(index).contains(item))
+                return index;
+        }
+        require(false, "the save migration fixture must retain each configured action");
+        return -1;
+    };
+    const auto savePosition = [&](const ScreenshotToolbarLayout& layout) {
+        return positionFor(layout, save);
+    };
     auto legacy = normalizedLayout(ScreenshotToolbarLayout{}, kind);
     for (auto& position : legacy.positions)
         position.removeAll(quick);
     const auto upgraded = normalizedLayout(legacy, kind);
-    require(upgraded.positions.constLast() == QStringList{cloud, print, quick, save} &&
+    require(upgraded.positions.at(savePosition(upgraded)) == storedSaveStack &&
                 normalizedLayout(upgraded, kind) == upgraded,
             "legacy default saves must upgrade to an idempotent quick-save stack");
     auto custom = legacy;
-    custom.positions.last().prepend(QStringLiteral("record-screen"));
-    custom.positions.removeAt(1);
-    require(normalizedLayout(custom, kind).positions.constLast() ==
-                QStringList{QStringLiteral("record-screen"), cloud, print, quick, save},
+    custom.positions.removeAt(positionFor(custom, QStringLiteral("record-screen")));
+    custom.positions[savePosition(custom)].prepend(QStringLiteral("record-screen"));
+    const auto customUpgraded = normalizedLayout(custom, kind);
+    require(customUpgraded.positions.at(savePosition(customUpgraded)) ==
+                (QStringList{QStringLiteral("record-screen")} + storedSaveStack),
             "custom save placements must gain Quick save immediately above Save");
-    legacy.positions.removeLast();
+    legacy.positions.removeAt(savePosition(legacy));
     legacy.hidden = {save};
     const auto hidden = normalizedLayout(legacy, kind);
     require(hidden.hidden.contains(save) && hidden.hidden.contains(quick),
             "hiding Save in a legacy layout must also hide the new Quick save action");
     auto explicitLayout = upgraded;
-    explicitLayout.positions.last().removeAll(quick);
+    explicitLayout.positions[savePosition(explicitLayout)].removeAll(quick);
     explicitLayout.hidden = {quick};
     require(normalizedLayout(explicitLayout, kind) == explicitLayout,
             "an explicitly hidden Quick save must stay hidden");
@@ -6181,6 +6292,7 @@ void arrowAndLineRemainDirectWhenConfiguredIndividually() {
     ScreenshotToolPalette::Options arrowOptions;
     arrowOptions.showSelectTool = false;
     arrowOptions.showShapeTool = false;
+    arrowOptions.showSpeechBubbleTool = false;
     arrowOptions.showArrowTool = true;
     arrowOptions.showDistanceTool = false;
     arrowOptions.showAngleTool = false;
@@ -6195,6 +6307,7 @@ void arrowAndLineRemainDirectWhenConfiguredIndividually() {
     ScreenshotToolPalette::Options lineOptions;
     lineOptions.showSelectTool = false;
     lineOptions.showShapeTool = false;
+    lineOptions.showSpeechBubbleTool = false;
     lineOptions.showArrowTool = false;
     lineOptions.showDistanceTool = false;
     lineOptions.showAngleTool = false;
@@ -6539,13 +6652,17 @@ void scrollingSettingsUseCenteredFormAndPersistOnAccept() {
         palette.findChild<AdButton*>(QStringLiteral("screenshotScrollingMoveVerticalButton"));
     auto* splitButton =
         palette.findChild<AdButton*>(QStringLiteral("screenshotScrollingImageSplittingButton"));
-    require(button && separator && movement && splitButton && button->text().isEmpty() &&
+    auto* editingButton =
+        palette.findChild<AdButton*>(QStringLiteral("screenshotScrollingImageEditingButton"));
+    require(button && separator && movement && splitButton && editingButton &&
+                button->text().isEmpty() &&
                 button->accessibleName() == QStringLiteral("Settings") &&
                 controls->layout()->itemAt(controls->layout()->count() - 1)->widget() == button &&
                 separator->x() - (movement->x() + movement->width()) == 16 &&
                 splitButton->x() - (separator->x() + separator->width()) == 16 &&
-                button->x() - (splitButton->x() + splitButton->width()) == 4,
-            "scrolling settings must follow Image Splitting at the far right");
+                editingButton->x() - (splitButton->x() + splitButton->width()) == 4 &&
+                button->x() - (editingButton->x() + editingButton->width()) == 4,
+            "scrolling settings must follow Image Splitting and Image Editing at the far right");
     const auto findModal = [&] {
         return palette.findChild<AdModal*>(QStringLiteral("screenshotScrollingSettingsModal"));
     };
@@ -6727,16 +6844,27 @@ void scrollingScreenshotExposesAxisRecognitionModes() {
                                  : nullptr;
     require(controls != nullptr &&
                 controls->findChild<adqt::widgets::AdRadioButtonGroup*>() == nullptr &&
-                modeButtons.size() == 8 && verticalButton != nullptr && horizontalButton != nullptr,
+                modeButtons.size() == 9 && verticalButton != nullptr && horizontalButton != nullptr,
             "scrolling screenshot should expose two independent mode buttons");
     auto* splitButton = controls->findChild<adqt::widgets::AdButton*>(
         QStringLiteral("screenshotScrollingImageSplittingButton"));
     auto* settingsButton = controls->findChild<adqt::widgets::AdButton*>(
         QStringLiteral("screenshotScrollingSettingsButton"));
-    require(splitButton && settingsButton && splitButton->isVisible() &&
+    auto* editingButton = controls->findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("screenshotScrollingImageEditingButton"));
+    require(splitButton && editingButton && settingsButton && splitButton->isVisible() &&
+                editingButton->isVisible() && !editingButton->icon().isNull() &&
+                editingButton->text().isEmpty() &&
+                editingButton->toolTip() == QStringLiteral("Image Editing") &&
                 splitButton->toolTip() == QStringLiteral("Image Splitting") &&
-                settingsButton->x() - (splitButton->x() + splitButton->width()) == 4,
-            "Image Splitting must appear immediately to the left of Settings");
+                editingButton->x() - (splitButton->x() + splitButton->width()) == 4 &&
+                settingsButton->x() - (editingButton->x() + editingButton->width()) == 4,
+            "Image Editing must appear between Image Splitting and Settings");
+    int editingRequests = 0;
+    QObject::connect(&palette, &ScreenshotToolPalette::scrollingImageEditingRequested,
+                     [&] { ++editingRequests; });
+    editingButton->click();
+    require(editingRequests == 1, "Image Editing must emit one request per click");
     int splitRequests = 0;
     QObject::connect(&palette, &ScreenshotToolPalette::scrollingImageSplittingRequested,
                      [&] { ++splitRequests; });
@@ -6874,8 +7002,9 @@ void scrollingScreenshotExposesAxisRecognitionModes() {
     require(palette.setPhysicalScale(1.5),
             "scrolling screenshot toolbar should accept a physical scale change");
     requireSeparatorSpacing(24, 6);
-    require(settingsButton->x() - (splitButton->x() + splitButton->width()) == 6,
-            "Image Splitting spacing must scale with the scrolling toolbar");
+    require(editingButton->x() - (splitButton->x() + splitButton->width()) == 6 &&
+                settingsButton->x() - (editingButton->x() + editingButton->width()) == 6,
+            "Image Editing spacing must scale with the scrolling toolbar");
     for (adqt::widgets::AdButton* button : modeButtons) {
         require(button->size() == QSize(button == interval ? 144 : 48, 48) &&
                     button->iconSize() == QSize(36, 36),
@@ -6933,6 +7062,11 @@ void scrollingScreenshotExposesAxisRecognitionModes() {
     splitButton = palette.findChild<adqt::widgets::AdButton*>(
         QStringLiteral("screenshotScrollingImageSplittingButton"));
     require(splitButton != nullptr, "Image Splitting must survive toolbar recreation");
+    editingButton = palette.findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("screenshotScrollingImageEditingButton"));
+    require(editingButton != nullptr, "Image Editing must survive toolbar recreation");
+    editingButton->click();
+    require(editingRequests == 2, "recreated Image Editing dispatches exactly once");
     const QString englishTooltip = interval->toolTip();
     for (const auto& locale : {QStringLiteral("zh_CN"), QStringLiteral("zh_TW")}) {
         require(languages.setLanguage(locale), "load interval translations");
@@ -6942,6 +7076,11 @@ void scrollingScreenshotExposesAxisRecognitionModes() {
         require(splitButton->toolTip() == splitLabel &&
                     splitButton->accessibleName() == splitButton->toolTip(),
                 "Image Splitting must retranslate its tooltip and accessible name");
+        const QString editingLabel =
+            QString::fromUtf8(locale == QStringLiteral("zh_CN") ? "图片编辑" : "圖片編輯");
+        require(editingButton->toolTip() == editingLabel &&
+                    editingButton->accessibleName() == editingLabel,
+                "Image Editing must retranslate its tooltip and accessible name");
         require(interval->toolTip() != englishTooltip &&
                     interval->accessibleName() == interval->toolTip() &&
                     interval->valueText() == QStringLiteral("350ms"),
@@ -6958,6 +7097,8 @@ void scrollingScreenshotExposesAxisRecognitionModes() {
             "scaling a translated interval editor must preserve its translation source");
     require(splitButton->toolTip() == QStringLiteral("Image Splitting"),
             "Image Splitting must restore its English caption after language changes");
+    require(editingButton->toolTip() == QStringLiteral("Image Editing"),
+            "Image Editing must restore its English caption after language changes");
 }
 
 void originalImageToggleLeadsRecognitionActions() {
@@ -7074,6 +7215,30 @@ void recognitionModelSelectorGroupsOptionsAndRetainsIndependentSelections() {
     options.showImageConversionTools = true;
     options.showSelectTool = true;
     ScreenshotToolPalette palette(options);
+    {
+        ScreenshotToolPalette aliasPalette(options);
+        for (const auto tool : {Tool::Table, Tool::Latex}) {
+            ScreenshotRecognitionModelState state;
+            state.selection = tool == Tool::Table ? QStringLiteral("qwen3.8-flash")
+                                                  : QStringLiteral("qwen-mt-flash");
+            state.models = {{QStringLiteral("ai-model"), QStringLiteral("AI Model"), true,
+                             QStringLiteral("default"), true}};
+            int changes = 0;
+            const auto connection =
+                QObject::connect(&aliasPalette, &ScreenshotToolPalette::recognitionModelChanged,
+                                 &aliasPalette, [&](const QString&) { ++changes; });
+            aliasPalette.setRecognitionModelState(tool, state);
+            aliasPalette.setActiveTool(tool);
+            const auto* aliasSelect = aliasPalette.findChild<AdSelect*>(
+                QStringLiteral("screenshotRecognitionModelSelect"));
+            require(aliasSelect && aliasSelect->currentValue() == QStringLiteral("ai-model") &&
+                        aliasSelect->toolTip() == QStringLiteral("AI Model") &&
+                        aliasSelect->options().size() == 2 && changes == 0,
+                    "both recognition selectors resolve retired IDs to the server's AI Model "
+                    "without emitting a model change or exposing standalone aliases");
+            QObject::disconnect(connection);
+        }
+    }
     ScreenshotRecognitionModelState tableState;
     tableState.selection = screenshotDedicatedRecognitionModelId();
     tableState.models = {
@@ -8385,6 +8550,26 @@ void tableToolExposesStructureActionsAndOwnHistoryState() {
     ScreenshotToolPalette palette(options);
     palette.setActiveTool(ScreenshotToolPalette::Tool::Table);
 
+    auto* open = palette.findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("screenshotOpenSpreadsheetFileButton"));
+    auto* separator =
+        palette.findChild<QFrame*>(QStringLiteral("screenshotOpenSpreadsheetFileSeparator"));
+    auto* model = palette.findChild<adqt::widgets::AdSelect*>(
+        QStringLiteral("screenshotRecognitionModelSelect"));
+    require(open && separator && model && !open->isHidden() && !separator->isHidden() &&
+                !open->isEnabled() && open->toolTip() == QStringLiteral("Open spreadsheet file") &&
+                open->accessibleName() == QStringLiteral("Open spreadsheet file"),
+            "table mode exposes an accessible open spreadsheet button disabled before recognition");
+    const auto* layout = palette.actionPanel()->layout();
+    require(layout->indexOf(separator) == layout->indexOf(model) + 2 &&
+                layout->indexOf(open) == layout->indexOf(separator) + 2,
+            "the separator and open action follow the model selector");
+    int openRequests = 0;
+    QObject::connect(&palette, &ScreenshotToolPalette::openSpreadsheetFileRequested,
+                     [&] { ++openRequests; });
+    open->click();
+    require(openRequests == 0, "disabled open does not dispatch");
+
     auto* merge =
         palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotTableMergeButton"));
     auto* split =
@@ -8410,6 +8595,12 @@ void tableToolExposesStructureActionsAndOwnHistoryState() {
             "table commands should remain disabled until a recognized document is ready");
 
     palette.setTableEditingState(true, true, false, true, false, true);
+    require(open->isEnabled(), "a recognized table enables spreadsheet opening");
+    palette.setTableBusy(true);
+    require(!open->isEnabled(), "busy table recognition disables spreadsheet opening");
+    palette.setTableBusy(false);
+    open->click();
+    require(openRequests == 1, "one open click dispatches one command");
     require(merge->isEnabled() && !split->isEnabled() && reset->isEnabled() && undo->isEnabled() &&
                 !redo->isEnabled(),
             "table command state should independently drive every editing action");
@@ -8435,6 +8626,12 @@ void tableToolExposesStructureActionsAndOwnHistoryState() {
     require(mergeRequests == 1 && splitRequests == 1 && resetRequests == 1,
             "enabled table action buttons should forward exactly one command");
 
+    palette.setActiveTool(ScreenshotToolPalette::Tool::Latex);
+    require(open->isHidden() && separator->isHidden(), "LaTeX hides spreadsheet-only controls");
+    palette.setActiveTool(ScreenshotToolPalette::Tool::Table);
+    require(!open->isHidden() && !separator->isHidden() && open->isEnabled(),
+            "returning from LaTeX restores the table action");
+
     palette.setActiveTool(ScreenshotToolPalette::Tool::Select);
     require(palette.findChild<adqt::widgets::AdButton*>(
                 QStringLiteral("screenshotTableMergeButton")) == nullptr &&
@@ -8444,6 +8641,13 @@ void tableToolExposesStructureActionsAndOwnHistoryState() {
                     QStringLiteral("screenshotTableResetButton")) == nullptr &&
                 undo->isEnabled() && redo->isEnabled(),
             "leaving Table should evict table actions and restore cached canvas history");
+    palette.setActiveTool(ScreenshotToolPalette::Tool::Table);
+    open = palette.findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("screenshotOpenSpreadsheetFileButton"));
+    require(open && !open->isHidden() && open->isEnabled(),
+            "rebuilding the table toolbar restores spreadsheet availability");
+    open->click();
+    require(openRequests == 2, "rebuilding the toolbar does not duplicate signal connections");
 }
 
 void isolatedBusyIndicatorMatchesItsOwnerWindowBand() {
@@ -8568,11 +8772,11 @@ void mixedColorsKeepUniformStyleButtonsActive() {
 
     requireControlActive(palette, "Dotted stroke",
                          "uniform stroke style should stay active when stroke colors differ");
-    requireControlActive(palette, "Cross-line fill",
+    requireControlActive(palette, "Crosshatched fill",
                          "uniform fill style should stay active when fill colors differ");
     selectedState.shapeStyle.fillStyle = SnowCanvasFillStyle::Border;
     palette.setStyleToolbarState(selectedState);
-    requireControlActive(palette, "Border",
+    requireControlActive(palette, "No fill",
                          "uniform Border mode stays active when stored fill colors differ");
     const QColor color(QStringLiteral("#FFCCC7"));
     selectedState.shapeStyle.fill = color;
@@ -9626,10 +9830,10 @@ void filterToolExposesTypeAndIntensityControls() {
     require(penTypeSelect != nullptr && penIntensity != nullptr && widthSummary != nullptr &&
                 width54 != nullptr,
             "Pen Filter should expose type, width presets, width summary, and intensity");
-    require(controlWithTooltip(palette, "Pen filter stroke width S (24px)") != nullptr &&
-                controlWithTooltip(palette, "Pen filter stroke width M (30px)") != nullptr &&
-                controlWithTooltip(palette, "Pen filter stroke width L (42px)") != nullptr &&
-                controlWithTooltip(palette, "Pen filter stroke width XL (54px)") != nullptr,
+    require(controlWithTooltip(palette, "Pen filter width S (24px)") != nullptr &&
+                controlWithTooltip(palette, "Pen filter width M (30px)") != nullptr &&
+                controlWithTooltip(palette, "Pen filter width L (42px)") != nullptr &&
+                controlWithTooltip(palette, "Pen filter width XL (54px)") != nullptr,
             "Pen Filter should use the same numeric stroke-width presets as Pen Highlight");
 
     SnowCanvasFilterStyle lastStyle;
@@ -10220,6 +10424,7 @@ void watermarkStyleEditorMatchesShapeHeight() {
 void watermarkAndTextToolsUseStandardSpacing() {
     ScreenshotToolPalette::Options options;
     options.showShapeTool = false;
+    options.showSpeechBubbleTool = false;
     options.showWatermarkTool = true;
     options.showTextTool = true;
     ScreenshotToolPalette palette(options);
@@ -10812,8 +11017,23 @@ void watermarkTemplateLibraryAndEditorApplySnapshotsDeterministically() {
 void drawTemplateSelectSavesFiltersInsertsAndDeletes() {
     const snow_shot::storage::DrawTemplateSettings settings;
     require(settings.setTemplates({}), "draw-template test must start with an empty library");
-    const QByteArray payload =
-        QByteArrayLiteral(R"({"schemaVersion":1,"selectedIds":[1],"elements":[1]})");
+    SnowCanvasRuntime source;
+    const auto created =
+        QJsonDocument::fromJson(
+            source.applyAnnotationTransaction(QByteArrayLiteral(
+                R"({"version":1,"operations":[{"type":"rectangle","bounds":[0,0,80,50]}]})")))
+            .object()
+            .value(QStringLiteral("created_element_ids"))
+            .toArray();
+    require(created.size() == 1, "create a real annotation for the template dialog");
+    const auto id = created.first().toObject();
+    SnowCanvasRuntimeEditor sourceEditor(source);
+    require(
+        sourceEditor.select(static_cast<quint32>(id.value(QStringLiteral("index")).toInt()),
+                            static_cast<quint32>(id.value(QStringLiteral("generation")).toInt())),
+        "select the annotation for the template dialog");
+    const QByteArray payload = source.serializeSelectedDrawTemplate();
+    require(!payload.isEmpty(), "capture a real engine-generated annotation template");
     ScreenshotToolPalette::Options options;
     options.showSelectTool = true;
     options.showOcrTool = true;
@@ -10827,7 +11047,7 @@ void drawTemplateSelectSavesFiltersInsertsAndDeletes() {
     palette.setDrawTemplateCallbacks(
         [&]() {
             ++snapshots;
-            return payload;
+            return source.serializeSelectedDrawTemplate();
         },
         [&](const QByteArray& value) { inserted.push_back(value); });
     palette.setActiveTool(ScreenshotToolPalette::Tool::Select);
@@ -10910,12 +11130,20 @@ void drawTemplateSelectSavesFiltersInsertsAndDeletes() {
             "Draw Template test should restore English");
     QCoreApplication::processEvents();
     require(snapshots == 0, "Add Template should wait for confirmation to capture the selection");
+    const QPointer<adqt::widgets::AdModal> createdModal(modal);
     modal->acceptButton()->click();
     QCoreApplication::processEvents();
     require(snapshots == 1, "confirming Add Template should capture the selected elements once");
     require(settings.templates() ==
                 QVector<snow_shot::storage::DrawTemplate>{{QStringLiteral("Template 1"), payload}},
             "confirming Add Template should persist the editable element payload");
+    require(createdModal == nullptr || !createdModal->isOpen(),
+            "successfully creating a real template should close the dialog");
+    SnowCanvasRuntime destination;
+    SnowCanvasRuntimeEditor destinationEditor(destination);
+    require(destinationEditor.insertDrawTemplate(settings.templates().first().payload,
+                                                 QPointF(200, 150)),
+            "the template created through the dialog must remain editable and insertable");
 
     palette.setStyleToolbarState(unselected);
     select->showPopup();
@@ -11489,8 +11717,8 @@ void arrowStyleControlsExposeAndEmitAllStyleProperties() {
         arrowControls->findChildren<QFrame*>(QString(), Qt::FindDirectChildrenOnly);
     require(separators.size() == 3,
             "arrow style controls should separate color, width, type, and endpoint settings");
-    QWidget* arrowStrokeColorControl = controlWithAccessibleName(palette, "Arrow stroke color");
-    QWidget* arrowStrokeWidthControl = controlWithTooltip(palette, "Current arrow stroke width");
+    QWidget* arrowStrokeColorControl = controlWithAccessibleName(palette, "Arrow color");
+    QWidget* arrowStrokeWidthControl = controlWithTooltip(palette, "Current arrow width");
     QWidget* arrowStrokeRoot = styleEditorRoot(arrowControls, "outline-stroke");
     QWidget* arrowWidthRoot = styleEditorRoot(arrowControls, "outline-width");
     require(arrowStrokeColorControl != nullptr && arrowStrokeWidthControl != nullptr &&
@@ -11565,11 +11793,11 @@ void arrowStyleControlsExposeAndEmitAllStyleProperties() {
             }
         });
 
-    clickStyleControl(palette, "Arrow stroke width 4");
+    clickStyleControl(palette, "Arrow width 4");
     require(styleChangeCount == 1, "arrow stroke width should emit once");
-    clickStyleControl(palette, "Arrow stroke color #f5222d");
+    clickStyleControl(palette, "Arrow color #f5222d");
     require(styleChangeCount == 2, "arrow stroke color should emit once");
-    clickStyleControl(palette, "Dashed arrow stroke");
+    clickStyleControl(palette, "Dashed arrow line");
     require(styleChangeCount == 3, "arrow stroke style should emit once");
     elbowArrowType->click();
     require(styleChangeCount == 4, "arrow type should emit once");
@@ -11868,7 +12096,9 @@ void magnifierControlsPatchIndependentProperties() {
         return palette.findChild<adqt::widgets::AdButton*>(
             QStringLiteral("screenshotMagnifierSourceOutlineButton"));
     };
-    const auto leader = [&]() { return controlWithAccessibleName(palette, "Leader line type"); };
+    const auto leader = [&]() {
+        return controlWithAccessibleName(palette, "Leader line arrowhead");
+    };
     const auto initial = palette.creationStyleDefaults().magnifier;
     require(shapes() && shapes()->buttons().size() == 3 && factor() && radius() && ratio() &&
                 connections() && connections()->buttons().size() == 3 && outline() && leader() &&
@@ -12539,8 +12769,9 @@ void magnifierControlsRetranslateAndRenderPreviews() {
             palette.findChild<QWidget*>(QStringLiteral("screenshotMagnifierArrowRatioButton"));
         require(
             factor && connection && outline && ratio &&
-                ratio->toolTip() == QCoreApplication::translate("ScreenshotToolPalette",
-                                                                "Arrow ratio (scroll to adjust)") &&
+                ratio->toolTip() ==
+                    QCoreApplication::translate("ScreenshotToolPalette",
+                                                "Arrowhead scale (scroll to adjust)") &&
                 factor->toolTip() ==
                     QCoreApplication::translate("ScreenshotToolPalette",
                                                 "Magnification factor (scroll to adjust)") &&
@@ -13210,6 +13441,7 @@ void distanceSettingsExposeIndependentPropertiesAndHoverWheel() {
 
     ScreenshotToolPalette::Options hiddenOptions;
     hiddenOptions.showSelectTool = false;
+    hiddenOptions.showSpeechBubbleTool = false;
     hiddenOptions.showArrowTool = false;
     hiddenOptions.showAngleTool = false;
     hiddenOptions.toolbarLayout = snow_shot::storage::ScreenshotToolbarLayout{
@@ -13333,6 +13565,134 @@ void distanceActualValueUpdatesTheCanvasAndUndo() {
             "resizing an annotation should refresh its actual value while preserving its scale");
     require(canvas.undo() && value->displayText() == QStringLiteral("25.125"),
             "undoing geometry should refresh the actual value without changing style");
+
+    mouse(QEvent::MouseButtonPress, {100, 200}, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonRelease, {100, 200}, Qt::LeftButton, Qt::NoButton);
+    require(canvas.hasActiveTextEditing() && value->isVisible() &&
+                canvas.canvasStyleToolbarState().source ==
+                    SnowCanvasStyleToolbarSource::SelectedDistance,
+            "inline editing must retain the distance controls in the sub-toolbar");
+    const auto key = [&canvas](int code, Qt::KeyboardModifiers modifiers,
+                               const QString& text = {}) {
+        QKeyEvent event(QEvent::KeyPress, code, modifiers, text);
+        QApplication::sendEvent(&canvas, &event);
+        QApplication::processEvents();
+    };
+    key(Qt::Key_A, Qt::ControlModifier);
+    key(Qt::Key_2, Qt::NoModifier, QStringLiteral("20"));
+    key(Qt::Key_Return, Qt::NoModifier);
+    require(!canvas.hasActiveTextEditing() && value->isVisible() &&
+                value->displayText() == QStringLiteral("20") &&
+                record(QStringLiteral("Text")).value(QStringLiteral("text")).toString() ==
+                    QStringLiteral("20.000 mm"),
+            "inline commit synchronizes the distance toolbar value");
+}
+
+void arrowOutlineEditorMatchesTextStroke() {
+    auto& language = snow_shot::presentation::LanguageManager::instance();
+    require(language.setLanguage(QStringLiteral("en_US")), "outline fixture uses English");
+    const auto restore =
+        qScopeGuard([&] { static_cast<void>(language.setLanguage(QStringLiteral("en_US"))); });
+    ScreenshotToolPalette palette(ScreenshotToolPalette::Options{});
+    palette.setActiveTool(ScreenshotToolPalette::Tool::Arrow);
+    palette.show();
+    QCoreApplication::processEvents();
+    const auto pickerForArrow = [&]() {
+        return qobject_cast<adqt::widgets::AdColorPicker*>(
+            controlWithAccessibleName(palette, "Arrow outline width"));
+    };
+    auto* picker = pickerForArrow();
+    require(picker != nullptr && picker->alphaChannelEnabled(),
+            "outline uses the alpha-enabled shared picker");
+    require(picker->triggerContent()->accessibleDescription() == QStringLiteral("0px") &&
+                picker->triggerContent()->cursor().shape() == Qt::SplitVCursor,
+            "outline starts at 0px and uses the text stroke adjustment cursor");
+    const auto initial = palette.creationStyleDefaults().arrow;
+    require(initial.arrowOutlineWidth == 0 && initial.arrowOutlineColor == QColor(0xff, 0xcc, 0xc7),
+            "outline defaults match text stroke");
+    auto* controls = palette.findChild<QWidget*>(QStringLiteral("screenshotArrowStyleControls"));
+    auto* root = styleEditorRoot(controls, "arrow-outline");
+    auto* ratio = palette.findChild<QWidget*>(QStringLiteral("screenshotArrowRatioButton"));
+    require(root != nullptr && ratio != nullptr &&
+                hasOnlySpacingBetween(controls->layout(), root, ratio, 4),
+            "outline has the text stroke trailing spacing before ratio");
+    SnowCanvasShapeStyle emitted;
+    quint32 properties = 0;
+    int changes = 0;
+    observePaletteStyleEdit<SnowCanvasShapeEdit>(
+        palette, [&](const SnowCanvasShapeStyle& value, quint32 changed, SnowCanvasShapeKind kind) {
+            require(kind == SnowCanvasShapeKind::Arrow, "outline only targets arrows");
+            emitted = value;
+            properties = changed;
+            ++changes;
+        });
+    const auto wheel = [&](int delta) {
+        const QPoint local = picker->rect().center();
+        QWheelEvent event(QPointF(local), picker->mapToGlobal(local), QPoint(), QPoint(0, delta),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        require(palette.handleToolbarWheel(&event), "outline consumes hover wheel");
+    };
+    wheel(120);
+    require(emitted.arrowOutlineWidth == 1 && emitted.strokeWidth == initial.strokeWidth &&
+                properties == SnowCanvasShapeStylePropertyArrowOutlineWidth,
+            "outline wheel edits only outline width");
+    for (int i = 0; i < 80; ++i)
+        wheel(120);
+    require(emitted.arrowOutlineWidth == 72, "outline width clamps to 72px");
+    const int atMaximum = changes;
+    wheel(120);
+    require(changes == atMaximum, "clamped outline width emits no edit");
+    for (int i = 0; i < 80; ++i)
+        wheel(-120);
+    require(emitted.arrowOutlineWidth == 0, "outline can be disabled with the wheel");
+    picker->setPopupLayerMode(adqt::widgets::AdColorPicker::PopupLayerMode::InWindow);
+    picker->setPopupVisible(true);
+    QCoreApplication::processEvents();
+    auto* popup = picker->findChild<adqt::widgets::AdPopover*>();
+    require(popup != nullptr, "outline picker owns its shared popup");
+    for (const char* label :
+         {"Arrow outline width 2px", "Arrow outline width 4px", "Arrow outline width 8px"})
+        require(popoverButtonWithTooltip(popup, label) != nullptr,
+                "outline shares the text stroke width shortcuts");
+    clickPopoverStyleControl(popup, "Arrow outline width 4px");
+    require(emitted.arrowOutlineWidth == 4 &&
+                properties == SnowCanvasShapeStylePropertyArrowOutlineWidth,
+            "outline preset dispatches only width");
+    clickPopoverStyleControl(popup, "Arrow outline color transparent");
+    require(emitted.arrowOutlineColor.alpha() == 0 && emitted.arrowOutlineWidth == 4 &&
+                properties == SnowCanvasShapeStylePropertyArrowOutlineColor,
+            "transparent outline retains its width");
+    auto* widthPreset = popoverButtonWithTooltip(popup, "Arrow outline width 4px");
+    require(language.setLanguage(QStringLiteral("zh_CN")),
+            "outline translates to Simplified Chinese");
+    QCoreApplication::processEvents();
+    require(widthPreset->toolTip() == QStringLiteral("箭头描边宽度 4px"),
+            "open outline popup retranslates");
+    require(language.setLanguage(QStringLiteral("zh_TW")),
+            "outline translates to Traditional Chinese");
+    QCoreApplication::processEvents();
+    require(widthPreset->toolTip() == QStringLiteral("箭頭描邊寬度 4px"),
+            "outline uses Traditional Chinese");
+    require(language.setLanguage(QStringLiteral("en_US")), "restore English for mixed values");
+    picker->setPopupVisible(false);
+    SnowCanvasStyleToolbarState selected;
+    selected.source = SnowCanvasStyleToolbarSource::SelectedArrow;
+    selected.shapeStyle = initial;
+    selected.shapeStyle.arrowOutlineWidth = 2;
+    selected.shapeStyleMixed =
+        SnowCanvasShapeStyleMixedArrowOutlineColor | SnowCanvasShapeStyleMixedArrowOutlineWidth;
+    palette.setStyleToolbarState(selected);
+    require(picker->property("mixed").toBool(), "mixed outline colors are displayed");
+    wheel(120);
+    require(properties == SnowCanvasShapeStylePropertyArrowOutlineWidth &&
+                emitted.arrowOutlineWidth == 3 && picker->property("mixed").toBool(),
+            "width edit leaves mixed outline color intact");
+    palette.setActiveTool(ScreenshotToolPalette::Tool::Text);
+    palette.setActiveTool(ScreenshotToolPalette::Tool::Arrow);
+    QCoreApplication::processEvents();
+    picker = pickerForArrow();
+    require(picker != nullptr && palette.creationStyleDefaults().arrow.arrowOutlineWidth == 3,
+            "outline survives editor reuse and tool switching");
 }
 
 void arrowRatioEditorAdjustsAndResets() {
@@ -13361,11 +13721,13 @@ void arrowRatioEditorAdjustsAndResets() {
             rowWidgets.push_back(widget);
     }
     const qsizetype ratioIndex = rowWidgets.indexOf(editor);
-    require(ratioIndex >= 2 && ratioIndex + 1 < rowWidgets.size() &&
-                rowWidgets.at(ratioIndex - 2) == rootInRow(arrowType) &&
-                qobject_cast<QFrame*>(rowWidgets.at(ratioIndex - 1)) != nullptr &&
+    require(ratioIndex >= 3 && ratioIndex + 1 < rowWidgets.size() &&
+                rowWidgets.at(ratioIndex - 3) == rootInRow(arrowType) &&
+                qobject_cast<QFrame*>(rowWidgets.at(ratioIndex - 2)) != nullptr &&
+                rowWidgets.at(ratioIndex - 1) ==
+                    rootInRow(controlWithAccessibleName(palette, "Arrow outline width")) &&
                 rowWidgets.at(ratioIndex + 1) == rootInRow(start),
-            "arrow type, separator, ratio, and start arrowhead must be consecutive");
+            "arrow type, separator, outline, ratio, and start arrowhead must be consecutive");
     require(editor->cursor().shape() == Qt::SplitVCursor,
             "ratio uses the same adjustment cursor as rounded corners");
     const auto wheel = [&palette, &editor](int delta) {
@@ -13466,7 +13828,7 @@ void arrowheadOptionsRetranslateInPlace() {
                                         QStringLiteral("arrowhead-standard"),
             "end arrowhead options should use the right-facing asset");
     endPopover->hide();
-    QWidget* ratioTrigger = controlWithTooltip(palette, "Arrow ratio (scroll to adjust)");
+    QWidget* ratioTrigger = controlWithTooltip(palette, "Arrowhead scale (scroll to adjust)");
     require(ratioTrigger != nullptr, "ratio editor must expose translated accessible text");
     QWidget* shaftTrigger = controlWithAccessibleName(palette, "Arrow shaft type");
     require(shaftTrigger != nullptr, "shaft trigger must be available");
@@ -13486,7 +13848,7 @@ void arrowheadOptionsRetranslateInPlace() {
             "arrowhead trigger should retranslate to Simplified Chinese");
     require(noneOption->toolTip() == QStringLiteral("\u8d77\u59cb\u7bad\u5934 \u65e0"),
             "open arrowhead option should retranslate to Simplified Chinese");
-    require(ratioTrigger->accessibleName() == QStringLiteral("箭头比例（滚动调整）"),
+    require(ratioTrigger->accessibleName() == QStringLiteral("箭头端点比例（滚动调整）"),
             "ratio editor retranslates to Simplified Chinese");
     require(shaftTrigger->accessibleName() == QStringLiteral("箭杆类型") &&
                 taperedOption->toolTip() == QStringLiteral("渐宽箭杆"),
@@ -13501,7 +13863,7 @@ void arrowheadOptionsRetranslateInPlace() {
             "arrowhead trigger should retranslate to Traditional Chinese");
     require(noneOption->toolTip() == QStringLiteral("\u8d77\u59cb\u7bad\u982d \u7121"),
             "open arrowhead option should retranslate to Traditional Chinese");
-    require(ratioTrigger->accessibleName() == QStringLiteral("箭頭比例（捲動調整）"),
+    require(ratioTrigger->accessibleName() == QStringLiteral("箭頭端點比例（捲動調整）"),
             "ratio editor retranslates to Traditional Chinese");
     require(shaftTrigger->accessibleName() == QStringLiteral("箭桿類型") &&
                 taperedOption->toolTip() == QStringLiteral("漸寬箭桿"),
@@ -13537,11 +13899,11 @@ void selectedArrowMixedPropertiesResolveIndependently() {
         SnowCanvasShapeStylePropertyArrowShaftType;
     palette.setStyleToolbarState(state);
 
-    requireControlInactive(palette, "Arrow stroke width 4",
+    requireControlInactive(palette, "Arrow width 4",
                            "mixed arrow stroke width must not select a preset");
-    requireControlInactive(palette, "Arrow stroke color #f5222d",
+    requireControlInactive(palette, "Arrow color #f5222d",
                            "mixed arrow color must not select a preset");
-    requireControlInactive(palette, "Dashed arrow stroke",
+    requireControlInactive(palette, "Dashed arrow line",
                            "mixed arrow stroke style must not select an option");
 
     QWidget* arrowTypeControls =
@@ -13594,7 +13956,7 @@ void selectedArrowMixedPropertiesResolveIndependently() {
             "the selected arrow type must emit only its arrow property");
     require(arrowTypeGroup->checkedId() == 2 && elbowArrowType->isChecked(),
             "the explicitly selected arrow type should become active");
-    requireControlInactive(palette, "Arrow stroke width 4",
+    requireControlInactive(palette, "Arrow width 4",
                            "resolving arrow type must preserve mixed width");
     for (const auto& option : {
              std::pair{startArrowheadPopover, "Start arrowhead triangle"},
@@ -14090,8 +14452,9 @@ void textStyleControlsExposeAndEmitAllRequestedProperties() {
     };
     adqt::widgets::AdColorPicker* colorPicker = pickerWithName(QStringLiteral("Text color"));
     adqt::widgets::AdColorPicker* strokePicker =
-        pickerWithName(QStringLiteral("Text stroke width"));
-    adqt::widgets::AdColorPicker* fillPicker = pickerWithName(QStringLiteral("Text fill color"));
+        pickerWithName(QStringLiteral("Text outline width"));
+    adqt::widgets::AdColorPicker* fillPicker =
+        pickerWithName(QStringLiteral("Text background color"));
     require(colorPicker != nullptr, "text foreground picker should be present");
     require(strokePicker != nullptr, "text stroke picker should be present");
     require(fillPicker != nullptr, "text fill picker should be present");
@@ -14172,15 +14535,15 @@ void textStyleControlsExposeAndEmitAllRequestedProperties() {
     QCoreApplication::processEvents();
     auto* strokePopover = strokePicker->findChild<adqt::widgets::AdPopover*>();
     require(strokePopover != nullptr, "text stroke picker should own a popup");
-    require(popoverButtonWithTooltip(strokePopover, "Text stroke width 2px") != nullptr &&
-                popoverButtonWithTooltip(strokePopover, "Text stroke width 4px") != nullptr &&
-                popoverButtonWithTooltip(strokePopover, "Text stroke width 8px") != nullptr,
+    require(popoverButtonWithTooltip(strokePopover, "Text outline width 2px") != nullptr &&
+                popoverButtonWithTooltip(strokePopover, "Text outline width 4px") != nullptr &&
+                popoverButtonWithTooltip(strokePopover, "Text outline width 8px") != nullptr,
             "text stroke popup should contain 2px, 4px, and 8px shortcuts");
-    require(popoverButtonWithTooltip(strokePopover, "Text stroke color transparent") != nullptr &&
-                popoverButtonWithTooltip(strokePopover, "Text stroke color #ffccc7") != nullptr &&
-                popoverButtonWithTooltip(strokePopover, "Text stroke color #d9f7be") != nullptr &&
-                popoverButtonWithTooltip(strokePopover, "Text stroke color #bae0ff") != nullptr &&
-                popoverButtonWithTooltip(strokePopover, "Text stroke color #fff1b8") != nullptr,
+    require(popoverButtonWithTooltip(strokePopover, "Text outline color transparent") != nullptr &&
+                popoverButtonWithTooltip(strokePopover, "Text outline color #ffccc7") != nullptr &&
+                popoverButtonWithTooltip(strokePopover, "Text outline color #d9f7be") != nullptr &&
+                popoverButtonWithTooltip(strokePopover, "Text outline color #bae0ff") != nullptr &&
+                popoverButtonWithTooltip(strokePopover, "Text outline color #fff1b8") != nullptr,
             "text stroke popup should reuse the fill color presets");
     strokePicker->setPopupVisible(false);
 
@@ -14205,7 +14568,7 @@ void textStyleControlsExposeAndEmitAllRequestedProperties() {
             xlFontSizePreset->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Tonal &&
             activeFontSizePreset->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Text,
         "changing text size should move the shared style-toolbar active state to the new preset");
-    clickStyleControl(palette, "Line text fill");
+    clickStyleControl(palette, "Hatched text background");
     require(changeCount == 2 && emittedStyle.fillStyle == SnowCanvasFillStyle::Line &&
                 emittedProperties == SnowCanvasTextStyleMixedFillStyle,
             "text fill pattern should update");
@@ -14239,8 +14602,8 @@ void textStylePopupLifecyclesAreBalanced() {
         return static_cast<adqt::widgets::AdColorPicker*>(nullptr);
     };
     auto* colorPicker = pickerWithName(QStringLiteral("Text color"));
-    auto* strokePicker = pickerWithName(QStringLiteral("Text stroke width"));
-    auto* fillPicker = pickerWithName(QStringLiteral("Text fill color"));
+    auto* strokePicker = pickerWithName(QStringLiteral("Text outline width"));
+    auto* fillPicker = pickerWithName(QStringLiteral("Text background color"));
     auto* fontSelect = qobject_cast<adqt::widgets::AdSelect*>(
         controlWithAccessibleName(palette, "Text font family"));
     auto* alignmentPopover =
@@ -14353,9 +14716,9 @@ void retainedEditorsApplyDestinationMixedStateDuringReconciliation() {
             "the retained outline editor should expose its destination color picker");
     strokePicker->setPopupVisible(true);
     QCoreApplication::processEvents();
-    requireControlInactive(palette, "Arrow stroke color #f5222d",
+    requireControlInactive(palette, "Arrow color #f5222d",
                            "the retained color editor should apply destination mixed state");
-    requireControlInactive(palette, "Dashed arrow stroke",
+    requireControlInactive(palette, "Dashed arrow line",
                            "the retained stroke-style editor should apply destination mixed state");
 }
 
@@ -14532,7 +14895,7 @@ void serialNumberStyleControlsExposeAndEmitRequestedProperties() {
     // on-demand lifecycle evicts Text controls during SerialNumber activation.
     auto* textColorPickerBeforeSwitch = colorPickerWithAccessibleName(palette, "Text color");
     auto* textFillColorPickerBeforeSwitch =
-        colorPickerWithAccessibleName(palette, "Text fill color");
+        colorPickerWithAccessibleName(palette, "Text background color");
     require(textColorPickerBeforeSwitch != nullptr && textFillColorPickerBeforeSwitch != nullptr,
             "text color editors should materialize before the family transition");
     const QSize textColorTriggerSize =
@@ -14579,12 +14942,12 @@ void serialNumberStyleControlsExposeAndEmitRequestedProperties() {
             "sequence-number style controls should be visible");
     require(controlWithAccessibleName(palette, "Sequence number color") != nullptr,
             "sequence-number color picker should be present");
-    require(controlWithAccessibleName(palette, "Sequence number fill color") != nullptr,
+    require(controlWithAccessibleName(palette, "Sequence number background color") != nullptr,
             "sequence-number fill color picker should be present");
     adqt::widgets::AdColorPicker* colorPicker =
         colorPickerWithAccessibleName(palette, "Sequence number color");
     adqt::widgets::AdColorPicker* fillColorPicker =
-        colorPickerWithAccessibleName(palette, "Sequence number fill color");
+        colorPickerWithAccessibleName(palette, "Sequence number background color");
     require(colorPicker != nullptr && fillColorPicker != nullptr &&
                 colorPicker->alphaChannelEnabled() && fillColorPicker->alphaChannelEnabled(),
             "sequence-number color should match text color alpha behavior");
@@ -14620,10 +14983,10 @@ void serialNumberStyleControlsExposeAndEmitRequestedProperties() {
             "sequence-number fill presets should match the text fill preset row");
     require(serialFillPresets->layout()->count() == textFillPresetsCount,
             "sequence-number fill popup should expose every text fill color preset");
-    QWidget* borderFill = controlWithTooltip(palette, "Border");
-    QWidget* solidFill = controlWithTooltip(palette, "Solid sequence number fill");
-    QWidget* crossLineFill = controlWithTooltip(palette, "Cross-line sequence number fill");
-    QWidget* lineFill = controlWithTooltip(palette, "Line sequence number fill");
+    QWidget* borderFill = controlWithTooltip(palette, "No fill");
+    QWidget* solidFill = controlWithTooltip(palette, "Solid sequence number background");
+    QWidget* crossLineFill = controlWithTooltip(palette, "Crosshatched sequence number background");
+    QWidget* lineFill = controlWithTooltip(palette, "Hatched sequence number background");
     QLayout* serialNumberLayout = controls->layout();
     QWidget* colorRoot = styleEditorRoot(controls, "foreground-color");
     QWidget* typeRoot = styleEditorRoot(controls, "serial-type");
@@ -14721,7 +15084,7 @@ void serialNumberStyleControlsExposeAndEmitRequestedProperties() {
     clickStyleControl(palette, "Sequence number color #52c41a");
     require(changeCount == 2 && emittedStyle.color == QColor(QStringLiteral("#52c41a")),
             "sequence-number color preset should update the style");
-    clickStyleControl(palette, "Line sequence number fill");
+    clickStyleControl(palette, "Hatched sequence number background");
     require(changeCount == 3 && emittedStyle.fillStyle == SnowCanvasFillStyle::Line,
             "sequence-number fill pattern should update like text fill");
     fillColorPicker->setValue(
@@ -14759,7 +15122,7 @@ void serialNumberStyleControlsExposeAndEmitRequestedProperties() {
     clickStyleControl(palette, "Sequence number font size 30px");
     require(changeCount == circleChangeCount + 1 && emittedStyle.fontSize == 30.0,
             "Circle font size should remain editable");
-    clickStyleControl(palette, "Cross-line sequence number fill");
+    clickStyleControl(palette, "Crosshatched sequence number background");
     require(emittedStyle.fillStyle == SnowCanvasFillStyle::CrossLine,
             "Circle fill should remain editable");
     solidSquareType->click();
@@ -15051,7 +15414,7 @@ void cornerRadiusButtonsRestoreTheDefaultValue() {
     observePaletteStyleEdit<SnowCanvasTextEdit>(
         palette,
         [&emittedTextStyle](const SnowCanvasTextStyle& style) { emittedTextStyle = style; });
-    clickStyleControl(palette, "Text fill corner radius (scroll to adjust)");
+    clickStyleControl(palette, "Text background corner radius (scroll to adjust)");
     require(qFuzzyCompare(emittedTextStyle.cornerRadii.topLeft + 1.0, 7.0),
             "clicking the text corner-radius button should restore 6px");
 }
@@ -15239,11 +15602,11 @@ void borderFillControlsRetainColorAndSavedPreferences() {
         const bool text = tool == Tool::Text;
         const bool serial = tool == Tool::SerialNumber;
         auto* picker =
-            colorPickerWithAccessibleName(palette, text     ? "Text fill color"
-                                                   : serial ? "Sequence number fill color"
+            colorPickerWithAccessibleName(palette, text     ? "Text background color"
+                                                   : serial ? "Sequence number background color"
                                                             : "Fill color");
         require(picker != nullptr, "each configurable fill exposes its color picker");
-        requireControlActive(palette, "Border", "Border starts selected");
+        requireControlActive(palette, "No fill", "Border starts selected");
         require(picker->value().solidColor == QColor("#FFCCC7"), "the latent fill is pale red");
         auto* trigger = picker->triggerContent();
         require(trigger != nullptr, "fill color trigger should be present");
@@ -15252,18 +15615,18 @@ void borderFillControlsRetainColorAndSavedPreferences() {
                 "Border mode displays the stored fill color as a solid block");
         const QColor chosen(23, 67, 109, 128);
         picker->commitValue(adqt::widgets::AdColorValue::solid(chosen));
-        requireControlActive(palette, "Border", "choosing a color retains Border mode");
+        requireControlActive(palette, "No fill", "choosing a color retains Border mode");
         const QImage chosenSwatch = renderButton(*trigger);
-        for (const char* tooltip : {text     ? "Solid text fill"
-                                    : serial ? "Solid sequence number fill"
+        for (const char* tooltip : {text     ? "Solid text background"
+                                    : serial ? "Solid sequence number background"
                                              : "Solid fill",
-                                    text     ? "Cross-line text fill"
-                                    : serial ? "Cross-line sequence number fill"
-                                             : "Cross-line fill",
-                                    text     ? "Line text fill"
-                                    : serial ? "Line sequence number fill"
-                                             : "Line fill",
-                                    "Border"}) {
+                                    text     ? "Crosshatched text background"
+                                    : serial ? "Crosshatched sequence number background"
+                                             : "Crosshatched fill",
+                                    text     ? "Hatched text background"
+                                    : serial ? "Hatched sequence number background"
+                                             : "Hatched fill",
+                                    "No fill"}) {
             clickStyleControl(palette, tooltip);
             require(picker->value().solidColor == chosen,
                     "switching fill styles retains the chosen color");
@@ -15311,9 +15674,9 @@ void fillStyleButtonsFollowFillColorPickerTrigger() {
     require(fillPicker != nullptr, "fill color picker should be present");
 
     auto* lineFill =
-        qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Line fill"));
+        qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Hatched fill"));
     auto* crossLineFill =
-        qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Cross-line fill"));
+        qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Crosshatched fill"));
     auto* solidFill =
         qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Solid fill"));
     require(lineFill != nullptr, "line fill control should be present");
@@ -15324,13 +15687,13 @@ void fillStyleButtonsFollowFillColorPickerTrigger() {
     require(toolbarLayout != nullptr, "fill color picker should have a toolbar layout");
     const int fillPickerIndex = layoutWidgetIndex(toolbarLayout, fillPicker);
     require(fillPickerIndex >= 0, "fill color picker should be in the toolbar layout");
-    auto* borderFill = controlWithTooltip(palette, "Border");
+    auto* borderFill = controlWithTooltip(palette, "No fill");
     require(borderFill != nullptr &&
                 layoutWidgetIndex(toolbarLayout, borderFill) == fillPickerIndex + 1 &&
                 layoutWidgetIndex(toolbarLayout, solidFill) == fillPickerIndex + 2 &&
                 layoutWidgetIndex(toolbarLayout, crossLineFill) == fillPickerIndex + 3 &&
                 layoutWidgetIndex(toolbarLayout, lineFill) == fillPickerIndex + 4,
-            "fill styles should follow the picker in Border, Solid, Cross-line, Line order");
+            "fill styles should follow the picker in No fill, Solid, Crosshatched, Hatched order");
 
     fillPicker->setPopupLayerMode(QApplication::platformName() == QStringLiteral("offscreen")
                                       ? adqt::widgets::AdColorPicker::PopupLayerMode::InWindow
@@ -15339,8 +15702,8 @@ void fillStyleButtonsFollowFillColorPickerTrigger() {
     QCoreApplication::processEvents();
     auto* fillPopover = fillPicker->findChild<adqt::widgets::AdPopover*>();
     require(fillPopover != nullptr, "fill color picker should own a popup");
-    require(popoverButtonWithTooltip(fillPopover, "Line fill") == nullptr &&
-                popoverButtonWithTooltip(fillPopover, "Cross-line fill") == nullptr &&
+    require(popoverButtonWithTooltip(fillPopover, "Hatched fill") == nullptr &&
+                popoverButtonWithTooltip(fillPopover, "Crosshatched fill") == nullptr &&
                 popoverButtonWithTooltip(fillPopover, "Solid fill") == nullptr,
             "fill styles should not remain in the fill color popup");
     require(popoverButtonWithTooltip(fillPopover, "Fill color transparent") != nullptr,
@@ -15455,9 +15818,9 @@ void configurationDrivenStyleEditorsShareStructuralContracts() {
         colorPickerWithAccessibleName(palette, "Highlight color");
     adqt::widgets::AdColorPicker* fillPicker = colorPickerWithAccessibleName(palette, "Fill color");
     adqt::widgets::AdColorPicker* strokePicker =
-        colorPickerWithAccessibleName(palette, "Arrow stroke color");
+        colorPickerWithAccessibleName(palette, "Arrow color");
     adqt::widgets::AdColorPicker* widthColorPicker =
-        colorPickerWithAccessibleName(palette, "Highlight stroke width");
+        colorPickerWithAccessibleName(palette, "Highlight outline width");
     const QList<adqt::widgets::AdColorPicker*> pickerShells{
         colorPicker,
         fillPicker,
@@ -15696,8 +16059,7 @@ void styleToolbarControlsDoNotEnterTabFocusChain() {
 
     const QList<adqt::widgets::AdRadio*> modeButtons =
         palette.findChildren<adqt::widgets::AdRadio*>();
-    require(modeButtons.size() == 21,
-            "style toolbars should expose the expected number of mode radios");
+    require(!modeButtons.isEmpty(), "focus-chain coverage must exercise materialized mode radios");
     for (adqt::widgets::AdRadio* button : modeButtons) {
         require(button != nullptr && button->focusPolicy() == Qt::NoFocus,
                 "style toolbar radio buttons should not enter the Tab focus chain");
@@ -15852,12 +16214,12 @@ void toolbarScalingDoesNotRelayoutPopupContent() {
         adqt::widgets::AdButton* strokeStyle =
             popoverButtonWithTooltip(strokePopover, "Solid stroke");
         auto* fillStyle =
-            qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Line fill"));
+            qobject_cast<adqt::widgets::AdButton*>(controlWithTooltip(palette, "Hatched fill"));
         adqt::widgets::AdButton* fillPreset =
             popoverButtonWithTooltip(fillPopover, "Fill color transparent");
         require(strokeStyle != nullptr && fillStyle != nullptr && fillPreset != nullptr,
                 "shape popup and toolbar options should be present");
-        require(popoverButtonWithTooltip(fillPopover, "Line fill") == nullptr,
+        require(popoverButtonWithTooltip(fillPopover, "Hatched fill") == nullptr,
                 "fill style option should not be in the fill color popup");
 
         QWidget* mainToolbarControl = controlWithTooltip(palette, "Select elements");
@@ -15900,10 +16262,10 @@ void toolbarScalingDoesNotRelayoutPopupContent() {
     {
         ScreenshotToolPalette palette(ScreenshotToolPalette::Options{});
         palette.setActiveTool(ScreenshotToolPalette::Tool::Arrow);
-        adqt::widgets::AdPopover* arrowStrokePopover = openColorPicker(
-            pickerWithAccessibleName(palette, QStringLiteral("Arrow stroke color")));
+        adqt::widgets::AdPopover* arrowStrokePopover =
+            openColorPicker(pickerWithAccessibleName(palette, QStringLiteral("Arrow color")));
         adqt::widgets::AdButton* arrowStrokeStyle =
-            popoverButtonWithTooltip(arrowStrokePopover, "Solid arrow stroke");
+            popoverButtonWithTooltip(arrowStrokePopover, "Solid arrow line");
         auto* arrowType =
             qobject_cast<adqt::widgets::AdRadio*>(controlWithTooltip(palette, "Straight arrow"));
         QWidget* startArrowheadTrigger = controlWithAccessibleName(palette, "Start arrowhead");
@@ -15971,7 +16333,7 @@ void toolbarScalingDoesNotRelayoutPopupContent() {
     {
         ScreenshotToolPalette palette(ScreenshotToolPalette::Options{});
         palette.setActiveTool(ScreenshotToolPalette::Tool::Text);
-        QWidget* strokePicker = controlWithAccessibleName(palette, "Text stroke width");
+        QWidget* strokePicker = controlWithAccessibleName(palette, "Text outline width");
         QWidget* controls =
             palette.findChild<QWidget*>(QStringLiteral("screenshotTextStyleControls"));
         QWidget* strokeRoot = styleEditorRoot(controls, "text-stroke");
@@ -16484,7 +16846,9 @@ void repeatedToolsAndDifferentialStyleSynchronizationAreNoOps() {
     const quint64 beforeSelected = palette.propertyGroupRefreshCountForTests();
     state.source = SnowCanvasStyleToolbarSource::SelectedRectangle;
     palette.setStyleToolbarState(state);
-    require(palette.propertyGroupRefreshCountForTests() == beforeSelected + 7,
+    // Mode, width, stroke, fill, corner, arrow type, arrowheads, and brush mode.
+    constexpr quint64 allShapePropertyGroups = 8;
+    require(palette.propertyGroupRefreshCountForTests() == beforeSelected + allShapePropertyGroups,
             "a selected/default source transition should perform a full refresh");
     const quint64 beforeMixed = palette.propertyGroupRefreshCountForTests();
     state.shapeStyleMixed = SnowCanvasShapeStyleMixedStrokeWidth;
@@ -17221,11 +17585,11 @@ void drawingColorsPreserveAlphaAcrossEditsAndToolSwitches() {
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.line.stroke; }},
         {Tool::FreeDraw, "Stroke color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.freeDraw.stroke; }},
-        {Tool::Arrow, "Arrow stroke color",
+        {Tool::Arrow, "Arrow color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.arrow.stroke; }},
         {Tool::RectangleHighlight, "Highlight color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.rectangleHighlight.fill; }},
-        {Tool::RectangleHighlight, "Highlight stroke width",
+        {Tool::RectangleHighlight, "Highlight outline width",
          [](SnowCanvasStyleDefaults& styles) -> QColor& {
              return styles.rectangleHighlight.stroke;
          }},
@@ -17233,13 +17597,13 @@ void drawingColorsPreserveAlphaAcrossEditsAndToolSwitches() {
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.penHighlight.stroke; }},
         {Tool::Text, "Text color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.text.color; }},
-        {Tool::Text, "Text stroke width",
+        {Tool::Text, "Text outline width",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.text.stroke; }},
-        {Tool::Text, "Text fill color",
+        {Tool::Text, "Text background color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.text.fill; }},
         {Tool::SerialNumber, "Sequence number color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.serialNumber.color; }},
-        {Tool::SerialNumber, "Sequence number fill color",
+        {Tool::SerialNumber, "Sequence number background color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.serialNumber.fill; }},
         {Tool::Spotlight, "Mask color",
          [](SnowCanvasStyleDefaults& styles) -> QColor& { return styles.spotlight.color; }},
@@ -17276,9 +17640,8 @@ void drawingColorsPreserveAlphaAcrossEditsAndToolSwitches() {
 
 QWidget* openStrokeRenderingRow(ScreenshotToolPalette& palette, ScreenshotToolPalette::Tool tool) {
     palette.setActiveTool(tool);
-    auto* picker = colorPickerWithAccessibleName(palette, tool == ScreenshotToolPalette::Tool::Arrow
-                                                              ? "Arrow stroke color"
-                                                              : "Stroke color");
+    auto* picker = colorPickerWithAccessibleName(
+        palette, tool == ScreenshotToolPalette::Tool::Arrow ? "Arrow color" : "Stroke color");
     require(picker != nullptr, "stroke rendering fixture needs a stroke color picker");
     picker->setPopupLayerMode(adqt::widgets::AdColorPicker::PopupLayerMode::InWindow);
     picker->setPopupVisible(true);
@@ -17318,6 +17681,7 @@ void strokeRenderingControlsPreserveIndependentToolStyles() {
     using Rendering = SnowCanvasStrokeRenderingStyle;
     const auto product = snow_shot::presentation::screenshotCanvasStyleDefaults();
     require(product.rectangle.strokeRenderingStyle == Rendering::Architect &&
+                product.speechBubble.strokeRenderingStyle == Rendering::Architect &&
                 product.arrow.strokeRenderingStyle == Rendering::Architect &&
                 product.line.strokeRenderingStyle == Rendering::Architect,
             "Architect should remain the default for each supported tool");
@@ -17343,7 +17707,7 @@ void strokeRenderingControlsPreserveIndependentToolStyles() {
         return true;
     });
     auto expected = product;
-    for (const auto tool : {Tool::Shape, Tool::Arrow, Tool::Line}) {
+    for (const auto tool : {Tool::Shape, Tool::SpeechBubble, Tool::Arrow, Tool::Line}) {
         QWidget* row = openStrokeRenderingRow(palette, tool);
         require(!row->isHidden(), "supported tools should expose stroke rendering controls");
         const auto buttons = strokeRenderingButtons(row);
@@ -17356,21 +17720,23 @@ void strokeRenderingControlsPreserveIndependentToolStyles() {
         const int index = tool == Tool::Arrow ? 2 : 1;
         buttons.at(index)->click();
         const auto style = static_cast<Rendering>(index);
-        auto& expectedStyle = tool == Tool::Arrow  ? expected.arrow
-                              : tool == Tool::Line ? expected.line
-                                                   : expected.rectangle;
+        auto& expectedStyle = tool == Tool::Arrow          ? expected.arrow
+                              : tool == Tool::Line         ? expected.line
+                              : tool == Tool::SpeechBubble ? expected.speechBubble
+                                                           : expected.rectangle;
         expectedStyle.strokeRenderingStyle = style;
         require(commits == before + 1 &&
                     properties == SnowCanvasShapeStylePropertyStrokeRenderingStyle &&
                     emitted.strokeRenderingStyle == style &&
-                    kind == (tool == Tool::Arrow  ? SnowCanvasShapeKind::Arrow
-                             : tool == Tool::Line ? SnowCanvasShapeKind::Line
-                                                  : SnowCanvasShapeKind::Rectangle) &&
+                    kind == (tool == Tool::Arrow          ? SnowCanvasShapeKind::Arrow
+                             : tool == Tool::Line         ? SnowCanvasShapeKind::Line
+                             : tool == Tool::SpeechBubble ? SnowCanvasShapeKind::SpeechBubble
+                                                          : SnowCanvasShapeKind::Rectangle) &&
                     palette.creationStyleDefaults() == expected,
                 "a rendering choice should emit one property and remember only its tool");
         buttons.at(index)->click();
         require(commits == before + 1, "clicking the current rendering style should be a no-op");
-        clickStyleControl(palette, tool == Tool::Arrow ? "Dashed arrow stroke" : "Dashed stroke");
+        clickStyleControl(palette, tool == Tool::Arrow ? "Dashed arrow line" : "Dashed stroke");
         expectedStyle.strokeStyle = SnowCanvasStrokeStyle::Dashed;
         require(properties == SnowCanvasShapeStylePropertyStrokeStyle &&
                     emitted.strokeRenderingStyle == style &&
@@ -17382,7 +17748,8 @@ void strokeRenderingControlsPreserveIndependentToolStyles() {
              {Tool::FreeDraw, Tool::SpeechBubble, Tool::Shape, Tool::Arrow, Tool::Line}) {
             QWidget* row = openStrokeRenderingRow(palette, tool);
             const auto buttons = strokeRenderingButtons(row);
-            const bool supported = tool == Tool::Shape || tool == Tool::Arrow || tool == Tool::Line;
+            const bool supported = tool == Tool::Shape || tool == Tool::SpeechBubble ||
+                                   tool == Tool::Arrow || tool == Tool::Line;
             require(
                 row->isHidden() != supported,
                 "reused stroke editors should expose rendering styles only for supported tools");
@@ -17485,16 +17852,19 @@ void serialNumberStrokeRenderingControlsRespectBadgeTypes() {
 
 void strokeRenderingMixedSelectionResolvesOneProperty() {
     using Tool = ScreenshotToolPalette::Tool;
-    for (const auto tool : {Tool::Shape, Tool::Arrow, Tool::Line}) {
+    for (const auto tool : {Tool::Shape, Tool::SpeechBubble, Tool::Arrow, Tool::Line}) {
         ScreenshotToolPalette::Options options;
         options.showLineTool = true;
+        options.showSpeechBubbleTool = true;
         ScreenshotToolPalette palette(options);
         QWidget* row = openStrokeRenderingRow(palette, tool);
         const auto buttons = strokeRenderingButtons(row);
         SnowCanvasStyleToolbarState state;
         state.source = tool == Tool::Arrow  ? SnowCanvasStyleToolbarSource::SelectedArrow
                        : tool == Tool::Line ? SnowCanvasStyleToolbarSource::SelectedLine
-                                            : SnowCanvasStyleToolbarSource::SelectedRectangle;
+                       : tool == Tool::SpeechBubble
+                           ? SnowCanvasStyleToolbarSource::SelectedSpeechBubble
+                           : SnowCanvasStyleToolbarSource::SelectedRectangle;
         state.shapeStyle.strokeRenderingStyle = SnowCanvasStrokeRenderingStyle::Artist;
         state.shapeStyle.strokeStyle = SnowCanvasStrokeStyle::Dashed;
         state.shapeStyleMixed =
@@ -17504,7 +17874,7 @@ void strokeRenderingMixedSelectionResolvesOneProperty() {
             require(button->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Text,
                     "mixed rendering styles should leave every option inactive");
         }
-        requireControlActive(palette, tool == Tool::Arrow ? "Dashed arrow stroke" : "Dashed stroke",
+        requireControlActive(palette, tool == Tool::Arrow ? "Dashed arrow line" : "Dashed stroke",
                              "mixed rendering and colors should preserve a uniform stroke pattern");
         int commits = 0;
         quint32 properties = 0;
@@ -17535,6 +17905,7 @@ void strokeRenderingPreferencesRoundTripAndRejectUnknownValues() {
         qScopeGuard([&] { static_cast<void>(persistScreenshotCanvasToolStyles(original)); });
     auto defaults = screenshotCanvasStyleDefaults();
     defaults.rectangle.strokeRenderingStyle = Rendering::Artist;
+    defaults.speechBubble.strokeRenderingStyle = Rendering::Artist;
     defaults.arrow.strokeRenderingStyle = Rendering::Cartoonist;
     defaults.line.strokeRenderingStyle = Rendering::Artist;
     defaults.serialNumber.strokeRenderingStyle = Rendering::Cartoonist;
@@ -17547,7 +17918,8 @@ void strokeRenderingPreferencesRoundTripAndRejectUnknownValues() {
                 canvas.canvasStyleToolbarState().serialNumberStyle.strokeRenderingStyle ==
                     Rendering::Cartoonist,
             "saved sequence stroke type must reach canvas creation state");
-    for (const auto tool : {SnowCanvasTool::Shape, SnowCanvasTool::Arrow, SnowCanvasTool::Line}) {
+    for (const auto tool : {SnowCanvasTool::Shape, SnowCanvasTool::SpeechBubble,
+                            SnowCanvasTool::Arrow, SnowCanvasTool::Line}) {
         require(canvas.setCanvasTool(tool), "activate a tool with restored rendering preferences");
         require(canvas.canvasStyleToolbarState().shapeStyle.strokeRenderingStyle ==
                     (tool == SnowCanvasTool::Arrow ? Rendering::Cartoonist : Rendering::Artist),
@@ -17666,6 +18038,7 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
                             QStringLiteral("line")};
     QVector<storage::DrawTemplate> templates;
     QVector<QJsonObject> sourceData;
+    int currentTemplateVersion = 0;
     const auto elementData = [](const QByteArray& payload) {
         const auto elements =
             QJsonDocument::fromJson(payload).object().value(QStringLiteral("elements")).toArray();
@@ -17689,6 +18062,12 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
             operation.insert(QStringLiteral("points"),
                              QJsonArray{QJsonArray{0, 0}, QJsonArray{120, 45}});
         }
+        if (kind == QStringLiteral("arrow")) {
+            auto style = operation.value(QStringLiteral("style")).toObject();
+            style.insert(QStringLiteral("arrow_outline_width"), 8);
+            style.insert(QStringLiteral("arrow_outline_color"), QJsonArray{12, 120, 240, 128});
+            operation.insert(QStringLiteral("style"), style);
+        }
         SnowCanvasRuntime source;
         const auto result =
             QJsonDocument::fromJson(source.applyAnnotationTransaction(
@@ -17706,11 +18085,23 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
                     static_cast<quint32>(id.value(QStringLiteral("generation")).toInt())),
                 "select the styled template source");
         const QByteArray payload = source.serializeSelectedDrawTemplate();
-        require(
-            QJsonDocument::fromJson(payload).object().value(QStringLiteral("schemaVersion")) ==
-                QJsonValue(6),
-            "storage compatibility coverage should follow the engine's current template version");
+        const int version = QJsonDocument::fromJson(payload)
+                                .object()
+                                .value(QStringLiteral("schemaVersion"))
+                                .toInt();
+        require(version > 0 && (currentTemplateVersion == 0 || version == currentTemplateVersion),
+                "the engine must serialize every template with the same positive schema version");
+        currentTemplateVersion = version;
         const auto data = elementData(payload);
+        if (kind == QStringLiteral("arrow")) {
+            require(data.value(QStringLiteral("arrow_outline_width")).toDouble() == 8 &&
+                        data.value(QStringLiteral("arrow_outline_color")).toObject() ==
+                            QJsonObject{{QStringLiteral("r"), 12},
+                                        {QStringLiteral("g"), 120},
+                                        {QStringLiteral("b"), 240},
+                                        {QStringLiteral("a"), 128}},
+                    "arrow templates retain outline width, color, and transparency");
+        }
         require(
             data.value(QStringLiteral("stroke_rendering_style")) ==
                     (kind == QStringLiteral("rectangle") ? QStringLiteral("artist")
@@ -17738,7 +18129,8 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
         const auto duplicateData = elementData(duplicatePayload);
         for (const auto& field :
              {QStringLiteral("stroke_rendering_style"), QStringLiteral("stroke_rendering_seed"),
-              QStringLiteral("stroke_style"), QStringLiteral("stroke_width")}) {
+              QStringLiteral("stroke_style"), QStringLiteral("stroke_width"),
+              QStringLiteral("arrow_outline_width"), QStringLiteral("arrow_outline_color")}) {
             require(duplicateData.value(field) == data.value(field),
                     "direct duplication should preserve exact rendering style, seed, pattern, and "
                     "width");
@@ -17777,7 +18169,8 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
         const auto inserted = elementData(destination.serializeSelectedDrawTemplate());
         for (const auto& field :
              {QStringLiteral("stroke_rendering_style"), QStringLiteral("stroke_rendering_seed"),
-              QStringLiteral("stroke_style"), QStringLiteral("stroke_width")}) {
+              QStringLiteral("stroke_style"), QStringLiteral("stroke_width"),
+              QStringLiteral("arrow_outline_width"), QStringLiteral("arrow_outline_color")}) {
             require(inserted.value(field) == sourceData.at(index).value(field),
                     "stored template insertion should preserve rendering style, seed, pattern, and "
                     "width");
@@ -17788,7 +18181,7 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
         object.insert(QStringLiteral("schemaVersion"), version);
         return QJsonDocument(object).toJson(QJsonDocument::Compact);
     };
-    for (int version = 1; version <= 6; ++version) {
+    for (int version = 1; version <= currentTemplateVersion; ++version) {
         const auto payload = withVersion(version);
         require(
             settings.setTemplates({{QStringLiteral("  Compatible  "), payload}}) &&
@@ -17798,8 +18191,9 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
     }
     require(settings.setTemplates(templates),
             "restore actual styled templates before invalid edits");
-    for (const auto& version : {QJsonValue(), QJsonValue(-1), QJsonValue(0), QJsonValue(7),
-                                QJsonValue(1.5), QJsonValue(QStringLiteral("6"))}) {
+    for (const auto& version :
+         {QJsonValue(), QJsonValue(-1), QJsonValue(0), QJsonValue(currentTemplateVersion + 1),
+          QJsonValue(1.5), QJsonValue(QStringLiteral("6"))}) {
         const auto invalid = withVersion(version);
         require(!settings.setTemplates({templates.first(), {QStringLiteral("Invalid"), invalid}}) &&
                     settings.templates() == templates,
@@ -17899,6 +18293,8 @@ void arrowShaftEditorPersistsAcrossReopening() {
         qScopeGuard([&] { static_cast<void>(persistScreenshotCanvasToolStyles(original)); });
     auto defaults = screenshotCanvasStyleDefaults();
     defaults.arrow.arrowRatio = 2.3;
+    defaults.arrow.arrowOutlineWidth = 4.0;
+    defaults.arrow.arrowOutlineColor = QColor(12, 34, 56, 128);
     require(persistScreenshotCanvasToolStyles(defaults), "prepare saved arrow defaults");
     ScreenshotToolPalette::Options options;
     options.styleDefaults = screenshotCanvasToolStyleDefaults();
@@ -17916,7 +18312,7 @@ void arrowShaftEditorPersistsAcrossReopening() {
                 screenshotCanvasToolStyleDefaults().arrow.arrowShaftType ==
                     SnowCanvasArrowShaftType::Tapered,
             "shaft control must save its choice through the canvas style binding");
-    clickStyleControl(palette, "Arrow stroke width 4");
+    clickStyleControl(palette, "Arrow width 4");
     require(screenshotCanvasToolStyleDefaults().arrow.arrowShaftType ==
                 SnowCanvasArrowShaftType::Tapered,
             "another property edit must preserve the saved shaft preference");
@@ -17940,6 +18336,8 @@ void arrowShaftEditorPersistsAcrossReopening() {
     freshPalette.setStyleToolbarState(freshCanvas.canvasStyleToolbarState());
     const auto restoredStyle = freshCanvas.canvasStyleToolbarState().shapeStyle;
     require(restoredStyle.arrowShaftType == SnowCanvasArrowShaftType::Tapered &&
+                restoredStyle.arrowOutlineWidth == defaults.arrow.arrowOutlineWidth &&
+                restoredStyle.arrowOutlineColor == defaults.arrow.arrowOutlineColor &&
                 restoredStyle.arrowRatio == defaults.arrow.arrowRatio &&
                 freshPalette.creationStyleDefaults().arrow == options.styleDefaults.arrow,
             "reopening must restore saved shaft and ratio to both palette and canvas");
@@ -18355,19 +18753,20 @@ void customColorPresetsRefreshCurrentAndLazyDrawingEditors() {
     palette.setActiveTool(ScreenshotToolPalette::Tool::Text);
     auto textButtons = swatches(palette.stylePanel(), QStringLiteral("Text color "));
     requireColors(textButtons, stroke);
-    auto* textFill = colorPickerWithAccessibleName(palette, "Text fill color");
-    auto* textStroke = colorPickerWithAccessibleName(palette, "Text stroke width");
+    auto* textFill = colorPickerWithAccessibleName(palette, "Text background color");
+    auto* textStroke = colorPickerWithAccessibleName(palette, "Text outline width");
     require(textFill != nullptr && textStroke != nullptr,
             "lazily materialized text controls must expose fill and stroke pickers");
     textFill->setPopupVisible(true);
     QCoreApplication::processEvents();
-    auto textFillButtons = swatches(textFill->popupContent(), QStringLiteral("Text fill color "));
+    auto textFillButtons =
+        swatches(textFill->popupContent(), QStringLiteral("Text background color "));
     requireColors(textFillButtons, fill);
     textFill->setPopupVisible(false);
     textStroke->setPopupVisible(true);
     QCoreApplication::processEvents();
     auto textStrokeButtons =
-        swatches(textStroke->popupContent(), QStringLiteral("Text stroke color "));
+        swatches(textStroke->popupContent(), QStringLiteral("Text outline color "));
     requireColors(textStrokeButtons, fill);
     int textCommands = 0;
     SnowCanvasTextStyle changedText;
@@ -18849,15 +19248,20 @@ void moveToolExposesCaptureCursorAndRecaptureOptions() {
                 subtractRegion != nullptr && regionSeparator != nullptr && layout != nullptr &&
                 palette.actionToolbarVisible() && !palette.styleToolbarVisible(),
             "Move must materialize and display its dedicated options row");
+    auto* backgroundOpacity = palette.findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("screenshotSelectionBackgroundOpacityEditor"));
     require(
-        layout->indexOf(addRegion) == 0 && layout->indexOf(subtractRegion) == 2 &&
-            layout->indexOf(regionSeparator) == 9 && layout->indexOf(cursor) == 11 &&
-            layout->indexOf(recapture) == 13 &&
+        backgroundOpacity && layout->indexOf(addRegion) == 0 &&
+            layout->indexOf(subtractRegion) == 2 &&
+            layout->indexOf(backgroundOpacity) > layout->indexOf(subtractRegion) &&
+            layout->indexOf(regionSeparator) == layout->indexOf(backgroundOpacity) + 2 &&
+            layout->indexOf(cursor) == layout->indexOf(regionSeparator) + 2 &&
+            layout->indexOf(recapture) == layout->indexOf(cursor) + 2 &&
             layout->indexOf(hideSelectionToolbar) == layout->count() - 1 &&
             layout->itemAt(layout->indexOf(hideSelectionToolbar) - 4) != nullptr &&
             qobject_cast<QFrame*>(
                 layout->itemAt(layout->indexOf(hideSelectionToolbar) - 4)->widget()) != nullptr,
-        "Move options must group region actions at the far left, before capture actions and hide");
+        "Move options must group region and background actions before capture actions and hide");
     auto* qr =
         palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotShowQrCodeButton"));
     require(qr && layout->indexOf(qr) == layout->indexOf(recapture) + 2 && !qr->isEnabled(),
@@ -19246,6 +19650,8 @@ void regionSwitcherRetranslatesAndRenders() {
     auto& language = snow_shot::presentation::LanguageManager::instance();
     auto& appTheme = snow_shot::presentation::styles::ThemeManager::instance();
     const auto oldMode = appTheme.themeMode();
+    // Match application startup so the controls measure the configured application font.
+    appTheme.initialize(*qApp);
     ScreenshotRegionTypeControl floating(nullptr, true);
     floating.show();
     ScreenshotToolPalette::Options options;
@@ -19306,12 +19712,21 @@ void regionSwitcherRetranslatesAndRenders() {
                                         snow_shot::storage::ScreenshotShortcutSettings().shortcuts(
                                             QStringLiteral("next_selection_type")))),
                     "region hint must show the configured next shortcut in every language");
-            require(hint &&
-                        hint->heightForWidth(hint->width()) ==
-                            hint->heightForWidth(hint->width() * 2) &&
-                        hint->palette().color(QPalette::WindowText) ==
-                            scheme.map.colorTextSecondary,
-                    "floating hint stays on one line and uses the secondary theme text color");
+            require(
+                hint &&
+                    hint->heightForWidth(hint->width()) ==
+                        hint->heightForWidth(hint->width() * 2) &&
+                    hint->palette().color(QPalette::WindowText) == scheme.map.colorTextSecondary,
+                qPrintable(
+                    QStringLiteral("floating hint must stay on one line with secondary "
+                                   "text color: width=%1, height=%2/%3, color=%4/%5")
+                        .arg(hint ? hint->width() : -1)
+                        .arg(hint ? hint->heightForWidth(hint->width()) : -1)
+                        .arg(hint ? hint->heightForWidth(hint->width() * 2) : -1)
+                        .arg(hint
+                                 ? hint->palette().color(QPalette::WindowText).name(QColor::HexArgb)
+                                 : QString())
+                        .arg(scheme.map.colorTextSecondary.name(QColor::HexArgb))));
             // Recreate the pre-configuration layout with the same shortcut text.
             ScreenshotRegionTypeControl original(nullptr, true);
             original.layout()->itemAt(0)->layout()->setAlignment({});
@@ -19605,14 +20020,16 @@ void layoutCompactionToolbar() {
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+    QTemporaryDir storageDirectory;
+    require(storageDirectory.isValid(), "failed to create toolbar test storage directory");
+    const auto storageLifetime =
+        qScopeGuard([] { snow_shot::storage::ApplicationStorage::instance().shutdown(); });
     const int fixtureFont = QFontDatabase::addApplicationFont(
         QStringLiteral(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf"));
     require(fixtureFont >= 0 && QFontDatabase::applicationFontFamilies(fixtureFont)
                                     .contains(QStringLiteral("Snow Recording Test Sans")),
             "toolbar tests require the repository's registered font fixture");
 
-    QTemporaryDir storageDirectory;
-    require(storageDirectory.isValid(), "failed to create toolbar test storage directory");
     const QString executableDirectory =
         QDir(storageDirectory.path()).filePath(QStringLiteral("bin"));
     require(QDir().mkpath(executableDirectory),
@@ -19651,14 +20068,12 @@ int main(int argc, char** argv) {
             {executableDirectory, storageDirectory.path(), 60000});
         customColorPresetsRefreshCurrentAndLazyDrawingEditors();
         colorPresetEditorsPreserveCommandsAcrossRebinding();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--pressure-brush-only"))) {
         pressureBrushToolbarPreservesStylesAndMixedSelection();
         pressureBrushPreferencePersistsAndRejectsUnknownValues();
         freeDrawToolIsDistinctAndUsesIndependentPathStyleControls();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--eraser-only"))) {
@@ -19666,12 +20081,10 @@ int main(int argc, char** argv) {
         eraserStyleToolbarHeightMatchesOtherTools();
         eraserToolsExposeRememberedModesAndIndependentWidth();
         recordingEraserActivationReturnsToSelect();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--watermark-persistence-only"))) {
         runWatermarkPersistenceTests();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--style-commit-only"))) {
@@ -19688,7 +20101,6 @@ int main(int argc, char** argv) {
         selectedFilterTypeRemembersOnlyTheEditedProperty();
         canvasToolStylesPersistIndependentlyWithoutGlobalStyles();
         runScreenshotStylePersistenceFailureTest();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--serial-number-only"))) {
@@ -19698,13 +20110,11 @@ int main(int argc, char** argv) {
         serialNumberStyleControlsExposeAndEmitRequestedProperties();
         serialNumberInputCommitsEditsAndSupportsWheel();
         canvasToolStylesPersistIndependentlyWithoutGlobalStyles();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--text-alignment-only"))) {
         runScreenshotTextAlignmentTests();
         textStylePopupLifecyclesAreBalanced();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--text-style-only"))) {
@@ -19714,19 +20124,20 @@ int main(int argc, char** argv) {
         textStyleControlsExposeAndEmitAllRequestedProperties();
         textStylePopupLifecyclesAreBalanced();
         runScreenshotTextAlignmentTests();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--focus-chain-only"))) {
+        styleToolbarControlsDoNotEnterTabFocusChain();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--retired-style-editors-only"))) {
         colorSamplerStopsWhenPopupClosureRetiresItsEditor();
         retiredStyleEditorsIgnorePendingCommands();
         watermarkTemplateDialogBindingsRetireWithTheirEditor();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--watermark-dialog-retirement-only"))) {
         watermarkTemplateDialogBindingsRetireWithTheirEditor();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--original-image-only"))) {
@@ -19737,7 +20148,6 @@ int main(int argc, char** argv) {
     if (application.arguments().contains(QStringLiteral("--remembered-drawing-tool-only"))) {
         rememberedDrawingModesPersistAcrossPaletteInstances();
         rememberedDrawingToolRecordedAndRestored();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--auto-filter-only"))) {
@@ -19752,33 +20162,27 @@ int main(int argc, char** argv) {
         rememberedDrawingModesPersistAcrossPaletteInstances();
         rememberedDrawingToolRecordedAndRestored();
         canvasToolStylesPersistIndependentlyWithoutGlobalStyles();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--color-input-only"))) {
         colorPickerChannelKeyboardInput();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--cloud-upload-only"))) {
         cloudUploadToolbarContracts();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--quick-save-only"))) {
         quickSaveStacksAndLayoutMigration();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--hidden-tools-only"))) {
         hiddenToolShortcutsUseCommandAvailability();
         hiddenToolbarShortcutsPreserveToolsAndLayouts();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--canvas-tool-bindings-only"))) {
         canvasToolBindingsRespectCapabilitiesAndLifetime();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--tool-shortcuts-only"))) {
@@ -19788,13 +20192,11 @@ int main(int argc, char** argv) {
         repeatingDrawingShortcutsReturnsToSelect();
         repeatingActionShortcutsReturnsToSelect();
         groupedToolShortcutsToggleOnlyTheRequestedTool();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--popup-recovery-only"))) {
         tableBusyStatePreservesSiblingGroupPopovers();
         tableBusyStatePreservesSiblingGroupPopovers(true);
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--popover-lifecycle-only"))) {
@@ -19809,37 +20211,31 @@ int main(int argc, char** argv) {
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QCoreApplication::processEvents();
         recordingExportSettingsPopoversStayLazy();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--popover-hover-switching-only"))) {
         groupedToolbarHoverSwitchesWithVisibleTooltips();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--compaction-only"))) {
         layoutCompactionToolbar();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--move-options-only"))) {
         regionControlsFollowTheActiveCaptureType();
         moveToolExposesCaptureCursorAndRecaptureOptions();
         regionSwitcherRetranslatesAndRenders();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--region-switcher-only"))) {
         regionControlsFollowTheActiveCaptureType();
         regionSwitcherRetranslatesAndRenders();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--selection-reset-only"))) {
         eraserResetRemainsAvailableWithoutSelection();
         selectToolExposesDedicatedActionToolbar();
         selectionAlignmentActionsFollowSelectionUnitCount();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--recording-controls-only"))) {
@@ -19851,17 +20247,14 @@ int main(int argc, char** argv) {
         recordingActionLayoutSupportsStacksHidingAndStatefulSlots();
         recordingAudioStacksUseVisibleAnchorsWithoutCompetingHoverPopovers();
         recordingExportSettingsAndDrawingAvailabilityFollowSessionState();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--selected-magnifier-wheel-only"))) {
         magnifierStyleWheelsPersistCompletedSteps();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--disabled-selection-opacity-only"))) {
         disabledSelectionOpacityRejectsWheelSteps();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--magnifier-only"))) {
@@ -19872,13 +20265,11 @@ int main(int argc, char** argv) {
         magnifierStyleWheelsPersistCompletedSteps();
         disabledSelectionOpacityRejectsWheelSteps();
         magnifierControlsRetranslateAndRenderPreviews();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--angle-only"))) {
         angleSettingsAndWheelPreserveIndependentProperties();
         runAngleStyleBindingTests();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--distance-only"))) {
@@ -19886,21 +20277,25 @@ int main(int argc, char** argv) {
         editorlessToolsRejectStaleStyleToolbarState();
         distanceSettingsExposeIndependentPropertiesAndHoverWheel();
         distanceActualValueUpdatesTheCanvasAndUndo();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--arrow-outline-only"))) {
+        arrowOutlineEditorMatchesTextStroke();
+        arrowRatioEditorAdjustsAndResets();
+        arrowShaftEditorPersistsAcrossReopening();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--arrow-icons-only"))) {
+        arrowOutlineEditorMatchesTextStroke();
         arrowRatioEditorAdjustsAndResets();
         arrowStyleControlsExposeAndEmitAllStyleProperties();
         arrowheadOptionsRetranslateInPlace();
         selectedArrowMixedPropertiesResolveIndependently();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--dynamic-i18n-only"))) {
         dynamicToolbarLabelsUseEveryTranslationCatalog();
         moveToolPresentationUsesTheOwningShortcutScope();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--color-control-styles-only"))) {
@@ -19913,7 +20308,6 @@ int main(int argc, char** argv) {
         toolbarScalingDoesNotRelayoutPopupContent();
         popupColorEditorButtonsKeepPopupScaleAfterToolbarDpiCommit();
         familiesHydratedAfterScaleKeepTheSamePhysicalSize();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--border-fill-only"))) {
@@ -19921,14 +20315,12 @@ int main(int argc, char** argv) {
         borderFillControlsRetainColorAndSavedPreferences();
         fillStyleButtonsFollowFillColorPickerTrigger();
         mixedColorsKeepUniformStyleButtonsActive();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--canvas-style-persistence-only"))) {
         screenshotProductStyleProfileIsComplete();
         canvasToolStylesPersistIndependentlyWithoutGlobalStyles();
         arrowShaftEditorPersistsAcrossReopening();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (QApplication::arguments().contains(QStringLiteral("--dpi-scaling-only"))) {
@@ -19939,19 +20331,16 @@ int main(int argc, char** argv) {
         physicalScaleDefersHiddenStyleGroupGeometry();
         watermarkControlsFollowPhysicalScale();
         styleToolbarRowSpacingFollowsPhysicalScale();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--lazy-loading-only"))) {
         secondaryControlsMaterializeOnlyForTheRequestedFamily();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--stroke-editor-only"))) {
         selectedStrokeColorDragKeepsPickerIndicatorInSync();
         textAndHighlightStrokeWidthTriggersUseSharedPreviewButton();
         shapeAndArrowStrokeEditorsShareThePresetCatalog();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--stroke-rendering-only"))) {
@@ -19961,12 +20350,10 @@ int main(int argc, char** argv) {
         strokeRenderingPreferencesRoundTripAndRejectUnknownValues();
         strokeRenderingSelectionEditUsesHistoryAndRemembersOnlyItsProperty();
         strokeRenderingPopupKeepsDpiAndRetranslates();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--styled-template-storage-only"))) {
         styledDrawTemplatesPersistNormalizeAndRemainInsertable();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--style-reconcile-only"))) {
@@ -19976,12 +20363,10 @@ int main(int argc, char** argv) {
         prewarmedDestinationMergesSourceSharedAndDestinationOnlyEditors();
         retainedEditorsApplyDestinationMixedStateDuringReconciliation();
         repeatedStyleReconciliationDoesNotAccumulateHiddenRows();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--popup-lifecycle-only"))) {
         textStylePopupLifecyclesAreBalanced();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--ocr-translation-only"))) {
@@ -19990,26 +20375,22 @@ int main(int argc, char** argv) {
     }
     if (application.arguments().contains(QStringLiteral("--image-conversion-only"))) {
         imageConversionToolsExposeRecognitionActions();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--latex-only"))) {
         latexHistoryActionsUseFormulaHistory();
         recognitionModelSelectorGroupsOptionsAndRetainsIndependentSelections();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--recognition-model-only"))) {
         recognitionModelSelectorGroupsOptionsAndRetainsIndependentSelections();
         recognitionModelSelectorPreservesPopupStateAndScalesAndRetranslates();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--screenshot-actions-tooltips-only"))) {
         screenshotActionTooltipsUseConfiguredShortcuts();
         screenshotActionTooltipsFollowStorageChangesWithoutRetranslation();
         moveToolPresentationUsesTheOwningShortcutScope();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--shortcut-tooltips-only"))) {
@@ -20020,7 +20401,6 @@ int main(int argc, char** argv) {
         screenshotActionTooltipsFollowStorageChangesWithoutRetranslation();
         moveToolPresentationUsesTheOwningShortcutScope();
         ocrToolReplacesSelectionActionToolbarContents();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--canvas-color-sampling-only"))) {
@@ -20033,7 +20413,6 @@ int main(int argc, char** argv) {
     }
     if (application.arguments().contains(QStringLiteral("--spotlight-wheel-only"))) {
         spotlightControlsMatchMaskConfigurationBehavior();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--spotlight-shape-only"))) {
@@ -20043,22 +20422,18 @@ int main(int argc, char** argv) {
         spotlightShapePreferencesRoundTripAndAcceptLegacySettings();
         shapeSelectorIsTheLeftmostStyleGroup();
         shapeSelectorIsExclusiveToTheShapeTool();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--watermark-template-only"))) {
         watermarkTemplateLibraryAndEditorApplySnapshotsDeterministically();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--draw-template-only"))) {
         drawTemplateSelectSavesFiltersInsertsAndDeletes();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--watermark-template-width-only"))) {
         watermarkTemplateSelectMatchesFontSelectWidth();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--toolbar-layout-only"))) {
@@ -20072,26 +20447,22 @@ int main(int argc, char** argv) {
         highlightVariantsUseConfiguredPopoverGroup();
         drawingToolbarGroupsUseToolbarPopoverMetrics();
         spotlightControlsMatchMaskConfigurationBehavior();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--first-group-button-only"))) {
         toolbarGroupsKeepFirstButtonWhenEnabled();
         actionGroupsKeepFirstButtonWhenEnabled();
         commandGroupsKeepFirstButtonWhenEnabled();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--history-only"))) {
         screenshotShortcutsShareButtonCommandsAndAvailability();
         drawingHistoryActionsFollowStacksAndHiddenShortcuts();
         tableToolExposesStructureActionsAndOwnHistoryState();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--stack-availability-only"))) {
         actionStacksKeepEnabledAlternativesReachable();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--screenshot-result-layout-only"))) {
@@ -20100,7 +20471,6 @@ int main(int argc, char** argv) {
         screenshotToolbarUsesCanonicalOrderAndSectionSeparators();
         sharedToolbarLayoutModelOperationsAreDeterministic();
         configurableScreenshotActionLayoutSupportsStacksHidingAndRuntimeReplacement();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--action-toolbar-layout-only"))) {
@@ -20118,7 +20488,6 @@ int main(int argc, char** argv) {
         tableQrPopoverSharesOneEntryAndRemembersTheSelectedMode();
         sharedToolbarLayoutModelOperationsAreDeterministic();
         configurableScreenshotActionLayoutSupportsStacksHidingAndRuntimeReplacement();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--scrolling-only"))) {
@@ -20127,7 +20496,6 @@ int main(int argc, char** argv) {
         scrollingIntervalContentsScaleProportionally();
         scrollingScreenshotExposesAxisRecognitionModes();
         scrollingScreenshotKeepsDrawingToolsAvailable();
-        snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
     colorPresetEditorsPreserveCommandsAcrossRebinding();

@@ -108,6 +108,7 @@ class Server final : public QObject {
     int modelRequests = 0;
     bool holdModels = false;
     bool rejectModels = false;
+    std::function<QByteArray(int)> streamRejection;
     QVector<Stream> streams;
     QVector<QPointer<QTcpSocket>> pendingModels;
     QJsonArray models{QJsonObject{{QStringLiteral("model"), QStringLiteral("general")},
@@ -154,6 +155,14 @@ class Server final : public QObject {
                 "translation uses the existing chat endpoint");
             streams.push_back(
                 {socket, QJsonDocument::fromJson(bytes.mid(end + 4)).object(), bytes.left(end)});
+            const auto rejection = streamRejection
+                                       ? streamRejection(static_cast<int>(streams.size() - 1))
+                                       : QByteArray{};
+            if (!rejection.isEmpty()) {
+                socket->write(rejection);
+                socket->disconnectFromHost();
+                return;
+            }
             socket->write(QByteArrayLiteral("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
                                             "Connection: close\r\n\r\n"));
             socket->flush();

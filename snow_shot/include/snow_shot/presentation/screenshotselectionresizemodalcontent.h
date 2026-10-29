@@ -17,6 +17,7 @@ class AdInputNumber;
 class AdLineEdit;
 class AdModal;
 class AdSelect;
+class AdSegmented;
 } // namespace adqt::widgets
 
 class ScreenshotSelectionResizeModalContent final : public QWidget {
@@ -45,6 +46,7 @@ class ScreenshotSelectionResizeModalContent final : public QWidget {
   private:
     void changeEvent(QEvent* event) override;
     void retranslateUi();
+    void updateEffectLabels();
     QWidget* createNormalPage();
     adqt::widgets::AdInputNumber* createIntegerInput(int minimum, int maximum,
                                                      QWidget* parent = nullptr);
@@ -87,14 +89,19 @@ class ScreenshotSelectionResizeModalContent final : public QWidget {
 
     adqt::widgets::AdForm* m_normalForm = nullptr;
 
+    ScreenshotSelectionParams m_effectParams;
+    adqt::widgets::AdSegmented* m_borderTypeControl = nullptr;
+    adqt::widgets::AdFormItem* m_borderTypeItem = nullptr;
+    adqt::widgets::AdFormItem* m_effectWidthItem = nullptr;
+    adqt::widgets::AdFormItem* m_effectColorItem = nullptr;
     adqt::widgets::AdSelect* m_quickSet = nullptr;
     adqt::widgets::AdInputNumber* m_xInput = nullptr;
     adqt::widgets::AdInputNumber* m_yInput = nullptr;
     adqt::widgets::AdInputNumber* m_widthInput = nullptr;
     adqt::widgets::AdInputNumber* m_heightInput = nullptr;
     adqt::widgets::AdInputNumber* m_radiusInput = nullptr;
-    adqt::widgets::AdInputNumber* m_shadowWidthInput = nullptr;
-    adqt::widgets::AdColorPicker* m_shadowColorPicker = nullptr;
+    adqt::widgets::AdInputNumber* m_effectWidthInput = nullptr;
+    adqt::widgets::AdColorPicker* m_effectColorPicker = nullptr;
     AspectRatioLockButton* m_lockAspectRatioButton = nullptr;
 
     QPointer<adqt::widgets::AdModal> m_createPresetModal;

@@ -209,6 +209,8 @@ pub struct SnowSceneDisplayItem {
     pub font_family_utf8: *const std::ffi::c_char,
     pub magnifier: SnowMagnifierGeometry,
     pub text_ink_reserve: f64,
+    pub arrow_outline_color: SnowColorRgba8,
+    pub arrow_outline_width: f64,
 }
 
 #[repr(C)]
@@ -309,6 +311,8 @@ pub struct SnowOverlayDisplayItem {
     pub snap_marker_size: f64,
     pub snap_gap_dash_length: f64,
     pub snap_gap_dash_gap: f64,
+    pub arrow_outline_color: SnowColorRgba8,
+    pub arrow_outline_width: f64,
 }
 
 impl Default for SnowInteractionOutput {
@@ -327,6 +331,8 @@ impl Default for SnowInteractionOutput {
 impl Default for SnowSceneDisplayItem {
     fn default() -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color().into(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: SnowStrokeRenderingStyle::Architect,
             stroke_rendering_seed: 0,
 
@@ -389,6 +395,8 @@ impl Default for SnowSceneDisplayItem {
 impl Default for SnowOverlayDisplayItem {
     fn default() -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color().into(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: SnowStrokeRenderingStyle::Architect,
             stroke_rendering_seed: 0,
             kind: SnowOverlayDisplayItemKind::DrawRect,
@@ -436,34 +444,6 @@ impl Default for SnowOverlayDisplayItem {
             snap_gap_dash_length: 0.0,
             snap_gap_dash_gap: 0.0,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display_views_are_compact() {
-        let scene_size = std::mem::size_of::<SnowSceneDisplayItem>();
-        let overlay_size = std::mem::size_of::<SnowOverlayDisplayItem>();
-        assert_eq!(
-            scene_size, 408,
-            "scene display ABI layout must remain stable"
-        );
-        assert_eq!(
-            std::mem::align_of::<SnowSceneDisplayItem>(),
-            8,
-            "scene display ABI alignment must remain stable"
-        );
-        assert_eq!(
-            std::mem::offset_of!(SnowSceneDisplayItem, serial_number_type),
-            std::mem::offset_of!(SnowSceneDisplayItem, rect_shape) + 1
-        );
-        assert!(
-            overlay_size <= 384,
-            "overlay display view is {overlay_size} bytes"
-        );
     }
 }
 

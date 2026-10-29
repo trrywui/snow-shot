@@ -80,12 +80,12 @@ struct Fixture {
         ScreenshotSelectionEditUiActions ui;
         ui.updateOverlayState = [this] { refresh(); };
         workflow = std::make_unique<ScreenshotSelectionEditWorkflow>(
-            ScreenshotSelectionEditWorkflowContext{
-                parent, capture, displays, geometry, interaction, selection, ui,
-                [this](int radius, int shadow, const QColor& color) {
-                    ++writes;
-                    settings.setSelectionEffects(radius, shadow, color);
-                }});
+            ScreenshotSelectionEditWorkflowContext{parent, capture, displays, geometry, interaction,
+                                                   selection, ui,
+                                                   [this](const ScreenshotSelectionParams& params) {
+                                                       ++writes;
+                                                       settings.setSelectionEffects(params);
+                                                   }});
         ScreenshotOverlayInputActions actions;
         actions.updateOverlayState = [this] { refresh(); };
         actions.setEffectCursor = ScreenshotOverlayCanvasPresenter::setOverlayEffectCursor;
@@ -122,22 +122,24 @@ struct Fixture {
         result.present = selection.hasPixelSelection();
         result.bounds = selection.normalizedSelection();
         result.cornerRadius = selection.cornerRadius();
-        result.shadowWidth = selection.shadowWidth();
+        result.borderType = selection.borderType();
+        result.effectWidth = selection.effectWidth();
+        result.effectColor = selection.effectColor();
         result.effectEditorsVisible = interaction.movingSelection() &&
                                       interaction.moveToolActive() && selection.rectangular() &&
                                       !interaction.effectEditorsSuppressed();
         result.hoveredEffectHandle = interaction.hoveredEffectHandle();
         if (interaction.effectGesture())
             result.activeEffectHandle = interaction.effectGesture()->handle;
-        result.effectPreviewVisible = result.hoveredEffectHandle == Handle::Shadow ||
-                                      result.activeEffectHandle == Handle::Shadow;
+        result.effectPreviewVisible = result.hoveredEffectHandle == Handle::Width ||
+                                      result.activeEffectHandle == Handle::Width;
         return result;
     }
 
     void refresh() {
         ++updates;
         toolbarRadius = selection.cornerRadius();
-        toolbarShadow = selection.shadowWidth();
+        toolbarShadow = selection.effectWidth();
         overlay.setScreenshotSelectionState(state());
     }
 
@@ -232,6 +234,30 @@ void hoverHysteresisLimitsAndTinySelections() {
     const auto maximum = screenshotSelectionEffectLayout(QRectF(0, 0, 800, 600), 500, QTransform(),
                                                          QRectF(0, 0, 1000, 800));
     require(maximum.maximumRadius == 256, "large selections must retain the existing radius limit");
+}
+
+void borderDraggingPreservesInactiveShadow() {
+    Fixture f;
+    static_cast<void>(f.selection.setShadowWidth(17));
+    f.selection.setBorderType(ScreenshotSelectionBorderType::Border);
+    f.selection.setBorderWidth(3);
+    f.refresh();
+    const auto point = f.layout().shadow;
+    f.input->handleMousePress(&f.overlay, point);
+    f.input->handleMouseMove(&f.overlay, point + QPointF(8, 0));
+    require(f.selection.borderWidth() == 11 && f.selection.shadowWidth() == 17 &&
+                f.toolbarShadow == 11,
+            "border drag changes only the active width and previews it");
+    require(f.input->handleRightClick(&f.overlay, point) ==
+                    ScreenshotOverlayRightClickResult::Handled &&
+                f.selection.borderWidth() == 3 && f.selection.shadowWidth() == 17 && f.writes == 0,
+            "cancel restores border width without touching the stored shadow");
+    f.input->handleMousePress(&f.overlay, point);
+    f.input->handleMouseMove(&f.overlay, point + QPointF(5, 0));
+    f.input->handleMouseRelease(&f.overlay, point + QPointF(5, 0));
+    require(f.settings.borderType() == ScreenshotSelectionBorderType::Border &&
+                f.settings.borderWidth() == 8 && f.settings.shadowWidth() == 17 && f.writes == 1,
+            "border drag commit persists both independent effect settings");
 }
 
 void shadowDraggingCancellationAndPointerOwnership() {
@@ -371,7 +397,7 @@ void leftShadowHandleSupportsHoverAndDragging() {
     const QPointF point = f.layout().shadow;
     require(point.x() < bounds.left(), "edge selection must expose the left shadow control");
     f.mouse(QEvent::MouseMove, point, Qt::NoButton, Qt::NoButton);
-    require(f.interaction.hoveredEffectHandle() == Handle::Shadow && f.state().effectPreviewVisible,
+    require(f.interaction.hoveredEffectHandle() == Handle::Width && f.state().effectPreviewVisible,
             "left shadow control must support hover and preview");
     f.mouse(QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
     require(f.input->effectDragActive(), "left shadow control must own the pointer gesture");
@@ -430,7 +456,7 @@ void enlargedShadowHandleMatchesItsHitArea() {
         f.refresh();
         const auto point = f.layout().shadow;
         f.mouse(QEvent::MouseMove, point + QPointF(10, 0), Qt::NoButton, Qt::NoButton);
-        require(f.interaction.hoveredEffectHandle() == Handle::Shadow,
+        require(f.interaction.hoveredEffectHandle() == Handle::Width,
                 "the enlarged shadow hit area must reveal its hover state");
         f.mouse(QEvent::MouseMove, point + QPointF(13, 0), Qt::NoButton, Qt::NoButton);
         require(f.interaction.hoveredEffectHandle() == Handle::None,
@@ -567,10 +593,10 @@ void shadowControlOpacityTracksHoverAndDragging() {
             const auto withoutControl = capture();
             state.effectEditorsVisible = true;
             const auto idle = capture();
-            state.hoveredEffectHandle = Handle::Shadow;
+            state.hoveredEffectHandle = Handle::Width;
             const auto hovered = capture();
             state.hoveredEffectHandle = Handle::None;
-            state.activeEffectHandle = Handle::Shadow;
+            state.activeEffectHandle = Handle::Width;
             const auto active = capture();
             require(active == hovered, "shadow drag must remain opaque after the pointer leaves");
             state.activeEffectHandle = Handle::None;
@@ -597,7 +623,7 @@ void shadowControlOpacityTracksHoverAndDragging() {
             }
             state.hoveredEffectHandle = Handle::TopLeft;
             const auto radiusWithIdleShadow = capture();
-            state.activeEffectHandle = Handle::Shadow;
+            state.activeEffectHandle = Handle::Width;
             const auto radiusWithActiveShadow = capture();
             const auto radiusArea = QRectF(layout.corners[0] - QPointF(5, 5), QSizeF(10, 10));
             const QRect pixels(qFloor(radiusArea.x() * dpr), qFloor(radiusArea.y() * dpr),
@@ -648,10 +674,10 @@ void editorDamageCoversEveryChangedPixel() {
         auto next = state;
         next.effectEditorsVisible = true;
         transition(next);
-        next.hoveredEffectHandle = Handle::Shadow;
+        next.hoveredEffectHandle = Handle::Width;
         transition(next);
         next.hoveredEffectHandle = Handle::None;
-        next.activeEffectHandle = Handle::Shadow;
+        next.activeEffectHandle = Handle::Width;
         transition(next);
         next.activeEffectHandle = Handle::None;
         next.hoveredEffectHandle = Handle::TopLeft;
@@ -661,9 +687,9 @@ void editorDamageCoversEveryChangedPixel() {
         next.activeEffectHandle = Handle::BottomRight;
         next.cornerRadius = 24;
         transition(next);
-        next.hoveredEffectHandle = next.activeEffectHandle = Handle::Shadow;
+        next.hoveredEffectHandle = next.activeEffectHandle = Handle::Width;
         next.effectPreviewVisible = true;
-        next.shadowWidth = 10;
+        next.effectWidth = 10;
         transition(next);
         const QString previewPath = qEnvironmentVariable("SNOW_TEST_EFFECT_EDITOR_PREVIEW");
         if (dpr == 2 && !previewPath.isEmpty()) {
@@ -672,9 +698,9 @@ void editorDamageCoversEveryChangedPixel() {
             require(render(canvas, dpr).save(previewPath), "visual preview must save");
             renderer.applySelectionState(state);
         }
-        next.shadowWidth = 64;
+        next.effectWidth = 64;
         transition(next);
-        next.shadowWidth = 0;
+        next.effectWidth = 0;
         transition(next);
         next.effectPreviewVisible = false;
         next.hoveredEffectHandle = next.activeEffectHandle = Handle::None;
@@ -683,10 +709,10 @@ void editorDamageCoversEveryChangedPixel() {
              {QRectF(200, 50, 200, 150), QRectF(0, 50, 400, 150), QRectF(50, 50, 200, 150)}) {
             next.bounds = bounds;
             transition(next);
-            next.hoveredEffectHandle = Handle::Shadow;
+            next.hoveredEffectHandle = Handle::Width;
             transition(next);
             next.hoveredEffectHandle = Handle::None;
-            next.activeEffectHandle = Handle::Shadow;
+            next.activeEffectHandle = Handle::Width;
             transition(next);
             next.activeEffectHandle = Handle::None;
             transition(next);
@@ -710,6 +736,7 @@ void runScreenshotSelectionEffectEditorTests() {
             "effect tests require isolated storage");
     radiusHandlesShareValuesAndPreserveBounds();
     hoverHysteresisLimitsAndTinySelections();
+    borderDraggingPreservesInactiveShadow();
     shadowDraggingCancellationAndPointerOwnership();
     geometryAndCursorsRespectDisplayScale();
     leftShadowHandleSupportsHoverAndDragging();

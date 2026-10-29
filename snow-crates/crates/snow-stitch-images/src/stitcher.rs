@@ -4,7 +4,8 @@ use crate::compositor::{synthesize_append_axis_in_place, synthesize_prepend_axis
 use crate::{
     Frame, MotionEstimate, MotionOutcome, ReferenceMode, StitchAxis, StitchBranch, StitchDecision,
     StitchError, StitchOptions, StitchProgressState, TiledCanvas, VerticalMotionEstimator,
-    ViewportState, band_height, estimator::validate_estimator_options,
+    ViewportState, band_height,
+    estimator::{EstimationCache, validate_estimator_options},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,8 +70,8 @@ impl Stitcher {
         accumulator.process(
             self.next_index,
             frame,
-            &mut |reference, previous_raw, incoming| {
-                estimator.estimate(reference, previous_raw, incoming)
+            &mut |reference, previous_raw, incoming, cache| {
+                estimator.estimate_cached(reference, previous_raw, incoming, cache)
             },
         )?;
         self.next_index = self
@@ -212,6 +213,7 @@ impl Stitcher {
 }
 
 struct StitchAccumulator {
+    estimation_cache: EstimationCache,
     viewport_extent: u32,
     expected_geometry: crate::Geometry,
     canvas: TiledCanvas,
@@ -246,6 +248,7 @@ impl StitchAccumulator {
     fn new(first: Frame, options: StitchOptions) -> Result<Self, StitchError> {
         validate_first(&first, options)?;
         Ok(Self {
+            estimation_cache: EstimationCache::default(),
             viewport_extent: options.axis.primary_extent(first.width(), first.height()),
             expected_geometry: first.geometry(),
             canvas: TiledCanvas::new_from_frame(&first, options.axis)?,
@@ -313,7 +316,12 @@ impl StitchAccumulator {
         &mut self,
         index: usize,
         incoming: Frame,
-        estimator: &mut impl FnMut(&Frame, &Frame, &Frame) -> Result<MotionEstimate, StitchError>,
+        estimator: &mut impl FnMut(
+            &Frame,
+            &Frame,
+            &Frame,
+            &mut EstimationCache,
+        ) -> Result<MotionEstimate, StitchError>,
     ) -> Result<(), StitchError> {
         self.validate_incoming(index, &incoming)?;
         let before = self.snapshot()?;
@@ -350,7 +358,12 @@ impl StitchAccumulator {
         let reference_perf = crate::perf::Scope::new(crate::perf::Stage::ReferencePreparation);
         self.prepare_comparison_reference()?;
         reference_perf.finish();
-        let estimate = estimator(&self.synthetic_reference, &self.previous_raw, &incoming)?;
+        let estimate = estimator(
+            &self.synthetic_reference,
+            &self.previous_raw,
+            &incoming,
+            &mut self.estimation_cache,
+        )?;
 
         let maximum_shift = self.viewport_extent as f32 * self.options.estimator.max_motion_ratio;
         let accepted_offset = match estimate.outcome {
@@ -394,6 +407,7 @@ impl StitchAccumulator {
                 .ok_or(StitchError::Arithmetic {
                     operation: "incrementing accepted-motion count",
                 })?;
+        self.estimation_cache.invalidate_reference();
         self.previous_raw = incoming;
         self.previous_raw_index = index;
         let transition = self.state.transition(offset)?;
@@ -519,7 +533,7 @@ fn stitch_owned_with_estimator<I, F>(
 ) -> Result<StitchResult, StitchError>
 where
     I: Iterator<Item = Result<Frame, StitchError>>,
-    F: FnMut(&Frame, &Frame, &Frame) -> Result<MotionEstimate, StitchError>,
+    F: FnMut(&Frame, &Frame, &Frame, &mut EstimationCache) -> Result<MotionEstimate, StitchError>,
 {
     let first = frames.next().ok_or(StitchError::EmptyInput)??;
     let mut accumulator = StitchAccumulator::new(first, options)?;
@@ -538,9 +552,13 @@ where
     let mut estimator =
         VerticalMotionEstimator::new_for_axis(first.geometry(), options.axis, options.estimator)?;
     let all_frames = std::iter::once(Ok(first)).chain(frames);
-    stitch_owned_with_estimator(all_frames, options, |reference, previous_raw, incoming| {
-        estimator.estimate(reference, previous_raw, incoming)
-    })
+    stitch_owned_with_estimator(
+        all_frames,
+        options,
+        |reference, previous_raw, incoming, cache| {
+            estimator.estimate_cached(reference, previous_raw, incoming, cache)
+        },
+    )
 }
 
 pub fn stitch(frames: &[Frame], options: StitchOptions) -> Result<StitchResult, StitchError> {
@@ -575,6 +593,10 @@ where
 {
     stitch_owned(frames.into_iter(), options)
 }
+
+#[cfg(test)]
+#[path = "stitcher_cache_tests.rs"]
+mod cache_tests;
 
 #[cfg(test)]
 mod tests {
@@ -618,7 +640,7 @@ mod tests {
                 record_decisions: true,
                 ..StitchOptions::default()
             },
-            |_, _, _| Ok(estimate(outcomes.pop_front().unwrap())),
+            |_, _, _, _| Ok(estimate(outcomes.pop_front().unwrap())),
         )
         .unwrap()
     }
@@ -674,12 +696,12 @@ mod tests {
             )
             .unwrap();
             accumulator
-                .process(1, solid(1, 12, 12), &mut |_, _, _| {
+                .process(1, solid(1, 12, 12), &mut |_, _, _, _| {
                     Ok(estimate(MotionOutcome::Motion { offset: -4 }))
                 })
                 .unwrap();
             accumulator
-                .process(2, solid(2, 12, 12), &mut |_, _, _| {
+                .process(2, solid(2, 12, 12), &mut |_, _, _, _| {
                     Ok(estimate(MotionOutcome::Motion { offset: 2 }))
                 })
                 .unwrap();
@@ -691,16 +713,20 @@ mod tests {
                 (4, MotionOutcome::Indeterminate),
             ] {
                 accumulator
-                    .process(index, solid(index as u8, 12, 12), &mut |reference, _, _| {
-                        assert_eq!(*reference, expected);
-                        Ok(estimate(outcome))
-                    })
+                    .process(
+                        index,
+                        solid(index as u8, 12, 12),
+                        &mut |reference, _, _, _| {
+                            assert_eq!(*reference, expected);
+                            Ok(estimate(outcome))
+                        },
+                    )
                     .unwrap();
                 assert_eq!(accumulator.loaded_canvas_window, Some(2));
                 assert_eq!(accumulator.state.position, 2);
             }
             accumulator
-                .process(5, solid(5, 12, 12), &mut |reference, _, _| {
+                .process(5, solid(5, 12, 12), &mut |reference, _, _, _| {
                     assert_eq!(*reference, expected);
                     Ok(estimate(MotionOutcome::Motion { offset: 1 }))
                 })
@@ -708,14 +734,14 @@ mod tests {
             assert_eq!(accumulator.loaded_canvas_window, None);
             let moved = accumulator.canvas.materialize_axis(1, 13).unwrap();
             accumulator
-                .process(6, solid(6, 12, 12), &mut |reference, _, _| {
+                .process(6, solid(6, 12, 12), &mut |reference, _, _, _| {
                     assert_eq!(*reference, moved);
                     Ok(estimate(MotionOutcome::NoMotion))
                 })
                 .unwrap();
             assert_eq!(accumulator.loaded_canvas_window, Some(1));
             accumulator
-                .process(7, solid(7, 12, 12), &mut |_, _, _| {
+                .process(7, solid(7, 12, 12), &mut |_, _, _, _| {
                     Ok(estimate(MotionOutcome::Motion { offset: -6 }))
                 })
                 .unwrap();
@@ -792,7 +818,7 @@ mod tests {
                 record_decisions: true,
                 ..StitchOptions::default()
             },
-            |_, _, _| {
+            |_, _, _, _| {
                 calls.set(calls.get() + 1);
                 Ok(estimate(MotionOutcome::NoMotion))
             },
@@ -824,7 +850,7 @@ mod tests {
                 record_decisions: true,
                 ..StitchOptions::default()
             },
-            |_, _, _| {
+            |_, _, _, _| {
                 calls.set(calls.get() + 1);
                 Ok(estimate(MotionOutcome::NoMotion))
             },

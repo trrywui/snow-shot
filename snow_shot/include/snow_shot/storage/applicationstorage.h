@@ -11,6 +11,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QThreadPool>
 
 #include <atomic>
@@ -116,6 +117,9 @@ class ApplicationStorage final : public QObject {
     void requestPinnedWindowShow(const QString& id) {
         emit pinnedWindowShowRequested(id);
     }
+    void requestPinnedWindowsShow(const QStringList& ids) {
+        emit pinnedWindowsShowRequested(ids);
+    }
     void requestPinnedWindowDelete(const QVector<QString>& ids) {
         emit pinnedWindowDeleteRequested(ids);
     }
@@ -138,6 +142,7 @@ class ApplicationStorage final : public QObject {
     void captureHistoryChanged();
     void pinnedWindowsChanged();
     void pinnedWindowShowRequested(const QString& id);
+    void pinnedWindowsShowRequested(const QStringList& ids);
     void pinnedWindowDeleteRequested(const QVector<QString>& ids);
     void storageStatusChanged(const snow_shot::storage::StorageStatus& status);
     void smartSelectionChanged(bool enabled);
@@ -146,6 +151,8 @@ class ApplicationStorage final : public QObject {
 
   private:
     explicit ApplicationStorage(QObject* parent = nullptr);
+    static void releaseApplicationResources();
+    void drainRuntimeWork();
     void updateConfigurationError(const QString& error);
     void updateHistoryError(const QString& error);
     void updateHistoryUsage(const CaptureHistoryUsage& usage);
@@ -165,6 +172,7 @@ class ApplicationStorage final : public QObject {
 
     StorageStatus m_status;
     std::unique_ptr<ConfigurationStore> m_configuration;
+    std::unique_ptr<QTimer> m_pinnedCleanupTimer;
     std::unique_ptr<CaptureHistoryRepository> m_captureHistory;
     std::unique_ptr<PinnedWindowRepository> m_pinnedWindows;
     QThreadPool m_pinnedPreviewPool;

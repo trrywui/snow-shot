@@ -116,6 +116,9 @@ void pointGeometryRoundTripsAndLegacyIndexRemainsReadable() {
     draft.displays.front().sourceCanvasRect = QRect(-10, 20, 10, 6);
     draft.displays.front().backingScale = 2.0;
     draft.displays.front().nativeDisplayId = 42;
+    draft.selection.borderType = ScreenshotSelectionBorderType::Border;
+    draft.selection.borderWidth = 5;
+    draft.selection.borderColor = QColor(Qt::white);
     draft.displays.front().canvasUsesPoints = true;
     storage::CaptureHistoryRecord published;
     {
@@ -123,6 +126,8 @@ void pointGeometryRoundTripsAndLegacyIndexRemainsReadable() {
         const auto result = repository->publish(draft).get();
         require(result.storage.success, "point geometry publication failed");
         published = result.record;
+        require(published.selection == draft.selection,
+                "border selection must be committed intact");
     }
     {
         auto repository = storage::makeCaptureHistoryRepository(temporary.path());

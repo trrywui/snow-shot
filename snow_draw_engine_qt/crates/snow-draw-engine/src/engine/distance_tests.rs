@@ -1320,3 +1320,285 @@ fn distance_final_pointer_position_invalidates_preview_metrics_before_commit() {
     engine.redo_with_viewport_changes().unwrap();
     assert_eq!(label(&engine, id).layout.width(), 64.0);
 }
+
+#[test]
+fn distance_inline_value_commit_is_owner_only_atomic_and_undoable() {
+    let (mut engine, viewport) = setup();
+    let ids = apply(&mut engine, json!([
+        {"type":"distance","points":[[0,0],[30,40]],"pixel_scale":[2,3],"style":{"decimal_places":3,"unit":"mm"}},
+        {"type":"distance","points":[[100,0],[200,0]]},
+        {"type":"arrow","points":[[0,100],[100,100]]}
+    ])).unwrap();
+    let original = engine.model.arrow(ids[0]).unwrap().clone();
+    let other = engine.model.arrow(ids[1]).unwrap().clone();
+    let default = engine.editor.persisted();
+    select(&mut engine, &[ids[0]]);
+    engine
+        .set_distance_value_draft(
+            viewport,
+            ids[0],
+            "25.125".into(),
+            TextLayoutSize::new(100.0, 24.0),
+        )
+        .unwrap();
+    assert_eq!(label(&engine, ids[0]).text, "134.164 mm");
+    assert_eq!(
+        engine
+            .active_text_draft_presentation(viewport)
+            .unwrap()
+            .unwrap()
+            .0
+            .text,
+        "25.125 mm"
+    );
+    assert!(
+        scene(&engine, viewport)
+            .iter()
+            .any(|item| matches!(item, SceneDisplayItem::Text(text) if text.text == "25.125 mm"))
+    );
+    assert_eq!(
+        engine
+            .viewport_style_toolbar_state(viewport)
+            .unwrap()
+            .source,
+        crate::StyleToolbarSource::SelectedDistance
+    );
+    for invalid in [f64::NAN, f64::INFINITY, -1.0] {
+        assert!(
+            engine
+                .commit_distance_value(viewport, ids[0], invalid)
+                .is_err()
+        );
+        assert_eq!(engine.model.arrow(ids[0]).unwrap(), &original);
+    }
+    assert!(
+        engine
+            .commit_distance_value(viewport, ids[2], 20.0)
+            .is_err()
+    );
+    engine
+        .commit_distance_value(viewport, ids[0], 25.125)
+        .unwrap();
+    assert_eq!(label(&engine, ids[0]).text, "25.125 mm");
+    assert_eq!(engine.model.arrow(ids[0]).unwrap().points, original.points);
+    assert_eq!(engine.model.arrow(ids[1]).unwrap(), &other);
+    assert_eq!(engine.editor.persisted(), default);
+    assert!(
+        engine
+            .active_text_draft_presentation(viewport)
+            .unwrap()
+            .is_none()
+    );
+    engine.undo_with_viewport_changes().unwrap();
+    assert_eq!(engine.model.arrow(ids[0]).unwrap(), &original);
+    engine.redo_with_viewport_changes().unwrap();
+    assert_eq!(label(&engine, ids[0]).text, "25.125 mm");
+    let restored = Engine::from_serialized_document_session_with_config(
+        &engine.serialize_document_session().unwrap(),
+        EngineConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(label(&restored, ids[0]).text, "25.125 mm");
+    engine.commit_distance_value(viewport, ids[0], 0.0).unwrap();
+    assert_eq!(
+        engine.model.arrow(ids[0]).unwrap().distance.unwrap().factor,
+        0.01
+    );
+    engine
+        .commit_distance_value(viewport, ids[0], f64::MAX)
+        .unwrap();
+    assert_eq!(
+        engine.model.arrow(ids[0]).unwrap().distance.unwrap().factor,
+        1000.0
+    );
+}
+
+#[test]
+fn distance_inline_ime_presentation_is_temporary_and_accepts_composition_text() {
+    let (mut engine, viewport) = setup();
+    let owner = apply(
+        &mut engine,
+        json!([{"type":"distance","points":[[0,0],[100,0]]}]),
+    )
+    .unwrap()[0];
+    let document = engine.serialize_document_session().unwrap();
+    let history = engine.serialize_document_history().unwrap();
+    for display_text in ["12.5", "12.3456", "pending", ""] {
+        engine
+            .set_distance_value_draft(
+                viewport,
+                owner,
+                display_text.into(),
+                TextLayoutSize::new(100.0, 24.0),
+            )
+            .unwrap();
+        let expected = format!("{display_text} cm");
+        assert_eq!(
+            engine
+                .active_text_draft_presentation(viewport)
+                .unwrap()
+                .unwrap()
+                .0
+                .text,
+            expected
+        );
+        assert!(
+            scene(&engine, viewport)
+                .iter()
+                .any(|item| matches!(item, SceneDisplayItem::Text(text) if text.text == expected))
+        );
+        assert_eq!(engine.serialize_document_session().unwrap(), document);
+        assert_eq!(engine.serialize_document_history().unwrap(), history);
+    }
+    engine
+        .clear_active_text_draft_presentation_with_viewport_changes(viewport)
+        .unwrap();
+    assert!(
+        engine
+            .active_text_draft_presentation(viewport)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(label(&engine, owner).text, "100 cm");
+    assert_eq!(engine.serialize_document_history().unwrap(), history);
+}
+
+#[test]
+fn distance_inline_value_hit_uses_numeric_metrics_and_keeps_owner_selected() {
+    for tool in [ActiveTool::Distance, ActiveTool::Select] {
+        let (mut engine, viewport) = setup();
+        let owner = apply(
+            &mut engine,
+            json!([{ "type":"distance", "points":[[-100,0],[100,0]] }]),
+        )
+        .unwrap()[0];
+        engine.set_viewport_active_tool(viewport, tool).unwrap();
+        let request = engine
+            .arrow_text_layout_requests(viewport)
+            .unwrap()
+            .remove(0);
+        assert_eq!(request.distance_value_chars, 3);
+        engine
+            .apply_arrow_text_measurements(
+                viewport,
+                &[(
+                    request.text_id,
+                    request.key,
+                    TextLayoutSize::new(80.0, 24.0),
+                    80.0,
+                )],
+            )
+            .unwrap();
+        engine.apply_distance_value_widths(&[(request.text_id, request.key, 40.0)]);
+        pointer(
+            &mut engine,
+            viewport,
+            PointerEventType::Down,
+            Point::new(-20.0, 0.0),
+        );
+        let (info, _) = engine
+            .take_distance_value_edit_request(viewport)
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.arrow_id, Some(owner));
+        assert_eq!(engine.editor.selected_ids(), vec![owner]);
+        assert!(
+            engine
+                .take_distance_value_edit_request(viewport)
+                .unwrap()
+                .is_none()
+        );
+        pointer(
+            &mut engine,
+            viewport,
+            PointerEventType::Up,
+            Point::new(-20.0, 0.0),
+        );
+        pointer(
+            &mut engine,
+            viewport,
+            PointerEventType::Down,
+            Point::new(20.0, 0.0),
+        );
+        assert!(
+            engine
+                .take_distance_value_edit_request(viewport)
+                .unwrap()
+                .is_none()
+        );
+        pointer(
+            &mut engine,
+            viewport,
+            PointerEventType::Up,
+            Point::new(20.0, 0.0),
+        );
+        pointer(
+            &mut engine,
+            viewport,
+            PointerEventType::Down,
+            Point::new(-100.0, 0.0),
+        );
+        assert!(
+            engine
+                .take_distance_value_edit_request(viewport)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn distance_inline_value_revalidates_locked_and_hidden_owners() {
+    for locked in [false, true] {
+        let (mut engine, viewport) = setup();
+        let owner = apply(
+            &mut engine,
+            json!([{"type":"distance","points":[[0,0],[100,0]]}]),
+        )
+        .unwrap()[0];
+        engine
+            .set_distance_value_draft(
+                viewport,
+                owner,
+                "50".into(),
+                TextLayoutSize::new(70.0, 24.0),
+            )
+            .unwrap();
+        let mut meta = engine.model.element(owner).unwrap().meta;
+        meta.locked = locked;
+        meta.visible = locked;
+        let mut transaction = snow_draw_engine_document::Transaction::new("restrict distance");
+        transaction.update_element_meta(owner, meta);
+        engine
+            .apply_editor_command(
+                viewport,
+                snow_draw_engine_editor::EditorCommand::ApplyTransaction(
+                    snow_draw_engine_editor::ApplyTransactionCommand {
+                        transaction,
+                        history_undo_snapshot: None,
+                        created_selection_target: None,
+                    },
+                ),
+            )
+            .unwrap();
+        assert!(
+            engine
+                .active_text_draft_presentation(viewport)
+                .unwrap()
+                .is_none()
+        );
+        let before = engine.serialize_document_session().unwrap();
+        assert!(engine.commit_distance_value(viewport, owner, 50.0).is_err());
+        assert!(
+            engine
+                .set_distance_value_draft(
+                    viewport,
+                    owner,
+                    "50".into(),
+                    TextLayoutSize::new(70.0, 24.0)
+                )
+                .is_err()
+        );
+        assert_eq!(engine.serialize_document_session().unwrap(), before);
+    }
+}

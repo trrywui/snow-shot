@@ -291,6 +291,88 @@ void reconstructionAppearanceKeys() {
                 render(item, coordinator.snapshot()).pixelColor(32, 32) == Qt::green,
             "replacement reconstruction pixels must invalidate a key after donors are released");
 }
+void interactiveSnapshotSeeding() {
+    using namespace snow_canvas_smart_erase;
+    QImage base(64, 64, QImage::Format_ARGB32);
+    base.fill(Qt::white);
+    const QList<SnowCanvasBaseImageSource> sources{{base, QRectF(0, 0, 64, 64), {}}};
+    int donorRepaints = 0;
+    Coordinator donor([&] { ++donorRepaints; },
+                      [](const auto& item, const auto&, const auto&) { return fakeResult(item); });
+    donor.setSources(&donor, sources, false);
+    const auto empty = donor.snapshot();
+    auto item = rectangle();
+    item.filter.render_phase = 1;
+    donor.syncItems({item});
+    const auto pending = donor.snapshot();
+    item.filter.render_phase = 0;
+    donor.syncItems({item});
+    until([&] { return donorRepaints == 1; });
+    const auto ready = donor.snapshot();
+
+    std::atomic_int calls{0};
+    int repaints = 0;
+    Coordinator editor([&] { ++repaints; },
+                       [&](const auto& entry, const auto&, const auto&) {
+                           ++calls;
+                           return fakeResult(entry);
+                       });
+    editor.setSources(&editor, sources, false);
+    editor.seedSnapshot(empty);
+    editor.syncItems({item});
+    until([&] { return calls == 1 && repaints == 1; });
+    require(render(item, editor.snapshot()).pixelColor(32, 32) == Qt::blue,
+            "an imported empty snapshot must keep new erasures interactive");
+
+    editor.seedSnapshot(ready);
+    editor.syncItems({item});
+    require(editor.snapshot().cacheKey() == ready.cacheKey() && calls == 1,
+            "interactive import must immediately reuse matching completed results");
+    item.opacity = 0.5;
+    editor.syncItems({item});
+    require(calls == 1 && editor.snapshot().cacheKey() != ready.cacheKey(),
+            "imported results must track opacity without recomputing");
+    item.opacity = 1;
+    item.center_x += 4;
+    item.filter.render_phase = 2;
+    editor.syncItems({item});
+    require(render(item, editor.snapshot()).pixelColor(36, 32) == QColor(255, 219, 220),
+            "moving imported geometry must stop painting its old reconstruction");
+    item.filter.render_phase = 0;
+    editor.syncItems({item});
+    until([&] { return calls == 2 && repaints == 2; });
+    item.center_x -= 4;
+    editor.syncItems({item});
+    require(calls == 2 && editor.snapshot().cacheKey() == ready.cacheKey(),
+            "undo to imported geometry must reuse its cached completed result");
+    auto added = item;
+    ++added.element_id.index;
+    added.center_y += 8;
+    editor.syncItems({item, added});
+    until([&] { return calls == 3 && repaints == 3; });
+    editor.syncItems({});
+    require(editor.snapshot().cacheKey().isEmpty(),
+            "deleting imported and newly created erasures must remove their snapshot entries");
+
+    editor.seedSnapshot(pending);
+    editor.syncItems({item});
+    until([&] { return calls == 4 && repaints == 4; });
+    require(render(item, editor.snapshot()).pixelColor(32, 32) == Qt::blue,
+            "imported pending erasures must schedule their own reconstruction");
+    editor.seedSnapshot(ready);
+    base.fill(Qt::green);
+    editor.setSources(&editor, {{base, QRectF(0, 0, 64, 64), {}}}, false);
+    editor.syncItems({item});
+    until([&] { return calls == 5 && repaints == 5; });
+    editor.setSources(&editor, sources, false);
+    editor.seedSnapshot(ready);
+    editor.clearCache();
+    editor.syncItems({item});
+    require(calls == 5 && editor.snapshot().cacheKey() == ready.cacheKey(),
+            "cache cleanup must preserve the current imported reconstruction");
+    require(render(item, ready).pixelColor(32, 32) == Qt::blue,
+            "interactive changes must preserve the immutable donor snapshot");
+}
 void historicalCacheCleanup() {
     using namespace snow_canvas_smart_erase;
     std::array<std::atomic_int, 3> originalReleased{};
@@ -431,6 +513,98 @@ void reconstruction() {
             "cancelled work must not produce a result");
 }
 
+void transparentExportNeedsNoReconstruction() {
+    using namespace snow_canvas_smart_erase;
+    QImage base(8, 8, QImage::Format_ARGB32);
+    base.fill(QColor(20, 40, 60));
+    const QRectF frame(28, 28, 8, 8);
+    const QList<CanvasExportSource> sources{{base, frame}};
+    const QList<SnowCanvasBaseImageSource> donors{{base, frame}};
+    const QList<CanvasExportTile> tiles{{base.rect(), QPoint()}};
+    for (const auto tool : {SnowCanvasTool::RectangleFilter, SnowCanvasTool::PenFilter}) {
+        for (const bool ordinaryFilter : {false, true}) {
+            SnowCanvasRuntime runtime;
+            SnowCanvasWidget canvas(runtime);
+            canvas.resize(64, 64);
+            canvas.show();
+            QApplication::processEvents();
+            require(canvas.setViewportCamera(32, 32, 1), "configure transparent export camera");
+            require(runtime.setQuickSelectionDisabledTools(
+                        {SnowCanvasTool::RectangleFilter, SnowCanvasTool::PenFilter}),
+                    "create independent transparent export filters");
+            const auto drag = [&](QPointF first, QPointF last) {
+                const auto mouse = [&](QEvent::Type type, QPointF point, Qt::MouseButton button,
+                                       Qt::MouseButtons buttons) {
+                    QMouseEvent event(type, point, point, point, button, buttons, Qt::NoModifier);
+                    QApplication::sendEvent(&canvas, &event);
+                };
+                mouse(QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton);
+                mouse(QEvent::MouseMove, last, Qt::NoButton, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton);
+            };
+            if (ordinaryFilter) {
+                require(
+                    canvas.setCanvasTool(SnowCanvasTool::RectangleFilter) &&
+                        canvas.setCanvasFilterStyle({SnowCanvasFilterType::Inversion, 0.5, 1, 24},
+                                                    SnowCanvasFilterStylePropertyType),
+                    "create ordinary filter below transparent erasure");
+                drag(QPointF(30, 30), QPointF(34, 34));
+                require(canvas.resetEditingStatePreservingTool(),
+                        "finish ordinary filter before creating transparent erasure");
+            }
+            const auto expected = runtime.renderToImage(frame, base.size(), sources);
+            const auto expectedTiles =
+                runtime.renderTilesToImage(frame, base.size(), base.size(), tiles, sources);
+            require(!expected.isNull() && !expectedTiles.isNull(),
+                    "transparent export baseline renders");
+            require(canvas.setCanvasTool(tool) &&
+                        canvas.setCanvasFilterStyle({SnowCanvasFilterType::SmartErase, 0.5, 1, 24},
+                                                    SnowCanvasFilterStylePropertyType |
+                                                        SnowCanvasFilterStylePropertyStrokeWidth),
+                    "create erasure covering every reconstruction donor");
+            drag(tool == SnowCanvasTool::RectangleFilter ? QPointF(20, 20) : QPointF(20, 32),
+                 tool == SnowCanvasTool::RectangleFilter ? QPointF(44, 44) : QPointF(44, 32));
+            const auto visibleSession = runtime.serializeDocumentSnapshot();
+            require(canvas.setCanvasTool(SnowCanvasTool::Select),
+                    "select erasure before changing its opacity");
+            const QPointF selectionPoint(24, tool == SnowCanvasTool::RectangleFilter ? 24 : 32);
+            drag(selectionPoint, selectionPoint);
+            require(canvas.setSelectedOpacity(0), "disable erasure with selection opacity");
+            const auto session = runtime.serializeDocumentSnapshot();
+            const auto pending = runtime.smartEraseSnapshot();
+            std::vector<SnowCanvasSceneItem> items;
+            applySnapshot(items, pending);
+            require(items.size() == 1 && items.front().opacity == 0,
+                    "zero-opacity erasure remains in editable document snapshots");
+            int repaints = 0;
+            Coordinator completed(
+                [&] { ++repaints; },
+                [](const auto& item, const auto&, const auto&) { return fakeResult(item); });
+            completed.setSources(&completed, donors, false);
+            completed.syncItems(items);
+            until([&] { return repaints == 1; });
+            for (const auto& seed : {pending, completed.snapshot()}) {
+                SnowCanvasRuntime worker;
+                require(worker.restoreDocumentSession(session),
+                        "restore transparent erasure on export worker");
+                require(worker.prepareSmartEraseForExport(seed, donors, frame),
+                        "transparent erasures need no reconstruction donors");
+                require(!hasItems(worker.smartEraseSnapshot()),
+                        "prepared export omits transparent erasure interaction previews");
+                require(worker.renderToImage(frame, base.size(), sources) == expected,
+                        "transparent erasures cannot paint red previews or cached pixels");
+                require(worker.renderTilesToImage(frame, base.size(), base.size(), tiles,
+                                                  sources) == expectedTiles,
+                        "tiled transparent exports preserve background and ordinary filters");
+            }
+            SnowCanvasRuntime visibleWorker;
+            require(visibleWorker.restoreDocumentSession(visibleSession) &&
+                        !visibleWorker.prepareSmartEraseForExport({}, donors, frame),
+                    "visible erasures still fail when no surrounding donor pixels exist");
+        }
+    }
+}
+
 void widgetAndWorkerExport() {
     SnowCanvasRuntime runtime;
     SnowCanvasWidget canvas(runtime);
@@ -528,6 +702,10 @@ void widgetAndWorkerExport() {
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    if (app.arguments().contains(QStringLiteral("--transparent-export-only"))) {
+        transparentExportNeedsNoReconstruction();
+        return 0;
+    }
     if (app.arguments().contains(QStringLiteral("--memory-ownership-only"))) {
         reconstructionBuffersReturnMappedPages();
         return 0;
@@ -536,8 +714,10 @@ int main(int argc, char** argv) {
     placeholders();
     asynchronousLifecycle();
     reconstructionAppearanceKeys();
+    interactiveSnapshotSeeding();
     historicalCacheCleanup();
     reconstruction();
+    transparentExportNeedsNoReconstruction();
     widgetAndWorkerExport();
     std::cout << "Smart Erase tests passed\n";
     return 0;

@@ -4,6 +4,7 @@
 #include <QTextBoundaryFinder>
 
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -63,6 +64,7 @@ int preeditCursorFromAttributes(const QInputMethodEvent& event) {
 
 void SnowCanvasTextDraft::reset() {
     m_text.clear();
+    m_validator = nullptr;
     m_cursorPosition = 0;
     m_anchorPosition = 0;
     m_undoStack.clear();
@@ -80,9 +82,10 @@ std::size_t SnowCanvasTextDraft::retainedHistoryStorageBytes() const {
     return (m_undoStack.capacity() + m_redoStack.capacity()) * sizeof(Snapshot);
 }
 
-void SnowCanvasTextDraft::begin(const QString& text) {
+void SnowCanvasTextDraft::begin(const QString& text, TextValidator validator) {
     reset();
     m_text = text;
+    m_validator = validator;
     m_cursorPosition = boundedTextLength(m_text);
     m_anchorPosition = m_cursorPosition;
 }
@@ -244,9 +247,9 @@ bool SnowCanvasTextDraft::ensureNoPreeditForDirectEdit() {
 }
 
 bool SnowCanvasTextDraft::undoEdit() {
-    ensureNoPreeditForDirectEdit();
+    const bool clearedPreedit = ensureNoPreeditForDirectEdit();
     if (m_undoStack.empty()) {
-        return false;
+        return clearedPreedit;
     }
     m_redoStack.push_back(snapshot());
     const Snapshot previous = m_undoStack.back();
@@ -256,9 +259,9 @@ bool SnowCanvasTextDraft::undoEdit() {
 }
 
 bool SnowCanvasTextDraft::redoEdit() {
-    ensureNoPreeditForDirectEdit();
+    const bool clearedPreedit = ensureNoPreeditForDirectEdit();
     if (m_redoStack.empty()) {
-        return false;
+        return clearedPreedit;
     }
     m_undoStack.push_back(snapshot());
     const Snapshot next = m_redoStack.back();
@@ -348,8 +351,14 @@ bool SnowCanvasTextDraft::replaceRange(const Range& range, const QString& text) 
         return false;
     }
 
+    QString nextText = m_text;
+    nextText.replace(start, length, text);
+    if (m_validator != nullptr && !m_validator(nextText)) {
+        return false;
+    }
+
     rememberUndoState();
-    m_text.replace(start, length, text);
+    m_text = std::move(nextText);
     m_cursorPosition = boundedTextPosition(static_cast<qsizetype>(start) + text.size());
     m_anchorPosition = m_cursorPosition;
     return true;

@@ -25,6 +25,7 @@ class ScreenshotQrRecognitionPort;
 class SnowShotApiClient;
 class ScreenshotExportArtifact;
 class ScreenshotPrintService;
+class ScreenshotAirDropService;
 class ScreenRecordingController;
 struct ScreenshotClipboardContent;
 struct ScreenshotClipboardContentSnapshot;
@@ -80,7 +81,10 @@ class ScreenshotController : public QObject {
     void cancelGlobalMouseCapture(quint64 gestureId);
 
     void setPrintService(ScreenshotPrintService* service);
+    void setAirDropService(ScreenshotAirDropService* service);
     void setRecordingPermissionCheck(std::function<bool(bool, bool, bool)> check);
+    void prepareForSessionEnd(int timeoutMs);
+    void offerRecordingRecovery();
 
     [[nodiscard]] QJsonObject mcpState() const;
     using McpCompletion = std::function<void(QJsonObject, QString)>;
@@ -111,6 +115,7 @@ class ScreenshotController : public QObject {
     void restoreLastClosedPinnedWindow();
     void togglePinnedWindowsVisibility();
     void showPinnedRecord(const QString& id);
+    void showPinnedRecords(const QStringList& ids);
     void destroyPinnedRecords(const QVector<QString>& ids);
     void restoreActivePinnedGroupWindows();
     void startCapture();
@@ -137,6 +142,8 @@ class ScreenshotController : public QObject {
   signals:
     void imageStitchingRequested(const QVector<ScreenshotPinnedImageSnapshot>& snapshots);
     void imageSplittingRequested(const ScreenshotPinnedImageSnapshot& snapshot);
+    void scrollingImageEditingRequested(const ScreenshotExportSource& source);
+    void pinnedImageEditingRequested(const QString& recordId);
     void recordingExportNotificationRequested(const QString& path);
     void captureActivityChanged(const QString& source, bool active);
     void selectedFilePinFailed(const QString& message);

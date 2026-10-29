@@ -1,0 +1,16 @@
+diff --git a/qtbase/src/widgets/graphicsview/qgraphicsscene.cpp b/qtbase/src/widgets/graphicsview/qgraphicsscene.cpp
+--- a/qtbase/src/widgets/graphicsview/qgraphicsscene.cpp
++++ b/qtbase/src/widgets/graphicsview/qgraphicsscene.cpp
+@@ -4620,7 +4620,11 @@ void QGraphicsScenePrivate::drawItems(QPainter *painter,
+     updateAll = false;
+     QRectF exposedSceneRect;
+     if (exposedRegion && indexMethod != QGraphicsScene::NoIndex) {
+-        exposedSceneRect = exposedRegion->boundingRect().adjusted(-1, -1, 1, 1);
++        // Expand in floating-point coordinates. MSVC 19.51 ARM64 can
++        // miscompile the inlined checked integer adjustment followed by
++        // QRectF conversion, zero-extending negative edges (e.g. -1).
++        // Those invalid bounds cause the scene index to cull visible items.
++        exposedSceneRect = QRectF(exposedRegion->boundingRect()).adjusted(-1, -1, 1, 1);
+         if (viewTransform)
+             exposedSceneRect = viewTransform->inverted().mapRect(exposedSceneRect);
+     }

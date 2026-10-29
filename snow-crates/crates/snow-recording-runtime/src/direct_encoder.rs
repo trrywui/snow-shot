@@ -41,6 +41,7 @@ enum Command {
     Pause(Sender<()>),
     Resume(Sender<()>),
     Finish(u64, Option<u64>),
+    Fail(ScreenRecorderError, Instant),
     Cancel,
 }
 
@@ -55,10 +56,7 @@ struct OwnedEncoder {
 
 impl OwnedEncoder {
     fn preserve_failure(&mut self, cause: ScreenRecorderError) -> ScreenRecorderError {
-        self.encoder
-            .preserve_recovery_failure(&cause.to_string())
-            .map(ScreenRecorderError::from)
-            .unwrap_or(cause)
+        crate::capture_failure::preserve(&mut self.encoder, &self.clock, Instant::now(), cause)
     }
 
     fn new(
@@ -69,18 +67,20 @@ impl OwnedEncoder {
         bench: (u8, bool),
     ) -> Result<Self> {
         #[cfg(feature = "bench-synthetic-input")]
-        let encoder = config
-            .force_hardware_failure(bench.1)
-            .create()
-            .and_then(|mut encoder| {
-                encoder.set_conversion_threads(bench.0)?;
-                Ok(encoder)
-            })?;
+        let mut encoder =
+            config
+                .force_hardware_failure(bench.1)
+                .create()
+                .and_then(|mut encoder| {
+                    encoder.set_conversion_threads(bench.0)?;
+                    Ok(encoder)
+                })?;
         #[cfg(not(feature = "bench-synthetic-input"))]
-        let encoder = {
+        let mut encoder = {
             let _ = bench;
             config.create()?
         };
+        encoder.retain_failed_output();
         let mixer = encoder
             .has_audio()
             .then(|| LiveAudioMixer::new(selection.0, selection.1));
@@ -166,7 +166,11 @@ impl OwnedEncoder {
         }
         if let Some(mixer) = self.mixer.as_mut() {
             if let Err(error) = mixer.emit_ready(audio_endpoint, true, &mut self.encoder) {
-                return Err(self.preserve_failure(error));
+                return Err(self
+                    .encoder
+                    .preserve_failure_at_duration(&error.to_string(), audio_endpoint)
+                    .map(ScreenRecorderError::from)
+                    .unwrap_or(error));
             }
             dropped_audio += mixer.dropped_frames;
         }
@@ -184,6 +188,7 @@ impl OwnedEncoder {
 struct ThreadedEncoder {
     video_encoder: String,
     hardware: bool,
+    needs_static_frame: Arc<AtomicBool>,
     mailbox: Arc<Mutex<Mailbox>>,
     commands: Sender<Command>,
     wake: Sender<()>,
@@ -239,10 +244,30 @@ pub(super) struct RecordingEncoder {
 
 impl RecordingEncoder {
     pub(super) fn preserve_failure(&mut self, cause: ScreenRecorderError) -> ScreenRecorderError {
+        if matches!(
+            cause,
+            ScreenRecorderError::ExportCanceled
+                | ScreenRecorderError::Capture(snow_capture::error::CaptureError::Canceled)
+        ) {
+            return ScreenRecorderError::ExportCanceled;
+        }
+        #[cfg(any(test, feature = "bench-synthetic-input"))]
+        if matches!(self.driver, Some(Driver::Threaded(_))) {
+            let Some(Driver::Threaded(threaded)) = self.driver.take() else {
+                unreachable!()
+            };
+            let original = ScreenRecorderError::Encode(cause.to_string());
+            let _ = threaded.command(Command::Fail(cause, Instant::now()));
+            return match threaded.worker.join() {
+                Ok(Err(error)) => error,
+                Ok(Ok(_)) => original,
+                Err(_) => ScreenRecorderError::Encode("recording encoder worker panicked".into()),
+            };
+        }
         match self.driver.as_mut().expect("encoder driver") {
             Driver::Inline(owned) => owned.preserve_failure(cause),
             #[cfg(any(test, feature = "bench-synthetic-input"))]
-            Driver::Threaded(_) => cause,
+            Driver::Threaded(_) => unreachable!(),
         }
     }
     #[cfg(all(windows, any(test, feature = "bench-synthetic-input")))]
@@ -257,7 +282,10 @@ impl RecordingEncoder {
     #[cfg(windows)]
     pub(super) fn recover_to_software(&mut self, reason: &str) -> Result<()> {
         match self.driver.as_mut().expect("encoder driver") {
-            Driver::Inline(owned) => Ok(owned.encoder.recover_to_software(reason)?),
+            Driver::Inline(owned) => owned
+                .encoder
+                .recover_to_software(reason)
+                .map_err(|error| owned.preserve_failure(error.into())),
             #[cfg(any(test, feature = "bench-synthetic-input"))]
             Driver::Threaded(_) => Err(ScreenRecorderError::Encode(
                 "GPU recovery requires the inline encoder owner".into(),
@@ -272,12 +300,13 @@ impl RecordingEncoder {
             Driver::Threaded(_) => Ok(()),
         }
     }
-    #[cfg(windows)]
-    pub(super) fn needs_recovery_image(&self) -> bool {
+    pub(super) fn needs_video_frame(&self, changed: bool) -> bool {
         match self.driver.as_ref().expect("encoder driver") {
-            Driver::Inline(owned) => owned.encoder.needs_recovery_image(),
+            Driver::Inline(owned) => owned.encoder.needs_video_frame(changed),
             #[cfg(any(test, feature = "bench-synthetic-input"))]
-            Driver::Threaded(_) => false,
+            Driver::Threaded(threaded) => {
+                changed || threaded.needs_static_frame.load(Ordering::Acquire)
+            }
         }
     }
     #[cfg(windows)]
@@ -339,6 +368,7 @@ impl RecordingEncoder {
     ) -> Result<Self> {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let failure = Arc::new(Mutex::new(None));
+        let needs_static_frame = Arc::new(AtomicBool::new(false));
         let (commands, control) = crossbeam_channel::bounded(1);
         let (wake, wake_rx) = crossbeam_channel::bounded(1);
         let (recycle, recycled) = crossbeam_channel::bounded(2);
@@ -346,6 +376,7 @@ impl RecordingEncoder {
         let (lifetime, stopped) = crossbeam_channel::bounded::<()>(0);
         let worker_mailbox = Arc::clone(&mailbox);
         let worker_failure = Arc::clone(&failure);
+        let worker_needs_static_frame = Arc::clone(&needs_static_frame);
         let worker = std::thread::Builder::new()
             .name("snow-direct-encoder".into())
             .spawn(move || {
@@ -356,6 +387,8 @@ impl RecordingEncoder {
                     let owned = OwnedEncoder::new(config, audio, selection, clock, bench);
                     match owned {
                         Ok(mut owned) => {
+                            worker_needs_static_frame
+                                .store(owned.encoder.needs_video_frame(false), Ordering::Release);
                             let (name, hardware) = owned.encoder.opened_video_encoder();
                             let _ = ready.send(Ok((name.to_owned(), hardware)));
                             loop {
@@ -373,8 +406,15 @@ impl RecordingEncoder {
                                     if let Some(frame) = accepted {
                                         #[cfg(test)]
                                         wait_for_video_gate(&worker_mailbox);
-                                        let _ = recycle.try_send(owned.video(frame)?);
+                                        let pixels = owned
+                                            .video(frame)
+                                            .map_err(|error| owned.preserve_failure(error))?;
+                                        let _ = recycle.try_send(pixels);
                                     }
+                                    worker_needs_static_frame.store(
+                                        owned.encoder.needs_video_frame(false),
+                                        Ordering::Release,
+                                    );
                                     match command {
                                         Command::Pause(ack) => {
                                             owned.pause();
@@ -392,20 +432,39 @@ impl RecordingEncoder {
                                                 .replacements;
                                             return Ok(report);
                                         }
+                                        Command::Fail(cause, at) => {
+                                            return Err(crate::capture_failure::preserve(
+                                                &mut owned.encoder,
+                                                &owned.clock,
+                                                at,
+                                                cause,
+                                            ));
+                                        }
                                         Command::Cancel => unreachable!(),
                                     }
                                 }
-                                owned.tick()?;
+                                owned
+                                    .tick()
+                                    .map_err(|error| owned.preserve_failure(error))?;
                                 let video = worker_mailbox
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
                                     .video
                                     .take();
+                                let has_video = video.is_some();
                                 if let Some(frame) = video {
                                     #[cfg(test)]
                                     wait_for_video_gate(&worker_mailbox);
-                                    let _ = recycle.try_send(owned.video(frame)?);
-                                } else {
+                                    let pixels = owned
+                                        .video(frame)
+                                        .map_err(|error| owned.preserve_failure(error))?;
+                                    let _ = recycle.try_send(pixels);
+                                }
+                                worker_needs_static_frame.store(
+                                    owned.encoder.needs_video_frame(false),
+                                    Ordering::Release,
+                                );
+                                if !has_video {
                                     match wake_rx.recv_timeout(Duration::from_millis(10)) {
                                         Ok(())
                                         | Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -434,6 +493,7 @@ impl RecordingEncoder {
                 driver: Some(Driver::Threaded(ThreadedEncoder {
                     video_encoder,
                     hardware,
+                    needs_static_frame,
                     mailbox,
                     commands,
                     wake,
@@ -682,6 +742,97 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_audio_finalization_failure_retains_staging_video() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unpublished.mp4");
+        let mut owned = OwnedEncoder::new(
+            StreamingEncoder::builder(config(path.clone())),
+            None,
+            (false, false),
+            RecordingClock::new(Instant::now() - Duration::from_millis(100)),
+            (0, false),
+        )
+        .unwrap();
+        owned
+            .encoder
+            .push_owned_rgba_frame_at_pts(0, vec![80; 16 * 16 * 4])
+            .unwrap();
+        owned.mixer = Some(LiveAudioMixer::new(true, false));
+        let error = owned.finish(100, None).unwrap_err().to_string();
+        assert!(
+            error.contains("unknown streaming audio track: system"),
+            "{error}"
+        );
+        assert!(error.contains("recoverable media is retained"), "{error}");
+        assert!(!path.exists());
+        let retained = std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(retained.join("unpublished.mp4").is_file());
+        assert!(retained.join("timeline.txt").is_file());
+        assert_eq!(video_end_ms(&retained.join("unpublished.mp4")), 10_000);
+    }
+
+    fn video_end_ms(path: &std::path::Path) -> i64 {
+        use ffmpeg_next::{self as ffmpeg, Rescale};
+        let mut media = ffmpeg::format::input(path).unwrap();
+        let stream = media.streams().best(ffmpeg::media::Type::Video).unwrap();
+        let index = stream.index();
+        let time_base = stream.time_base();
+        media
+            .packets()
+            .filter(|(stream, _)| stream.index() == index)
+            .map(|(_, packet)| {
+                (packet.pts().unwrap() + packet.duration()).rescale(time_base, (1, 1000))
+            })
+            .max()
+            .unwrap()
+    }
+
+    #[test]
+    fn both_encoder_drivers_preserve_static_capture_at_the_frozen_boundary() {
+        for asynchronous in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("source.mp4");
+            let start = Instant::now() - Duration::from_secs(20);
+            let clock = RecordingClock::new(start);
+            clock
+                .controller()
+                .mark_pause(start + Duration::from_millis(10_037));
+            let mut encoder = RecordingEncoder::new(
+                StreamingEncoder::builder(config(path.clone()))
+                    .recording_source()
+                    .software_only(),
+                None,
+                (false, false),
+                clock,
+                asynchronous,
+                (0, false),
+            )
+            .unwrap();
+            // The threaded path must also drain its accepted mailbox image before sealing.
+            encoder
+                .push_owned_rgba_frame_at_pts(0, vec![80; 16 * 16 * 4].into())
+                .unwrap();
+            let error = encoder
+                .preserve_failure(ScreenRecorderError::Encode("capture source failed".into()));
+            drop(encoder);
+            let message = error.to_string();
+            let retained = PathBuf::from(
+                message
+                    .split("recoverable media is retained in ")
+                    .nth(1)
+                    .unwrap(),
+            );
+            assert_eq!(video_end_ms(&retained.join("source.mp4")), 10_037);
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
     fn audio_finalization_failure_retains_recoverable_video() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("unpublished.mp4");
@@ -724,6 +875,81 @@ mod tests {
             .unwrap();
         let packets = video.split('\t').nth(2).unwrap().parse::<u64>().unwrap();
         assert!(packets > 0, "{manifest}");
+    }
+
+    #[test]
+    fn static_admission_waits_for_durable_packets_in_both_encoder_drivers() {
+        use ffmpeg_next::Rescale;
+
+        let directory = tempfile::tempdir().unwrap();
+        for asynchronous in [false, true] {
+            let path = directory.path().join(format!("static-{asynchronous}.mp4"));
+            let mut encoder = RecordingEncoder::new(
+                StreamingEncoder::builder(config(path.clone()))
+                    .recording_source()
+                    .recoverable()
+                    .software_only(),
+                None,
+                (false, false),
+                RecordingClock::new(Instant::now()),
+                asynchronous,
+                (0, false),
+            )
+            .unwrap();
+            assert!(encoder.needs_video_frame(false));
+            encoder
+                .push_owned_rgba_frame_at_pts(0, [80, 80, 80, 255].repeat(16 * 16).into())
+                .unwrap();
+            // The acknowledgment covers accepted video and its published
+            // admission state, independent of worker scheduling.
+            encoder.pause().unwrap();
+            assert!(encoder.needs_video_frame(false));
+            encoder.resume().unwrap();
+            let mut pts = 1;
+            while pts < 32 && encoder.needs_video_frame(false) {
+                encoder
+                    .push_owned_rgba_frame_at_pts(pts, [80, 80, 80, 255].repeat(16 * 16).into())
+                    .unwrap();
+                encoder.pause().unwrap();
+                encoder.resume().unwrap();
+                pts += 1;
+            }
+            assert!(!encoder.needs_video_frame(false));
+            assert!(encoder.needs_video_frame(true));
+            let endpoint = pts + 100;
+            let report = encoder.finish_at_pts(endpoint).unwrap();
+            assert_eq!(report.encoded_frames, pts);
+
+            let mut media = ffmpeg_next::format::input(&path).unwrap();
+            let stream = media
+                .streams()
+                .best(ffmpeg_next::media::Type::Video)
+                .unwrap();
+            let time_base = stream.time_base();
+            let mut decoder =
+                ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())
+                    .unwrap()
+                    .decoder()
+                    .video()
+                    .unwrap();
+            let mut decoded = ffmpeg_next::frame::Video::empty();
+            let mut decoded_count = 0;
+            let mut end = 0;
+            for (_, packet) in media.packets() {
+                end = end
+                    .max((packet.pts().unwrap() + packet.duration()).rescale(time_base, (1, 10)));
+                decoder.send_packet(&packet).unwrap();
+                while decoder.receive_frame(&mut decoded).is_ok() {
+                    decoded_count += 1;
+                }
+            }
+            decoder.send_eof().unwrap();
+            while decoder.receive_frame(&mut decoded).is_ok() {
+                decoded_count += 1;
+            }
+            assert_eq!(decoded_count, report.encoded_frames);
+            assert_eq!(end, endpoint as i64);
+        }
     }
 
     #[test]

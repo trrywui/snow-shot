@@ -40,8 +40,8 @@ class StageTimer {
 };
 constexpr qsizetype kMaximumWorkingPixels = 16 * 1024 * 1024;
 
-void checkCancelled(const std::atomic_bool& cancelled) {
-    if (cancelled.load(std::memory_order_relaxed)) {
+void checkCancelled(const std::function<bool()>& cancelled) {
+    if (cancelled && cancelled()) {
         throw std::runtime_error("cancelled");
     }
 }
@@ -63,7 +63,7 @@ void collectMaskPoints(const cv::Mat1b& mask, snow::memory::PixelArray<cv::Point
 // A surface is accepted using surrounding observations, never pixels inside the hole.
 // Robust fitting tolerates a few foreground/antialiasing pixels on the outer boundary.
 bool surfaceFill(cv::Mat3f& source, const cv::Mat1b& hole, const cv::Mat1b& known,
-                 const std::atomic_bool& cancelled) {
+                 const std::function<bool()>& cancelled) {
     const auto bounds = cv::boundingRect(hole);
     cv::Mat1b ring = pixelMatrix<unsigned char>();
     cv::dilate(hole, ring, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(9, 9)));
@@ -121,7 +121,7 @@ bool surfaceFill(cv::Mat3f& source, const cv::Mat1b& hole, const cv::Mat1b& know
 // Buffer coverage and donor eligibility are separate. Start locally and expand only
 // if no usable patches remain (e.g. a stroke beside a source edge).
 cv::Mat1b donorDomain(const cv::Mat1b& hole, const cv::Mat1b& known,
-                      const std::atomic_bool& cancelled) {
+                      const std::function<bool()>& cancelled) {
     cv::Mat1f distance = pixelMatrix<float>();
     cv::distanceTransform(pixelMatrixNot(hole), distance, cv::DIST_L2, 5);
     const auto bounds = cv::boundingRect(hole);
@@ -143,7 +143,7 @@ cv::Mat1b donorDomain(const cv::Mat1b& hole, const cv::Mat1b& known,
 // Exact periodic backgrounds have a fast path, but matching a border is not enough.
 // Verify a short translation throughout the known donor domain before using it.
 cv::Mat3f periodicFill(const cv::Mat3f& source, const cv::Mat1b& hole, const cv::Mat1b& domain,
-                       const std::atomic_bool& cancelled) {
+                       const std::function<bool()>& cancelled) {
     snow::memory::PixelArray<cv::Point> points;
     collectMaskPoints(domain, points);
     for (const auto direction : {cv::Point(1, 0), cv::Point(0, 1)}) {
@@ -200,7 +200,7 @@ cv::Mat3f periodicFill(const cv::Mat3f& source, const cv::Mat1b& hole, const cv:
 }
 
 cv::Mat3f observedBackground(const cv::Mat3f& source, const cv::Mat1b& known, int radius,
-                             const std::atomic_bool& cancelled, cv::Mat1f& weights) {
+                             const std::function<bool()>& cancelled, cv::Mat1f& weights) {
     known.convertTo(weights, CV_32F, 1.0 / 255);
     auto weighted = pixelMatrix<cv::Vec3f>(source.size(), cv::Vec3f(0, 0, 0));
     source.copyTo(weighted, known);
@@ -216,8 +216,8 @@ cv::Mat3f observedBackground(const cv::Mat3f& source, const cv::Mat1b& known, in
 }
 
 cv::Mat1f backgroundVariation(const cv::Mat3f& source, const cv::Mat3f& mean,
-                              const cv::Mat1b& known, int radius, const std::atomic_bool& cancelled,
-                              const cv::Mat1f& weights) {
+                              const cv::Mat1b& known, int radius,
+                              const std::function<bool()>& cancelled, const cv::Mat1f& weights) {
     auto squared = pixelMatrix<float>(source.size(), 0.0F);
     for (int y = 0; y < source.rows; ++y) {
         checkCancelled(cancelled);
@@ -245,7 +245,7 @@ struct BackgroundGuide {
 // agreeing endpoints preserves bands/edges without assuming a horizontal layout.
 BackgroundGuide backgroundGuide(const cv::Mat3f& observed, const cv::Mat1f& variation,
                                 const cv::Mat1b& hole, const cv::Mat1b& known,
-                                const std::atomic_bool& cancelled) {
+                                const std::function<bool()>& cancelled) {
     cv::Mat3f guide = pixelMatrixCopy(observed);
     cv::Mat1f texture = pixelMatrixCopy(variation);
     auto costs = pixelMatrix<float>(observed.size(), std::numeric_limits<float>::max());
@@ -330,7 +330,7 @@ struct TargetPatch {
 // propagation and voting; their order matches a dense forward/reverse scan.
 LevelResult fillLevel(const cv::Mat3f& source, const cv::Mat1b& hole, const cv::Mat1b& coverage,
                       const cv::Mat1b& domain, const BackgroundGuide& background,
-                      const LevelResult& previous, const std::atomic_bool& cancelled,
+                      const LevelResult& previous, const std::function<bool()>& cancelled,
                       const ReconstructionOptions& options, int passes,
                       LevelDiagnostics* diagnostics) {
     const auto& guide = background.color;
@@ -645,11 +645,11 @@ QPainterPath path(const SnowCanvasSceneItem& item) {
     return transform.map(result);
 }
 
-Result reconstructWithOptions(const SnowCanvasSceneItem& item,
-                              const QList<SnowCanvasBaseImageSource>& sources,
-                              const std::atomic_bool& cancelled,
-                              const ReconstructionOptions& options,
-                              ReconstructionDiagnostics* diagnostics) {
+static Result reconstructWithCancellation(const SnowCanvasSceneItem& item,
+                                          const QList<SnowCanvasBaseImageSource>& sources,
+                                          const std::function<bool()>& cancelled,
+                                          const ReconstructionOptions& options,
+                                          ReconstructionDiagnostics* diagnostics) {
     if (options.coarsePasses < 2 || options.coarsePasses > 5 || options.intermediatePasses < 2 ||
         options.intermediatePasses > 5 || options.finePasses < 2 || options.finePasses > 5)
         return {};
@@ -665,6 +665,8 @@ Result reconstructWithOptions(const SnowCanvasSceneItem& item,
         QRectF available;
         qreal scale = 1;
         for (const auto& source : sources) {
+            if (!source.smartEraseSource)
+                continue;
             const QRectF coverage = source.coverage.isEmpty()
                                         ? source.canvasRect
                                         : source.coverage.intersected(source.canvasRect);
@@ -706,6 +708,8 @@ Result reconstructWithOptions(const SnowCanvasSceneItem& item,
             painter.setWorldTransform(mapping);
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
             for (const auto& source : sources) {
+                if (!source.smartEraseSource)
+                    continue;
                 checkCancelled(cancelled);
                 painter.save();
                 if (!source.coverage.isEmpty())
@@ -917,8 +921,22 @@ Result reconstructWithOptions(const SnowCanvasSceneItem& item,
         return {};
     }
 }
+Result reconstructWithOptions(const SnowCanvasSceneItem& item,
+                              const QList<SnowCanvasBaseImageSource>& sources,
+                              const std::atomic_bool& cancelled,
+                              const ReconstructionOptions& options,
+                              ReconstructionDiagnostics* diagnostics) {
+    return reconstructWithCancellation(
+        item, sources, [&cancelled] { return cancelled.load(std::memory_order_relaxed); }, options,
+        diagnostics);
+}
 Result reconstruct(const SnowCanvasSceneItem& item, const QList<SnowCanvasBaseImageSource>& sources,
                    const std::atomic_bool& cancelled) {
     return reconstructWithOptions(item, sources, cancelled, {});
+}
+Result reconstructForExport(const SnowCanvasSceneItem& item,
+                            const QList<SnowCanvasBaseImageSource>& sources,
+                            const std::function<bool()>& cancelled) {
+    return reconstructWithCancellation(item, sources, cancelled, {}, nullptr);
 }
 } // namespace snow_canvas_smart_erase

@@ -241,6 +241,17 @@ impl TexturePool {
         self.pressure
     }
 
+    /// Whether one acquisition can proceed without waiting for a published
+    /// lease. Unused textures can be reused or retired for any requested layout.
+    /// The caller must keep exclusive access to this pool until `acquire`.
+    pub fn has_capacity(&self) -> bool {
+        self.textures.len() < self.capacity
+            || self
+                .textures
+                .iter()
+                .any(|texture| Arc::strong_count(&texture.0) == 1)
+    }
+
     pub fn acquire(
         &mut self,
         width: u32,

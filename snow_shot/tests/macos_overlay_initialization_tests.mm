@@ -84,6 +84,85 @@ void finishNativeModalTransition() {
     loop.exec();
 }
 
+void screenshotLayersSurviveNativeViewDetachment() {
+    using namespace snow_shot::platform;
+    using namespace snow_shot::platform::detail;
+    struct Configuration {
+        void (*configure)(QWidget*);
+        CaptureLayer role;
+    };
+    for (const auto configuration :
+         {Configuration{configureScreenshotOverlayWindow,
+                        {CaptureFamily::Screenshot, kOverlayLayer}},
+          Configuration{configureScreenshotToolbarWindow,
+                        {CaptureFamily::Screenshot, kToolbarLayer}},
+          Configuration{configureScreenshotColorPickerWindow,
+                        {CaptureFamily::Screenshot, kPopupLayer}},
+          Configuration{configureGlobalCanvasWindow, {CaptureFamily::GlobalCanvas, kOverlayLayer}},
+          Configuration{configureScreenRecordingAreaWindow,
+                        {CaptureFamily::Recording, kOverlayLayer}},
+          Configuration{configureScreenRecordingToolbarWindow,
+                        {CaptureFamily::Recording, kToolbarLayer}},
+          Configuration{configureScreenshotRecognitionWindow,
+                        {CaptureFamily::Screenshot, kRecognitionLayer}}}) {
+        for (const bool configureBeforeDetachment : {false, true}) {
+            @autoreleasepool {
+                ToolFixture tool;
+                // Exercise Qt's primary-screen fallback without depending on the
+                // physical monitor layout or restoring any persisted settings.
+                const QPoint outside =
+                    QGuiApplication::primaryScreen()->virtualGeometry().bottomRight() +
+                    QPoint(1000, 1000);
+                tool.setGeometry(QRect(outside, QSize(160, 214)));
+                static_cast<void>(tool.winId());
+                if (configureBeforeDetachment)
+                    configuration.configure(&tool);
+                NSView* view = [reinterpret_cast<NSView*>(tool.internalWinId()) retain];
+                NSWindow* native = [view.window retain];
+                require(native != nil,
+                        "the capture fixture must start with an attached native window");
+                native.contentView = nil;
+                require(tool.internalWinId() != 0 && view.window == nil,
+                        "a detached Qt view must retain its native ID without an NSWindow");
+                if (!configureBeforeDetachment)
+                    configuration.configure(&tool);
+                for (const auto type :
+                     {QEvent::ZOrderChange, QEvent::Expose, QEvent::ParentChange}) {
+                    QEvent event(type);
+                    QCoreApplication::sendEvent(&tool, &event);
+                }
+                // Reattach without another configure call. Normal presentation
+                // must recover all policy settings after skipping the detached view.
+                native.contentView = view;
+                tool.show();
+                require(native.level == captureWindowLevel(configuration.role) &&
+                            !native.hidesOnDeactivate &&
+                            native.collectionBehavior ==
+                                (NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                 NSWindowCollectionBehaviorFullScreenAuxiliary),
+                        "reattached capture views must recover their complete native policy");
+                if (configuration.role.family == CaptureFamily::GlobalCanvas) {
+                    const NSRect frame = NSMakeRect(outside.x(), outside.y(), 320, 240);
+                    require(NSEqualRects([native constrainFrameRect:frame toScreen:native.screen],
+                                         frame),
+                            "reattached global canvases must retain unconstrained frame geometry");
+                }
+                [view release];
+                tool.recreateSurface();
+                [native release];
+                require(tool.internalWinId() == 0 && tool.windowHandle() == nullptr,
+                        "retiring the fixture must release its Qt native surface");
+                static_cast<void>(tool.winId());
+                NSWindow* replacement = reinterpret_cast<NSView*>(tool.internalWinId()).window;
+                require(replacement != nil &&
+                            replacement.level == captureWindowLevel(configuration.role) &&
+                            !replacement.hidesOnDeactivate,
+                        "replacement native surfaces must acquire their saved role before showing");
+            }
+        }
+    }
+}
+
 void recordingOwnsNativeGeometry() {
     ToolFixture recording;
     recording.setGeometry(200, 200, 320, 240);
@@ -102,6 +181,54 @@ void recordingOwnsNativeGeometry() {
                 "disabling AppKit resizing must preserve application-controlled geometry");
         recording.recreateSurface();
     }
+}
+
+void captureInteractionSurvivesNativeUpdates() {
+    using namespace snow_shot::platform;
+    for (auto configure : {configureScreenshotOverlayWindow, configureGlobalCanvasWindow,
+                           configureScreenRecordingAreaWindow}) {
+        ToolFixture tool;
+        configure(&tool);
+        tool.show();
+        QWindow* handle = tool.windowHandle();
+        const WId identity = tool.internalWinId();
+        auto verify = [&] {
+            NSWindow* window = reinterpret_cast<NSView*>(identity).window;
+            require(window && !(window.styleMask & NSWindowStyleMaskResizable) && !window.movable &&
+                        !window.movableByWindowBackground,
+                    "capture geometry ownership must survive native flag and attachment changes");
+        };
+        verify();
+        for (const bool transparent : {true, false}) {
+            setScreenshotInputTransparent(&tool, transparent);
+            verify();
+        }
+        // Cocoa changes NSWindow class when revealing a different window type,
+        // retaining the same QWindow and QNSView. No QWidget show/ID event occurs.
+        NSWindow* previous = [reinterpret_cast<NSView*>(identity).window retain];
+        handle->hide();
+        handle->setFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+        handle->show();
+        require(tool.internalWinId() == identity && tool.windowHandle() == handle &&
+                    reinterpret_cast<NSView*>(identity).window != previous,
+                "the fixture must replace NSWindow without replacing its Qt identity");
+        verify();
+        [previous release];
+    }
+    ToolFixture toolbar;
+    configureScreenshotToolbarWindow(&toolbar);
+    auto* auxiliary = snow_shot::presentation::configurePinnedAuxiliary(&toolbar);
+    toolbar.show();
+    toolbar.windowHandle()->setFlag(Qt::WindowDoesNotAcceptFocus, true);
+    NSWindow* native = reinterpret_cast<NSView*>(toolbar.internalWinId()).window;
+    using namespace snow_shot::platform::detail;
+    require(!native.movable &&
+                captureLayer(toolbar.windowHandle()).family == CaptureFamily::Screenshot,
+            "pinned auxiliary interaction must preserve the toolbar's explicit capture role");
+    delete auxiliary;
+    require(!native.movable &&
+                captureLayer(toolbar.windowHandle()).family == CaptureFamily::Screenshot,
+            "releasing an auxiliary must preserve the toolbar's remaining policy owners");
 }
 
 void captureFamiliesFollowOwnership() {
@@ -773,6 +900,14 @@ void adqtPopupPreservesScreenshotLayers(bool cocoa) {
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     const bool cocoa = QGuiApplication::platformName() == QStringLiteral("cocoa");
+    if (app.arguments().contains(QStringLiteral("--native-view-lifecycle-only"))) {
+        captureFamiliesFollowOwnership();
+        if (cocoa)
+            screenshotLayersSurviveNativeViewDetachment();
+        if (cocoa)
+            captureInteractionSurvivesNativeUpdates();
+        return 0;
+    }
     if (app.arguments().contains(QStringLiteral("--overlay-animation-only"))) {
         captureWindowAnimationPolicy();
         if (cocoa) {
@@ -859,6 +994,8 @@ int main(int argc, char** argv) {
         captureFamiliesFollowOwnership();
         captureWindowAnimationPolicy();
         if (cocoa) {
+            screenshotLayersSurviveNativeViewDetachment();
+            captureInteractionSurvivesNativeUpdates();
             recordingOwnsNativeGeometry();
             captureFamiliesKeepNativeOrder();
             screenshotNativeSettingsFollowOwnership();

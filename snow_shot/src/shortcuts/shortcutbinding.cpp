@@ -12,6 +12,18 @@
 namespace snow_shot::shortcuts {
 namespace {
 
+bool enterKey(Qt::Key key) {
+    return key == Qt::Key_Return || key == Qt::Key_Enter;
+}
+
+Qt::Key policyKey(Qt::Key key, ShortcutPolicy policy) {
+    return policy == ShortcutPolicy::Application && enterKey(key) ? Qt::Key_Enter : key;
+}
+
+quint32 policyMacKey(quint32 key, ShortcutPolicy policy) {
+    return policy == ShortcutPolicy::Application && key == 76 ? 36 : key;
+}
+
 bool modifierOnlyKey(Qt::Key key) {
     return key == Qt::Key_Control || key == Qt::Key_Alt || key == Qt::Key_Shift ||
            key == Qt::Key_Meta || key == Qt::Key_AltGr || key == Qt::Key_Super_L ||
@@ -181,7 +193,8 @@ std::optional<quint32> ansiVirtualKey(Qt::Key key, bool keypad) {
     }
 }
 
-std::optional<quint32> eventPhysicalKey(const QKeyEvent& event) {
+std::optional<quint32> eventPhysicalKey(const QKeyEvent& event,
+                                        ShortcutPolicy policy = ShortcutPolicy::Native) {
 #ifdef Q_OS_MACOS
     // Cocoa's A key is zero. Native fields also identify events supplied by
     // other producers, including offscreen input, without requiring Cocoa.
@@ -189,10 +202,11 @@ std::optional<quint32> eventPhysicalKey(const QKeyEvent& event) {
          event.nativeVirtualKey() != 0 || event.nativeScanCode() != 0 ||
          event.nativeModifiers() != 0) &&
         event.nativeVirtualKey() <= 127) {
-        return static_cast<quint32>(event.nativeVirtualKey());
+        return policyMacKey(static_cast<quint32>(event.nativeVirtualKey()), policy);
     }
 #else
     Q_UNUSED(event);
+    Q_UNUSED(policy);
 #endif
     return std::nullopt;
 }
@@ -259,11 +273,14 @@ std::optional<quint32> eventPhysicalKey(const QKeyEvent& event) {
 }
 
 Qt::KeyboardModifiers normalizedEventModifiers(const QKeyEvent& event,
-                                               const ShortcutIdentity& expected) {
+                                               const ShortcutIdentity& expected,
+                                               ShortcutPolicy policy) {
     Qt::KeyboardModifiers modifiers = event.modifiers();
     modifiers |= modifierForKey(commandKey(event));
-    if (expected.physicalKey.has_value() || (navigationKey(static_cast<Qt::Key>(event.key())) &&
-                                             !expected.modifiers.testFlag(Qt::KeypadModifier))) {
+    if ((policy == ShortcutPolicy::Application && enterKey(expected.key)) ||
+        expected.physicalKey.has_value() ||
+        (navigationKey(static_cast<Qt::Key>(event.key())) &&
+         !expected.modifiers.testFlag(Qt::KeypadModifier))) {
         modifiers &= ~Qt::KeypadModifier;
     }
     return modifiers;
@@ -315,7 +332,8 @@ bool matchesStandardShortcut(const QKeyEvent& event, QKeySequence::StandardKey k
 }
 
 QString canonicalPortableText(const QString& text, bool allowModifierOnlyShift,
-                              bool allowModifierOnlyAlt, bool allowModifierOnlyControl) {
+                              bool allowModifierOnlyAlt, bool allowModifierOnlyControl,
+                              ShortcutPolicy policy) {
     QString trimmed = text.trimmed();
     if (trimmed.isEmpty()) {
         return {};
@@ -385,14 +403,20 @@ QString canonicalPortableText(const QString& text, bool allowModifierOnlyShift,
     if (key == Qt::Key_unknown || modifierOnlyKey(key)) {
         return {};
     }
+    if (policy == ShortcutPolicy::Application && enterKey(key)) {
+        sequence = QKeySequence(
+            QKeyCombination(combination.keyboardModifiers() & ~Qt::KeypadModifier, Qt::Key_Enter));
+    }
     return sequence.toString(QKeySequence::PortableText).trimmed();
 }
 
 ShortcutBinding canonicalBinding(const ShortcutBinding& binding, bool allowModifierOnlyShift,
-                                 bool allowModifierOnlyAlt, bool allowModifierOnlyControl) {
+                                 bool allowModifierOnlyAlt, bool allowModifierOnlyControl,
+                                 ShortcutPolicy policy) {
     ShortcutBinding result;
-    result.portableText = canonicalPortableText(binding.portableText, allowModifierOnlyShift,
-                                                allowModifierOnlyAlt, allowModifierOnlyControl);
+    result.portableText =
+        canonicalPortableText(binding.portableText, allowModifierOnlyShift, allowModifierOnlyAlt,
+                              allowModifierOnlyControl, policy);
     if (result.portableText.isEmpty()) {
         return {};
     }
@@ -401,19 +425,20 @@ ShortcutBinding canonicalBinding(const ShortcutBinding& binding, bool allowModif
             result.portableText != QStringLiteral("Shift") &&
             result.portableText != QStringLiteral("Alt") &&
             result.portableText != QStringLiteral("Ctrl")) {
-            result.physicalKeys.insert(key.key(), key.value());
+            result.physicalKeys.insert(key.key(), policyMacKey(key.value(), policy));
         }
     }
     return result;
 }
 
 ShortcutBinding bindingFromPortableText(const QString& text, bool allowModifierOnlyShift,
-                                        bool allowModifierOnlyAlt) {
-    return canonicalBinding(ShortcutBinding{text}, allowModifierOnlyShift, allowModifierOnlyAlt);
+                                        bool allowModifierOnlyAlt, ShortcutPolicy policy) {
+    return canonicalBinding(ShortcutBinding{text}, allowModifierOnlyShift, allowModifierOnlyAlt,
+                            false, policy);
 }
 
 ShortcutBinding bindingFromKeyEvent(const QKeyEvent& event, bool allowModifierOnlyShift,
-                                    bool allowModifierOnlyAlt) {
+                                    bool allowModifierOnlyAlt, ShortcutPolicy policy) {
     const Qt::Key key =
         event.key() == Qt::Key_unknown ? commandKey(event) : static_cast<Qt::Key>(event.key());
     if (allowModifierOnlyShift && key == Qt::Key_Shift) {
@@ -432,10 +457,10 @@ ShortcutBinding bindingFromKeyEvent(const QKeyEvent& event, bool allowModifierOn
     ShortcutBinding result{QKeySequence(QKeyCombination(modifiers, key))
                                .toString(QKeySequence::PortableText)
                                .trimmed()};
-    result = canonicalBinding(result, allowModifierOnlyShift, allowModifierOnlyAlt);
+    result = canonicalBinding(result, allowModifierOnlyShift, allowModifierOnlyAlt, false, policy);
 #ifdef Q_OS_MACOS
     if (const auto physical = eventPhysicalKey(event); !result.portableText.isEmpty() && physical) {
-        result.physicalKeys.insert(ShortcutPlatform::MacOS, *physical);
+        result.physicalKeys.insert(ShortcutPlatform::MacOS, policyMacKey(*physical, policy));
     }
 #endif
     return result;
@@ -443,14 +468,14 @@ ShortcutBinding bindingFromKeyEvent(const QKeyEvent& event, bool allowModifierOn
 
 ShortcutBindingList bindingsFromPortableText(const QStringList& shortcuts,
                                              bool allowModifierOnlyShift, int maximumItems,
-                                             bool allowModifierOnlyAlt) {
+                                             bool allowModifierOnlyAlt, ShortcutPolicy policy) {
     ShortcutBindingList result;
     for (const QString& text : shortcuts) {
         const ShortcutBinding binding =
-            bindingFromPortableText(text, allowModifierOnlyShift, allowModifierOnlyAlt);
+            bindingFromPortableText(text, allowModifierOnlyShift, allowModifierOnlyAlt, policy);
         const bool duplicate = std::any_of(result.cbegin(), result.cend(),
-                                           [&binding](const ShortcutBinding& existing) {
-                                               return bindingsConflict(existing, binding);
+                                           [&binding, policy](const ShortcutBinding& existing) {
+                                               return bindingsConflict(existing, binding, policy);
                                            });
         if (binding.portableText.isEmpty() || duplicate) {
             continue;
@@ -488,7 +513,8 @@ QJsonObject shortcutBindingToJson(const ShortcutBinding& binding) {
 }
 
 ShortcutBinding shortcutBindingFromJson(const QJsonValue& value, bool allowModifierOnlyShift,
-                                        bool* valid, bool* changed, bool allowModifierOnlyAlt) {
+                                        bool* valid, bool* changed, bool allowModifierOnlyAlt,
+                                        ShortcutPolicy policy) {
     if (valid != nullptr) {
         *valid = false;
     }
@@ -535,7 +561,7 @@ ShortcutBinding shortcutBindingFromJson(const QJsonValue& value, bool allowModif
     }
 
     const ShortcutBinding result =
-        canonicalBinding(candidate, allowModifierOnlyShift, allowModifierOnlyAlt);
+        canonicalBinding(candidate, allowModifierOnlyShift, allowModifierOnlyAlt, false, policy);
     if (result.portableText.isEmpty()) {
         if (changed != nullptr) {
             *changed = true;
@@ -565,7 +591,7 @@ QJsonArray shortcutBindingsToJson(const ShortcutBindingList& bindings) {
 
 ShortcutBindingList shortcutBindingsFromJson(const QJsonValue& value, bool allowModifierOnlyShift,
                                              int maximumItems, bool* valid, bool* changed,
-                                             bool allowModifierOnlyAlt) {
+                                             bool allowModifierOnlyAlt, ShortcutPolicy policy) {
     if (valid != nullptr) {
         *valid = false;
     }
@@ -581,10 +607,10 @@ ShortcutBindingList shortcutBindingsFromJson(const QJsonValue& value, bool allow
         bool itemValid = false;
         bool itemChanged = false;
         const ShortcutBinding binding = shortcutBindingFromJson(
-            item, allowModifierOnlyShift, &itemValid, &itemChanged, allowModifierOnlyAlt);
+            item, allowModifierOnlyShift, &itemValid, &itemChanged, allowModifierOnlyAlt, policy);
         const bool duplicate = std::any_of(result.cbegin(), result.cend(),
-                                           [&binding](const ShortcutBinding& existing) {
-                                               return bindingsConflict(existing, binding);
+                                           [&binding, policy](const ShortcutBinding& existing) {
+                                               return bindingsConflict(existing, binding, policy);
                                            });
         if (!itemValid || duplicate || (maximumItems >= 0 && result.size() >= maximumItems)) {
             normalizedChanged = true;
@@ -625,7 +651,7 @@ std::optional<quint32> macVirtualKeyForBinding(const ShortcutBinding& binding) {
                           combination.keyboardModifiers().testFlag(Qt::KeypadModifier));
 }
 
-ShortcutIdentity effectiveIdentity(const ShortcutBinding& binding) {
+ShortcutIdentity effectiveIdentity(const ShortcutBinding& binding, ShortcutPolicy policy) {
     ShortcutIdentity result;
     if (binding.portableText == QStringLiteral("Shift")) {
         result.key = Qt::Key_Shift;
@@ -656,12 +682,20 @@ ShortcutIdentity effectiveIdentity(const ShortcutBinding& binding) {
         result.modifiers &= ~Qt::KeypadModifier;
     }
 #endif
+    if (policy == ShortcutPolicy::Application) {
+        result.key = policyKey(result.key, policy);
+        if (enterKey(result.key))
+            result.modifiers &= ~Qt::KeypadModifier;
+        if (result.physicalKey)
+            result.physicalKey = policyMacKey(*result.physicalKey, policy);
+    }
     return result;
 }
 
-bool bindingsConflict(const ShortcutBinding& first, const ShortcutBinding& second) {
-    const ShortcutIdentity firstIdentity = effectiveIdentity(first);
-    const ShortcutIdentity secondIdentity = effectiveIdentity(second);
+bool bindingsConflict(const ShortcutBinding& first, const ShortcutBinding& second,
+                      ShortcutPolicy policy) {
+    const ShortcutIdentity firstIdentity = effectiveIdentity(first, policy);
+    const ShortcutIdentity secondIdentity = effectiveIdentity(second, policy);
     if (firstIdentity.key == Qt::Key_unknown || secondIdentity.key == Qt::Key_unknown) {
         return false;
     }
@@ -681,8 +715,8 @@ bool bindingsConflict(const ShortcutBinding& first, const ShortcutBinding& secon
 }
 
 bool shortcutMatchesEvent(const ShortcutBinding& binding, const QKeyEvent& event,
-                          Qt::KeyboardModifiers allowedAdditionalModifiers) {
-    const ShortcutIdentity expected = effectiveIdentity(binding);
+                          Qt::KeyboardModifiers allowedAdditionalModifiers, ShortcutPolicy policy) {
+    const ShortcutIdentity expected = effectiveIdentity(binding, policy);
     if (expected.key == Qt::Key_unknown) {
         return false;
     }
@@ -692,50 +726,51 @@ bool shortcutMatchesEvent(const ShortcutBinding& binding, const QKeyEvent& event
         !expected.physicalKey) {
         if (commandKey(event) != expected.key)
             return false;
-    } else if (!expected.physicalKey || eventPhysicalKey(event) != expected.physicalKey) {
+    } else if (!expected.physicalKey || eventPhysicalKey(event, policy) != expected.physicalKey) {
         return false;
     }
 #else
-    if (!matchesLogicalKey(expected, static_cast<Qt::Key>(event.key())))
+    if (!matchesLogicalKey(expected, policyKey(static_cast<Qt::Key>(event.key()), policy)))
         return false;
 #endif
 
-    const Qt::KeyboardModifiers actual = normalizedEventModifiers(event, expected);
+    const Qt::KeyboardModifiers actual = normalizedEventModifiers(event, expected, policy);
     const Qt::KeyboardModifiers unexpected =
         actual & ~(expected.modifiers | allowedAdditionalModifiers);
     return (actual & expected.modifiers) == expected.modifiers && unexpected == Qt::NoModifier;
 }
 
-bool shortcutReleaseMatchesEvent(const ShortcutBinding& binding, const QKeyEvent& event) {
-    const ShortcutIdentity expected = effectiveIdentity(binding);
+bool shortcutReleaseMatchesEvent(const ShortcutBinding& binding, const QKeyEvent& event,
+                                 ShortcutPolicy policy) {
+    const ShortcutIdentity expected = effectiveIdentity(binding, policy);
 #ifdef Q_OS_MACOS
     if ((expected.key == Qt::Key_Shift || expected.key == Qt::Key_Alt ||
          expected.key == Qt::Key_Control) &&
         !expected.physicalKey)
         return commandKey(event) == expected.key;
-    return expected.physicalKey && eventPhysicalKey(event) == expected.physicalKey;
+    return expected.physicalKey && eventPhysicalKey(event, policy) == expected.physicalKey;
 #else
-    return matchesLogicalKey(expected, static_cast<Qt::Key>(event.key()));
+    return matchesLogicalKey(expected, policyKey(static_cast<Qt::Key>(event.key()), policy));
 #endif
 }
 
-quint64 shortcutKeyToken(const ShortcutBinding& binding) {
-    const ShortcutIdentity identity = effectiveIdentity(binding);
+quint64 shortcutKeyToken(const ShortcutBinding& binding, ShortcutPolicy policy) {
+    const ShortcutIdentity identity = effectiveIdentity(binding, policy);
     if (identity.physicalKey.has_value()) {
         return (quint64{1} << 63U) | static_cast<quint64>(*identity.physicalKey);
     }
     return static_cast<quint64>(static_cast<quint32>(identity.key));
 }
 
-quint64 eventKeyToken(const QKeyEvent& event) {
-    if (const auto physical = eventPhysicalKey(event)) {
+quint64 eventKeyToken(const QKeyEvent& event, ShortcutPolicy policy) {
+    if (const auto physical = eventPhysicalKey(event, policy)) {
         // Either physical modifier key implements a modifier-only binding.
         if (commandKey(event) == Qt::Key_Shift || commandKey(event) == Qt::Key_Alt ||
             commandKey(event) == Qt::Key_Control)
             return static_cast<quint64>(commandKey(event));
         return (quint64{1} << 63U) | static_cast<quint64>(*physical);
     }
-    return static_cast<quint64>(static_cast<quint32>(commandKey(event)));
+    return static_cast<quint64>(static_cast<quint32>(policyKey(commandKey(event), policy)));
 }
 
 } // namespace snow_shot::shortcuts

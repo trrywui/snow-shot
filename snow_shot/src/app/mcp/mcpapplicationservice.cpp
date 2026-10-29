@@ -4,6 +4,7 @@
 #include "snow_shot/app/mcp/screenshotmcpsession.h"
 #include "mcpsettingsadapter_p.h"
 #include "mcpasyncwork_p.h"
+#include "mcpreplayregistry_p.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/capturehistoryrepository.h"
 #include "snow_shot/storage/configurationarchive.h"
@@ -119,7 +120,9 @@ QJsonObject updateJson(update::UpdateService* service) {
 #ifdef Q_OS_MACOS
             {QStringLiteral("installation"), QStringLiteral("official_website")}
 #else
-            {QStringLiteral("installation"), QStringLiteral("native_updater")}
+            {QStringLiteral("installation"), service->managedByStore()
+                                                 ? QStringLiteral("microsoft_store")
+                                                 : QStringLiteral("native_updater")}
 #endif
     };
 }
@@ -137,21 +140,12 @@ struct McpApplicationService::Impl {
     quint64 activeUpdateOwner = 0;
     int admittedWork = 0;
     QHash<QString, std::shared_ptr<std::atomic_bool>> pendingReads;
-    struct Replay {
-        QByteArray fingerprint;
-        ScreenshotMcpResponse response;
-        QList<ScreenshotMcpServer::Completion> waiters;
-        quint64 owner = 0;
-        qint64 created = 0;
-        bool complete = false;
-    };
-    QHash<QString, Replay> replay;
-    QElapsedTimer clock;
+    McpReplayRegistry requests;
 
-    Impl(McpApplicationService& owner, Ports value) : q(owner), ports(std::move(value)) {
+    Impl(McpApplicationService& owner, Ports value)
+        : q(owner), ports(std::move(value)), requests(owner, {}) {
         workers.setMaxThreadCount(2);
         workers.setExpiryTimeout(30000);
-        clock.start();
     }
 
     storage::ConfigurationStore& configuration() const {
@@ -295,7 +289,8 @@ struct McpApplicationService::Impl {
                 auto response = watcher->result();
                 watcher->deleteLater();
                 --admittedWork;
-                pendingReads.remove(key);
+                if (pendingReads.value(key) == canceled)
+                    pendingReads.remove(key);
                 if (stopping || canceled->load())
                     response = failure(request, QStringLiteral("canceled"));
                 completion(std::move(response));
@@ -475,86 +470,20 @@ void McpApplicationService::request(const ScreenshotMcpRequest& request,
         completion(failure(request, QStringLiteral("unavailable")));
         return;
     }
-    if (request.idempotencyKey.isEmpty()) {
-        m_impl->handle(request, std::move(completion));
-        return;
-    }
-    // A connection owns its replay records. Never replay commands on a new connection.
-    const QString key = QString::number(request.connectionId) + u':' + request.idempotencyKey;
-    const QByteArray fingerprint = QCryptographicHash::hash(
-        QJsonDocument(QJsonObject{{QStringLiteral("method"), request.method},
-                                  {QStringLiteral("params"), request.params},
-                                  {QStringLiteral("revision"),
-                                   request.expectedRevision
-                                       ? QJsonValue(static_cast<qint64>(*request.expectedRevision))
-                                       : QJsonValue()}})
-            .toJson(QJsonDocument::Compact),
-        QCryptographicHash::Sha256);
-    for (auto it = m_impl->replay.begin(); it != m_impl->replay.end();) {
-        if (it->complete && m_impl->clock.elapsed() - it->created > 600000)
-            it = m_impl->replay.erase(it);
-        else
-            ++it;
-    }
-    if (auto it = m_impl->replay.find(key); it != m_impl->replay.end()) {
-        if (it->fingerprint != fingerprint) {
-            completion(failure(request, QStringLiteral("idempotency_conflict")));
-        } else if (it->complete) {
-            auto result = it->response;
-            result.requestId = request.requestId;
-            completion(std::move(result));
-        } else if (it->waiters.size() < 8) {
-            it->waiters.append(
-                [request, completion = std::move(completion)](auto response) mutable {
-                    response.requestId = request.requestId;
-                    response.afterSend = {};
-                    completion(std::move(response));
-                });
-        } else
-            completion(failure(request, QStringLiteral("queue_full")));
-        return;
-    }
-    if (m_impl->replay.size() >= 128) {
-        completion(failure(request, QStringLiteral("queue_full")));
-        return;
-    }
-    Impl::Replay record;
-    record.fingerprint = fingerprint;
-    record.owner = request.connectionId;
-    record.created = m_impl->clock.elapsed();
-    m_impl->replay.insert(key, std::move(record));
-    m_impl->handle(request, [this, key, completion = std::move(completion)](auto response) mutable {
-        auto it = m_impl->replay.find(key);
-        QList<ScreenshotMcpServer::Completion> waiters;
-        if (it != m_impl->replay.end()) {
-            waiters = std::move(it->waiters);
-            // Reads with binary results are not retained a second time.
-            if (!response.attachment.isEmpty() ||
-                QJsonDocument(response.result).toJson(QJsonDocument::Compact).size() > 65536) {
-                m_impl->replay.erase(it);
-            } else {
-                it->response = response;
-                it->response.afterSend = {};
-                it->complete = true;
-            }
-        }
-        for (auto& waiter : waiters)
-            waiter(response);
-        completion(std::move(response));
-    });
+    auto operation = m_impl->requests.begin(request, std::move(completion));
+    if (operation)
+        m_impl->handle(request, std::move(operation.complete));
 }
 void McpApplicationService::disconnected(quint64 connection) {
+    m_impl->requests.disconnected(connection);
     const auto prefix = QString::number(connection) + u':';
     for (auto it = m_impl->pendingReads.begin(); it != m_impl->pendingReads.end(); ++it)
         if (it.key().startsWith(prefix))
             it.value()->store(true);
-    for (auto it = m_impl->replay.begin(); it != m_impl->replay.end();)
-        if (it->owner == connection)
-            it = m_impl->replay.erase(it);
-        else
-            ++it;
 }
 bool McpApplicationService::cancelRequest(quint64 connection, const QString& requestId) {
+    if (m_impl->requests.cancelAlias(connection, requestId))
+        return true;
     const auto canceled =
         m_impl->pendingReads.value(QString::number(connection) + u':' + requestId);
     if (!canceled)
@@ -566,6 +495,7 @@ void McpApplicationService::shutdown() {
     if (!m_impl || m_impl->stopping)
         return;
     m_impl->stopping = true;
+    m_impl->requests.shutdown();
     m_impl->workers.waitForDone();
 }
 
@@ -853,7 +783,7 @@ void McpApplicationService::Impl::handle(const ScreenshotMcpRequest& request,
     } else if (method == u"snow_shot_updates_status") {
         finish(updateJson(ports.updates));
     } else if (method == u"snow_shot_updates_action") {
-        if (!ports.updates) {
+        if (!ports.updates || ports.updates->managedByStore()) {
             error(QStringLiteral("unsupported"));
             return;
         }

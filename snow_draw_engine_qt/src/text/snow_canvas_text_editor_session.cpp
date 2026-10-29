@@ -11,6 +11,7 @@
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QPainter>
+#include <QRegularExpression>
 
 #include <cstdint>
 #include <cmath>
@@ -86,6 +87,44 @@ bool SnowCanvasTextEditorSession::begin(const SnowTextElementInfo& info,
     return true;
 }
 
+void SnowCanvasTextEditorSession::beginDistanceValue(const QFont& baseFont) {
+    const QString label = m_draft.text();
+    const qsizetype separator = label.lastIndexOf(QLatin1Char(' '));
+    if (separator <= 0)
+        return;
+    m_distanceSuffix = label.mid(separator);
+    m_initialDistanceValue = label.left(separator);
+    m_draft.begin(m_initialDistanceValue, [](const QString& text) {
+        static const QRegularExpression partial(QStringLiteral("\\A[0-9]*(?:\\.[0-9]{0,3})?\\z"));
+        return partial.match(text).hasMatch();
+    });
+    updatePreviewLayout(baseFont, true);
+}
+
+std::optional<double> SnowCanvasTextEditorSession::parsedDistanceValue() const {
+    static const QRegularExpression number(
+        QStringLiteral("\\A(?:[0-9]+(?:\\.[0-9]{0,3})?|\\.[0-9]{1,3})\\z"));
+    if (!number.match(m_draft.text()).hasMatch())
+        return std::nullopt;
+    bool ok = false;
+    const double value = m_draft.text().toDouble(&ok);
+    return ok && std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
+}
+
+SnowCanvasSceneItem SnowCanvasTextEditorSession::editableItem(const QFont& baseFont) const {
+    auto item = m_previewItem;
+    if (!isDistanceValue())
+        return item;
+    const auto measured =
+        snow_canvas_text_layout::measureNaturalTextLayout(m_draft.displayText(), baseFont, item);
+    const double width = qMax(1.0, measured.layout.width());
+    item.center_x += (width - item.width) / 2.0;
+    item.width = width;
+    item.content_width = measured.content.width();
+    snow_canvas_text::copyTextToSceneItem(item, m_draft.displayText());
+    return item;
+}
+
 SnowCanvasTextEditorSession::FinishedEdit
 SnowCanvasTextEditorSession::finish(const QFont& baseFont) {
     FinishedEdit result;
@@ -97,6 +136,9 @@ SnowCanvasTextEditorSession::finish(const QFont& baseFont) {
     m_draft.clearPreedit();
     updatePreviewFromState(baseFont);
     result.text = m_draft.text();
+    result.distanceValue = isDistanceValue();
+    result.distanceValueChanged = m_draft.text() != m_initialDistanceValue;
+    result.parsedDistanceValue = isDistanceValue() ? parsedDistanceValue() : std::nullopt;
     result.canvasCenter = QPointF(m_previewItem.center_x, m_previewItem.center_y);
     result.elementId = m_elementId;
     result.arrowId = m_arrowId;
@@ -146,11 +188,12 @@ bool SnowCanvasTextEditorSession::isActive() const {
 }
 
 bool SnowCanvasTextEditorSession::containsViewPosition(const SceneDisplayInfo& sceneInfo,
-                                                       const QPointF& viewPosition) const {
+                                                       const QPointF& viewPosition,
+                                                       const QFont& baseFont) const {
     if (!m_hasPreview) {
         return false;
     }
-    return snow_canvas_text_editor_view::itemContainsViewPosition(m_previewItem, sceneInfo,
+    return snow_canvas_text_editor_view::itemContainsViewPosition(editableItem(baseFont), sceneInfo,
                                                                   viewPosition);
 }
 
@@ -159,7 +202,7 @@ const SnowSceneDisplayItem* SnowCanvasTextEditorSession::previewItem() const {
 }
 
 QString SnowCanvasTextEditorSession::presentationText() const {
-    return m_hasPreview ? m_draft.displayText() : QString();
+    return m_hasPreview ? m_draft.displayText() + m_distanceSuffix : QString();
 }
 
 bool SnowCanvasTextEditorSession::activeDraftHasExistingElement() const {
@@ -200,7 +243,7 @@ bool SnowCanvasTextEditorSession::applyActiveDraftPresentation(const SnowTextEle
     m_previewItem.text_ink_reserve = info.text_ink_reserve;
     m_previewItem.rotation = info.rotation;
     snow_canvas_text::applyTextStyleToSceneItem(m_previewItem, style);
-    snow_canvas_text::copyTextToSceneItem(m_previewItem, m_draft.displayText());
+    snow_canvas_text::copyTextToSceneItem(m_previewItem, presentationText());
     m_previewAutoResize = info.auto_resize != 0;
     m_canvasAnchor = (snow_canvas_element_id::hasElementId(m_arrowId) ||
                       snow_canvas_element_id::hasElementId(m_bubbleId))
@@ -251,7 +294,9 @@ QRegion SnowCanvasTextEditorSession::editingRegion(const QFont& baseFont,
     if (!m_hasPreview) {
         return {};
     }
-    return snow_canvas_text_editor_view::editingRegion(m_previewItem, m_draft, baseFont, sceneInfo);
+    return snow_canvas_text_editor_view::editingRegion(editableItem(baseFont), m_draft, baseFont,
+                                                       sceneInfo) +
+           previewRegion(sceneInfo);
 }
 
 QRegion SnowCanvasTextEditorSession::caretRegion(const QFont& baseFont,
@@ -259,7 +304,8 @@ QRegion SnowCanvasTextEditorSession::caretRegion(const QFont& baseFont,
     if (!m_hasPreview) {
         return {};
     }
-    return snow_canvas_text_editor_view::caretRegion(m_previewItem, m_draft, baseFont, sceneInfo);
+    return snow_canvas_text_editor_view::caretRegion(editableItem(baseFont), m_draft, baseFont,
+                                                     sceneInfo);
 }
 
 void SnowCanvasTextEditorSession::updatePreviewFromState(const QFont& baseFont) {
@@ -334,7 +380,7 @@ bool SnowCanvasTextEditorSession::setCursorFromViewPosition(const QFont& baseFon
 
     const bool clearedPreedit = m_draft.ensureNoPreeditForDirectEdit();
     const int position = snow_canvas_text_editor_view::cursorPositionForViewPosition(
-        m_previewItem, baseFont, sceneInfo, viewPosition, m_draft.text());
+        editableItem(baseFont), baseFont, sceneInfo, viewPosition, m_draft.text());
     const bool cursorChanged = m_draft.setCursorPosition(position, keepSelection);
     if (clearedPreedit) {
         updatePreviewFromState(baseFont);
@@ -344,19 +390,33 @@ bool SnowCanvasTextEditorSession::setCursorFromViewPosition(const QFont& baseFon
 
 SnowCanvasTextEditorSession::KeyResult
 SnowCanvasTextEditorSession::handleKeyPress(QKeyEvent* event, const QFont& baseFont,
-                                            const SceneDisplayInfo& sceneInfo) {
+                                            const SceneDisplayInfo& sceneInfo,
+                                            bool deleteTextAfterCursor) {
     KeyResult result;
     if (!m_hasPreview || event == nullptr) {
         return result;
     }
 
+    if (isDistanceValue()) {
+        if (event->key() == Qt::Key_Escape) {
+            result.handled = true;
+            result.command = EventCommand::Cancel;
+            return result;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            result.handled = true;
+            result.command = EventCommand::Commit;
+            return result;
+        }
+    }
     const snow_canvas_text_editor_input::KeyResult commandResult =
         snow_canvas_text_editor_input::handleKeyPress(
             event, m_draft,
             [this, &baseFont, &sceneInfo](QTextCursor::MoveOperation operation,
                                           QTextCursor::MoveMode mode) {
                 return moveCursor(operation, mode, baseFont, sceneInfo);
-            });
+            },
+            deleteTextAfterCursor || isDistanceValue());
     result.handled = commandResult.handled;
     result.changed = commandResult.changed;
     switch (commandResult.command) {
@@ -401,9 +461,9 @@ QVariant SnowCanvasTextEditorSession::inputMethodQuery(Qt::InputMethodQuery quer
     case Qt::ImEnabled:
         return true;
     case Qt::ImHints:
-        return static_cast<int>(Qt::ImhMultiLine);
+        return static_cast<int>(isDistanceValue() ? Qt::ImhFormattedNumbersOnly : Qt::ImhMultiLine);
     case Qt::ImCursorRectangle:
-        return snow_canvas_text_editor_view::cursorRect(m_previewItem, baseFont, sceneInfo,
+        return snow_canvas_text_editor_view::cursorRect(editableItem(baseFont), baseFont, sceneInfo,
                                                         m_draft.displayText(),
                                                         m_draft.inputMethodCursorPosition());
     case Qt::ImCursorPosition:
@@ -428,7 +488,7 @@ void SnowCanvasTextEditorSession::renderEditorOverlay(QPainter& painter, const Q
         return;
     }
 
-    snow_canvas_text_editor_view::renderOverlay(painter, m_previewItem, m_draft, baseFont,
+    snow_canvas_text_editor_view::renderOverlay(painter, editableItem(baseFont), m_draft, baseFont,
                                                 sceneInfo, caretVisible);
 }
 
@@ -447,6 +507,8 @@ void SnowCanvasTextEditorSession::resetState() {
     m_previewAutoResize = false;
     m_styleChanged = false;
     m_draft.reset();
+    m_distanceSuffix.clear();
+    m_initialDistanceValue.clear();
 }
 
 void SnowCanvasTextEditorSession::releaseRetainedState() {
@@ -465,7 +527,7 @@ void SnowCanvasTextEditorSession::updatePreviewLayout(const QFont& baseFont, boo
         return;
     }
 
-    const QString text = m_draft.displayText();
+    const QString text = presentationText();
     // Persisted engine geometry remains authoritative until a text or font input changes.
     if (!forceLayout && snow_canvas_text::textFromSceneItem(m_previewItem) == text) {
         return;
@@ -515,7 +577,8 @@ void SnowCanvasTextEditorSession::updatePreviewLayout(const QFont& baseFont, boo
         const snow_canvas_text_layout::TextMeasuredLayout natural =
             snow_canvas_text_layout::measureNaturalTextLayout(text, baseFont, m_previewItem);
         const double maximum = qMax(m_arrowWidth * 0.7, m_previewItem.font_size * 11.0);
-        m_previewItem.width = qMin(natural.layout.width(), maximum);
+        m_previewItem.width =
+            isDistanceValue() ? natural.layout.width() : qMin(natural.layout.width(), maximum);
         const snow_canvas_text_layout::TextMeasuredLayout wrapped =
             snow_canvas_text_layout::measureWrappedTextLayout(text, baseFont, m_previewItem,
                                                               m_previewItem.width);
@@ -557,7 +620,7 @@ bool SnowCanvasTextEditorSession::moveCursor(QTextCursor::MoveOperation operatio
                                              const SceneDisplayInfo& sceneInfo) {
     const bool clearedPreedit = m_draft.ensureNoPreeditForDirectEdit();
     const int position = snow_canvas_text_editor_view::movedCursorPosition(
-        m_previewItem, baseFont, sceneInfo, m_draft.text(), m_draft.cursorPosition(), operation,
-        mode);
+        editableItem(baseFont), baseFont, sceneInfo, m_draft.text(), m_draft.cursorPosition(),
+        operation, mode);
     return m_draft.setCursorPosition(position, mode == QTextCursor::KeepAnchor) || clearedPreedit;
 }

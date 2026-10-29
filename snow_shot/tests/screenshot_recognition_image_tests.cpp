@@ -1,5 +1,6 @@
 #include "snow_shot/presentation/screenshotrecognitionimage.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
+#include "snow_shot/presentation/screenshotselectionshadowrenderer.h"
 #include "../../test-support/virtualmemory.h"
 #include <QGuiApplication>
 #include <QFontDatabase>
@@ -69,6 +70,34 @@ void displayedBackgroundAndEffectsAreAppliedOnce() {
             "shadow padding is applied exactly once after recognition composition");
     require(image.pixelColor(8, 8).alpha() < 255, "rounded result corners preserve transparency");
 }
+void effectsScaleOnceForEverySelectionShape() {
+    for (const auto type :
+         {ScreenshotSelectionBorderType::Shadow, ScreenshotSelectionBorderType::Border}) {
+        for (const qreal scale : {0.5, 1.25, 2.0}) {
+            for (const bool shaped : {false, true}) {
+                auto snapshot = fixture();
+                snapshot.lines.clear();
+                snapshot.image = snapshot.image.scaled(qRound(320 * scale), qRound(180 * scale));
+                snapshot.resultStyle = {16, 48, Qt::black};
+                snapshot.resultStyle.borderType = type;
+                snapshot.resultStyle.borderWidth = 48;
+                if (shaped)
+                    snapshot.resultStyle.region =
+                        QRegion(0, 0, 320, 180).subtracted(QRect(100, 40, 120, 100));
+                const auto rendered = renderScreenshotRecognitionImage(snapshot);
+                const int padding = qRound(48 * scale);
+                require(
+                    rendered.size() == snapshot.image.size() + QSize(2 * padding, 2 * padding),
+                    "recognition effects scale from canvas units once for every selection shape");
+                require(rendered == ScreenshotResultCompositor::compose(
+                                        snapshot.image, ScreenshotResultCompositor::scaledStyle(
+                                                            snapshot.resultStyle, scale)),
+                        "recognition and ordinary exports must use the same output style");
+            }
+        }
+    }
+}
+
 void compoundSelectionClipsRecognizedText() {
     auto snapshot = fixture();
     snapshot.resultStyle.region = QRegion(0, 0, 320, 180).subtracted(QRegion(80, 0, 80, 100));
@@ -86,33 +115,62 @@ void compoundSelectionClipsRecognizedText() {
 }
 
 void compactionFollowsRecognitionRendering() {
-    for (int shadow : {0, 3}) {
-        for (qreal scale : {1.0, 1.5, 2.0}) {
-            auto snapshot = fixture();
-            snapshot.image = snapshot.image.scaled(qRound(320 * scale), qRound(180 * scale));
-            snapshot.resultStyle = {6, shadow, Qt::black,
-                                    ScreenshotRegionGeometry(
-                                        QRegion(0, 0, 100, 180).united(QRegion(220, 0, 100, 180)))};
-            const auto reference = renderScreenshotRecognitionImage(snapshot);
-            snapshot.layoutCompaction = {true, 4};
-            const auto originalQuad = snapshot.lines.first().quad;
-            const auto actual = renderScreenshotRecognitionImage(snapshot);
-            const int padding = qRound(shadow * scale);
-            const QSize footprint(qRound(100 * scale) + 2 * padding,
-                                  qRound(180 * scale) + 2 * padding);
-            const int spacing = qRound(4 * scale);
-            QImage expected(2 * footprint.width() + spacing, footprint.height(),
-                            QImage::Format_ARGB32_Premultiplied);
-            expected.fill(Qt::transparent);
-            QPainter painter(&expected);
-            painter.drawImage(QPoint(), reference, QRect(QPoint(), footprint));
-            painter.drawImage(QPoint(footprint.width() + spacing, 0), reference,
-                              QRect(QPoint(qRound(220 * scale), 0), footprint));
-            painter.end();
-            require(actual == expected && snapshot.lines.first().quad == originalQuad,
-                    "recognition compaction must preserve text coordinates and every shadow pixel");
+    for (auto type :
+         {ScreenshotSelectionBorderType::Shadow, ScreenshotSelectionBorderType::Border}) {
+        for (int shadow : {0, 3, 6}) {
+            for (qreal scale : {1.0, 1.5, 2.0}) {
+                auto snapshot = fixture();
+                snapshot.image = snapshot.image.scaled(qRound(320 * scale), qRound(180 * scale));
+                snapshot.resultStyle = {
+                    6, shadow, Qt::black,
+                    ScreenshotRegionGeometry(
+                        QRegion(0, 0, 100, 180).united(QRegion(220, 0, 100, 180)))};
+                snapshot.resultStyle.borderType = type;
+                snapshot.resultStyle.borderWidth = shadow;
+                if (type == ScreenshotSelectionBorderType::Border)
+                    snapshot.resultStyle.shadowWidth = 11;
+                const auto reference = renderScreenshotRecognitionImage(snapshot);
+                snapshot.layoutCompaction = {true, 4};
+                const auto originalQuad = snapshot.lines.first().quad;
+                const auto actual = renderScreenshotRecognitionImage(snapshot);
+                const int padding = qRound(shadow * scale);
+                const QSize footprint(qRound(100 * scale) + 2 * padding,
+                                      qRound(180 * scale) + 2 * padding);
+                const int spacing = qRound(4 * scale);
+                QImage expected(2 * footprint.width() + spacing, footprint.height(),
+                                QImage::Format_ARGB32_Premultiplied);
+                expected.fill(Qt::transparent);
+                QPainter painter(&expected);
+                painter.drawImage(QPoint(), reference, QRect(QPoint(), footprint));
+                painter.drawImage(QPoint(footprint.width() + spacing, 0), reference,
+                                  QRect(QPoint(qRound(220 * scale), 0), footprint));
+                painter.end();
+                require(actual == expected && snapshot.lines.first().quad == originalQuad,
+                        "recognition compaction preserves text, active effect pixels and spacing");
+            }
         }
     }
+}
+
+void completedRenderingReleasesCompositorCaches() {
+    auto snapshot = fixture();
+    snapshot.resultStyle = {
+        6, 3, Qt::black,
+        ScreenshotRegionGeometry(QRegion(0, 0, 100, 180).united(QRegion(220, 0, 100, 180)))};
+    snapshot.layoutCompaction = {true, 4};
+    const auto verify = [snapshot] {
+        const auto rendered = renderScreenshotRecognitionImage(snapshot);
+        const auto caches = ScreenshotSelectionShadowRenderer::diagnosticsForCurrentThread();
+        require(!rendered.isNull() && caches.retainedBytes == 0 &&
+                    caches.regionCacheRetainedBytes == 0 && caches.regionPathCacheElements == 0 &&
+                    !screenshotLayoutCompactionCache.plan,
+                "completed recognition rendering releases worker compositor caches");
+        require(renderScreenshotRecognitionImage(snapshot, [] { return true; }).isNull(),
+                "canceled recognition rendering publishes no image");
+        require(!screenshotLayoutCompactionCache.plan,
+                "canceled rendering leaves no worker layout cache");
+    };
+    std::async(std::launch::async, verify).get();
 }
 
 void retainedBackgroundUsesOriginalCapture() {
@@ -260,8 +318,10 @@ int main(int argc, char** argv) {
     try {
         rendersNativeCoordinatesAndPreservesSource();
         displayedBackgroundAndEffectsAreAppliedOnce();
+        effectsScaleOnceForEverySelectionShape();
         compoundSelectionClipsRecognizedText();
         compactionFollowsRecognitionRendering();
+        completedRenderingReleasesCompositorCaches();
         retainedBackgroundUsesOriginalCapture();
         layoutModesAndTransformsRenderOnWorkers();
         sourceRowsSurviveImageExportOnWorkers();

@@ -37,6 +37,10 @@ class ScreenshotImageConversionController final : public QObject {
     [[nodiscard]] bool active() const {
         return m_active;
     }
+    // The displayed request keeps its model identity even if the saved selection changes.
+    [[nodiscard]] QString activeModel() const {
+        return m_active ? m_requestModel : QString{};
+    }
     [[nodiscard]] QString source() const {
         return m_source;
     }

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:uap11="http://schemas.microsoft.com/appx/manifest/uap/windows10/11"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 uap11 desktop desktop4 desktop5 com rescap">
+  <Identity Name="@Name@" Publisher="@Publisher@" Version="@Version@" ProcessorArchitecture="@Architecture@" />
+  <Properties>
+    <DisplayName>ms-resource:DisplayName</DisplayName>
+    <PublisherDisplayName>@PublisherDisplayName@</PublisherDisplayName>
+    <Description>ms-resource:Description</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-US" />
+    <Resource Language="zh-CN" />
+    <Resource Language="zh-TW" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="@MinVersion@" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Applications>
+    <Application Id="SnowShot" Executable="bin\snow_shot.exe" EntryPoint="Windows.FullTrustApplication"
+      uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="ms-resource:DisplayName" Description="ms-resource:Description"
+        BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="bin\snow_shot.exe"
+          EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--autostart">
+          <desktop:StartupTask TaskId="SnowShotStartup" Enabled="false" DisplayName="ms-resource:DisplayName" />
+        </desktop:Extension>
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="bin\snow-shot-mcp.exe"
+          EntryPoint="Windows.FullTrustApplication" uap11:Subsystem="console" uap11:SupportsMultipleInstances="true">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="snow-shot-store-mcp.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="Snow Shot">
+              <com:Class Id="3F1E90A2-7D4B-4F21-9D8A-6B0C5E2F7093"
+                Path="bin\SnowShotExplorerCommand.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+@ContextMenuItemTypes@
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="snowshotfiles" Parameters="--edit-with-snow-shot &quot;%1&quot;" MultiSelectModel="Document">
+            <uap:DisplayName>ms-resource:FileTypesDisplayName</uap:DisplayName>
+            <uap:SupportedFileTypes>
+@FileTypes@
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

@@ -14,6 +14,7 @@
 #include <QThread>
 #include <QWindow>
 #include <qt_windows.h>
+#include <functional>
 
 namespace {
 void settleWindows() {
@@ -24,6 +25,51 @@ void settleWindows() {
         QThread::msleep(1);
     }
 }
+
+bool waitForWindowState(const std::function<bool()>& ready) {
+    QElapsedTimer timer;
+    timer.start();
+    do {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (ready())
+            return true;
+        QThread::yieldCurrentThread();
+    } while (timer.elapsed() < 3000);
+    return false;
+}
+
+bool moveNativePointer(QPoint point) {
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    input.mi.dx = qRound((point.x() - GetSystemMetrics(SM_XVIRTUALSCREEN) + 0.5) * 65536.0 /
+                         GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    input.mi.dy = qRound((point.y() - GetSystemMetrics(SM_YVIRTUALSCREEN) + 0.5) * 65536.0 /
+                         GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    return SendInput(1, &input, sizeof(INPUT)) == 1;
+}
+
+bool sendNativeButton(bool down) {
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+    return SendInput(1, &input, sizeof(INPUT)) == 1;
+}
+
+struct RestorePointer {
+    POINT point{};
+    bool valid = GetCursorPos(&point) != FALSE;
+    bool pressed = false;
+    HWND foreground = GetForegroundWindow();
+    ~RestorePointer() {
+        if (pressed)
+            sendNativeButton(false);
+        if (valid)
+            SetCursorPos(point.x, point.y);
+        if (foreground)
+            SetForegroundWindow(foreground);
+    }
+};
 
 QRect nativeClient(QWidget& widget) {
     const HWND handle = reinterpret_cast<HWND>(widget.winId());
@@ -126,7 +172,7 @@ bool renderedContentMatchesDesktop(ScreenRecordingToolbarWindow& toolbar, const 
 
 // Invoked by the controller fixture, with its fake capture backend and isolated settings.
 // Real Windows surfaces are essential: offscreen QPA cannot exercise WM_DPICHANGED.
-int recordingToolbarAcrossNativeDisplays(bool startCapture) {
+int recordingToolbarAcrossNativeDisplays() {
     QScreen* displayA = nullptr;
     QScreen* displayB = nullptr;
     for (QScreen* a : QGuiApplication::screens()) {
@@ -155,6 +201,7 @@ int recordingToolbarAcrossNativeDisplays(bool startCapture) {
             ++failures;
         }
     };
+    RestorePointer restore;
     ScreenRecordingController controller;
     const QRect aBounds = ScreenshotGeometryMapper::physicalRectForScreen(*displayA);
     const QRect bBounds = ScreenshotGeometryMapper::physicalRectForScreen(*displayB);
@@ -173,20 +220,8 @@ int recordingToolbarAcrossNativeDisplays(bool startCapture) {
         qCritical() << "FAIL: controller must create both recording windows";
         return 1;
     }
-    if (startCapture) {
-        controller.startRecording();
-        // Starting the real backend is asynchronous; wait for it to finish
-        // before comparing compositor output.
-        QElapsedTimer startWait;
-        startWait.start();
-        while (!controller.isRecording() && startWait.elapsed() < 5000) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-            QThread::msleep(1);
-        }
-    }
     settleWindows();
-    check(controller.isRecording() == startCapture,
-          "source recording state must match the scenario");
+    check(!controller.isRecording(), "recording area movement must begin in the idle state");
     auto* settings = toolbar->palette()->findChild<adqt::widgets::AdButton*>(
         QStringLiteral("screenRecordingExportSettings"));
     if (!settings) {
@@ -198,7 +233,7 @@ int recordingToolbarAcrossNativeDisplays(bool startCapture) {
     }
     settleWindows();
     check(area->inputMode() == ScreenRecordingAreaWindow::InputMode::RegionEditing,
-          "export settings must enable moving the active recording area");
+          "export settings must enable moving the idle recording area");
     check(toolbar->screen() == displayA &&
               GetDpiForWindow(reinterpret_cast<HWND>(toolbar->winId())) == 144,
           "source toolbar must begin on A at 144 DPI");
@@ -206,17 +241,25 @@ int recordingToolbarAcrossNativeDisplays(bool startCapture) {
         return 1;
     }
 
-    check(renderedContentMatchesDesktop(*toolbar, startCapture ? "active-source" : "source"),
+    check(renderedContentMatchesDesktop(*toolbar, "source"),
           "source toolbar compositor output must match its complete rendered content");
     if (failures) {
         return 1;
     }
 
     const HWND areaHandle = reinterpret_cast<HWND>(area->winId());
-    const QPoint hitPoint = area->recordingRegion().center();
-    check(SendMessageW(areaHandle, WM_NCHITTEST, 0, MAKELPARAM(hitPoint.x(), hitPoint.y())) ==
-              HTCAPTION,
-          "PREREQUISITE: recording area must accept dragging in the requested recording state");
+    auto* handle = area->findChild<QWidget*>(QStringLiteral("screenRecordingRegionDragHandle"));
+    check(handle && handle->isVisible() && handle->isEnabled(),
+          "the idle recording area must expose its move handle");
+    if (failures)
+        return 1;
+    const QPoint handlePoint =
+        nativeClient(*area).topLeft() +
+        (QPointF(handle->mapTo(area, handle->rect().center())) * area->devicePixelRatioF())
+            .toPoint();
+    check(SendMessageW(areaHandle, WM_NCHITTEST, 0, MAKELPARAM(handlePoint.x(), handlePoint.y())) ==
+              HTCLIENT,
+          "the current region move handle must accept native client input");
     if (failures) {
         return 1;
     }
@@ -226,17 +269,39 @@ int recordingToolbarAcrossNativeDisplays(bool startCapture) {
                      [&]() { ++starts; });
     QObject::connect(area, &ScreenRecordingAreaWindow::regionInteractionFinished, area,
                      [&]() { ++finishes; });
-    // Replay the native move lifecycle without taking over the user's mouse. SetWindowPos
-    // crosses the real monitor boundary and lets Windows deliver the actual DPI change.
-    SendMessageW(areaHandle, WM_ENTERSIZEMOVE, 0, 0);
+    // Drive the current client-side move handle. The retired HTCAPTION/WM_ENTERSIZEMOVE
+    // path cannot exercise its capture lifecycle or the toolbar's drag suppression.
+    check(restore.valid && moveNativePointer(handlePoint) && waitForWindowState([&] {
+              POINT point{};
+              return GetCursorPos(&point) && QPoint(point.x, point.y) == handlePoint &&
+                     GetAncestor(WindowFromPoint(point), GA_ROOT) == areaHandle;
+          }),
+          "the native pointer must reach the recording move handle");
+    if (failures)
+        return 1;
+    restore.pressed = sendNativeButton(true);
+    check(restore.pressed && waitForWindowState([&] {
+              return starts == 1 && QWidget::mouseGrabber() == handle && GetCapture() == areaHandle;
+          }),
+          "the recording move handle must capture one native drag");
+    if (failures)
+        return 1;
     check(!toolbar->isVisible(), "toolbar must hide during the drag");
     const QPoint destination = bBounds.center() - QPoint(240, 160);
-    check(SetWindowPos(areaHandle, nullptr, destination.x(), destination.y(), 0, 0,
-                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE,
-          "native recording area move must succeed");
-    settleWindows();
+    const QPoint delta = destination - area->recordingRegion().topLeft();
+    check(moveNativePointer(handlePoint + delta) && waitForWindowState([&] {
+              return area->recordingRegion().topLeft() == destination && area->screen() == displayB;
+          }),
+          "native recording drag must cross the real display boundary");
     check(!toolbar->isVisible(), "toolbar must stay hidden until dragging ends");
-    SendMessageW(areaHandle, WM_EXITSIZEMOVE, 0, 0);
+    const bool released = sendNativeButton(false);
+    restore.pressed = !released;
+    check(released && waitForWindowState([&] {
+              return finishes == 1 && QWidget::mouseGrabber() != handle && toolbar->isVisible();
+          }),
+          "native release must finish the drag and restore the toolbar");
+    if (failures)
+        return 1;
 
     const auto verifyToolbar = [&](const char* phase) {
         const QRect client = nativeClient(*toolbar);
@@ -289,9 +354,8 @@ int recordingToolbarAcrossNativeDisplays(bool startCapture) {
     verifyToolbar("Immediately after release");
     settleWindows();
     verifyToolbar("After queued DPI/layout events");
-    check(renderedContentMatchesDesktop(*toolbar,
-                                        startCapture ? "active-destination" : "destination"),
+    check(renderedContentMatchesDesktop(*toolbar, "destination"),
           "destination compositor output must display all toolbar content at the correct scale");
-    check(controller.isRecording() == startCapture, "moving must preserve the recording state");
+    check(!controller.isRecording(), "moving the idle area must not start a recording");
     return failures == 0 ? 0 : 1;
 }

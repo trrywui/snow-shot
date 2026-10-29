@@ -42,8 +42,6 @@ struct Frame {
     const QWidget* widget = nullptr;
     QRectF watermarkRenderArea;
     bool hasWatermarkRenderArea = false;
-    QRectF spotlightRenderArea;
-    bool hasSpotlightRenderArea = false;
     bool clearBackgroundEnabled = true;
     bool showDirtyRects = false;
 };

@@ -794,7 +794,12 @@ void verifyHoverPlacement() {
             require(icon, "placement fixture creates an icon");
             const QPoint anchor = geometry::restore({x, 0.5}, icon->size(), bounds);
             const QPoint shown = geometry::tucked(anchor, icon->size(), bounds);
-            require(icon->mapToGlobal(QPoint()) == shown,
+            // The concealed child origin can cross onto a monitor with another DPR.
+            // Keep this placement comparison in the owning window's logical coordinate space.
+            const auto iconPosition = [&] {
+                return iconWindow->pos() + icon->mapTo(iconWindow, QPoint());
+            };
+            require(iconPosition() == shown,
                     "first icon show respects saved placement and edge clipping");
             const QRect iconFrame = iconWindow->geometry();
             for (int iteration = 0; iteration < 4; ++iteration) {
@@ -828,13 +833,12 @@ void verifyHoverPlacement() {
                               << panel->width() << ',' << panel->height() << '\n';
                 require(toolbar->pos() == geometry::constrain(desired, toolbar->size(), bounds),
                         "first and repeated reveals align the settled panel beside the icon");
-                require(icon->mapToGlobal(QPoint()) == shown && iconWindow->geometry() == iconFrame,
+                require(iconPosition() == shown && iconWindow->geometry() == iconFrame,
                         "hover preserves icon position and partial clipping at either edge");
                 const QRect toolbarFrame = toolbar->geometry();
                 QPointer<adqt::widgets::AdContextMenu> menu = context(icon);
                 require(menu && menu->isVisible(), "icon context menu opens");
-                require(icon->mapToGlobal(QPoint()) == shown &&
-                            iconWindow->geometry() == iconFrame &&
+                require(iconPosition() == shown && iconWindow->geometry() == iconFrame &&
                             toolbar->geometry() == toolbarFrame,
                         "opening a menu preserves the icon and hover toolbar placement");
                 menu->close();

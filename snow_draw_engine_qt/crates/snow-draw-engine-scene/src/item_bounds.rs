@@ -104,8 +104,17 @@ pub(crate) fn scene_display_item_bounds(
         SceneDisplayItem::Rectangle(item) if item.stroke.a != 0 && item.stroke_width > 0.0 => {
             item.stroke_rendering_style
         }
-        SceneDisplayItem::Arrow(item) if item.stroke.a != 0 && item.stroke_width > 0.0 => {
+        SceneDisplayItem::Arrow(item)
+            if (item.stroke.a != 0
+                || (item.arrow_outline_color.a != 0 && item.arrow_outline_width > 0.0))
+                && item.stroke_width > 0.0 =>
+        {
             item.stroke_rendering_style
+        }
+        SceneDisplayItem::SpeechBubble(item)
+            if item.path.stroke.a != 0 && item.path.stroke_width > 0.0 =>
+        {
+            item.path.stroke_rendering_style
         }
         SceneDisplayItem::SerialNumber(item)
             if item.color.a != 0
@@ -120,7 +129,15 @@ pub(crate) fn scene_display_item_bounds(
         }
         _ => Default::default(),
     };
-    let outset = snow_draw_engine_core::arrow::stroke_rendering_outset(style, f64::MAX)
+    let outline = match item {
+        SceneDisplayItem::Arrow(item)
+            if item.arrow_outline_color.a != 0 && item.stroke_width > 0.0 =>
+        {
+            item.arrow_outline_width / 2.0
+        }
+        _ => 0.0,
+    };
+    let outset = (snow_draw_engine_core::arrow::stroke_rendering_outset(style, f64::MAX) + outline)
         * frame_view.camera.zoom.max(0.0);
     bounds.map(|bounds| {
         DirtyRegion::new(
@@ -552,6 +569,8 @@ fn display_arrow_to_document_arrow(
         end_arrowhead,
     )
     .unwrap_or_else(|| ArrowData {
+        arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+        arrow_outline_width: 0.0,
         stroke_rendering_seed: 0,
         stroke_rendering_style: Default::default(),
         linear_kind: LinearElementKind::Arrow,
@@ -954,6 +973,32 @@ mod tests {
         assert!((bounds.min_y - (500.0 - expected_extent)).abs() < 1e-9);
         assert!((bounds.max_y - (500.0 + expected_extent)).abs() < 1e-9);
     }
+    #[test]
+    fn arrow_outline_dirty_bounds_scale_without_changing_geometry() {
+        let mut arrow = snow_draw_engine_display::ArrowDisplayItem {
+            stroke_width: 2.0,
+            arrow_outline_color: ColorRgba8 {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            ..Default::default()
+        };
+        for zoom in [0.5, 1.0, 3.0] {
+            let mut frame = frame_view();
+            frame.camera.zoom = zoom;
+            arrow.arrow_outline_width = 0.0;
+            let original =
+                scene_display_item_bounds(&SceneDisplayItem::Arrow(arrow.clone()), frame).unwrap();
+            arrow.arrow_outline_width = 8.0;
+            let outlined =
+                scene_display_item_bounds(&SceneDisplayItem::Arrow(arrow.clone()), frame).unwrap();
+            assert_eq!(outlined.min_x, original.min_x - 4.0 * zoom);
+            assert_eq!(outlined.max_y, original.max_y + 4.0 * zoom);
+        }
+    }
+
     #[test]
     fn stroke_rendering_scene_dirty_bounds_cover_shared_ink_outset() {
         use snow_draw_engine_core::arrow::StrokeRenderingStyle;

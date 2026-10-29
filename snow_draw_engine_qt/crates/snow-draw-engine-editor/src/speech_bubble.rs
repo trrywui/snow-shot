@@ -72,6 +72,21 @@ pub fn speech_bubble_text_constraints(
                 height * factor - 2.0 * padding,
             )
         }
+        HighlightShape::ThoughtBubble => {
+            // The cloud stays outside an ellipse with 86% of the body radii.
+            // A centered 60% rectangle fits that ellipse even at extreme aspect ratios.
+            let factor = 0.6;
+            let width = body.width.max((g + 2.0 * padding) / factor);
+            let height = body
+                .height
+                .max((text_height.max(1.0) + 2.0 * padding) / factor);
+            (
+                width,
+                height,
+                width * factor - 2.0 * padding,
+                height * factor - 2.0 * padding,
+            )
+        }
         HighlightShape::Rectangle => {
             let radius = [
                 body.corner_radii.top_left,
@@ -1212,11 +1227,118 @@ mod tests {
         }
     }
     #[test]
+    fn speech_bubble_hand_drawn_patches_preserve_geometry_seed_and_resolve_mixed_styles() {
+        use snow_draw_engine_core::arrow::{StrokeRenderingStyle, StrokeStyle};
+        use snow_draw_engine_document::ElementMeta;
+
+        for shape in [
+            HighlightShape::Rectangle,
+            HighlightShape::Ellipse,
+            HighlightShape::Diamond,
+            HighlightShape::ThoughtBubble,
+        ] {
+            let mut document = DocumentModel::new();
+            let mut editor = Editor::new(Default::default()).unwrap();
+            editor.set_active_tool(ActiveTool::SpeechBubble).unwrap();
+            let rectangle_default = editor.state.default_rectangle_shape_style;
+            let mut style = editor.shape_style(&document);
+            style.stroke_rendering_style = StrokeRenderingStyle::Cartoonist;
+            assert!(
+                editor
+                    .set_shape_style_patch(
+                        &document,
+                        ShapeStylePatch {
+                            kind: ShapeKind::SpeechBubble,
+                            style,
+                            properties: SHAPE_STYLE_PROPERTY_STROKE_RENDERING_STYLE,
+                        }
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                editor
+                    .state
+                    .default_speech_bubble_style
+                    .stroke_rendering_style,
+                StrokeRenderingStyle::Cartoonist
+            );
+            assert_eq!(
+                editor.state.default_rectangle_shape_style,
+                rectangle_default
+            );
+
+            let ids = [
+                document.allocate_element_id(),
+                document.allocate_element_id(),
+            ];
+            let originals: Vec<_> = [901, 0]
+                .into_iter()
+                .enumerate()
+                .map(|(index, seed)| {
+                    let mut value = SpeechBubbleData::new(body(shape));
+                    value.body.center.x = index as f64 * 160.0;
+                    value.body.stroke_rendering_seed = seed;
+                    value.body.stroke_style = StrokeStyle::Dashed;
+                    value.body.stroke_rendering_style = if index == 0 {
+                        StrokeRenderingStyle::Architect
+                    } else {
+                        StrokeRenderingStyle::Artist
+                    };
+                    value.tails.push(speech_bubble_default_tail(
+                        &value,
+                        Point::new(0.0, 100.0),
+                        1.0,
+                    ));
+                    value
+                })
+                .collect();
+            let mut insert = Transaction::new("hand-drawn bubble fixtures");
+            for (id, value) in ids.into_iter().zip(&originals) {
+                insert.insert_speech_bubble(id, ElementMeta::default(), value.clone());
+            }
+            document.apply_transaction(insert).unwrap();
+            editor.set_selection_state_with_document(Some(&document), ids.to_vec(), Some(ids[0]));
+            let bounds = editor.selection_bounds_snapshot(&document);
+            assert_ne!(
+                editor.shape_style_mixed(&document) & SHAPE_STYLE_MIXED_STROKE_RENDERING_STYLE,
+                0
+            );
+            let mut style = editor.shape_style(&document);
+            style.stroke_rendering_style = StrokeRenderingStyle::Artist;
+            let Some(EditorCommand::ApplyTransaction(command)) = editor
+                .set_shape_style_patch(
+                    &document,
+                    ShapeStylePatch {
+                        kind: ShapeKind::SpeechBubble,
+                        style,
+                        properties: SHAPE_STYLE_PROPERTY_STROKE_RENDERING_STYLE,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("bubble style transaction missing")
+            };
+            document.apply_transaction(command.transaction).unwrap();
+            assert_eq!(editor.selection_bounds_snapshot(&document), bounds);
+            assert_eq!(
+                editor.shape_style_mixed(&document) & SHAPE_STYLE_MIXED_STROKE_RENDERING_STYLE,
+                0
+            );
+            for (id, mut original) in ids.into_iter().zip(originals) {
+                original.body.stroke_rendering_style = StrokeRenderingStyle::Artist;
+                assert_eq!(document.speech_bubble(id).unwrap(), &original);
+            }
+        }
+    }
+
+    #[test]
     fn speech_bubble_safe_content_rect_fits_every_contour_and_has_no_height_width_feedback() {
         for shape in [
             HighlightShape::Rectangle,
             HighlightShape::Ellipse,
             HighlightShape::Diamond,
+            HighlightShape::ThoughtBubble,
         ] {
             for width in [1.0, 20.0, 100.0, 900.0] {
                 for height in [1.0, 30.0, 1000.0] {

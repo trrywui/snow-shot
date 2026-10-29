@@ -1,10 +1,12 @@
 #include "snow_shot/presentation/components/pinnedwindowmanagementpagewidget.h"
+#include "snow_shot/presentation/components/historypagecommon.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include "../../test-support/virtualmemory.h"
 #include "snow_shot/presentation/components/thumbnailcache.h"
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include "snow_shot/presentation/styles/thememanager.h"
 #include "snow_shot/storage/applicationstorage.h"
+#include "snow_shot/storage/settingsadapters.h"
 #include "theme/theme_manager.h"
 #include "widgets/select.h"
 #include "widgets/date_picker.h"
@@ -14,6 +16,8 @@
 #include "widgets/pagination.h"
 #include "widgets/image.h"
 #include "widgets/context_menu.h"
+#include "widgets/message.h"
+#include "history_sticky_selection_test_support.h"
 #include <QElapsedTimer>
 #include <QTimeZone>
 #include <QThread>
@@ -37,6 +41,7 @@
 #include <QStringList>
 #include <QScopeGuard>
 #include <algorithm>
+#include <functional>
 #include <cstdlib>
 #include <iostream>
 using namespace snow_shot;
@@ -50,6 +55,15 @@ class Fixture final : public PinnedWindowManagementDataSource {
   public:
     QVector<storage::PinnedWindowSummary> items;
     QString shown;
+    QStringList shownIds;
+    QVector<QStringList> shownBatches;
+    std::function<void()> onShow;
+    QStringList revealed;
+    bool revealSucceeds = true;
+    bool revealRecord(const QString& id) override {
+        revealed.append(id);
+        return revealSucceeds;
+    }
     QVector<QString> removed;
     QVector<QSize> previewSizes;
     int fullImageRequests = 0;
@@ -87,6 +101,14 @@ class Fixture final : public PinnedWindowManagementDataSource {
     }
     void showRecord(const QString& id) override {
         shown = id;
+        shownIds.append(id);
+        if (onShow)
+            onShow();
+    }
+    void showRecords(const QStringList& ids) override {
+        shownBatches.append(ids);
+        for (const auto& id : ids)
+            showRecord(id);
     }
     void removeRecords(const QVector<QString>& ids) override {
         removed = ids;
@@ -104,6 +126,35 @@ class SkinBackdrop final : public QWidget {
     }
 };
 
+void selectionPanelSticksWhileScrolling() {
+    Fixture fixture;
+    for (int index = 0; index < 55; ++index) {
+        storage::PinnedWindowSummary item;
+        item.id = QStringLiteral("sticky-%1").arg(index);
+        item.createdUtc =
+            QDateTime(QDate(2026, 9, 24), QTime(0, 30), QTimeZone::UTC).addSecs(-index);
+        fixture.items.push_back(item);
+    }
+    storage::InterfaceSettings settings;
+    const int originalPageSize = settings.pinnedWindowManagementPageSize();
+    const auto restorePageSize =
+        qScopeGuard([&] { settings.setPinnedWindowManagementPageSize(originalPageSize); });
+    for (const int pageSize : {10, 20, 50}) {
+        require(settings.setPinnedWindowManagementPageSize(pageSize),
+                "save pinned fixture page size");
+        PinnedWindowManagementPageWidget page(&fixture, nullptr);
+        require(page.findChild<adqt::widgets::AdPagination*>()->pageSize() == pageSize,
+                "sticky pinned fixture restores the saved page size");
+        page.resize(980, 640);
+        page.show();
+        history_sticky_test::settleLayout();
+        auto* row = page.findChild<QFrame*>(QStringLiteral("pinnedManagementRecord"));
+        require(row != nullptr, "sticky pinned fixture has an entry");
+        history_sticky_test::verifySelection(page, QStringLiteral("pinnedManagement"),
+                                             row->findChild<adqt::widgets::AdCheckbox*>(), require);
+    }
+}
+
 class StyleChangeRecorder final : public QObject {
   public:
     QStringList styles;
@@ -117,6 +168,72 @@ class StyleChangeRecorder final : public QObject {
     }
 };
 
+void pinnedDescriptionsUseSmallThemeText(const QVector<storage::PinnedWindowSummary>& records) {
+    Fixture fixture;
+    fixture.items = records;
+    QWidget host;
+    QFont inheritedFont = host.font();
+    inheritedFont.setPixelSize(14);
+    inheritedFont.setHintingPreference(QFont::PreferNoHinting);
+    host.setFont(inheritedFont);
+    PinnedWindowManagementPageWidget page(&fixture, &host);
+    host.resize(980, 640);
+    page.resize(host.size());
+    host.show();
+    page.show();
+    QCoreApplication::processEvents();
+
+    const QStringList descriptionNames{QStringLiteral("pinnedManagementSourceBadge"),
+                                       QStringLiteral("pinnedManagementGroup"),
+                                       QStringLiteral("pinnedManagementStatus")};
+    QHash<QString, QFont::HintingPreference> originalHinting;
+    for (const auto& name : descriptionNames) {
+        const auto* label = page.findChild<QLabel*>(name);
+        require(label != nullptr, "pinned description labels exist before changing their theme");
+        originalHinting.insert(name, label->font().hintingPreference());
+    }
+
+    for (const int fontSize : {14, 20, 14}) {
+        presentation::styles::ThemeStyleConfig config;
+        config.fontSize = fontSize;
+        const auto scheme = presentation::styles::generateThemeColorScheme(config);
+        page.applyTheme(scheme);
+        const auto requireDescriptionFonts = [&] {
+            for (const auto& name : descriptionNames) {
+                const auto labels = page.findChildren<QLabel*>(name);
+                require(labels.size() == fixture.items.size(),
+                        "every pinned entry exposes all three description labels");
+                for (const auto* label : labels) {
+                    require(label->font().pixelSize() == scheme.metricAlias.fontSizeSM &&
+                                label->font().weight() == QFont::Normal &&
+                                label->font().hintingPreference() == originalHinting.value(name),
+                            "pinned descriptions use small theme text and preserve their hinting");
+                }
+            }
+            const auto timestamps = page.findChildren<adqt::widgets::AdCheckbox*>(
+                QStringLiteral("pinnedManagementEntrySelection"));
+            for (const auto* timestamp : timestamps) {
+                require(timestamp->font().pixelSize() == scheme.metricAlias.fontSizeLG &&
+                            timestamp->font().weight() == QFont::DemiBold,
+                        "pinned timestamps retain their heading text style");
+            }
+        };
+        QCoreApplication::processEvents();
+        requireDescriptionFonts();
+        inheritedFont.setPointSizeF(24);
+        inheritedFont.setWeight(QFont::Bold);
+        host.setFont(inheritedFont);
+        QCoreApplication::processEvents();
+        requireDescriptionFonts();
+        auto record = records.first();
+        record.id = QStringLiteral("added-%1").arg(fixture.items.size());
+        fixture.items.push_back(record);
+        page.refresh();
+        QCoreApplication::processEvents();
+        requireDescriptionFonts();
+    }
+}
+
 void pinnedThemeChangesDoNotRestyleTwice(const QVector<storage::PinnedWindowSummary>& records) {
     auto& themeManager = presentation::styles::ThemeManager::instance();
     themeManager.setThemeAppearance(presentation::styles::ThemeAppearance::Light);
@@ -126,17 +243,17 @@ void pinnedThemeChangesDoNotRestyleTwice(const QVector<storage::PinnedWindowSumm
     page.resize(980, 640);
     page.show();
     QCoreApplication::processEvents();
-    auto* row = page.findChild<QFrame*>(QStringLiteral("pinnedManagementRecord"));
-    require(row != nullptr, "the pinned theme regression needs a seeded row");
+    auto* badge = page.findChild<QLabel*>(QStringLiteral("pinnedManagementSourceBadge"));
+    require(badge != nullptr, "the pinned theme regression needs a seeded source badge");
     StyleChangeRecorder recorder;
-    row->installEventFilter(&recorder);
+    badge->installEventFilter(&recorder);
     for (const auto appearance : {presentation::styles::ThemeAppearance::Dark,
                                   presentation::styles::ThemeAppearance::Light}) {
-        const QString previous = row->styleSheet();
+        const QString previous = badge->styleSheet();
         recorder.styles.clear();
         themeManager.setThemeAppearance(appearance);
         require(recorder.styles.size() == 1 && recorder.styles.first() != previous,
-                "an unskinned pinned theme change must apply each row background exactly once");
+                "an unskinned pinned theme change must apply each source badge exactly once");
     }
     QWidget unrelated;
     adqt::theme::ThemeOverride overrideValue;
@@ -145,7 +262,8 @@ void pinnedThemeChangesDoNotRestyleTwice(const QVector<storage::PinnedWindowSumm
     recorder.styles.clear();
     controlTheme.setScopeOverride(&unrelated, overrideValue);
     controlTheme.clearScopeOverride(&unrelated);
-    require(recorder.styles.isEmpty(), "an unrelated skin must not restyle unskinned pinned rows");
+    require(recorder.styles.isEmpty(),
+            "an unrelated skin must not restyle unskinned pinned source badges");
 }
 
 void pinnedRowsRespectSkinMask(const QVector<storage::PinnedWindowSummary>& records) {
@@ -443,6 +561,19 @@ void pinnedPreviewRetriesAcrossStorageMigration(const QString& destination) {
             "releasing a recovered preview and its cache returns large pixel pages to the OS");
 }
 
+void triggerBatchStitch(adqt::widgets::AdButton* trigger) {
+    trigger->click();
+    QCoreApplication::processEvents();
+    auto* menu = trigger->window()->findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("pinnedManagementBatchActionsMenu"));
+    require(menu && menu->isPopupVisible(), "Batch Actions opens its menu");
+    menu->setActiveAction(menu->actions().first());
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(menu, &enter);
+    QCoreApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
 void pinnedCollageSelectionKeepsRecordOrder() {
     Fixture fixture;
     for (int index = 0; index < 15; ++index) {
@@ -456,20 +587,20 @@ void pinnedCollageSelectionKeepsRecordOrder() {
     page.resize(980, 900);
     page.show();
     QCoreApplication::processEvents();
-    auto* collage =
-        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementCollage"));
+    auto* batchActions =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementBatchActions"));
     auto* selectAll =
         page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementSelectAll"));
     auto* deselect =
         page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementDeselectAll"));
     auto* pagination =
         page.findChild<adqt::widgets::AdPagination*>(QStringLiteral("pinnedManagementPagination"));
-    require(collage && selectAll && deselect && pagination &&
-                collage->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link &&
-                collage->parentWidget()->layout()->indexOf(collage) + 1 ==
-                    collage->parentWidget()->layout()->indexOf(selectAll),
+    require(batchActions && selectAll && deselect && pagination &&
+                batchActions->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link &&
+                batchActions->parentWidget()->layout()->indexOf(batchActions) + 1 ==
+                    batchActions->parentWidget()->layout()->indexOf(selectAll),
             "pinned Collage is a link action immediately before Select all");
-    require(!collage->isVisible() && !collage->isEnabled(),
+    require(!batchActions->isVisible() && !batchActions->isEnabled(),
             "pinned Collage is unavailable before selection");
     QStringList requested;
     int requests = 0;
@@ -488,49 +619,50 @@ void pinnedCollageSelectionKeepsRecordOrder() {
         require(false, "requested collage record is on the current page");
     };
     select(14);
-    require(collage->isVisible() && collage->isEnabled(), "one selected pin enables Collage");
-    collage->click();
+    require(batchActions->isVisible() && batchActions->isEnabled(),
+            "one selected pin enables Collage");
+    triggerBatchStitch(batchActions);
     require(requested == QStringList{QStringLiteral("collage-14")},
             "a single selected pin can start a collage");
     pagination->setCurrentPage(2);
     select(0);
     pagination->setCurrentPage(1);
     select(5);
-    collage->click();
+    triggerBatchStitch(batchActions);
     require(requested == QStringList{QStringLiteral("collage-14"), QStringLiteral("collage-5"),
                                      QStringLiteral("collage-0")},
             "collage includes selected pins across pages in displayed record order");
     QEvent language(QEvent::LanguageChange);
     QApplication::sendEvent(&page, &language);
-    require(collage->text() == QStringLiteral("Collage") &&
-                collage->accessibleName() ==
-                    QStringLiteral("Create a collage from selected pinned windows"),
+    require(batchActions->text() == QStringLiteral("Batch Actions") &&
+                batchActions->accessibleName() == QStringLiteral("Batch Actions"),
             "language changes retranslate the pinned collage action");
     fixture.items.removeLast();
     emit fixture.changed();
-    collage->click();
+    triggerBatchStitch(batchActions);
     require(requested == QStringList{QStringLiteral("collage-5"), QStringLiteral("collage-0")},
             "removed records are excluded from the retained collage selection");
     deselect->click();
     const int previousRequests = requests;
-    collage->click();
-    require(!collage->isVisible() && !collage->isEnabled() && requests == previousRequests,
+    batchActions->click();
+    require(!batchActions->isVisible() && !batchActions->isEnabled() &&
+                requests == previousRequests,
             "deselecting every pin disables collage dispatch");
     selectAll->click();
-    collage->click();
+    triggerBatchStitch(batchActions);
     require(requested.size() == 10 && requested.first() == QStringLiteral("collage-13") &&
                 requested.last() == QStringLiteral("collage-4"),
             "Select all imports only the current page in its display order");
     page.resize(500, 900);
     QCoreApplication::processEvents();
     const auto* panel = page.findChild<QWidget*>(QStringLiteral("pinnedManagementSelectionPanel"));
-    const QPoint actionOrigin = collage->parentWidget()->mapTo(panel, QPoint());
+    const QPoint actionOrigin = batchActions->parentWidget()->mapTo(panel, QPoint());
     require(actionOrigin.x() >= 0 &&
-                actionOrigin.x() + collage->parentWidget()->width() <= panel->width(),
+                actionOrigin.x() + batchActions->parentWidget()->width() <= panel->width(),
             "pinned selection actions fit within a narrow management page");
     page.findChild<adqt::widgets::AdSelect*>()->setCurrentValues(
         {static_cast<int>(storage::PinnedWindowCreationSource::Clipboard)});
-    require(!collage->isVisible() && !collage->isEnabled(),
+    require(!batchActions->isVisible() && !batchActions->isEnabled(),
             "changing the source filter clears the collage selection");
     require(fixture.fullImageRequests == 0 && fixture.removed.isEmpty() && fixture.shown.isEmpty(),
             "selection dispatch neither decodes images nor mutates or opens saved pins");
@@ -542,6 +674,145 @@ void activatePinnedMenuAction(QMenu* menu, QAction* action) {
     QApplication::sendEvent(menu, &enter);
     QCoreApplication::processEvents();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void batchPinRequiresSingleGroup() {
+    Fixture fixture;
+    for (int index = 0; index < 2; ++index) {
+        storage::PinnedWindowSummary item;
+        item.id = QStringLiteral("group-batch-%1").arg(index);
+        item.groupId = index == 0 ? QStringLiteral("default") : QStringLiteral("work");
+        item.activitySequence = static_cast<quint64>(index);
+        fixture.items.append(item);
+    }
+    PinnedWindowManagementPageWidget page(&fixture, nullptr);
+    page.resize(980, 900);
+    page.show();
+    QCoreApplication::processEvents();
+    auto* trigger =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementBatchActions"));
+    page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementSelectAll"))->click();
+    trigger->click();
+    QCoreApplication::processEvents();
+    auto* menu = page.findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("pinnedManagementBatchActionsMenu"));
+    require(menu && menu->actions()[0]->isEnabled() && !menu->actions()[1]->isEnabled(),
+            "mixed-group selections allow stitching but cannot switch groups during batch pin");
+    auto* pin = menu->actions()[1];
+    require(pin->toolTip().contains(QStringLiteral("same group")),
+            "disabled batch pin explains the group restriction");
+    const auto boxes = page.findChildren<adqt::widgets::AdCheckbox*>();
+    boxes.first()->setChecked(false);
+    require(pin->isEnabled(), "a single remaining group enables the open menu pin action");
+    boxes.first()->setChecked(true);
+    require(!pin->isEnabled(), "adding another group disables the open menu pin action");
+    for (const QString& locale : {QStringLiteral("zh_CN"), QStringLiteral("zh_TW")}) {
+        QTranslator translator;
+        require(translator.load(QStringLiteral(":/i18n/snow_shot_%1.qm").arg(locale)),
+                "load group restriction translations");
+        QCoreApplication::installTranslator(&translator);
+        QEvent language(QEvent::LanguageChange);
+        QApplication::sendEvent(&page, &language);
+        require(pin->toolTip() ==
+                    translator.translate(
+                        "PinnedWindowManagementPageWidget",
+                        "Select pinned windows from the same group to pin them to the screen."),
+                "the open menu retranslates its mixed-group explanation");
+        QCoreApplication::removeTranslator(&translator);
+    }
+    pin->setEnabled(true);
+    pin->trigger();
+    require(fixture.shownIds.isEmpty() && fixture.shownBatches.isEmpty(),
+            "a stale enabled action revalidates groups before dispatch");
+}
+
+void batchPinUsesExistingShowForEveryState() {
+    Fixture fixture;
+    for (int index = 0; index < 12; ++index) {
+        storage::PinnedWindowSummary item;
+        item.id = QStringLiteral("batch-%1").arg(index);
+        item.activitySequence = static_cast<quint64>(index) + 1;
+        item.createdUtc = QDateTime::currentDateTimeUtc();
+        item.ignored = index % 3 == 0;
+        item.hidden = index % 3 == 1;
+        fixture.items.append(item);
+    }
+    PinnedWindowManagementPageWidget page(&fixture, nullptr);
+    page.resize(980, 900);
+    page.show();
+    QCoreApplication::processEvents();
+    auto* trigger =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementBatchActions"));
+    auto* selectAll =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("pinnedManagementSelectAll"));
+    auto* pagination =
+        page.findChild<adqt::widgets::AdPagination*>(QStringLiteral("pinnedManagementPagination"));
+    selectAll->click();
+    pagination->setCurrentPage(2);
+    selectAll->click();
+    int stitched = 0;
+    QObject::connect(&page, &PinnedWindowManagementPageWidget::collageRequested, &page,
+                     [&](const auto&) { ++stitched; });
+    QKeyEvent open(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+    QApplication::sendEvent(trigger, &open);
+    QCoreApplication::processEvents();
+    QPointer<adqt::widgets::AdContextMenu> menu = page.findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("pinnedManagementBatchActionsMenu"));
+    require(menu && menu->isPopupVisible() && !menu->nativeMenuEnabled() &&
+                menu->actions().size() == 2 && stitched == 0 && fixture.shownIds.isEmpty(),
+            "keyboard opens pinned Batch Actions without dispatch");
+    auto* stitch = menu->actions()[0];
+    auto* pin = menu->actions()[1];
+    require(stitch->text() == QStringLiteral("Stitch Image") &&
+                pin->text() == QStringLiteral("Pin to screen") && pin->isEnabled() &&
+                !stitch->icon().isNull() && !pin->icon().isNull(),
+            "pinned batch menu offers themed Stitch Image then Pin to screen");
+    for (const QString& locale : {QStringLiteral("zh_CN"), QStringLiteral("zh_TW")}) {
+        QTranslator translator;
+        require(translator.load(QStringLiteral(":/i18n/snow_shot_%1.qm").arg(locale)),
+                "load pinned batch translations");
+        QCoreApplication::installTranslator(&translator);
+        QEvent language(QEvent::LanguageChange);
+        QApplication::sendEvent(&page, &language);
+        require(trigger->text() ==
+                        translator.translate("PinnedWindowManagementPageWidget", "Batch Actions") &&
+                    trigger->accessibleName() == trigger->text() &&
+                    stitch->text() ==
+                        translator.translate("PinnedWindowManagementPageWidget", "Stitch Image") &&
+                    pin->text() ==
+                        translator.translate("PinnedWindowManagementPageWidget", "Pin to screen") &&
+                    pin->toolTip() == pin->text(),
+                "pinned open menu and trigger retranslate together");
+        QCoreApplication::removeTranslator(&translator);
+    }
+    for (auto* row : page.findChildren<QFrame*>(QStringLiteral("pinnedManagementRecord"))) {
+        if (row->property("recordId").toString() == QStringLiteral("batch-0"))
+            row->findChild<adqt::widgets::AdCheckbox*>()->setChecked(false);
+    }
+    QStringList expected;
+    for (int index = 11; index > 0; --index)
+        expected.append(QStringLiteral("batch-%1").arg(index));
+    activatePinnedMenuAction(menu, pin);
+    require(!menu && fixture.shownIds == expected &&
+                fixture.shownBatches == QVector<QStringList>{expected},
+            "batch pin dispatches every selected closed, hidden, and visible record in order "
+            "across pages");
+    auto* summary = page.findChild<QLabel*>(QStringLiteral("pinnedManagementSelectionSummary"));
+    require(summary && summary->text().contains(QStringLiteral("11")),
+            "pinning retains the selection");
+    fixture.shownIds.clear();
+    fixture.onShow = [&] {
+        fixture.items.detach();
+        page.refresh();
+    };
+    trigger->click();
+    QCoreApplication::processEvents();
+    menu = page.findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("pinnedManagementBatchActionsMenu"));
+    require(menu, "reopen pinned batch menu");
+    activatePinnedMenuAction(menu, menu->actions()[1]);
+    require(fixture.shownIds == expected && fixture.removed.isEmpty(),
+            "synchronous source refresh cannot invalidate the batch show snapshot");
 }
 
 void pinnedEntryMoreActionsUseOnlyTheirRecord() {
@@ -573,6 +844,9 @@ void pinnedEntryMoreActionsUseOnlyTheirRecord() {
                      });
     const QPoint previousCursor = QCursor::pos();
     const auto restoreCursor = qScopeGuard([previousCursor] { QCursor::setPos(previousCursor); });
+    QString editorId;
+    QObject::connect(&page, &PinnedWindowManagementPageWidget::imageEditingRequested, &page,
+                     [&](const QString& id) { editorId = id; });
     const auto rows = page.findChildren<QFrame*>(QStringLiteral("pinnedManagementRecord"));
     require(rows.size() == 3, "stitching fixtures include closed and open pins");
     auto* selection = rows.back()->findChild<adqt::widgets::AdCheckbox*>();
@@ -611,10 +885,23 @@ void pinnedEntryMoreActionsUseOnlyTheirRecord() {
         QPointer<adqt::widgets::AdContextMenu> menu = row->findChild<adqt::widgets::AdContextMenu*>(
             QStringLiteral("pinnedManagementEntryMoreMenu"));
         require(menu && menu->isPopupVisible() && !menu->nativeMenuEnabled() &&
-                    menu->actions().size() == 2,
+                    menu->actions().size() == 4,
                 "hovering More opens the shared widget menu");
         auto* stitch = menu->actions().at(0);
         auto* split = menu->actions().at(1);
+        auto* reveal = menu->actions().at(3);
+        auto* imageEditing =
+            menu->findChild<QAction*>(QStringLiteral("pinnedManagementEntryImageEditing"));
+        require(imageEditing && menu->actions().at(2) == imageEditing &&
+                    imageEditing->isEnabled() &&
+                    imageEditing->text() == QStringLiteral("Image Editing") &&
+                    !imageEditing->icon().isNull(),
+                "independent editor follows Image Splitting for open and closed pins");
+        require(reveal->objectName() == QStringLiteral("pinnedManagementEntryReveal") &&
+                    reveal->text() == presentation::components::history_page::revealActionText() &&
+                    reveal->toolTip() == reveal->text() && reveal->isEnabled() &&
+                    !reveal->icon().isNull(),
+                "More offers a themed, platform-specific reveal action after image editing");
         require(stitch->text() == QStringLiteral("Stitch Image") && stitch->isEnabled() &&
                     !stitch->icon().isNull() &&
                     split->text() == QStringLiteral("Image Splitting") && split->isEnabled() &&
@@ -632,10 +919,27 @@ void pinnedEntryMoreActionsUseOnlyTheirRecord() {
         activatePinnedMenuAction(menu, menu->actions().at(1));
         require(splitId == row->property("recordId").toString() && !menu,
                 "splitting dispatches only its saved pin and retires the menu");
+        more->click();
+        QCoreApplication::processEvents();
+        menu = row->findChild<adqt::widgets::AdContextMenu*>(
+            QStringLiteral("pinnedManagementEntryMoreMenu"));
+        require(menu, "reopen More for reveal");
+        activatePinnedMenuAction(menu, menu->actions().at(3));
+        require(!menu && fixture.revealed.last() == row->property("recordId").toString(),
+                "reveal dispatches only its row and retires the menu");
+        more->click();
+        QCoreApplication::processEvents();
+        menu = row->findChild<adqt::widgets::AdContextMenu*>(
+            QStringLiteral("pinnedManagementEntryMoreMenu"));
+        require(menu, "reopen More for independent editing");
+        activatePinnedMenuAction(
+            menu, menu->findChild<QAction*>(QStringLiteral("pinnedManagementEntryImageEditing")));
+        require(editorId == row->property("recordId").toString() && !menu,
+                "Image Editing dispatches exactly its pin and retires the menu");
     }
-    require(requests == 3 && splitRequests == 3 && selection->isChecked() &&
-                fixture.fullImageRequests == 0 && fixture.shown.isEmpty() &&
-                fixture.removed.isEmpty(),
+    require(requests == 3 && splitRequests == 3 && fixture.revealed.size() == 3 &&
+                selection->isChecked() && fixture.fullImageRequests == 0 &&
+                fixture.shown.isEmpty() && fixture.removed.isEmpty(),
             "image action dispatch preserves selection and pins without restoring or decoding");
 
     auto* more = rows.front()->findChild<adqt::widgets::AdButton*>(
@@ -670,6 +974,12 @@ void pinnedEntryMoreActionsUseOnlyTheirRecord() {
                     translator.translate("PinnedWindowManagementPageWidget", "Image Splitting") &&
                 menu->actions().at(1)->toolTip() == menu->actions().at(1)->text(),
             "language changes retranslate both actions in the open menu");
+        const QString revealLabel = presentation::components::history_page::revealActionText();
+        require(menu->actions().at(3)->text() == revealLabel &&
+                    menu->actions().at(3)->toolTip() == revealLabel &&
+                    !translator.translate("HistoryFileLocation", "Open in Explorer").isEmpty() &&
+                    !translator.translate("HistoryFileLocation", "Reveal in Finder").isEmpty(),
+                "language changes retranslate the platform reveal action in the open menu");
         QCoreApplication::removeTranslator(&translator);
     }
     menu->dismissPopup();
@@ -677,10 +987,35 @@ void pinnedEntryMoreActionsUseOnlyTheirRecord() {
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     QCoreApplication::processEvents();
     require(!menu && more->isVisible(), "dismissal retires the menu and leaves More usable");
+    QString failureMessage;
+    auto* messages = adqt::widgets::AdMessageService::instance(&page);
+    QObject::connect(
+        messages, &adqt::widgets::AdMessage::messageOpened, &page,
+        [&](adqt::widgets::AdMessageHandle* handle) { failureMessage = handle->content(); });
+    fixture.revealSucceeds = false;
     more->click();
     QCoreApplication::processEvents();
     menu = rows.front()->findChild<adqt::widgets::AdContextMenu*>(
         QStringLiteral("pinnedManagementEntryMoreMenu"));
+    require(menu, "reopen More for failure fixture");
+    activatePinnedMenuAction(menu, menu->actions().at(3));
+    require(!menu &&
+                failureMessage == QStringLiteral("Unable to open this entry's file location.") &&
+                QApplication::activeModalWidget() == nullptr && fixture.removed.isEmpty() &&
+                fixture.shown.isEmpty() && selection->isChecked(),
+            "failed pin reveal reports a non-modal error and preserves pins and selection");
+    adqt::widgets::AdMessageService::destroyAll(&page);
+    more->click();
+    QCoreApplication::processEvents();
+    menu = rows.front()->findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("pinnedManagementEntryMoreMenu"));
+    for (auto& item : fixture.items) {
+        if (item.id == rows.front()->property("recordId").toString())
+            item.pending = true;
+    }
+    page.refresh();
+    require(menu && !menu->actions().at(3)->isEnabled(),
+            "pending pins retain a visible disabled reveal action");
     fixture.items.clear();
     page.refresh();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
@@ -690,16 +1025,25 @@ void pinnedEntryMoreActionsUseOnlyTheirRecord() {
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
-    pinnedEntryMoreActionsUseOnlyTheirRecord();
-    pinnedCollageSelectionKeepsRecordOrder();
-    if (QApplication::arguments().contains(QStringLiteral("--collage-only")))
-        return 0;
     QTemporaryDir directory;
     QTemporaryDir migratedDirectory;
     require(storage::ApplicationStorage::instance()
                 .initialize({directory.path(), directory.path(), 30000})
                 .success,
             "isolated storage");
+    if (application.arguments().contains(QStringLiteral("--sticky-only"))) {
+        selectionPanelSticksWhileScrolling();
+        storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    pinnedEntryMoreActionsUseOnlyTheirRecord();
+    pinnedCollageSelectionKeepsRecordOrder();
+    batchPinRequiresSingleGroup();
+    batchPinUsesExistingShowForEveryState();
+    if (QApplication::arguments().contains(QStringLiteral("--collage-only"))) {
+        storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
     Fixture fixture;
     const auto today = QDateTime(QDate(2026, 9, 24), QTime(0, 30), QTimeZone::systemTimeZone());
     storage::PinnedWindowSummary first;
@@ -714,8 +1058,10 @@ int main(int argc, char** argv) {
     second.ignored = true;
     second.creationSource = storage::PinnedWindowCreationSource::Screenshot;
     fixture.items = {first, second};
+    pinnedDescriptionsUseSmallThemeText(fixture.items);
     pinnedThemeChangesDoNotRestyleTwice(fixture.items);
     pinnedRowsRespectSkinMask(fixture.items);
+    selectionPanelSticksWhileScrolling();
     pinnedChangesRefreshOnlyVisiblePages(fixture.items);
     pinnedHiddenRecordsUseShowAction(first);
     pinnedFailedPreviewsRetryOnRefresh(fixture.items);
@@ -950,6 +1296,8 @@ int main(int argc, char** argv) {
         auto* pagination = page.findChild<adqt::widgets::AdPagination*>(
             QStringLiteral("pinnedManagementPagination"));
         pagination->setPageSize(50);
+        const auto restorePageSize =
+            qScopeGuard([] { storage::InterfaceSettings().setPinnedWindowManagementPageSize(10); });
         application.processEvents();
         QHash<QString, QPointer<QFrame>> originalRows;
         for (auto* row : page.findChildren<QFrame*>(QStringLiteral("pinnedManagementRecord")))

@@ -7,12 +7,20 @@ pub mod error;
 pub mod recording;
 
 pub(crate) mod adapter;
+mod capture_failure;
 mod capture_policy;
+mod capture_queue;
+#[cfg(any(windows, test))]
+mod gpu_startup;
 pub(crate) mod keyboard_hook;
 pub(crate) mod keyboard_overlay;
 pub(crate) mod keyboard_rasterizer;
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "macos/schedule.rs"]
+mod macos_schedule;
 pub(crate) mod mouse_hook;
 mod output_schedule;
+mod webcam;
 mod worker_startup;
 pub use keyboard_overlay::{KeyboardOverlayConfig, KeyboardOverlayFont};
 #[cfg(feature = "legacy-capture")]

@@ -1,4 +1,5 @@
 #include "snow_shot/storage/clipboardfilecache.h"
+#include "snow_shot/app/distribution.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -34,13 +35,28 @@ void ClipboardFileCache::ExportDirectory::retain() {
 
 ClipboardFileCache::ClipboardFileCache(QString root) : m_root(std::move(root)) {}
 
+QString ClipboardFileCache::defaultRootDirectory() {
+    if (app::distribution::isStoreManaged()) {
+        const QString localState = app::distribution::writableDataDirectory();
+        return localState.isEmpty() ? QString()
+                                    : QDir(localState).filePath(QStringLiteral("cache/clipboard"));
+    }
+    return QDir::temp().filePath(QStringLiteral("snow-shot-clipboard"));
+}
+
 ClipboardFileCache& ClipboardFileCache::shared() {
-    static ClipboardFileCache cache(QDir::temp().filePath(QStringLiteral("snow-shot-clipboard")));
+    static ClipboardFileCache cache(defaultRootDirectory());
     return cache;
 }
 
 std::unique_ptr<ClipboardFileCache::ExportDirectory>
 ClipboardFileCache::createDirectory(QString* error, QDateTime now) {
+    if (m_root.isEmpty()) {
+        if (error)
+            *error = QCoreApplication::translate("StorageDirectoryChange",
+                                                 "The storage directory path is empty");
+        return {};
+    }
     // If creating the cache root fails, QTemporaryDir supplies the filesystem error below.
     static_cast<void>(QDir().mkpath(m_root));
     {
@@ -63,6 +79,8 @@ ClipboardFileCache::createDirectory(QString* error, QDateTime now) {
 }
 
 void ClipboardFileCache::removeExpired(QDateTime now) const {
+    if (m_root.isEmpty())
+        return;
     const qint64 cutoff = now.addDays(-RetentionDays).toMSecsSinceEpoch();
     const auto directories = QDir(m_root).entryInfoList(
         {QStringLiteral("export-*")}, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);

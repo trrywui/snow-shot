@@ -3,8 +3,12 @@
 #include "snow_canvas_ffi_handles.h"
 #include "snow_canvas_render_diagnostics.h"
 #include "snow_canvas_spotlight_renderer.h"
+#include "snow_canvas_renderer.h"
+#include "snow_canvas_filter_tile_cache.h"
 #include "snow_canvas_viewport.h"
 #include "snow_draw_engine_qt/snow_canvas_widget.h"
+#include "snow_draw_engine_qt/snow_canvas_runtime.h"
+#include "snow_draw_engine_qt/snow_canvas_custom_renderer.h"
 
 #include <QApplication>
 #include <QColor>
@@ -14,6 +18,7 @@
 #include <QImage>
 #include <QObject>
 #include <QPainter>
+#include <QPaintEvent>
 #include <QRegion>
 #include <QThread>
 
@@ -21,6 +26,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -105,6 +111,617 @@ void defaultMaskHasExactOpacityAndTransparentHole() {
             "default spotlight mask must composite 64% black");
     require(image.pixelColor(50, 50) == QColor(Qt::white),
             "spotlight rectangle must reveal the unmasked canvas");
+}
+
+SnowCanvasSceneItem orderFilter(std::uint32_t id, const QRectF& bounds, std::uint32_t type = 3) {
+    SnowSceneDisplayItem item{};
+    item.kind = SNOW_SCENE_DISPLAY_ITEM_FILTER;
+    item.element_id = {id, 1};
+    item.center_x = bounds.center().x();
+    item.center_y = bounds.center().y();
+    item.width = bounds.width();
+    item.height = bounds.height();
+    item.opacity = 1;
+    item.filter = snow_filter_render_spec_resolve(type, 0.4);
+    return SnowCanvasSceneItem(item);
+}
+
+QImage renderSceneImage(snow_canvas_renderer::SceneRenderRequest request, bool tiled,
+                        double dpr = 1, QPainter::RenderHints hints = {},
+                        const QImage& previous = {}) {
+    const auto& info = *request.displayInfo;
+    QImage image = previous.copy();
+    if (image.isNull()) {
+        image = QImage(QSize(qRound(info.surface_width * dpr), qRound(info.surface_height * dpr)),
+                       QImage::Format_ARGB32_Premultiplied);
+        image.setDevicePixelRatio(dpr);
+        image.fill(request.clearBackgroundEnabled ? snow_canvas_renderer::toQColor(info.clear_color)
+                                                  : Qt::transparent);
+    }
+    QPainter painter(&image);
+    painter.setRenderHints(hints);
+    painter.setClipRegion(request.exposedRegion);
+    request.painter = &painter;
+    if (tiled)
+        snow_canvas_renderer::renderSceneItemsTiled(request);
+    else
+        snow_canvas_renderer::renderSceneItems(request);
+    painter.end();
+    return image;
+}
+
+QImage renderOrderedScene(const std::vector<SnowCanvasSceneItem>& items,
+                          const SpotlightDisplayInfo& spotlight, const SnowSpotlightCutout& hole,
+                          bool tiled, const void* cacheNamespace, double dpr = 1,
+                          const QRegion& exposed = QRegion(QRect(0, 0, 600, 600)),
+                          const QImage& previous = {}, bool useBackgroundImage = true) {
+    auto info = sceneInfo();
+    info.surface_width = info.surface_height = 600;
+    info.camera_center_x = info.camera_center_y = 300;
+    info.clear_color = {255, 255, 255, 255};
+    QImage background(QSize(qRound(600 * dpr), qRound(600 * dpr)),
+                      QImage::Format_ARGB32_Premultiplied);
+    background.setDevicePixelRatio(dpr);
+    background.fill(Qt::white);
+    snow_canvas_renderer::SceneRenderRequest request;
+    request.displayInfo = &info;
+    request.sceneItems = items.data();
+    request.sceneItemCount = static_cast<std::uint32_t>(items.size());
+    request.backgroundImage = useBackgroundImage ? &background : nullptr;
+    request.exposedRegion = exposed;
+    request.cacheNamespace = cacheNamespace;
+    request.filterTileContentKey = 17;
+    request.spotlightInfo = &spotlight;
+    request.spotlightCutouts = &hole;
+    request.spotlightCutoutCount = 1;
+    return renderSceneImage(request, tiled, dpr, QPainter::Antialiasing, previous);
+}
+
+void spotlightFormsBackdropForSceneItems() {
+    SpotlightDisplayInfo spotlight{{255, 0, 0, 255}, 0.5, true};
+    const auto hole = cutout(50, 50, 20, 20);
+    const auto firstFilter = orderFilter(1, QRectF(0, 0, 600, 600));
+    const auto secondFilter = orderFilter(2, QRectF(70, 10, 20, 20));
+    SnowSceneDisplayItem rectangle{};
+    rectangle.kind = SNOW_SCENE_DISPLAY_ITEM_DRAW_RECT;
+    rectangle.element_id = {3, 1};
+    rectangle.center_x = rectangle.center_y = 20;
+    rectangle.width = rectangle.height = 10;
+    rectangle.fill = {0, 0, 255, 255};
+    rectangle.opacity = 1;
+    rectangle.fill_style = SNOW_FILL_STYLE_SOLID;
+    const std::vector<SnowCanvasSceneItem> items{firstFilter, secondFilter,
+                                                 SnowCanvasSceneItem(rectangle)};
+    for (double dpr : {1.0, 1.25, 2.0}) {
+        const auto image = renderOrderedScene(items, spotlight, hole, false, nullptr, dpr);
+        const auto pixel = [&](int x, int y) {
+            return image.pixelColor(qRound(x * dpr), qRound(y * dpr));
+        };
+        require(pixel(30, 30).red() == 0 && std::abs(pixel(30, 30).green() - 128) <= 1 &&
+                    pixel(30, 30).blue() == pixel(30, 30).green(),
+                "scene filters must sample the Spotlight backdrop");
+        require(pixel(20, 20) == QColor(Qt::blue),
+                "ordinary annotations must paint above Spotlight");
+        require(pixel(50, 50) == QColor(Qt::black),
+                "filters must sample the unmasked background inside Spotlight cutouts");
+        require(pixel(80, 20) == pixel(30, 30),
+                "adjacent filters must retain their shared entering backdrop");
+        require(renderOrderedScene(items, spotlight, hole, true, &items, dpr) == image,
+                "tiled and direct Spotlight composition must match");
+        snow_canvas_filter_tile_cache::invalidateNamespace(&items);
+        for (bool tiled : {false, true}) {
+            require(renderOrderedScene(items, spotlight, hole, tiled, &items, dpr,
+                                       QRegion(QRect(0, 0, 600, 600)), {}, false) == image,
+                    "the clear color must form the Spotlight backdrop without a background image");
+            snow_canvas_filter_tile_cache::invalidateNamespace(&items);
+        }
+    }
+    require(renderOrderedScene({}, spotlight, hole, false, nullptr).pixelColor(30, 30).green() <
+                255,
+            "Spotlight must render without scene items");
+    require(renderOrderedScene({SnowCanvasSceneItem(rectangle)}, spotlight, hole, false, nullptr)
+                    .pixelColor(20, 20) == QColor(Qt::blue),
+            "Spotlight must sit below ordinary annotations without filters");
+    spotlight.opacity = 0;
+    const auto transparent = renderOrderedScene(items, spotlight, hole, false, nullptr);
+    require(transparent.pixelColor(80, 20) == QColor(Qt::black),
+            "a transparent Spotlight must leave the shared filter backdrop unchanged");
+    spotlight.active = false;
+    const auto inactive = renderOrderedScene(items, spotlight, hole, false, nullptr);
+    require(inactive == transparent && inactive.pixelColor(20, 20) == QColor(Qt::blue),
+            "inactive Spotlight must leave existing scene rendering unchanged");
+}
+
+void spotlightEditsRefreshRetainedFilterSources() {
+    SpotlightDisplayInfo spotlight{{0, 0, 0, 255}, 0.64, true};
+    auto hole = cutout(256, 300, 40, 40);
+    const std::vector<SnowCanvasSceneItem> items{orderFilter(1, QRectF(0, 0, 600, 600), 2),
+                                                 orderFilter(2, QRectF(220, 250, 90, 100), 1)};
+    for (double dpr : {1.0, 1.25, 2.0}) {
+        auto previous = renderOrderedScene(items, spotlight, hole, true, &items, dpr);
+        require(previous == renderOrderedScene(items, spotlight, hole, false, nullptr, dpr),
+                "filters sampling a Spotlight edge must agree across tile boundaries");
+        spotlight.opacity = 0.35;
+        spotlight.color = {255, 0, 0, 255};
+        hole.center_x += 15;
+        const auto expected = renderOrderedScene(items, spotlight, hole, false, nullptr, dpr);
+        require(renderOrderedScene(items, spotlight, hole, true, &items, dpr) == expected,
+                "warm filter sources must refresh after Spotlight style and cutout edits");
+        const QRegion exposed(QRect(200, 200, 130, 200));
+        const auto partial =
+            renderOrderedScene(items, spotlight, hole, true, &items, dpr, exposed, previous);
+        require(partial.copy(QRect(qRound(200 * dpr), qRound(200 * dpr), qRound(130 * dpr),
+                                   qRound(200 * dpr))) ==
+                    expected.copy(QRect(qRound(200 * dpr), qRound(200 * dpr), qRound(130 * dpr),
+                                        qRound(200 * dpr))),
+                "partial repaints must match a fresh Spotlight composition");
+        snow_canvas_filter_tile_cache::invalidateNamespace(&items);
+    }
+}
+
+void spotlightBackdropPreservesTransparency() {
+    const auto info = sceneInfo();
+    const auto filter = orderFilter(1, QRectF(0, 0, 100, 100));
+    const SpotlightDisplayInfo spotlight{{255, 0, 0, 255}, 0.5, true};
+    const auto hole = cutout(50, 50, 20, 20);
+    QImage direct;
+    for (bool tiled : {false, true}) {
+        snow_canvas_renderer::SceneRenderRequest request;
+        request.displayInfo = &info;
+        request.sceneItems = &filter;
+        request.sceneItemCount = 1;
+        request.exposedRegion = QRegion(QRect(0, 0, 100, 100));
+        request.cacheNamespace = &filter;
+        request.clearBackgroundEnabled = false;
+        request.spotlightInfo = &spotlight;
+        request.spotlightCutouts = &hole;
+        request.spotlightCutoutCount = 1;
+        const auto image = renderSceneImage(request, tiled);
+        const auto pixel = image.pixelColor(10, 10);
+        require(pixel.red() == 0 && pixel.green() == 255 && pixel.blue() == 255 &&
+                    std::abs(pixel.alpha() - 128) <= 1 && image.pixelColor(50, 50).alpha() == 0,
+                "filters must preserve the alpha of a Spotlight-only backdrop and its cutouts");
+        if (tiled)
+            require(image == direct, "direct and tiled transparent Spotlight backdrops must match");
+        else
+            direct = image;
+    }
+    snow_canvas_filter_tile_cache::invalidateNamespace(&filter);
+}
+
+void invisibleSpotlightsPreserveFilterSources() {
+    auto info = sceneInfo();
+    info.clear_color = {255, 255, 255, 255};
+    const auto hole = cutout(50, 50, 20, 20);
+    SnowSceneDisplayItem rectangle{};
+    rectangle.kind = SNOW_SCENE_DISPLAY_ITEM_DRAW_RECT;
+    rectangle.element_id = {2, 1};
+    rectangle.center_x = rectangle.center_y = 20;
+    rectangle.width = rectangle.height = 10;
+    rectangle.fill = {0, 0, 255, 255};
+    rectangle.opacity = 1;
+    rectangle.fill_style = SNOW_FILL_STYLE_SOLID;
+    const SpotlightDisplayInfo visible{{255, 0, 0, 255}, 0.5, true};
+    const std::vector<SpotlightDisplayInfo> invisible{
+        {{255, 0, 0, 255}, 0.5, false},
+        {{255, 0, 0, 255}, 0.0, true},
+        {{255, 0, 0, 0}, 0.5, true},
+        {{255, 0, 0, 255}, -0.5, true},
+        {{255, 0, 0, 255}, std::numeric_limits<double>::quiet_NaN(), true},
+    };
+    for (bool withDrawable : {false, true}) {
+        std::vector<SnowCanvasSceneItem> items;
+        if (withDrawable)
+            items.emplace_back(rectangle);
+        items.push_back(orderFilter(1, QRectF(0, 0, 100, 100)));
+        for (double dpr : {1.0, 1.25, 2.0}) {
+            QImage background(QSize(qRound(100 * dpr), qRound(100 * dpr)),
+                              QImage::Format_ARGB32_Premultiplied);
+            background.setDevicePixelRatio(dpr);
+            background.fill(QColor(60, 120, 180, 128));
+            for (bool withBackground : {false, true}) {
+                for (bool clear : {true, false}) {
+                    // Exercise direct replay, retained source tiles, and tiled presentation.
+                    for (int mode : {0, 1, 2}) {
+                        snow_canvas_renderer::SceneRenderRequest request;
+                        request.displayInfo = &info;
+                        request.sceneItems = items.data();
+                        request.sceneItemCount = static_cast<std::uint32_t>(items.size());
+                        request.exposedRegion = QRegion(QRect(0, 0, 100, 100));
+                        request.backgroundImage = withBackground ? &background : nullptr;
+                        request.clearBackgroundEnabled = clear;
+                        request.cacheNamespace = &items;
+                        request.enableFilterTileCache = mode != 0;
+                        request.filterTileContentKey = 23;
+                        request.spotlightCutouts = &hole;
+                        request.spotlightCutoutCount = 1;
+                        const auto renderScene = [&](const SpotlightDisplayInfo* spotlight) {
+                            request.spotlightInfo = spotlight;
+                            return renderSceneImage(request, mode == 2, dpr);
+                        };
+                        const auto baseline = renderScene(nullptr);
+                        for (const auto& spotlight : invisible) {
+                            require(renderScene(&spotlight) == baseline,
+                                    "invisible Spotlight must preserve existing filter sources");
+                            require(renderScene(&visible) != baseline,
+                                    "visible Spotlight must still contribute a filter backdrop");
+                            require(renderScene(&spotlight) == baseline,
+                                    "hiding Spotlight must retire its cached filter backdrop");
+                        }
+                        snow_canvas_filter_tile_cache::invalidateNamespace(&items);
+                    }
+                }
+            }
+        }
+    }
+}
+
+class SpotlightTestBackground final : public SnowCanvasCustomRenderer {
+  public:
+    bool retained = false;
+    std::optional<SnowCanvasFilterRenderReference> filterRenderReference() const override {
+        if (retained)
+            return SnowCanvasFilterRenderReference{QRectF(0, 0, 100, 100), 1.0};
+        return std::nullopt;
+    }
+    void renderBeforeCanvas(QPainter& painter, const SnowCanvasRenderContext& context) override {
+        painter.fillRect(context.viewportRect, Qt::white);
+    }
+};
+
+void runtimeSpotlightOrderMatchesWidgetAndExports() {
+    for (bool reverse : {false, true}) {
+        SnowCanvasRuntime runtime;
+        const QByteArray rectangle =
+            R"({"type":"rectangle","bounds":[15,15,10,10],"style":{"fill":[0,0,255,255],"stroke_width":0}})";
+        const QByteArray spotlight =
+            R"({"type":"spotlight","bounds":[40,40,20,20],"style":{"color":[255,0,0,255],"opacity":0.64,"corner_radius":0}})";
+        const auto fill = [&]() {
+            SnowCanvasRuntimeEditor editor(runtime, SnowCanvasTool::AutoFilter);
+            SnowCanvasFilterStyle style;
+            style.type = SnowCanvasFilterType::Inversion;
+            require(editor.setFilterStyleFromToolbar(style, SnowCanvasFilterStylePropertyType),
+                    "configure inversion filter");
+            const SnowCanvasAutoFilterRecord record{
+                QRectF(0, 0, 100, 100), {{1, QRectF(0, 0, 100, 100), QStringLiteral("text")}}};
+            require(editor.setAutoFilterRegions(record) &&
+                        editor.fillAutoFilterCategory(QStringLiteral("text")),
+                    "create automatic filter below all annotations");
+        };
+        if (!reverse)
+            fill();
+        const QByteArray operations =
+            reverse ? spotlight + "," + rectangle : rectangle + "," + spotlight;
+        require(
+            !runtime
+                 .applyAnnotationTransaction("{\"version\":1,\"operations\":[" + operations + "]}")
+                 .isEmpty(),
+            "create Spotlight and rectangle in either order");
+        if (reverse)
+            fill();
+        SpotlightTestBackground backgroundRenderer;
+        SnowCanvasWidget canvas(runtime);
+        canvas.resize(100, 100);
+        canvas.setCustomRenderer(&backgroundRenderer);
+        require(canvas.setCanvasTool(SnowCanvasTool::Select), "hide Auto Filter editing overlays");
+        canvas.show();
+        require(canvas.setViewportCamera(50, 50, 1), "set test canvas camera");
+        QCoreApplication::processEvents();
+        QImage background(100, 100, QImage::Format_ARGB32_Premultiplied);
+        background.fill(Qt::white);
+        const QRectF bounds(0, 0, 100, 100);
+        const QList<CanvasExportSource> sources{{background, bounds}};
+        const auto exported = runtime.renderToImage(bounds, QSize(100, 100), sources);
+        require(exported.pixelColor(20, 20) == QColor(Qt::blue) &&
+                    exported.pixelColor(30, 30).red() == 0 &&
+                    std::abs(exported.pixelColor(30, 30).green() - 163) <= 1 &&
+                    exported.pixelColor(50, 50) == QColor(Qt::black),
+                "scene filters must sample Spotlight regardless of creation order or origin");
+        const auto tiled = runtime.renderTilesToImage(
+            bounds, QSize(100, 100), QSize(100, 100),
+            {{QRect(0, 0, 50, 100), QPoint(0, 0)}, {QRect(50, 0, 50, 100), QPoint(50, 0)}},
+            sources);
+        require(tiled == exported, "tiled export must match full Spotlight export");
+        for (bool retained : {false, true}) {
+            backgroundRenderer.retained = retained;
+            auto config = canvas.canvasSpotlightConfig();
+            config.opacity = 0.64;
+            require(canvas.setCanvasSpotlightConfig(config), "reset Spotlight opacity");
+            auto widgetImage = canvas.grab().toImage();
+            require(widgetImage.pixelColor(20, 20) == QColor(Qt::blue) &&
+                        widgetImage.pixelColor(30, 30).red() == 0 &&
+                        std::abs(widgetImage.pixelColor(30, 30).green() - 163) <= 1,
+                    "live and retained widgets must match export stacking");
+            config.opacity = 0.25;
+            require(canvas.setCanvasSpotlightConfig(config), "edit Spotlight opacity");
+            widgetImage = canvas.grab().toImage();
+            require(widgetImage.pixelColor(30, 30).red() == 0 &&
+                        std::abs(widgetImage.pixelColor(30, 30).green() - 64) <= 1 &&
+                        widgetImage.pixelColor(20, 20) == QColor(Qt::blue),
+                    "Spotlight edits must refresh the retained widget without tinting annotations");
+            require(
+                !runtime
+                     .applyAnnotationTransaction(
+                         R"({"version":1,"operations":[{"type":"spotlight","bounds":[25,25,10,10],"style":{"color":[255,0,0,255],"opacity":0.25,"corner_radius":0}}]})")
+                     .isEmpty(),
+                "add a cutout after the widget has retained its scene");
+            widgetImage = canvas.grab().toImage();
+            require(widgetImage.pixelColor(30, 30) == QColor(Qt::black),
+                    "cutout changes must invalidate retained Spotlight pixels");
+            require(runtime.undo(), "restore the original cutout for the next renderer");
+        }
+    }
+}
+
+class SpotlightDamageObserver final : public QObject {
+  public:
+    QRegion painted;
+
+  protected:
+    bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::Paint)
+            painted += static_cast<QPaintEvent*>(event)->region();
+        return false;
+    }
+};
+
+class SpotlightReferenceBackground final : public SnowCanvasCustomRenderer {
+  public:
+    bool retained = false;
+    QRectF bounds{0, 0, 300, 220};
+    qreal sourceScale = 1.0;
+    std::optional<SnowCanvasFilterRenderReference> filterRenderReference() const override {
+        return retained ? std::optional(SnowCanvasFilterRenderReference{bounds, sourceScale})
+                        : std::nullopt;
+    }
+    void renderBeforeCanvas(QPainter& painter, const SnowCanvasRenderContext& context) override {
+        painter.fillRect(context.canvasToViewTransform.mapRect(bounds), Qt::white);
+    }
+};
+
+QImage renderSpotlightWidget(SnowCanvasWidget& canvas) {
+    QImage image(canvas.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    canvas.render(&image);
+    return image;
+}
+
+void transparentSpotlightPreservesWidgetAndExports() {
+    for (bool withFilter : {false, true}) {
+        for (bool transparentColor : {false, true}) {
+            for (int backgroundMode : {0, 1, 2}) {
+                SnowCanvasRuntime runtime;
+                if (withFilter) {
+                    require(
+                        !runtime
+                             .applyAnnotationTransaction(
+                                 R"({"version":1,"operations":[{"type":"rectangle_filter","bounds":[0,0,100,100],"style":{"filter":"inversion"}}]})")
+                             .isEmpty(),
+                        "create an inversion filter without Spotlight");
+                }
+                SpotlightTestBackground background;
+                background.retained = backgroundMode == 2;
+                SnowCanvasWidget canvas(runtime);
+                canvas.resize(100, 100);
+                if (backgroundMode != 0)
+                    canvas.setCustomRenderer(&background);
+                canvas.show();
+                require(canvas.setViewportCamera(50, 50, 1), "set transparent Spotlight camera");
+                QCoreApplication::processEvents();
+                const auto baseline = renderSpotlightWidget(canvas);
+                const QRectF bounds(0, 0, 100, 100);
+                QImage image(100, 100, QImage::Format_ARGB32_Premultiplied);
+                image.fill(Qt::white);
+                const QList<CanvasExportSource> sources =
+                    backgroundMode == 0 ? QList<CanvasExportSource>{}
+                                        : QList<CanvasExportSource>{{image, bounds}};
+                const auto baselineExport = runtime.renderToImage(bounds, image.size(), sources);
+                require(
+                    !runtime
+                         .applyAnnotationTransaction(
+                             R"({"version":1,"operations":[{"type":"spotlight","bounds":[40,40,20,20],"style":{"opacity":0,"corner_radius":0}}]})")
+                         .isEmpty(),
+                    "add a fully transparent Spotlight");
+                const SnowCanvasSpotlightConfig hidden{
+                    QColor(255, 0, 0, transparentColor ? 0 : 255), transparentColor ? 0.5 : 0.0};
+                require(canvas.setCanvasSpotlightConfig(hidden), "set invisible Spotlight style");
+                const auto requireHidden = [&] {
+                    require(renderSpotlightWidget(canvas) == baseline,
+                            "transparent Spotlight must preserve the widget before its creation");
+                    require(runtime.renderToImage(bounds, image.size(), sources) == baselineExport,
+                            "transparent Spotlight must preserve full exports");
+                    require(runtime.renderTilesToImage(bounds, image.size(), image.size(),
+                                                       {{QRect(0, 0, 50, 100), QPoint(0, 0)},
+                                                        {QRect(50, 0, 50, 100), QPoint(50, 0)}},
+                                                       sources) == baselineExport,
+                            "transparent Spotlight must preserve tiled exports");
+                };
+                requireHidden();
+                const SnowCanvasSpotlightConfig visible{QColor(255, 0, 0, 255), 0.5};
+                require(canvas.setCanvasSpotlightConfig(visible), "show Spotlight");
+                require(renderSpotlightWidget(canvas) != baseline,
+                        "visible Spotlight must change the widget");
+                canvas.previewCanvasSpotlightConfig(hidden);
+                require(renderSpotlightWidget(canvas) == baseline,
+                        "a transparent preview must remove the retained Spotlight backdrop");
+                require(canvas.setCanvasSpotlightConfig(hidden), "commit transparent Spotlight");
+                requireHidden();
+                canvas.setCustomRenderer(nullptr);
+            }
+        }
+    }
+}
+
+template <typename Mutation>
+QRegion requireSpotlightDamageCoversChanges(SnowCanvasWidget& canvas, Mutation mutate,
+                                            int presentationTolerance = 0) {
+    QCoreApplication::processEvents();
+    const auto before = renderSpotlightWidget(canvas);
+    SpotlightDamageObserver observer;
+    canvas.installEventFilter(&observer);
+    mutate();
+    QCoreApplication::processEvents();
+    canvas.removeEventFilter(&observer);
+    const auto after = renderSpotlightWidget(canvas);
+    int changed = 0;
+    for (int y = 0; y < before.height(); ++y) {
+        for (int x = 0; x < before.width(); ++x) {
+            if (before.pixel(x, y) != after.pixel(x, y)) {
+                ++changed;
+                require(observer.painted.contains(QPoint(x, y)),
+                        "Spotlight damage must cover every changed filtered or resampled pixel");
+            }
+        }
+    }
+    require(changed > 0, "the Spotlight edit must change visible pixels");
+    QImage partial = before;
+    QPainter painter(&partial);
+    canvas.render(&painter, observer.painted.boundingRect().topLeft(), observer.painted);
+    painter.end();
+    // Qt's clipped bilinear image spans can round a channel one level differently
+    // from an unclipped span. Source-grid and unscaled comparisons remain exact.
+    for (int y = 0; y < after.height(); ++y) {
+        for (int x = 0; x < after.width(); ++x) {
+            const QColor actual = partial.pixelColor(x, y);
+            const QColor expected = after.pixelColor(x, y);
+            require(std::abs(actual.red() - expected.red()) <= presentationTolerance &&
+                        std::abs(actual.green() - expected.green()) <= presentationTolerance &&
+                        std::abs(actual.blue() - expected.blue()) <= presentationTolerance &&
+                        std::abs(actual.alpha() - expected.alpha()) <= presentationTolerance,
+                    "scheduled Spotlight repaints must match a complete repaint");
+        }
+    }
+    return observer.painted;
+}
+
+void spotlightDamagePropagatesThroughFilters() {
+    for (bool retained : {false, true}) {
+        for (double zoom : {1.0, 0.65, 1.4}) {
+            SnowCanvasRuntime runtime;
+            require(
+                !runtime
+                     .applyAnnotationTransaction(
+                         R"({"version":1,"operations":[{"type":"spotlight","bounds":[250,180,10,10],"style":{"opacity":0.64,"corner_radius":0}},{"type":"rectangle_filter","bounds":[0,0,300,220],"style":{"filter":"gaussian_blur","strength":0.1}},{"type":"rectangle","bounds":[2,2,5,5],"style":{"fill":[0,0,255,255],"stroke_width":0}},{"type":"rectangle_filter","bounds":[0,0,300,220],"style":{"filter":"gaussian_blur","strength":0.1}}]})")
+                     .isEmpty(),
+                "create Spotlight and two dependent filter passes");
+            SpotlightReferenceBackground background;
+            background.retained = retained;
+            SnowCanvasWidget canvas(runtime);
+            canvas.resize(qRound(300 * zoom), qRound(220 * zoom));
+            canvas.setCustomRenderer(&background);
+            canvas.show();
+            require(canvas.setViewportCamera(150, 110, zoom), "set damage test camera");
+            const auto verifyDamage = [&](auto mutate) {
+                return requireSpotlightDamageCoversChanges(canvas, mutate,
+                                                           retained && zoom != 1.0 ? 1 : 0);
+            };
+            const auto damage = verifyDamage([&] {
+                require(
+                    !runtime
+                         .applyAnnotationTransaction(
+                             R"({"version":1,"operations":[{"type":"spotlight","bounds":[130,90,20,20],"style":{"opacity":0.64,"corner_radius":0}}]})")
+                         .isEmpty(),
+                    "add a cutout inside both filters");
+            });
+            require(damage != QRegion(canvas.rect()),
+                    "local Spotlight edits must not repaint the whole viewport");
+            verifyDamage([&] { require(runtime.undo(), "undo cutout creation"); });
+            verifyDamage([&] { require(runtime.redo(), "redo cutout creation"); });
+            canvas.setSpotlightRenderArea(QRectF(0, 0, 150, 220));
+            verifyDamage([&] { canvas.setSpotlightRenderArea(QRectF(0, 0, 160, 220)); });
+            canvas.setSpotlightRenderArea(QRectF(0, 0, 160.1, 220));
+            verifyDamage([&] { canvas.setSpotlightRenderArea(QRectF(0, 0, 160.8, 220)); });
+            verifyDamage([&] {
+                auto config = canvas.canvasSpotlightConfig();
+                config.opacity = 0.25;
+                canvas.previewCanvasSpotlightConfig(config);
+            });
+            verifyDamage([&] {
+                auto config = canvas.canvasSpotlightConfig();
+                config.opacity = 0.4;
+                require(canvas.setCanvasSpotlightConfig(config), "commit Spotlight style");
+            });
+            canvas.setCustomRenderer(nullptr);
+        }
+    }
+}
+
+void retainedSpotlightDamageIncludesCulledCutouts() {
+    for (qreal sourceScale : {1.0, 2.0}) {
+        SnowCanvasRuntime runtime;
+        require(
+            !runtime
+                 .applyAnnotationTransaction(
+                     R"({"version":1,"operations":[{"type":"spotlight","bounds":[250,180,10,10],"style":{"color":[0,0,0,255],"opacity":0.64,"corner_radius":0}},{"type":"rectangle_filter","bounds":[0,0,300,220],"style":{"filter":"gaussian_blur","strength":0.7}}]})")
+                 .isEmpty(),
+            "create a reference scene wider than the viewport");
+        SpotlightReferenceBackground background;
+        background.retained = true;
+        background.sourceScale = sourceScale;
+        SnowCanvasWidget canvas(runtime);
+        canvas.resize(80, 80);
+        canvas.setCustomRenderer(&background);
+        canvas.show();
+        require(canvas.setViewportCamera(150, 110, 1), "crop the live viewport");
+        requireSpotlightDamageCoversChanges(
+            canvas,
+            [&] {
+                require(
+                    !runtime
+                         .applyAnnotationTransaction(
+                             R"({"version":1,"operations":[{"type":"spotlight","bounds":[85,100,10,10],"style":{"color":[0,0,0,255],"opacity":0.64,"corner_radius":0}}]})")
+                         .isEmpty(),
+                    "edit a cutout outside the live viewport but inside filter support");
+            },
+            sourceScale == 1.0 ? 0 : 1);
+        canvas.setSpotlightRenderArea(QRectF(0, 0, 95, 220));
+        // Cross the blur's downsample taps while keeping both edges left of the
+        // visible canvas interval [110, 190). A narrower move can sample identical pixels.
+        requireSpotlightDamageCoversChanges(
+            canvas, [&] { canvas.setSpotlightRenderArea(QRectF(0, 0, 109, 220)); },
+            sourceScale == 1.0 ? 0 : 1);
+        canvas.setCustomRenderer(nullptr);
+    }
+}
+
+void retainedSpotlightPreservesViewportCoverageAndReuse() {
+    SnowCanvasRuntime runtime;
+    require(
+        !runtime
+             .applyAnnotationTransaction(
+                 R"({"version":1,"operations":[{"type":"spotlight","bounds":[130,90,20,20],"style":{"opacity":0.64,"corner_radius":0}},{"type":"rectangle_filter","bounds":[0,0,300,220],"style":{"filter":"inversion"}}]})")
+             .isEmpty(),
+        "create retained Spotlight coverage scene");
+    SpotlightReferenceBackground background;
+    SnowCanvasWidget canvas(runtime);
+    canvas.resize(340, 260);
+    canvas.setCustomRenderer(&background);
+    canvas.show();
+    require(canvas.setViewportCamera(150, 110, 1), "set coverage camera");
+    for (bool clear : {true, false}) {
+        canvas.setClearBackgroundEnabled(clear);
+        background.retained = false;
+        const auto direct = renderSpotlightWidget(canvas);
+        background.retained = true;
+        require(renderSpotlightWidget(canvas) == direct,
+                "retained Spotlight must cover the viewport outside its reference surface");
+    }
+    for (bool configured : {false, true}) {
+        if (configured)
+            canvas.setSpotlightRenderArea(QRectF(-10.25, -5.5, 320.75, 240.25));
+        renderSpotlightWidget(canvas);
+        for (double zoom : {0.75, 1.25, 1.0}) {
+            canvas.resize(qRound(340 * zoom), qRound(260 * zoom));
+            require(canvas.setViewportCamera(140.25, 105.5, zoom), "pan and zoom Spotlight");
+            renderSpotlightWidget(canvas);
+            const auto diagnostics =
+                snow_canvas_renderer::filterRenderDiagnosticsForCurrentThread();
+            require(diagnostics.referenceSceneBuildCount == 0 &&
+                        diagnostics.referenceSceneHits == 1,
+                    "camera and viewport changes must reuse the Spotlight reference pixels");
+        }
+    }
+    canvas.setCustomRenderer(nullptr);
 }
 
 void spotlightTypesRenderDistinctHolesAndMixedOverlaps() {
@@ -405,6 +1022,8 @@ void displayCachePatchesSpotlightIndependentlyFromStyle() {
             "spotlight creation preview must not advance the scene revision");
     require(cache.sceneDirtyRectCount() == 0,
             "spotlight creation preview must not dirty retained scene content");
+    require(!cache.spotlightDamage().isEmpty(),
+            "cutout previews must expose backdrop damage to downstream filters");
 
     pointer(SNOW_POINTER_EVENT_UP, 70.0, 70.0, 0);
     require(cache.sync(runtime.get(), viewport.get()), "committed spotlight sync must succeed");
@@ -420,6 +1039,21 @@ void displayCachePatchesSpotlightIndependentlyFromStyle() {
     require(cache.sync(runtime.get(), viewport.get()), "spotlight opacity sync must succeed");
     require(cache.patchCursor().scene_revision == sceneRevision,
             "spotlight color/opacity-only updates must preserve scene revision");
+    require(!cache.spotlightDamage().isEmpty(),
+            "Spotlight style changes must expose backdrop damage");
+    SnowWatermarkConfig watermark{};
+    require(snow_viewport_get_watermark_config(runtime.get(), viewport.get(), &watermark) ==
+                SNOW_OK,
+            "query watermark config");
+    watermark.text_utf8[0] = 'W';
+    watermark.text_utf8_len = 1;
+    ScopedChangedViewportList watermarkChange;
+    require(snow_viewport_set_watermark_config_ex(runtime.get(), viewport.get(), &watermark,
+                                                  watermarkChange.outParam()) == SNOW_OK &&
+                cache.sync(runtime.get(), viewport.get()),
+            "sync a watermark-only edit");
+    require(cache.decorationDirtyRectCount() != 0 && cache.spotlightDamage().isEmpty(),
+            "watermark damage must not invalidate filter backdrops");
     require(cache.executionPlan(1.0).buildCount == 1,
             "decoration and editor changes must reuse the scene execution plan");
     require(cache.executionPlan(1.25).buildCount == 2,
@@ -565,6 +1199,15 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     snow_canvas_render_diagnostics::setEnabled(true);
     defaultMaskHasExactOpacityAndTransparentHole();
+    spotlightFormsBackdropForSceneItems();
+    spotlightEditsRefreshRetainedFilterSources();
+    spotlightBackdropPreservesTransparency();
+    invisibleSpotlightsPreserveFilterSources();
+    runtimeSpotlightOrderMatchesWidgetAndExports();
+    transparentSpotlightPreservesWidgetAndExports();
+    spotlightDamagePropagatesThroughFilters();
+    retainedSpotlightDamageIncludesCulledCutouts();
+    retainedSpotlightPreservesViewportCoverageAndReuse();
     spotlightTypesRenderDistinctHolesAndMixedOverlaps();
     spotlightRoundedCornersMatchShapeGeometry();
     spotlightTypeSurvivesDisplayPatchesAndExport();

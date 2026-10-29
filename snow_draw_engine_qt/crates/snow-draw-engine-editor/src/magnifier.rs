@@ -131,6 +131,9 @@ impl MagnifierStyle {
     }
 }
 pub fn validate_magnifier_style(style: MagnifierStyle) -> Result<(), ErrorCode> {
+    if style.shape == snow_draw_engine_document::HighlightShape::ThoughtBubble {
+        return Err(ErrorCode::InvalidArgument);
+    }
     if !style.stroke_width.is_finite()
         || !(0.0..=72.0).contains(&style.stroke_width)
         || !style.factor.is_finite()

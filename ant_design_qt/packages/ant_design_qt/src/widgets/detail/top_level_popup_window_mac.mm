@@ -1,10 +1,13 @@
 #include "top_level_popup_window.h"
+#include "window_surface_observer.h"
 
 #include <QEvent>
 #include <QGuiApplication>
 #include <QPointer>
 #include <QWidget>
 #include <QWindow>
+#include <QScopedValueRollback>
+#include <memory>
 #import <AppKit/AppKit.h>
 
 namespace adqt::widgets::detail {
@@ -14,14 +17,18 @@ namespace {
 // disappear behind an owner that is raised during layout or activation.
 class MacPopupOwnership final : public QObject {
   public:
-    explicit MacPopupOwnership(QWidget* popup) : QObject(popup), popup_(popup) {
-        popup->installEventFilter(this);
-    }
+    explicit MacPopupOwnership(QWidget* popup)
+        : QObject(popup), popup_(popup),
+          popupObserver_(popup, [this] { sync(); }, this, [this] { detach(); }) {}
     ~MacPopupOwnership() override {
+        ownerObserver_.reset();
         detach();
     }
 
     void sync() {
+        if (synchronizing_)
+            return;
+        const QScopedValueRollback guard(synchronizing_, true);
         QWindow* handle = popup_->windowHandle();
         if (handle != observedHandle_) {
             QObject::disconnect(ownerChanged_);
@@ -35,6 +42,13 @@ class MacPopupOwnership final : public QObject {
                               ? reinterpret_cast<NSView*>(popup_->internalWinId()).window
                               : nil;
         QWindow* ownerHandle = handle ? handle->transientParent() : nullptr;
+        if (ownerHandle != observedOwner_) {
+            ownerObserver_.reset();
+            observedOwner_ = ownerHandle;
+            if (ownerHandle)
+                ownerObserver_ = std::make_unique<WindowSurfaceObserver>(
+                    ownerHandle, [this] { sync(); }, this, [this] { detach(); });
+        }
         NSWindow* owner = ownerHandle && ownerHandle->handle()
                               ? reinterpret_cast<NSView*>(ownerHandle->winId()).window
                               : nil;
@@ -52,20 +66,6 @@ class MacPopupOwnership final : public QObject {
         }
     }
 
-  protected:
-    bool eventFilter(QObject*, QEvent* event) override {
-        switch (event->type()) {
-        case QEvent::ShowToParent:
-        case QEvent::HideToParent:
-        case QEvent::WinIdChange:
-            sync();
-            break;
-        default:
-            break;
-        }
-        return false;
-    }
-
   private:
     void detach() {
         if (child_) {
@@ -76,8 +76,12 @@ class MacPopupOwnership final : public QObject {
     }
     QWidget* popup_;
     QPointer<QWindow> observedHandle_;
+    QPointer<QWindow> observedOwner_;
     QMetaObject::Connection ownerChanged_;
     NSWindow* child_ = nil;
+    bool synchronizing_ = false;
+    WindowSurfaceObserver popupObserver_;
+    std::unique_ptr<WindowSurfaceObserver> ownerObserver_;
 };
 } // namespace
 

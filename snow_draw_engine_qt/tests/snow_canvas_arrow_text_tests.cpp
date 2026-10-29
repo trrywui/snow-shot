@@ -14,10 +14,12 @@
 #include <QApplication>
 #include <QImage>
 #include <QInputMethodEvent>
+#include <QInputMethodQueryEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -418,6 +420,105 @@ void arrowRatioEditsRenderAndRoundTrip() {
             snow_canvas_types::toCanvasShapeStyle(snow_canvas_types::toEngineShapeStyle(style));
         require(normalized.arrowRatio == (invalid == 4.0 ? 3.0 : 1.0),
                 "Qt/FFI normalizes invalid ratios");
+    }
+}
+
+void arrowOutlineEditsRenderAndRoundTrip() {
+    for (const auto shaft : {SnowCanvasArrowShaftType::Plain, SnowCanvasArrowShaftType::Tapered}) {
+        for (const double outlineWidth : {2.0, 8.0, 72.0}) {
+            SnowCanvasRuntime runtime;
+            SnowCanvasWidget canvas(runtime);
+            canvas.resize(600, 360);
+            canvas.show();
+            QApplication::processEvents();
+            require(canvas.setCanvasTool(SnowCanvasTool::Arrow),
+                    "activate outline width test arrow");
+            SnowCanvasShapeStyle style;
+            style.stroke = Qt::red;
+            style.strokeWidth = 2.0;
+            style.startArrowhead = SnowCanvasArrowhead::Triangle;
+            style.endArrowhead = SnowCanvasArrowhead::Triangle;
+            style.arrowShaftType = shaft;
+            require(canvas.setCanvasShapeStylePatch(style,
+                                                    SnowCanvasShapeStylePropertyStrokeColor |
+                                                        SnowCanvasShapeStylePropertyStrokeWidth |
+                                                        SnowCanvasShapeStylePropertyStartArrowhead |
+                                                        SnowCanvasShapeStylePropertyEndArrowhead |
+                                                        SnowCanvasShapeStylePropertyArrowShaftType,
+                                                    SnowCanvasShapeKind::Arrow),
+                    "configure outline width test arrow");
+            createArrow(canvas, runtime);
+            const auto render = [&]() {
+                return runtime.renderToImage(QRectF(-300, -180, 600, 360), QSize(600, 360), {});
+            };
+            const QImage original = render();
+            mouse(canvas, QEvent::MouseButtonPress, {30.0, 120.0}, Qt::LeftButton, Qt::LeftButton);
+            mouse(canvas, QEvent::MouseMove, {550.0, 240.0}, Qt::NoButton, Qt::LeftButton);
+            mouse(canvas, QEvent::MouseButtonRelease, {550.0, 240.0}, Qt::LeftButton, Qt::NoButton);
+            require(canvas.canvasStyleToolbarState().source ==
+                        SnowCanvasStyleToolbarSource::SelectedArrow,
+                    "outline width test selects the arrow");
+            style.arrowOutlineWidth = outlineWidth;
+            style.arrowOutlineColor = QColor(12, 120, 250, 180);
+            require(
+                canvas.setCanvasShapeStylePatch(style,
+                                                SnowCanvasShapeStylePropertyArrowOutlineWidth |
+                                                    SnowCanvasShapeStylePropertyArrowOutlineColor,
+                                                SnowCanvasShapeKind::Arrow),
+                "edit selected outline width");
+            const auto arrow = payload(runtime, QStringLiteral("Arrow"));
+            require(arrow.value(QStringLiteral("arrow_outline_width")).toDouble() == outlineWidth &&
+                        arrow.value(QStringLiteral("stroke_width")).toDouble() == 2.0 &&
+                        canvas.canvasStyleToolbarState().shapeStyle.arrowOutlineWidth ==
+                            outlineWidth &&
+                        canvas.canvasStyleToolbarState().shapeStyle.arrowOutlineColor ==
+                            style.arrowOutlineColor,
+                    "outline width crosses Qt and FFI without changing stroke width");
+            const QImage resized = render();
+            require(!original.isNull() && !resized.isNull() && original != resized,
+                    "outline width changes exported endpoint geometry");
+            SnowCanvasRuntime restored;
+            require(restored.restoreDocumentSession(runtime.serializeDocumentSession()) &&
+                        payload(restored, QStringLiteral("Arrow")) == arrow,
+                    "outline width round-trips through the document session");
+            require(canvas.undo() &&
+                        payload(runtime, QStringLiteral("Arrow"))
+                                .value(QStringLiteral("arrow_outline_width"))
+                                .toDouble() == 0.0 &&
+                        render() == original,
+                    "undo restores outline width and original pixels");
+            require(canvas.redo() && render() == resized, "redo restores outlined arrow pixels");
+            require(restored.renderToImage(QRectF(-300, -180, 600, 360), QSize(600, 360), {}) ==
+                        resized,
+                    "restored documents export the same outline pixels");
+            require(canvas.setCanvasTool(SnowCanvasTool::Arrow),
+                    "activate outlined creation defaults");
+            require(
+                canvas.setCanvasShapeStylePatch(style,
+                                                SnowCanvasShapeStylePropertyArrowOutlineWidth |
+                                                    SnowCanvasShapeStylePropertyArrowOutlineColor,
+                                                SnowCanvasShapeKind::Arrow),
+                "configure outline on new arrows");
+            mouse(canvas, QEvent::MouseButtonPress, {70.0, 280.0}, Qt::LeftButton, Qt::LeftButton);
+            mouse(canvas, QEvent::MouseMove, {490.0, 280.0}, Qt::NoButton, Qt::LeftButton);
+            mouse(canvas, QEvent::MouseButtonRelease, {490.0, 280.0}, Qt::LeftButton, Qt::NoButton);
+            const auto arrows = records(runtime, QStringLiteral("Arrow"));
+            require(arrows.size() == 2, "outline defaults create a second arrow");
+            for (const auto& record : arrows) {
+                const auto data = record.toObject()
+                                      .value(QStringLiteral("data"))
+                                      .toObject()
+                                      .value(QStringLiteral("Arrow"))
+                                      .toObject();
+                require(data.value(QStringLiteral("arrow_outline_width")).toDouble() ==
+                                outlineWidth &&
+                            data.value(QStringLiteral("arrow_outline_color"))
+                                    .toObject()
+                                    .value(QStringLiteral("a"))
+                                    .toInt() == 180,
+                        "created and edited arrows carry the same independent outline style");
+            }
+        }
     }
 }
 
@@ -900,6 +1001,106 @@ void deleteKeyRemovesEditedText() {
     }
 }
 
+void enabledDeleteKeepsEditedTextAndItsOwner() {
+    const auto text = [](SnowCanvasWidget& canvas) {
+        QInputMethodQueryEvent query(Qt::ImSurroundingText);
+        QApplication::sendEvent(&canvas, &query);
+        return query.value(Qt::ImSurroundingText).toString();
+    };
+    const auto standardKey = [](SnowCanvasWidget& canvas, QKeySequence::StandardKey command) {
+        const auto shortcut = QKeySequence(command)[0];
+        key(canvas, shortcut.key(), shortcut.keyboardModifiers());
+    };
+    for (const bool attached : {false, true}) {
+        for (const bool existing : {false, true}) {
+            SnowCanvasRuntime runtime;
+            SnowCanvasWidget canvas(runtime);
+            require(!canvas.deleteTextAfterCursor(), "forward Delete defaults to disabled");
+            canvas.setDeleteTextAfterCursor(true);
+            canvas.resize(600, 360);
+            canvas.show();
+            QApplication::processEvents();
+            if (attached) {
+                createArrow(canvas, runtime);
+                openLabel(canvas);
+            } else {
+                require(canvas.setCanvasTool(SnowCanvasTool::Text), "activate text tool");
+                mouse(canvas, QEvent::MouseButtonPress, {280, 180}, Qt::LeftButton, Qt::LeftButton);
+                mouse(canvas, QEvent::MouseButtonRelease, {280, 180}, Qt::LeftButton, Qt::NoButton);
+            }
+            key(canvas, Qt::Key_A, Qt::NoModifier, QStringLiteral("abc"));
+            if (existing) {
+                key(canvas, Qt::Key_Return, Qt::ControlModifier);
+                if (attached) {
+                    openLabel(canvas);
+                } else {
+                    mouse(canvas, QEvent::MouseButtonPress, {280, 180}, Qt::LeftButton,
+                          Qt::LeftButton);
+                    mouse(canvas, QEvent::MouseButtonRelease, {280, 180}, Qt::LeftButton,
+                          Qt::NoButton);
+                }
+            }
+            const QByteArray history = runtime.serializeDocumentHistory();
+            canvas.setDeleteTextAfterCursor(false);
+            canvas.setDeleteTextAfterCursor(true);
+            require(canvas.hasActiveTextEditing() && runtime.serializeDocumentHistory() == history,
+                    "changing Delete preferences preserves the active draft and document history");
+            key(canvas, Qt::Key_Home);
+            key(canvas, Qt::Key_Right);
+            key(canvas, Qt::Key_Delete);
+            require(canvas.hasActiveTextEditing() &&
+                        canvas.testAttribute(Qt::WA_InputMethodEnabled),
+                    "forward Delete retains the editor and input methods");
+            require(text(canvas) == QStringLiteral("ac"),
+                    "forward Delete removes only the next character");
+            standardKey(canvas, QKeySequence::Undo);
+            require(text(canvas) == QStringLiteral("abc"), "draft undo restores forward deletion");
+            standardKey(canvas, QKeySequence::Redo);
+            require(text(canvas) == QStringLiteral("ac"), "draft redo reapplies forward deletion");
+            key(canvas, Qt::Key_End);
+            key(canvas, Qt::Key_Delete);
+            require(canvas.hasActiveTextEditing(), "Delete at the end retains the element");
+            key(canvas, Qt::Key_A, Qt::ControlModifier);
+            key(canvas, Qt::Key_Delete);
+            key(canvas, Qt::Key_Delete);
+            require(canvas.hasActiveTextEditing() && text(canvas).isEmpty(),
+                    "deleting selected text and the empty draft retains editing");
+            standardKey(canvas, QKeySequence::Undo);
+            require(text(canvas) == QStringLiteral("ac"), "undo restores the deleted selection");
+            key(canvas, Qt::Key_Return, Qt::ControlModifier);
+            require(payload(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                        QStringLiteral("ac"),
+                    "commit persists the edited text");
+            if (existing) {
+                require(
+                    canvas.undo() &&
+                        payload(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                            QStringLiteral("abc"),
+                    "document undo restores text before the edit");
+                require(canvas.redo(), "document redo reapplies the committed text edit");
+            }
+            if (attached) {
+                require(records(runtime, QStringLiteral("Arrow")).size() == 1,
+                        "editing a label preserves its arrow");
+            }
+            // With no active editor, Delete still follows normal element selection semantics.
+            require(canvas.setCanvasTool(SnowCanvasTool::Select), "activate element selection");
+            const auto id = records(runtime, QStringLiteral("Text"))[0]
+                                .toObject()
+                                .value(QStringLiteral("id"))
+                                .toObject();
+            SnowCanvasRuntimeEditor editor(runtime);
+            require(
+                editor.select(static_cast<quint32>(id.value(QStringLiteral("index")).toInt()),
+                              static_cast<quint32>(id.value(QStringLiteral("generation")).toInt())),
+                "select text before testing element deletion");
+            key(canvas, Qt::Key_Delete);
+            require(records(runtime, QStringLiteral("Text")).isEmpty(),
+                    "Delete outside text editing still deletes selected elements");
+        }
+    }
+}
+
 void commandResolverPreservesTextAndEngineCommands() {
     SnowCanvasRuntime runtime;
     SnowCanvasWidget canvas(runtime);
@@ -1372,6 +1573,16 @@ int main(int argc, char** argv) {
     }
 #endif
     QApplication app(argc, argv);
+    if (QCoreApplication::arguments().contains(QStringLiteral("--arrow-outline-only"))) {
+        arrowOutlineEditsRenderAndRoundTrip();
+        return 0;
+    }
+
+    if (app.arguments().contains(QStringLiteral("--delete-text-only"))) {
+        deleteKeyRemovesEditedText();
+        enabledDeleteKeepsEditedTextAndItsOwner();
+        return 0;
+    }
     retainedTextLayoutsPreservePixelsAndRespectInvalidationAndBudget();
     naturalLayoutCacheTracksTypographyAndHasABoundedBudget();
     documentCleanupReleasesTextDraftHistoryStorage();
@@ -1380,6 +1591,7 @@ int main(int argc, char** argv) {
         return 0;
     arrowLabelRemeasuresAfterHostFontChange();
     arrowRatioEditsRenderAndRoundTrip();
+    arrowOutlineEditsRenderAndRoundTrip();
     arrowRatioFallbackRendering();
     taperedShaftsRenderAndRoundTrip();
     if (app.arguments().contains(QStringLiteral("--shafts-only")))
@@ -1387,6 +1599,7 @@ int main(int argc, char** argv) {
     indentedTriangleStyleRoundTrips();
     escapeKeyCommitsEditedText();
     deleteKeyRemovesEditedText();
+    enabledDeleteKeepsEditedTextAndItsOwner();
     commandResolverPreservesTextAndEngineCommands();
     widgetLifecycle();
     arrowLabelWheelChangesFontSizeWhileSelecting();

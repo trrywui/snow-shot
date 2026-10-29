@@ -6,6 +6,7 @@
 #include "widgets/select.h"
 
 #include <QApplication>
+#include <QAbstractEventDispatcher>
 #include <QCoreApplication>
 #include <QDir>
 #include <QEnterEvent>
@@ -74,7 +75,7 @@ class NoOpSelectionToolbarCommands final : public ScreenshotSelectionToolbarComm
     void setSelectionCornerRadiusFromToolbar(int) override {
         ++interactionCount;
     }
-    void setSelectionShadowWidthFromToolbar(int) override {
+    void setSelectionEffectWidthFromToolbar(int) override {
         ++interactionCount;
     }
     void setSelectionToolbarHovered(bool hovered) override {
@@ -834,6 +835,55 @@ QModelIndex optionIndex(adqt::widgets::AdSelect* select, const QString& value) {
     return {};
 }
 
+void waitForFixtureCondition(const std::function<bool()>& ready, const char* message) {
+    if (!ready()) {
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(QAbstractEventDispatcher::instance(),
+                         &QAbstractEventDispatcher::aboutToBlock, &loop, [&] {
+                             if (ready())
+                                 loop.quit();
+                         });
+        timeout.start(5000);
+        loop.exec();
+    }
+    require(ready(), message);
+}
+
+void prepareRatioPointerFixture(QWidget& host, adqt::widgets::AdSelect* select,
+                                NoOpSelectionToolbarCommands& commands) {
+    host.raise();
+    host.activateWindow();
+    waitForFixtureCondition(
+        [select] {
+            QWidget* hit = QApplication::widgetAt(select->mapToGlobal(select->rect().center()));
+            return hit && hit->window() == select->window() &&
+                   (hit == select || select->isAncestorOf(hit));
+        },
+        "the ratio trigger must own its hit target before synthetic pointer input");
+    // Showing a native host can deliver real Enter events. Start the controlled pointer sequence
+    // after exposure, with no popup session inherited from the desktop pointer's position.
+    sendLeave(select);
+    select->hidePopup();
+    commands.popupVisibility.clear();
+}
+
+void prepareRatioKeyboardFixture(QWidget& host, adqt::widgets::AdSelect* select,
+                                 bool useInWindowPopup = true) {
+    if (useInWindowPopup && QApplication::platformName() == QStringLiteral("offscreen")) {
+        // The unit case exercises Qt focus ownership inside one active window. The native full
+        // host retains QtTool popups and separately verifies window-manager focus restoration.
+        select->setPopupLayerMode(adqt::widgets::AdSelect::PopupLayerMode::InWindow);
+    }
+    host.activateWindow();
+    host.setFocus();
+    waitForFixtureCondition(
+        [&host] { return host.isActiveWindow() && QApplication::focusWidget() == &host; },
+        "the screenshot host must own keyboard focus before opening its ratio popup");
+}
+
 void aspectRatioPopupFollowsPointerHover() {
     NoOpSelectionToolbarCommands commands;
     QWidget host;
@@ -845,6 +895,7 @@ void aspectRatioPopupFollowsPointerHover() {
     toolbar.show();
     QCoreApplication::processEvents();
     auto* select = ratioSelect(toolbar);
+    prepareRatioPointerFixture(host, select, commands);
 
     sendEnter(select);
     require(select->popupVisible() && commands.popupVisibility == std::vector<bool>({true}) &&
@@ -889,6 +940,7 @@ void aspectRatioPopupRecoversFromHoverMovement() {
     toolbar.show();
     QCoreApplication::processEvents();
     auto* select = ratioSelect(toolbar);
+    prepareRatioPointerFixture(host, select, commands);
     const auto hover = [](QWidget* receiver, QEvent::Type type, const QPoint& point) {
         QHoverEvent event(type, point, receiver->mapToGlobal(point), QPointF(-1, -1),
                           Qt::NoModifier);
@@ -938,6 +990,7 @@ void aspectRatioTriggerInputStaysWithSelect() {
     toolbar.show();
     QCoreApplication::processEvents();
     auto* select = ratioSelect(toolbar);
+    prepareRatioPointerFixture(host, select, commands);
     const auto click = [](QWidget* trigger) {
         const QPointF position(trigger->rect().center());
         const QPointF globalPosition(trigger->mapToGlobal(position.toPoint()));
@@ -1345,10 +1398,10 @@ void aspectRatioPopupOwnsInputAndEndsWithToolbarLifecycle() {
     toolbar.move(100, 40);
     host.show();
     toolbar.show();
-    host.activateWindow();
-    host.setFocus();
     QCoreApplication::processEvents();
     auto* select = ratioSelect(toolbar);
+    prepareRatioPointerFixture(host, select, commands);
+    prepareRatioKeyboardFixture(host, select, false);
     auto* panel = toolbar.findChild<SelectionToolbarPanel*>();
     require(panel != nullptr, "aspect-ratio test needs the toolbar panel");
 
@@ -1384,6 +1437,15 @@ void aspectRatioPopupOwnsInputAndEndsWithToolbarLifecycle() {
     require(!toolbar.containsInteractiveGlobalPoint(host.mapToGlobal(QPoint(799, 399))),
             "popup hit testing must not capture unrelated canvas points");
 
+    if (QApplication::platformName() == QStringLiteral("offscreen")) {
+        // Geometry above exercises the production QtTool surface. The remaining focus and
+        // toolbar lifecycle assertions use a window-manager-independent keyboard fixture.
+        select->hidePopup();
+        prepareRatioKeyboardFixture(host, select);
+        select->showPopup();
+        QCoreApplication::processEvents();
+        view = select->view();
+    }
     view->setCurrentIndex(optionIndex(select, QStringLiteral("16:9")));
     QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(view, &enter);
@@ -1471,10 +1533,9 @@ void aspectRatioPopupSuspendsScreenshotShortcutsThroughDismissal() {
     toolbar.move(100, 40);
     host.show();
     toolbar.show();
-    host.activateWindow();
-    host.setFocus();
     QCoreApplication::processEvents();
     auto* select = ratioSelect(toolbar);
+    prepareRatioKeyboardFixture(host, select);
     select->showPopup();
     QCoreApplication::processEvents();
     require(suspension != 0, "opening the ratio menu must suspend screenshot shortcuts");
@@ -1606,13 +1667,13 @@ void closingRatioPopupPreservesNewKeyboardFocus() {
     toolbar.move(100, 40);
     host.show();
     toolbar.show();
-    host.activateWindow();
-    host.setFocus();
     QCoreApplication::processEvents();
     auto* select = ratioSelect(toolbar);
+    prepareRatioKeyboardFixture(host, select, false);
     select->showPopup();
     QCoreApplication::processEvents();
     select->hidePopup();
+    host.activateWindow();
     externalEditor.setFocus();
     QCoreApplication::processEvents();
     require(QApplication::focusWidget() == &externalEditor,

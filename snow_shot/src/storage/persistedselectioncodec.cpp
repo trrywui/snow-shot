@@ -66,6 +66,11 @@ QJsonObject persistedSelectionToJson(const PersistedSelection& selection) {
         {QStringLiteral("lock_aspect_ratio"), selection.lockAspectRatio},
         {QStringLiteral("lock_drag_aspect_ratio"), selection.lockDragAspectRatio},
     };
+    result.insert(QStringLiteral("border_type"),
+                  screenshotSelectionBorderTypeId(selection.borderType));
+    result.insert(QStringLiteral("border_width"), selection.borderWidth);
+    result.insert(QStringLiteral("border_color"),
+                  selection.borderColor.name(QColor::HexArgb).toUpper());
     result.insert(QStringLiteral("background_opacity_percent"), selection.backgroundOpacityPercent);
     result.insert(QStringLiteral("layout_compaction_enabled"), selection.layoutCompaction.enabled);
     result.insert(QStringLiteral("layout_compaction_spacing"), selection.layoutCompaction.spacing);
@@ -138,6 +143,21 @@ PersistedSelectionNormalization normalizePersistedSelection(const QJsonValue& va
             return {};
         selection.region = region;
         selection.rectangle = bounds;
+    }
+    const auto type = object.value(QStringLiteral("border_type"));
+    if (!type.isUndefined() && type != QStringLiteral("shadow") && type != QStringLiteral("border"))
+        return {};
+    selection.borderType = type == QStringLiteral("border") ? ScreenshotSelectionBorderType::Border
+                                                            : ScreenshotSelectionBorderType::Shadow;
+    const auto width = object.value(QStringLiteral("border_width"));
+    if (!width.isUndefined() && !integer(width, 0, kMaximumShadowWidth, &selection.borderWidth))
+        return {};
+    const auto borderColor = object.value(QStringLiteral("border_color"));
+    if (!borderColor.isUndefined()) {
+        if (!borderColor.isString() || !QColor(borderColor.toString()).isValid())
+            return {};
+        selection.borderColor = QColor(borderColor.toString());
+        selection.borderColor.setAlpha(255);
     }
     const auto opacity = object.value(QStringLiteral("background_opacity_percent"));
     if (!opacity.isUndefined() && !integer(opacity, 0, 100, &selection.backgroundOpacityPercent))

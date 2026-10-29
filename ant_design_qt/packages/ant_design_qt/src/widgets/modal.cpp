@@ -335,6 +335,10 @@ class ModalOverlayWidget final : public QWidget {
 
   void setWindowResizable(bool value) { windowResizable_ = value; }
 
+  void setWindowInteractionHandler(std::function<void(bool)> handler) {
+    windowInteractionHandler_ = std::move(handler);
+  }
+
   void setWindowManagementButtons(bool minimizeEnabled, bool maximizeEnabled) {
     if (windowMinimizeEnabled_ == minimizeEnabled && windowMaximizeEnabled_ == maximizeEnabled) {
       return;
@@ -371,7 +375,8 @@ class ModalOverlayWidget final : public QWidget {
       winId();
       // Register before native order-in so elevated owners retain animation on
       // the first presentation. Keep the session alive through native order-out.
-      macModalSession_ = detail::createMacModalSession(this, windowModalBlocker_);
+      macModalSession_ = detail::createMacModalSession(
+          this, windowModalBlocker_, [this](bool active) { setWindowInteractionActive(active); });
     }
     if (!visible && macModalSession_) {
       // Native order-out can activate the owner before QWidget clears its
@@ -380,6 +385,9 @@ class ModalOverlayWidget final : public QWidget {
     }
 #endif
     QWidget::setVisible(visible);
+    if (!visible) {
+      setWindowInteractionActive(false);
+    }
 #ifdef Q_OS_MACOS
     if (!visible) {
       macModalSession_.reset();
@@ -526,6 +534,16 @@ class ModalOverlayWidget final : public QWidget {
   }
 
  private:
+  void setWindowInteractionActive(bool active) {
+    if (windowInteractionActive_ == active) {
+      return;
+    }
+    windowInteractionActive_ = active;
+    if (windowInteractionHandler_) {
+      windowInteractionHandler_(active);
+    }
+  }
+
 #if defined(Q_OS_WIN) || defined(_WIN32)
   static HWND hwndForWidget(QWidget* widget) {
     if (!widget) {
@@ -619,9 +637,13 @@ class ModalOverlayWidget final : public QWidget {
 #ifdef Q_OS_MACOS
     if (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate ||
         event->type() == QEvent::UngrabMouse) {
+      const bool wasDragging = windowDragOffset_.has_value();
       windowDragOffset_.reset();
       if (QWidget::mouseGrabber() == this) {
         releaseMouse();
+      }
+      if (wasDragging) {
+        setWindowInteractionActive(false);
       }
     }
     if (windowDragOffset_ &&
@@ -634,6 +656,7 @@ class ModalOverlayWidget final : public QWidget {
         if (QWidget::mouseGrabber() == this) {
           releaseMouse();
         }
+        setWindowInteractionActive(false);
       }
       return true;
     }
@@ -662,6 +685,7 @@ class ModalOverlayWidget final : public QWidget {
     // Qt delivers mouse events asynchronously on Cocoa. NSApp.currentEvent can
     // already be a different event, so startSystemMove cannot reliably use it.
     windowDragOffset_ = globalPos - pos();
+    setWindowInteractionActive(true);
     grabMouse();
     return true;
 #else
@@ -670,13 +694,20 @@ class ModalOverlayWidget final : public QWidget {
   }
 
 #if defined(Q_OS_WIN) || defined(_WIN32)
-  bool handleWindowModeNativeEvent(void* message, qintptr* result) const {
+  bool handleWindowModeNativeEvent(void* message, qintptr* result) {
     if (!windowModeChromeEnabled_ || message == nullptr || result == nullptr) {
       return false;
     }
 
     const auto* msg = static_cast<const MSG*>(message);
     switch (msg->message) {
+      case WM_ENTERSIZEMOVE:
+        setWindowInteractionActive(true);
+        break;
+      case WM_EXITSIZEMOVE:
+      case WM_CANCELMODE:
+        setWindowInteractionActive(false);
+        break;
       case WM_GETMINMAXINFO: {
         if (!windowMaximizeEnabled_) break;
         MONITORINFO monitor{};
@@ -768,6 +799,8 @@ class ModalOverlayWidget final : public QWidget {
   bool windowResizable_ = false;
   bool windowMinimizeEnabled_ = false;
   bool windowMaximizeEnabled_ = false;
+  bool windowInteractionActive_ = false;
+  std::function<void(bool)> windowInteractionHandler_;
   QPointer<QWidget> windowModeHeader_;
   QPointer<QWidget> windowModePanel_;
 #ifdef Q_OS_MACOS
@@ -2223,6 +2256,13 @@ void AdModal::ensureOverlay() {
   overlay->hide();
   overlay->installEventFilter(this);
   overlay->setFocusNavigator([this](bool next) { return focusNextPrevChildInModal(next); });
+  overlay->setWindowInteractionHandler([this](bool active) {
+    if (active) {
+      emit windowInteractionStarted();
+    } else {
+      emit windowInteractionFinished();
+    }
+  });
 
   auto* overlayLayout = new QVBoxLayout(overlay);
   overlayLayout->setContentsMargins(16, topOffset_, 16, 16);

@@ -89,10 +89,22 @@ the GUI thread.
 
 ## Focused validation
 
-Build the application and the two recording test executables, then run:
+Recording diagnostics retain the error text shown by the application and FFmpeg's native error
+messages in the normal daily log. Trim preparation and export events include a session operation
+ID, export attempt, submitted frame/time boundaries, speed, requested codec settings, cache reuse,
+publication stage, and detached-window state. Failed deferred renders retain their error and stage.
+Video packet mux failures also log the actual/requested encoder, hardware fallback, pixel format,
+dimensions/FPS, native and submitted packet timing, both time bases, previous successful video DTS,
+and drain state. Packet values are captured before FFmpeg consumes the packet. These diagnostics
+do not change the encoder's timestamp policy or add packet details to the error dialog.
+Use **Copy today's log file** in storage settings after a failure; include the approximate failure
+time when reporting it. Ordinary FFmpeg progress remains on its existing console path.
+
+Build the application and the recording and diagnostics test executables, then run:
 
 ```powershell
 ctest --preset test-windows-msvc-debug -R "^(snow-shot-recording-(trimming|export-naming|post-processing|finalization-close)-tests|snow-shot-screen-recording-area-window-tests)$"
+ctest --preset test-windows-msvc-debug -R '^snow-shot-(recording-diagnostics|diagnostics)-tests$'
 ```
 
 Set `SNOW_TRIM_VISUAL_OUTPUT` to a directory to render the actual trim toolbar in light/dark themes

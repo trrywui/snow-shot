@@ -4,12 +4,14 @@
 #include "snow_shot/presentation/screenshotinteractionstate.h"
 #include "snow_shot/presentation/screenshotselectioneditworkflow.h"
 #include "snow_shot/presentation/screenshotselectionmodel.h"
+#include "snow_shot/presentation/screenshotresultcompositor.h"
 #include "snow_shot/presentation/screenshotselectionsettingsstore.h"
 #include "snow_shot/storage/capturehistoryrepository.h"
 #include "snow_shot/storage/persistedselectioncodec.h"
 #include "snow_shot/storage/applicationstorage.h"
 
 #include <QCoreApplication>
+#include <QJsonArray>
 #include <QTemporaryDir>
 
 #include <cstdlib>
@@ -22,6 +24,89 @@ void require(bool condition, const char* message) {
         std::cerr << message << '\n';
         std::exit(1);
     }
+}
+
+void selectionResultStylesUseTheCropOrigin() {
+    for (const QPoint origin : {QPoint(), QPoint(100, -70), QPoint(-80, 25)}) {
+        for (const bool curved : {false, true}) {
+            ScreenshotSelectionParams params;
+            params.selection = QRect(origin, QSize(120, 80));
+            params.radius = 9;
+            params.borderType = ScreenshotSelectionBorderType::Border;
+            params.borderWidth = 5;
+            params.borderColor = Qt::red;
+            params.shadowWidth = 11;
+            params.shadowColor = Qt::blue;
+            params.backgroundOpacityPercent = 35;
+            ScreenshotRegionGeometry region(QRegion(0, 0, 40, 80) + QRect(80, 0, 40, 80));
+            if (curved) {
+                QPainterPath ellipse;
+                ellipse.addEllipse(QRectF(0, 0, 120, 80));
+                region = ScreenshotRegionGeometry::fromPath(ellipse, ScreenshotRegionType::Curve);
+            }
+            params.region = region.translated(origin);
+            const auto style = params.resultStyle();
+            require(style.region == region && style.regionScale == 1 &&
+                        style.cornerRadius == params.radius &&
+                        style.borderType == params.borderType &&
+                        style.borderWidth == params.borderWidth &&
+                        style.borderColor == params.borderColor &&
+                        style.shadowWidth == params.shadowWidth &&
+                        style.shadowColor == params.shadowColor &&
+                        style.backgroundOpacityPercent == params.backgroundOpacityPercent,
+                    "selection result styles rebase geometry once and preserve all effects");
+            ScreenshotSelectionModel model;
+            require(model.applyParams(params, params.selection), "restore the offset selection");
+            const auto modelStyle = model.resultStyle();
+            require(modelStyle.region == style.region &&
+                        modelStyle.borderWidth == style.borderWidth &&
+                        modelStyle.backgroundOpacityPercent == style.backgroundOpacityPercent,
+                    "document snapshots and selection models share the result-style conversion");
+            params.region.reset();
+            require(!params.resultStyle().region, "legacy rectangular selections remain unshaped");
+        }
+    }
+}
+
+void borderStateAndPersistence() {
+    const QRect bounds(0, 0, 1000, 800);
+    ScreenshotSelectionModel model;
+    model.setSelectionRect(QRect(20, 20, 300, 200));
+    static_cast<void>(model.setShadowWidth(11));
+    model.setShadowColor(QColor(Qt::black));
+    model.setBorderType(ScreenshotSelectionBorderType::Border);
+    model.setEffectWidth(6);
+    model.setBorderColor(QColor(Qt::red));
+    require(model.shadowWidth() == 11 && model.effectWidth() == 6,
+            "active width edits preserve shadow");
+    const auto params = model.params(bounds);
+    ScreenshotSelectionModel copy;
+    require(copy.applyParams(params, bounds) && copy.params(bounds) == params,
+            "selection copies preserve both effects and type");
+    model.setBorderType(ScreenshotSelectionBorderType::Shadow);
+    require(model.effectWidth() == 11 && model.borderWidth() == 6, "type switch restores width");
+    snow_shot::storage::PersistedSelection saved;
+    saved.rectangle = params.selection;
+    saved.shadowWidth = params.shadowWidth;
+    saved.shadowColor = params.shadowColor;
+    saved.borderType = params.borderType;
+    saved.borderWidth = params.borderWidth;
+    saved.borderColor = params.borderColor;
+    auto json = snow_shot::storage::persistedSelectionToJson(saved);
+    const auto restored = snow_shot::storage::normalizePersistedSelection(json);
+    require(restored.valid && restored.value == saved, "border history JSON round trips");
+    for (const auto& key : {QStringLiteral("border_type"), QStringLiteral("border_width"),
+                            QStringLiteral("border_color")}) {
+        auto invalid = json;
+        invalid[key] = QJsonArray();
+        require(!snow_shot::storage::normalizePersistedSelection(invalid).valid,
+                "invalid border fields are rejected");
+        json.remove(key);
+    }
+    const auto legacy = snow_shot::storage::normalizePersistedSelection(json);
+    require(legacy.valid && legacy.value.borderType == ScreenshotSelectionBorderType::Shadow &&
+                legacy.value.borderWidth == 0 && legacy.value.borderColor == QColor(Qt::white),
+            "legacy border defaults");
 }
 
 void selectionEffectsPersistAcrossRestarts() {
@@ -58,7 +143,16 @@ void selectionEffectsPersistAcrossRestarts() {
     ScreenshotSelectionParams presetParams;
     presetParams.selection = QRect(10, 20, 80, 60);
     presetParams.backgroundOpacityPercent = 61;
+    presetParams.borderType = ScreenshotSelectionBorderType::Border;
+    presetParams.borderWidth = 7;
+    presetParams.borderColor = QColor(Qt::yellow);
+    settings.setSelectionBorder(presetParams.borderType, presetParams.borderWidth,
+                                presetParams.borderColor);
     settings.setPresets({{QStringLiteral("Background"), presetParams}});
+    require(settings.presets().first().params == presetParams && settings.borderWidth() == 7 &&
+                settings.borderType() == ScreenshotSelectionBorderType::Border &&
+                settings.borderColor() == QColor(Qt::yellow),
+            "preferences and presets retain border settings");
     settings.setSelectionTarget(ScreenshotIntelligentSelectionTarget::Window);
     require(settings.selectionTarget() == ScreenshotIntelligentSelectionTarget::Window,
             "selection target preference must be writable");
@@ -92,16 +186,14 @@ void selectionEffectsPersistAcrossRestarts() {
         interaction,
         selection,
         ui,
-        [&](int radius, int shadowWidth, const QColor& color) {
-            settings.setSelectionEffects(radius, shadowWidth, color);
-        },
+        [&](const ScreenshotSelectionParams& params) { settings.setSelectionEffects(params); },
         [&](ScreenshotSelectionAspectRatioPreset preset, bool locked) {
             settings.setAspectRatioPreference(preset, locked);
         },
     });
 
     workflow.setSelectionCornerRadiusFromToolbar(24);
-    workflow.setSelectionShadowWidthFromToolbar(12);
+    workflow.setSelectionEffectWidthFromToolbar(12);
     workflow.toggleSelectionAspectRatioLockFromToolbar();
     require(settings.cornerRadius() == 24 && settings.shadowWidth() == 12,
             "toolbar edits must persist both effects without exporting a screenshot");
@@ -178,7 +270,7 @@ void selectionEffectsPersistAcrossRestarts() {
             "a color-only dialog edit must persist without changing the other effects");
 
     workflow.setSelectionCornerRadiusFromToolbar(1000);
-    workflow.setSelectionShadowWidthFromToolbar(1000);
+    workflow.setSelectionEffectWidthFromToolbar(1000);
     require(settings.cornerRadius() == 256 && settings.shadowWidth() == 64,
             "toolbar edits must persist the clamped effect values");
     require(settings.shadowColor() == params.shadowColor,
@@ -197,7 +289,7 @@ void selectionEffectsPersistAcrossRestarts() {
             "invalid shadow color preferences must be rejected without overwriting the color");
 
     workflow.setSelectionCornerRadiusFromToolbar(-1);
-    workflow.setSelectionShadowWidthFromToolbar(-1);
+    workflow.setSelectionEffectWidthFromToolbar(-1);
     storage.shutdown();
     require(storage.initialize(options).success, "disabled effects must reload");
     require(settings.cornerRadius() == 0 && settings.shadowWidth() == 0,
@@ -274,9 +366,7 @@ void selectionAspectRatioWorkflowPersistsOnlyUserPreferences() {
         interaction,
         selection,
         ui,
-        [&](int radius, int shadowWidth, const QColor& color) {
-            settings.setSelectionEffects(radius, shadowWidth, color);
-        },
+        [&](const ScreenshotSelectionParams& params) { settings.setSelectionEffects(params); },
         [&](Preset preset, bool locked) {
             ++preferenceWrites;
             settings.setAspectRatioPreference(preset, locked);
@@ -536,6 +626,8 @@ void compactionSelectionState() {
 
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
+    selectionResultStylesUseTheCropOrigin();
+    borderStateAndPersistence();
     backgroundOpacitySelectionState();
     compactionSelectionState();
     selectionEffectsPersistAcrossRestarts();

@@ -783,12 +783,17 @@ class ScreenshotOcrGraphicsScene final : public QGraphicsScene {
   public:
     using QGraphicsScene::QGraphicsScene;
 
-    void setTextHighlighting(const QColor& color, const QPainterPath& mask) {
-        if (m_maskColor == color && m_mask == mask) {
+    void setTextHighlighting(const QColor& color, const QPainterPath& mask,
+                             const std::optional<QTransform>& imageToScene = std::nullopt,
+                             const QRectF& imageBounds = {}) {
+        if (m_maskColor == color && m_mask == mask && m_imageToScene == imageToScene &&
+            m_imageBounds == imageBounds) {
             return;
         }
         m_maskColor = color;
         m_mask = mask;
+        m_imageToScene = imageToScene;
+        m_imageBounds = imageBounds;
         invalidate(sceneRect(), QGraphicsScene::BackgroundLayer);
     }
 
@@ -798,10 +803,17 @@ class ScreenshotOcrGraphicsScene final : public QGraphicsScene {
         m_rasterMask = {};
     }
 
+#if defined(SNOW_SHOT_BENCH_INTERNALS)
+    quint64 rasterBuilds = 0;
+    QImage rasterForTesting() const {
+        return m_raster;
+    }
+#endif
+
   protected:
     void drawBackground(QPainter* painter, const QRectF& rect) override {
         QGraphicsScene::drawBackground(painter, rect);
-        if (m_maskColor.alpha() == 0 || m_mask.isEmpty()) {
+        if (m_maskColor.alpha() == 0 || (m_mask.isEmpty() && !m_imageToScene)) {
             return;
         }
         // Paint one shared complement so overlapping text regions stay clear and mask
@@ -809,6 +821,20 @@ class ScreenshotOcrGraphicsScene final : public QGraphicsScene {
         const QPainterStateGuard guard(painter);
         painter->setCompositionMode(QPainter::CompositionMode_SourceOver);
         painter->setRenderHint(QPainter::Antialiasing, true);
+        if (m_imageToScene) {
+            painter->setClipRect(sceneRect(), Qt::IntersectClip);
+            painter->setWorldTransform(*m_imageToScene, true);
+            // Panning can expose canvas outside the recognized image. Fill that exterior
+            // separately so it does not enlarge or invalidate the image-resolution cache.
+            QPainterPath exterior;
+            exterior.addRect(m_imageToScene->inverted().mapRect(sceneRect()));
+            QPainterPath image;
+            image.addRect(m_imageBounds);
+            painter->setRenderHint(QPainter::Antialiasing, false);
+            painter->fillPath(exterior.subtracted(image), m_maskColor);
+            painter->setClipRect(m_imageBounds, Qt::IntersectClip);
+            painter->setRenderHint(QPainter::Antialiasing, true);
+        }
         if (!drawCachedMask(*painter)) {
             painter->fillPath(m_mask, m_maskColor);
         }
@@ -819,18 +845,26 @@ class ScreenshotOcrGraphicsScene final : public QGraphicsScene {
         // Small contours are cheaper to fill directly than to blit a viewport-sized image.
         // Complex contours amortize rasterization across repaints. The actual device
         // transform owns pixel alignment, including fractional DPR and redirected renders.
-        const QTransform device = painter.deviceTransform();
-        if (m_mask.elementCount() < 128 || device.type() > QTransform::TxScale ||
-            !std::isfinite(device.m11()) || device.m11() <= 0 ||
-            !qFuzzyCompare(device.m11(), device.m22())) {
+        // Pinned OCR keeps one pixel per image coordinate (100% zoom), independent of
+        // viewport size, pan, DPR and redirected paint devices.
+        const QTransform device = m_imageToScene ? QTransform() : painter.deviceTransform();
+        if ((!m_imageToScene && m_mask.elementCount() < 128) ||
+            device.type() > QTransform::TxScale || !std::isfinite(device.m11()) ||
+            device.m11() <= 0 || !qFuzzyCompare(device.m11(), device.m22())) {
             return false;
         }
         const qreal scale = device.m11();
         const QRect pixels =
-            device.mapRect(m_mask.boundingRect().adjusted(-2, -2, 2, 2)).toAlignedRect();
+            m_imageToScene
+                ? m_imageBounds.toAlignedRect()
+                : device.mapRect(m_mask.boundingRect().adjusted(-2, -2, 2, 2)).toAlignedRect();
         constexpr qint64 byteLimit = 64 * 1024 * 1024;
-        if (pixels.isEmpty() || pixels.width() > byteLimit / 4 || pixels.height() > byteLimit / 4 ||
-            qint64(pixels.width()) * pixels.height() * 4 > byteLimit) {
+        // Device-sized masks can grow without bound while zooming. The native cache is
+        // bounded by the source image instead and uses the canvas image allocator's policy.
+        if (pixels.isEmpty() ||
+            (!m_imageToScene &&
+             (pixels.width() > byteLimit / 4 || pixels.height() > byteLimit / 4 ||
+              qint64(pixels.width()) * pixels.height() * 4 > byteLimit))) {
             return false;
         }
         const QPointF origin = device.inverted().map(QPointF(pixels.topLeft()));
@@ -857,13 +891,20 @@ class ScreenshotOcrGraphicsScene final : public QGraphicsScene {
             m_rasterColor = m_maskColor;
             m_rasterOrigin = origin;
             m_rasterScale = scale;
+#if defined(SNOW_SHOT_BENCH_INTERNALS)
+            ++rasterBuilds;
+#endif
         }
+        if (m_imageToScene)
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         painter.drawImage(origin, m_raster);
         return true;
     }
 
     QColor m_maskColor = QColor(Qt::transparent);
     QPainterPath m_mask;
+    std::optional<QTransform> m_imageToScene;
+    QRectF m_imageBounds;
     QImage m_raster;
     QPainterPath m_rasterMask;
     QColor m_rasterColor;
@@ -1236,12 +1277,12 @@ bool hasSelectionBounds(const ScreenshotSelectionVisualState& state) {
 
 bool selectionEffectsPreviewVisible(const ScreenshotSelectionVisualState& state) {
     return hasSelectionBounds(state) && (state.toolbarHovered || state.effectPreviewVisible) &&
-           (state.region || state.cornerRadius > 0 || state.shadowWidth > 0);
+           (state.region || state.cornerRadius > 0 || state.effectWidth > 0);
 }
 
 QRectF selectionPreviewBounds(const ScreenshotSelectionVisualState& state,
                               const QTransform& canvasToViewTransform) {
-    const qreal padding = std::max(0, state.shadowWidth);
+    const qreal padding = std::max(0, state.effectWidth);
     return canvasToViewTransform.mapRect(
         state.bounds.adjusted(-padding, -padding, padding, padding));
 }
@@ -1324,7 +1365,7 @@ QRegion selectionStateDecorationRegion(const ScreenshotSelectionVisualState& sta
     }
     const qreal scale = viewScale(canvasToViewTransform);
     const qreal shadow =
-        selectionEffectsPreviewVisible(state) ? std::max(0, state.shadowWidth) * scale : 0.0;
+        selectionEffectsPreviewVisible(state) ? std::max(0, state.effectWidth) * scale : 0.0;
     const qreal padding = shadow + kSelectionBorderUpdatePadding;
     QRegion decoration(selectionBounds.adjusted(-padding, -padding, padding, padding)
                            .toAlignedRect()
@@ -1729,8 +1770,8 @@ QRegion planScreenshotSelectionDamage(const ScreenshotSelectionVisualState& prev
             // around its edges. Include that band without repainting the gaps.
             const int padding =
                 qCeil(scale *
-                      std::max(selectionEffectsPreviewVisible(previous) ? previous.shadowWidth : 0,
-                               selectionEffectsPreviewVisible(next) ? next.shadowWidth : 0)) +
+                      std::max(selectionEffectsPreviewVisible(previous) ? previous.effectWidth : 0,
+                               selectionEffectsPreviewVisible(next) ? next.effectWidth : 0)) +
                 3;
             const int radius = qCeil(scale * std::max(previous.cornerRadius, next.cornerRadius));
             QRegion dirtyRegion = previousPixels.xored(nextPixels);
@@ -1822,7 +1863,8 @@ QRegion planScreenshotSelectionDamage(const ScreenshotSelectionVisualState& prev
     const bool hoveredShadowChanged =
         (previous.toolbarHovered || next.toolbarHovered || previous.effectPreviewVisible ||
          next.effectPreviewVisible) &&
-        (previous.shadowWidth != next.shadowWidth || previous.shadowColor != next.shadowColor);
+        (previous.borderType != next.borderType || previous.effectWidth != next.effectWidth ||
+         previous.effectColor != next.effectColor);
     if (previous.bounds != next.bounds || previous.cornerRadius != next.cornerRadius ||
         previous.toolbarHovered != next.toolbarHovered ||
         previous.effectPreviewVisible != next.effectPreviewVisible || hoveredShadowChanged) {
@@ -1892,9 +1934,11 @@ bool pinnedResultUsesLinearFiltering(const SnowCanvasRenderContext& context,
 }
 } // namespace
 
-ScreenshotOcrTextLayer::ScreenshotOcrTextLayer(QWidget* parent)
+ScreenshotOcrTextLayer::ScreenshotOcrTextLayer(QWidget* parent,
+                                               HighlightingResolution highlightingResolution)
     : QGraphicsView(parent), m_scene(new ScreenshotOcrGraphicsScene(this)),
-      m_glyphRasterCache(std::make_unique<ScreenshotOcrGlyphRasterCache>()) {
+      m_glyphRasterCache(std::make_unique<ScreenshotOcrGlyphRasterCache>()),
+      m_highlightingResolution(highlightingResolution) {
     setObjectName(QStringLiteral("snowShotOcrTextLayer"));
     setScene(m_scene);
     setFrameShape(QFrame::NoFrame);
@@ -1956,6 +2000,14 @@ void ScreenshotOcrTextLayer::refreshTextAppearance() {
 }
 
 #if defined(SNOW_SHOT_BENCH_INTERNALS)
+quint64 ScreenshotOcrTextLayer::highlightingRasterBuildCount() const {
+    return m_scene->rasterBuilds;
+}
+
+QImage ScreenshotOcrTextLayer::highlightingRasterForTesting() const {
+    return m_scene->rasterForTesting();
+}
+
 quint64 ScreenshotOcrTextLayer::glyphRasterBuildCount() const {
     return m_glyphRasterCache->builds;
 }
@@ -2106,17 +2158,35 @@ void ScreenshotOcrTextLayer::setTextHighlighting(bool enabled, const QColor& mas
 void ScreenshotOcrTextLayer::updateTextHighlighting() {
     if (!m_synchronized || m_renderingMode == RenderingMode::SelectionOnly ||
         m_textHighlightColor.alpha() == 0) {
-        m_scene->setTextHighlighting(QColor(Qt::transparent), {});
+        if (m_highlightingResolution == HighlightingResolution::Image)
+            m_scene->clearTextHighlighting();
+        else
+            m_scene->setTextHighlighting(QColor(Qt::transparent), {});
         return;
     }
+    const bool imageResolution = m_highlightingResolution == HighlightingResolution::Image;
     if (m_textHighlightGeometryDirty) {
         QPainterPath textRegions;
         textRegions.setFillRule(Qt::WindingFill);
         for (const TextItem& item : m_textItems) {
-            if (!item.graphicsText->isVisible()) {
-                continue;
+            QPolygonF polygon;
+            if (imageResolution) {
+                // Prepare fitted holes at 100%, including labels currently outside the
+                // viewport. Zooming/panning must never rebuild this geometry or raster.
+                ScreenshotOcrTextLayout layout;
+                QTransform textToImage;
+                if (!configureScreenshotOcrTextLayout(
+                        layout, m_presentation->lines.at(item.lineIndex), QTransform(),
+                        m_layoutFont, m_textColor, {}, &textToImage)) {
+                    continue;
+                }
+                polygon = textToImage.map(QPolygonF(layout.boundingRect()));
+            } else {
+                if (!item.graphicsText->isVisible()) {
+                    continue;
+                }
+                polygon = item.graphicsText->mapToScene(item.graphicsText->boundingRect());
             }
-            QPolygonF polygon = item.graphicsText->mapToScene(item.graphicsText->boundingRect());
             // Consistent winding gives union semantics even when mirrored labels overlap.
             qreal area = 0;
             for (qsizetype index = 0; index < polygon.size(); ++index) {
@@ -2130,11 +2200,14 @@ void ScreenshotOcrTextLayer::updateTextHighlighting() {
             textRegions.closeSubpath();
         }
         QPainterPath viewport;
-        viewport.addRect(sceneRect());
+        viewport.addRect(imageResolution ? QRectF(m_presentation->selection) : sceneRect());
         m_textHighlightMask = viewport.subtracted(textRegions);
         m_textHighlightGeometryDirty = false;
     }
-    m_scene->setTextHighlighting(m_textHighlightColor, m_textHighlightMask);
+    m_scene->setTextHighlighting(
+        m_textHighlightColor, m_textHighlightMask,
+        imageResolution ? std::optional<QTransform>(m_canvasToViewTransform) : std::nullopt,
+        imageResolution ? QRectF(m_presentation->selection) : QRectF());
 }
 
 void ScreenshotOcrTextLayer::synchronize(const QTransform& canvasToViewTransform,
@@ -2163,7 +2236,8 @@ void ScreenshotOcrTextLayer::synchronize(const QTransform& canvasToViewTransform
             synchronizeTextItem(item, canvasToViewTransform);
         }
         updateSelectionOverlay();
-        m_textHighlightGeometryDirty = true;
+        if (m_highlightingResolution == HighlightingResolution::Device)
+            m_textHighlightGeometryDirty = true;
         updateTextHighlighting();
     }
     updateSelection();
@@ -2412,11 +2486,8 @@ bool ScreenshotCanvasRenderer::PathRasterCache::draw(QPainter& painter, const QP
                 QPainter raster(&entry.image);
                 raster.setRenderHint(QPainter::Antialiasing);
                 if (exterior) {
-                    QPainterPath complement;
-                    complement.setFillRule(Qt::OddEvenFill);
-                    complement.addRect(QRectF(QPointF(), QSizeF(pixels.size()) / scale));
-                    complement.addPath(localPath);
-                    raster.fillPath(complement, color);
+                    ScreenshotResultCompositor::fillOutsideSelection(
+                        raster, QRectF(QPointF(), QSizeF(pixels.size()) / scale), localPath, color);
                 } else {
                     raster.setPen(QPen(color, kSelectionBorderWidth));
                     raster.setBrush(Qt::NoBrush);
@@ -2631,6 +2702,9 @@ void ScreenshotCanvasRenderer::setPinnedResultSurface(const QRectF& contentCanva
     const bool changed = m_pinnedContentCanvasRect != contentCanvasRect.normalized() ||
                          m_pinnedSurfaceCanvasRect != surfaceCanvasRect.normalized() ||
                          m_pinnedResultStyle.cornerRadius != normalizedStyle.cornerRadius ||
+                         m_pinnedResultStyle.borderType != normalizedStyle.borderType ||
+                         m_pinnedResultStyle.borderWidth != normalizedStyle.borderWidth ||
+                         m_pinnedResultStyle.borderColor != normalizedStyle.borderColor ||
                          m_pinnedResultStyle.shadowWidth != normalizedStyle.shadowWidth ||
                          m_pinnedResultStyle.shadowColor != normalizedStyle.shadowColor ||
                          m_pinnedResultStyle.region != normalizedStyle.region ||
@@ -2766,8 +2840,9 @@ void ScreenshotCanvasRenderer::setSelection(const QRectF& selection, bool handle
     next.present = next.bounds.isValid() && !next.bounds.isEmpty();
     next.handlesVisible = handlesVisible;
     next.cornerRadius = next.present ? std::max(0, cornerRadius) : 0;
-    next.shadowWidth = next.present ? std::max(0, shadowWidth) : 0;
-    next.shadowColor = shadowColor.isValid() ? shadowColor : QColor(0x33, 0x33, 0x33);
+    next.borderType = ScreenshotSelectionBorderType::Shadow;
+    next.effectWidth = next.present ? std::max(0, shadowWidth) : 0;
+    next.effectColor = shadowColor.isValid() ? shadowColor : QColor(0x33, 0x33, 0x33);
     applySelectionState(next);
 }
 
@@ -2796,10 +2871,10 @@ void ScreenshotCanvasRenderer::applySelectionState(const ScreenshotSelectionVisu
     next.bounds = next.bounds.normalized();
     next.present = next.present && next.bounds.isValid() && !next.bounds.isEmpty();
     next.cornerRadius = next.present ? std::max(0, next.cornerRadius) : 0;
-    next.shadowWidth = next.present ? std::max(0, next.shadowWidth) : 0;
+    next.effectWidth = next.present ? std::max(0, next.effectWidth) : 0;
     next.backgroundOpacityPercent = std::clamp(next.backgroundOpacityPercent, 0, 100);
-    if (!next.shadowColor.isValid()) {
-        next.shadowColor = QColor(0x33, 0x33, 0x33);
+    if (!next.effectColor.isValid()) {
+        next.effectColor = QColor(0x33, 0x33, 0x33);
     }
     if (next == m_selectionState) {
         return;
@@ -2895,8 +2970,9 @@ void ScreenshotCanvasRenderer::clearSelection() {
     next.present = false;
     next.handlesVisible = true;
     next.cornerRadius = 0;
-    next.shadowWidth = 0;
-    next.shadowColor = QColor(0x33, 0x33, 0x33);
+    next.borderType = ScreenshotSelectionBorderType::Shadow;
+    next.effectWidth = 0;
+    next.effectColor = QColor(0x33, 0x33, 0x33);
     applySelectionState(next);
 }
 
@@ -3050,7 +3126,7 @@ void ScreenshotCanvasRenderer::reset() {
         !m_ocrFilteredImage.isNull() || hasScrollingResultPreview();
     const bool hadState = m_imageSource.isValid() || !m_imageViewportPhysicalSize.isEmpty() ||
                           m_renderMode != RenderMode::Standard || m_maskVisible ||
-                          m_selectionState.present || m_selectionState.shadowWidth > 0 ||
+                          m_selectionState.present || m_selectionState.effectWidth > 0 ||
                           m_selectionState.toolbarHovered || !m_selectionState.borderVisible ||
                           m_ocrPresentation != nullptr || !m_ocrFilteredImage.isNull() ||
                           m_guideLinesVisible;
@@ -3187,8 +3263,8 @@ int ScreenshotCanvasRenderer::selectionCornerRadius() const {
     return m_selectionState.cornerRadius;
 }
 
-int ScreenshotCanvasRenderer::selectionShadowWidth() const {
-    return m_selectionState.shadowWidth;
+int ScreenshotCanvasRenderer::selectionEffectWidth() const {
+    return m_selectionState.effectWidth;
 }
 
 bool ScreenshotCanvasRenderer::selectionToolbarHovered() const {
@@ -3277,6 +3353,19 @@ ScreenshotOcrTextLayer* ScreenshotCanvasRenderer::ensureOcrTextLayer() {
 void ScreenshotCanvasRenderer::renderBeforeCanvas(QPainter& painter,
                                                   const SnowCanvasRenderContext& context) {
     paintBackground(painter, context, false);
+    if (context.purpose == SnowCanvasRenderContext::Purpose::ContentSnapshot)
+        return;
+    if (m_renderMode == RenderMode::PinnedResult && m_pinnedResultStyle.region) {
+        const auto content = context.canvasToViewTransform.mapRect(m_pinnedContentCanvasRect);
+        const qreal scale =
+            std::hypot(context.canvasToViewTransform.m11(), context.canvasToViewTransform.m12());
+        const auto path = screenshotSelectionPath(content, m_pinnedResultStyle.region,
+                                                  m_pinnedResultStyle.cornerRadius * scale,
+                                                  m_pinnedResultStyle.regionScale * scale);
+        ScreenshotResultCompositor::maskLiveSurface(
+            painter, pinnedViewportForContext(context).intersected(context.viewportRect), path);
+        paintPinnedRegionEffects(painter, context);
+    }
     if (m_renderMode == RenderMode::Standard && m_selectionState.region &&
         selectionEffectsPreviewVisible(m_selectionState)) {
         selectionViewGeometry(context, m_selectionState.cornerRadius,
@@ -3678,9 +3767,10 @@ ScreenshotCanvasRenderer::selectionViewGeometry(const SnowCanvasRenderContext& c
                                  context.canvasToViewTransform, 0.5);
     geometry.draftPath = context.canvasToViewTransform.map(m_selectionState.draftPath);
     geometry.maskPath = {};
-    if (!geometry.rectangular) {
+    if (!geometry.rectangular && geometry.effectivePath.fillRule() == Qt::OddEvenFill) {
         geometry.maskPath.setFillRule(Qt::OddEvenFill);
-        geometry.maskPath.addRect(QRectF(context.viewportRect));
+        geometry.maskPath.addRect(
+            QRectF(context.viewportRect).united(geometry.effectivePath.boundingRect()));
         if (m_selectionState.present)
             geometry.maskPath.addPath(geometry.effectivePath);
     }
@@ -3705,10 +3795,19 @@ void ScreenshotCanvasRenderer::paintSelectionPreview(QPainter& painter,
     painter.setClipRect(previewBounds, Qt::IntersectClip);
     maskSelectionPreview(painter, context, previewBounds);
     painter.setCompositionMode(QPainter::CompositionMode_DestinationOver);
-    if (m_selectionState.region) {
+    if (m_selectionState.borderType == ScreenshotSelectionBorderType::Border) {
+        const auto path =
+            screenshotSelectionPath(m_selectionState.region ? QRectF() : m_selectionState.bounds,
+                                    m_selectionState.region, m_selectionState.cornerRadius);
+        painter.save();
+        painter.setWorldTransform(context.canvasToViewTransform, true);
+        ScreenshotSelectionShadowRenderer::renderBorder(painter, path, m_selectionState.effectWidth,
+                                                        m_selectionState.effectColor);
+        painter.restore();
+    } else if (m_selectionState.region) {
         m_regionShadowRenderer.render(painter, *m_selectionState.region,
-                                      m_selectionState.cornerRadius, m_selectionState.shadowWidth,
-                                      m_selectionState.shadowColor, context.canvasToViewTransform,
+                                      m_selectionState.cornerRadius, m_selectionState.effectWidth,
+                                      m_selectionState.effectColor, context.canvasToViewTransform,
                                       context.exposedRegion);
     } else {
         const qreal scale =
@@ -3718,7 +3817,7 @@ void ScreenshotCanvasRenderer::paintSelectionPreview(QPainter& painter,
                                                         context.canvasToViewTransform.m22())));
         ScreenshotSelectionShadowRenderer::renderResultShadow(
             painter, selectionView, m_selectionState.cornerRadius * scale,
-            m_selectionState.shadowWidth * scale, m_selectionState.shadowColor,
+            m_selectionState.effectWidth * scale, m_selectionState.effectColor,
             context.devicePixelRatio);
     }
     if (m_selectionState.backgroundOpacityPercent > 0) {
@@ -3729,8 +3828,33 @@ void ScreenshotCanvasRenderer::paintSelectionPreview(QPainter& painter,
     painter.restore();
 }
 
+void ScreenshotCanvasRenderer::paintPinnedRegionEffects(QPainter& painter,
+                                                        const SnowCanvasRenderContext& context) {
+    const auto& style = m_pinnedResultStyle;
+    if (style.effectWidth() <= 0)
+        return;
+    const auto path =
+        screenshotSelectionPath(QRectF(), style.region, style.cornerRadius, style.regionScale);
+    QTransform transform = context.canvasToViewTransform;
+    transform.translate(m_pinnedContentCanvasRect.x(), m_pinnedContentCanvasRect.y());
+    painter.save();
+    painter.setCompositionMode(QPainter::CompositionMode_DestinationOver);
+    if (style.borderType == ScreenshotSelectionBorderType::Border) {
+        painter.setWorldTransform(transform, true);
+        ScreenshotSelectionShadowRenderer::renderBorder(painter, path, style.borderWidth,
+                                                        style.borderColor);
+    } else {
+        m_regionShadowRenderer.render(
+            painter, ScreenshotRegionGeometry::fromPath(path, ScreenshotRegionType::Curve), 0,
+            style.shadowWidth, style.shadowColor, transform, context.exposedRegion);
+    }
+    painter.restore();
+}
+
 void ScreenshotCanvasRenderer::renderAfterCanvas(QPainter& painter,
                                                  const SnowCanvasRenderContext& context) {
+    if (context.purpose == SnowCanvasRenderContext::Purpose::ContentSnapshot)
+        return;
     if (m_renderMode == RenderMode::PinnedResult) {
         const QRectF viewport = pinnedViewportForContext(context).intersected(context.viewportRect);
         if (m_pinnedViewportRect) {
@@ -3757,9 +3881,27 @@ void ScreenshotCanvasRenderer::renderAfterCanvas(QPainter& painter,
         QPainterStateGuard viewportGuard(&painter);
         painter.setClipRect(viewport, Qt::IntersectClip);
         const QRectF contentView = context.canvasToViewTransform.mapRect(m_pinnedContentCanvasRect);
-        ScreenshotResultCompositor::finishLiveSurface(
-            painter, viewport, contentView, m_pinnedResultStyle, context.devicePixelRatio,
-            std::hypot(context.canvasToViewTransform.m11(), context.canvasToViewTransform.m12()));
+        if (m_pinnedResultStyle.region) {
+            // The capture mask and interior effects were painted before annotations.
+            // Trim document overflow to its bounding rectangle, then restore only
+            // the exterior effect margin that this trim erased.
+            QPainterPath contentBounds;
+            contentBounds.addRect(contentView);
+            ScreenshotResultCompositor::maskLiveSurface(painter, viewport, contentBounds);
+            QPainterPath margin;
+            margin.setFillRule(Qt::OddEvenFill);
+            margin.addRect(viewport.united(contentView));
+            margin.addRect(contentView);
+            painter.save();
+            painter.setClipPath(margin, Qt::IntersectClip);
+            paintPinnedRegionEffects(painter, context);
+            painter.restore();
+        } else {
+            ScreenshotResultCompositor::finishLiveSurface(
+                painter, viewport, contentView, m_pinnedResultStyle, context.devicePixelRatio,
+                std::hypot(context.canvasToViewTransform.m11(),
+                           context.canvasToViewTransform.m12()));
+        }
         // Fill behind the composed image and annotations. The compositor has already
         // cleared the exterior of rounded and shaped results, so an earlier fill
         // would be removed along with those pixels.
@@ -3833,7 +3975,11 @@ void ScreenshotCanvasRenderer::renderAfterCanvas(QPainter& painter,
             geometry.rectangular && m_selectionState.present &&
             paintPixelAlignedRectangularMask(painter, QRectF(context.viewportRect),
                                              geometry.effectiveRect, m_maskColor);
-        if (!rectangularMask) {
+        if (!rectangularMask && m_selectionState.present &&
+            effectivePath.fillRule() == Qt::WindingFill) {
+            ScreenshotResultCompositor::fillOutsideSelection(painter, context.viewportRect,
+                                                             effectivePath, m_maskColor);
+        } else if (!rectangularMask) {
             if (geometry.maskPath.isEmpty()) {
                 geometry.maskPath.setFillRule(Qt::OddEvenFill);
                 geometry.maskPath.addRect(QRectF(context.viewportRect));
@@ -3882,7 +4028,7 @@ void ScreenshotCanvasRenderer::renderAfterCanvas(QPainter& painter,
         if (effectsPreview) {
             if (!shaped) {
                 paintSelectionPreview(painter, context);
-            } else if (m_selectionState.shadowWidth > 0) {
+            } else if (m_selectionState.effectWidth > 0) {
                 // Annotations belong to the overall content bounds, not the
                 // added shadow margin. Restore only that margin after drawing.
                 painter.save();
@@ -3971,8 +4117,8 @@ void ScreenshotCanvasRenderer::renderAfterCanvas(QPainter& painter,
                 painter.setRenderHint(QPainter::Antialiasing);
                 painter.save();
                 if (m_selectionState.hoveredEffectHandle !=
-                        ScreenshotSelectionEffectHandle::Shadow &&
-                    m_selectionState.activeEffectHandle != ScreenshotSelectionEffectHandle::Shadow)
+                        ScreenshotSelectionEffectHandle::Width &&
+                    m_selectionState.activeEffectHandle != ScreenshotSelectionEffectHandle::Width)
                     painter.setOpacity(painter.opacity() * 0.5);
                 painter.setPen(QPen(selectionAccent, 1.5 * kScreenshotSelectionShadowControlScale));
                 painter.drawLine(layout.shadowAnchor, layout.shadow);

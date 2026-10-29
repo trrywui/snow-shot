@@ -64,30 +64,11 @@ impl KeyboardInput {
 
 impl KeyObservation {
     pub fn event(&self, at_ms: u64, config: &KeyboardOverlayConfig) -> KeyEvent {
-        let mut modifiers = Vec::with_capacity(4);
-        for (left, right, label_key) in [
-            (0xa2, 0xa3, 0x11),
-            (0xa4, 0xa5, 0x12),
-            (0xa0, 0xa1, 0x10),
-            (0x5b, 0x5c, 0x5b),
-        ] {
-            let left_down = self.pressed[left] != 0;
-            let right_down = self.pressed[right] != 0;
-            if self.alt_gr && left == 0xa2 && !right_down {
-                continue;
-            }
-            if left_down || right_down {
-                let label_key = if self.alt_gr && left == 0xa4 {
-                    0xa5
-                } else {
-                    label_key
-                };
-                modifiers.push((
-                    if left_down { left as u16 } else { right as u16 },
-                    key_label(label_key, self, config),
-                ));
-            }
-        }
+        let modifiers = MODIFIER_KEYS
+            .into_iter()
+            .filter(|&key| self.pressed[usize::from(key)] != 0 && !(self.alt_gr && key == 0xa2))
+            .map(|key| (key, key_label(key, self, config)))
+            .collect();
         KeyEvent {
             at_ms,
             key: self.key,
@@ -98,16 +79,58 @@ impl KeyObservation {
     }
 }
 
+/// Physical modifiers, ordered by family and then left before right.
+pub const MODIFIER_KEYS: [u16; 8] = [0xa2, 0xa3, 0xa4, 0xa5, 0xa0, 0xa1, 0x5b, 0x5c];
+
+pub(crate) fn modifier_label(key: u16, config: &KeyboardOverlayConfig) -> Option<String> {
+    let macos = cfg!(target_os = "macos");
+    let label = match key {
+        0xa0 => "Left Shift",
+        0xa1 => "Right Shift",
+        0xa2 if macos => "Left Control",
+        0xa3 if macos => "Right Control",
+        0xa2 => "Left Ctrl",
+        0xa3 => "Right Ctrl",
+        0xa4 if macos => "Left Option",
+        0xa5 if macos => "Right Option",
+        0xa4 => "Left Alt",
+        0xa5 => "Right Alt",
+        0x5b if macos => "Left Command",
+        0x5c if macos => "Right Command",
+        0x5b => "Left Win",
+        0x5c => "Right Win",
+        _ => return None,
+    };
+    Some(
+        config
+            .labels
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| label.into()),
+    )
+}
+
+/// IOLLEvent.h device-dependent flags preserve each side even when its peer is held.
+#[cfg(any(target_os = "macos", test))]
+pub fn macos_modifier_sides(flags: u64) -> [bool; 8] {
+    [0x1, 0x2000, 0x20, 0x40, 0x2, 0x4, 0x8, 0x10].map(|mask| flags & mask != 0)
+}
+
 fn key_label(key: u16, observation: &KeyObservation, config: &KeyboardOverlayConfig) -> String {
+    if key == 0xa5 && observation.alt_gr {
+        return "AltGr".into();
+    }
+    if let Some(label) = modifier_label(key, config) {
+        return label;
+    }
     if let Some(label) = config.labels.get(&key) {
         return label.clone();
     }
     #[cfg(target_os = "macos")]
     if let Some(label) = match key {
-        0x11 | 0xa2 | 0xa3 => Some("Control"),
-        0x12 | 0xa4 | 0xa5 => Some("Option"),
-        0x10 | 0xa0 | 0xa1 => Some("Shift"),
-        0x5b | 0x5c => Some("Command"),
+        0x11 => Some("Control"),
+        0x12 => Some("Option"),
+        0x10 => Some("Shift"),
         _ => None,
     } {
         return label.into();
@@ -456,7 +479,7 @@ mod platform {
                     .iter()
                     .map(|(_, label)| label.as_str())
                     .collect::<Vec<_>>(),
-                ["Ctrl", "Shift"]
+                ["Left Ctrl", "Left Shift"]
             );
             drop(input);
         }
@@ -533,18 +556,25 @@ impl KeyObservation {
             return None;
         }
         let mut pressed = [0; 256];
-        for (bit, key) in [(18, 0xa2), (19, 0xa4), (17, 0xa0), (20, 0x5b)] {
-            pressed[key] = u8::from(event.modifiers & (1 << bit) != 0);
+        for (key, down) in MODIFIER_KEYS
+            .into_iter()
+            .zip(macos_modifier_sides(event.modifiers))
+        {
+            pressed[usize::from(key)] = u8::from(down);
         }
         let (key, down) = if event.kind == 12 {
-            let (key, bit) = match event.key_code {
-                54 | 55 => (0x5b, 20),
-                56 | 60 => (0xa0, 17),
-                58 | 61 => (0xa4, 19),
-                59 | 62 => (0xa2, 18),
+            let key = match event.key_code {
+                54 => 0x5c,
+                55 => 0x5b,
+                56 => 0xa0,
+                60 => 0xa1,
+                58 => 0xa4,
+                61 => 0xa5,
+                59 => 0xa2,
+                62 => 0xa3,
                 _ => return None,
             };
-            (key, event.modifiers & (1 << bit) != 0)
+            (key, pressed[usize::from(key)] != 0)
         } else {
             (0x100 + event.key_code, event.kind == 10)
         };
@@ -653,6 +683,72 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config() -> KeyboardOverlayConfig {
+        KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0; 4],
+            text_rgba: [255; 4],
+            border_rgba: [0; 4],
+            labels: Default::default(),
+        }
+    }
+
+    #[test]
+    fn physical_modifiers_have_distinct_labels_for_single_keys_and_chords() {
+        let config = config();
+        let mut observation = KeyObservation {
+            at: Instant::now(),
+            key: 0,
+            scan: 0,
+            down: true,
+            layout: 0,
+            pressed: [0; 256],
+            alt_gr: false,
+            generation: 0,
+            extra_info: 0,
+        };
+        for pair in MODIFIER_KEYS.chunks_exact(2) {
+            let labels = [pair[0], pair[1]].map(|key| modifier_label(key, &config).unwrap());
+            assert!(labels[0].starts_with("Left "));
+            assert!(labels[1].starts_with("Right "));
+            for (index, &key) in pair.iter().enumerate() {
+                observation.key = key;
+                observation.pressed = [0; 256];
+                observation.pressed[usize::from(key)] = 128;
+                let event = observation.event(0, &config);
+                assert_eq!(event.label, labels[index]);
+                assert_eq!(event.modifiers, [(key, labels[index].clone())]);
+            }
+            observation.pressed[usize::from(pair[0])] = 128;
+            assert_eq!(
+                observation.event(1, &config).modifiers,
+                [(pair[0], labels[0].clone()), (pair[1], labels[1].clone())]
+            );
+            observation.down = false;
+            observation.pressed[usize::from(pair[1])] = 0;
+            assert_eq!(
+                observation.event(2, &config).modifiers,
+                [(pair[0], labels[0].clone())]
+            );
+            observation.down = true;
+        }
+    }
+
+    #[test]
+    fn macos_device_flags_preserve_each_side_on_peer_release() {
+        for (index, mask) in [0x1, 0x2000, 0x20, 0x40, 0x2, 0x4, 0x8, 0x10]
+            .into_iter()
+            .enumerate()
+        {
+            let mut expected = [false; 8];
+            expected[index] = true;
+            assert_eq!(macos_modifier_sides(mask | 0x1e0000), expected);
+        }
+        assert_eq!(macos_modifier_sides(0x207f), [true; 8]);
+        assert_eq!(macos_modifier_sides(0x1e0000), [false; 8]);
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_keys_preserve_modifier_state_releases_and_generation() {
@@ -663,8 +759,9 @@ mod tests {
             timestamp_ns: 0,
             key_code: 36,
             mouse_button: 0,
+            scroll_delta_y: 0.0,
             keyboard_type: 40,
-            modifiers: (1 << 20) | (1 << 19),
+            modifiers: (1 << 20) | (1 << 19) | 0x8 | 0x20,
             repeat: false,
             text: [0; 16],
             text_len: 0,
@@ -676,7 +773,7 @@ mod tests {
             background_rgba: [0; 4],
             text_rgba: [0; 4],
             border_rgba: [0; 4],
-            labels: [(0x12, "Option".into()), (0x5b, "Command".into())].into(),
+            labels: Default::default(),
         };
         let observation = KeyObservation::from_macos(&input, Instant::now(), 7).unwrap();
         assert_eq!(observation.generation, 7);
@@ -685,7 +782,7 @@ mod tests {
         assert_eq!(event.label, "Return");
         assert_eq!(
             event.modifiers,
-            [(0xa4, "Option".into()), (0x5b, "Command".into())]
+            [(0xa4, "Left Option".into()), (0x5b, "Left Command".into())]
         );
         input.kind = 11;
         assert!(
@@ -704,9 +801,37 @@ mod tests {
         assert_eq!(release.key, 0x5b);
         assert!(!release.down);
         assert!(release.event(40, &config).modifiers.is_empty());
+        for (left_native, right_native, left, right, left_mask, right_mask, family_mask) in [
+            (59, 62, 0xa2, 0xa3, 0x1, 0x2000, 1 << 18),
+            (58, 61, 0xa4, 0xa5, 0x20, 0x40, 1 << 19),
+            (56, 60, 0xa0, 0xa1, 0x2, 0x4, 1 << 17),
+            (55, 54, 0x5b, 0x5c, 0x8, 0x10, 1 << 20),
+        ] {
+            input.key_code = right_native;
+            input.modifiers = family_mask | left_mask | right_mask;
+            let both = KeyObservation::from_macos(&input, Instant::now(), 8).unwrap();
+            assert_eq!(both.key, right);
+            assert!(both.down);
+            assert_eq!(both.event(50, &config).modifiers.len(), 2);
+            input.key_code = left_native;
+            input.modifiers = family_mask | right_mask;
+            let release = KeyObservation::from_macos(&input, Instant::now(), 8).unwrap();
+            assert_eq!(release.key, left);
+            assert!(
+                !release.down,
+                "releasing one side must not look like a press"
+            );
+            assert_eq!(release.event(60, &config).modifiers[0].0, right);
+            input.key_code = right_native;
+            input.modifiers = 0;
+            let release = KeyObservation::from_macos(&input, Instant::now(), 8).unwrap();
+            assert_eq!(release.key, right);
+            assert!(!release.down);
+            assert!(release.event(70, &config).modifiers.is_empty());
+        }
     }
     #[test]
-    fn modifier_sides_collapse_and_altgr_hides_only_synthetic_control() {
+    fn modifier_sides_remain_distinct_and_altgr_hides_only_synthetic_control() {
         let config = KeyboardOverlayConfig {
             font: None,
             keycap_size: 64,
@@ -716,7 +841,7 @@ mod tests {
             labels: [
                 (0x11, "Ctrl".into()),
                 (0x12, "Alt".into()),
-                (0xa5, "AltGr".into()),
+                (0xa5, "Right Alt".into()),
             ]
             .into(),
         };
@@ -735,6 +860,28 @@ mod tests {
         event.pressed[0xa5] = 128;
         assert_eq!(event.event(0, &config).modifiers, [(0xa5, "AltGr".into())]);
         event.pressed[0xa3] = 128;
-        assert_eq!(event.event(0, &config).modifiers.len(), 2);
+        assert_eq!(
+            event.event(0, &config).modifiers,
+            [
+                (
+                    0xa3,
+                    if cfg!(target_os = "macos") {
+                        "Right Control".into()
+                    } else {
+                        "Right Ctrl".into()
+                    }
+                ),
+                (0xa5, "AltGr".into())
+            ]
+        );
+        event.pressed[0xa4] = 128;
+        assert_eq!(event.event(0, &config).modifiers.len(), 3);
+        event.alt_gr = false;
+        let modifiers = event.event(0, &config).modifiers;
+        assert_eq!(
+            modifiers.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [0xa2, 0xa3, 0xa4, 0xa5]
+        );
+        assert_eq!(modifiers.last().unwrap().1, "Right Alt");
     }
 }

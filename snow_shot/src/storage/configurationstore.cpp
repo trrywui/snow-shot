@@ -1,4 +1,5 @@
 #include "snow_shot/shortcuts/screenshotshortcutcontext.h"
+#include "snow_shot/shortcuts/pinnedshortcutcontext.h"
 #include "snow_shot/storage/configurationstore.h"
 #include "snow_shot/clouduploadconfiguration.h"
 #include "snow_shot/app/edition.h"
@@ -8,7 +9,6 @@
 #endif
 
 #include "snow_shot/storage/configurationschema.h"
-#include "snow_shot/storage/settingsadapters.h"
 #include "snow_shot/storage/storagelogging.h"
 #include "snow_shot/shortcuts/shortcutbinding.h"
 
@@ -86,12 +86,13 @@ QMap<QString, QJsonValue> overlayFromDocument(const QJsonObject& document) {
             overlay.insert(entry.key, raw);
         }
     }
-    const QString legacyAutoSaveKey = QStringLiteral("screenshot/auto_save_after_copy");
-    bool legacyAutoSavePresent = false;
-    const QJsonValue legacyAutoSave =
-        valueAtPath(document, legacyAutoSaveKey, &legacyAutoSavePresent);
-    if (legacyAutoSavePresent) {
-        overlay.insert(legacyAutoSaveKey, legacyAutoSave);
+    for (const QString& legacyKey : {QStringLiteral("screenshot/auto_save_after_copy"),
+                                     QStringLiteral("interface/app_font_size_percentage")}) {
+        bool present = false;
+        const QJsonValue raw = valueAtPath(document, legacyKey, &present);
+        if (present) {
+            overlay.insert(legacyKey, raw);
+        }
     }
     return overlay;
 }
@@ -106,7 +107,7 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
     QStringList defaultedLocalKeys;
     const auto bindingsForKey = [&result](const QString& key) {
         return shortcuts::shortcutBindingsFromJson(
-            result.values.value(key), key.startsWith(QStringLiteral("screenshot_shortcuts/")), -1,
+            result.values.value(key), ConfigurationSchema::allowsModifierOnlyShift(key), -1,
             nullptr, nullptr, key == QStringLiteral("screenshot_shortcuts/toggle_guides"));
     };
     // Reserve every explicit binding first, including entries later in the schema.
@@ -119,32 +120,33 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
             defaultedLocalKeys.push_back(entry.key);
         } else {
             auto& assigned = assignedByScope[entry.key.section(u'/', 0, 0)];
-            const QString id = entry.key.section(u'/', 1);
-            for (const auto& binding : bindingsForKey(entry.key)) {
-                assigned.push_back({id, binding});
-            }
+            for (const auto& binding : bindingsForKey(entry.key))
+                assigned.append({entry.key.section(u'/', 1), binding});
         }
     }
     for (const QString& key : defaultedLocalKeys) {
-        const QString scope = key.section(u'/', 0, 0);
-        const QString id = key.section(u'/', 1);
-        auto& assigned = assignedByScope[scope];
+        auto& assigned = assignedByScope[key.section(u'/', 0, 0)];
         const auto defaults = bindingsForKey(key);
+        const auto actionsMayConflict = [&key](const QString& otherAction) {
+            const QString action = key.section(u'/', 1);
+            if (key.startsWith(QStringLiteral("screenshot_shortcuts/")))
+                return shortcuts::screenshotShortcutActionsMayConflict(action, otherAction);
+            if (key.startsWith(QStringLiteral("pin_to_screen_shortcuts/")))
+                return shortcuts::pinnedShortcutActionsMayConflict(action, otherAction);
+            return true;
+        };
         shortcuts::ShortcutBindingList retained;
         for (const auto& binding : defaults) {
             if (std::any_of(assigned.cbegin(), assigned.cend(),
-                            [&binding, &id, &scope](const auto& existing) {
-                                return (scope != QStringLiteral("pin_to_screen_shortcuts") ||
-                                        PinToScreenShortcutSettings::actionsMayConflict(
-                                            existing.first, id)) &&
-                                       (scope != QStringLiteral("screenshot_shortcuts") ||
-                                        shortcuts::screenshotShortcutActionsMayConflict(
-                                            id, existing.first)) &&
-                                       shortcuts::bindingsConflict(existing.second, binding);
+                            [&binding, &actionsMayConflict](const auto& existing) {
+                                return actionsMayConflict(existing.first) &&
+                                       shortcuts::bindingsConflict(
+                                           existing.second, binding,
+                                           shortcuts::ShortcutPolicy::Application);
                             }))
                 continue;
             retained.push_back(binding);
-            assigned.push_back({id, binding});
+            assigned.push_back({key.section(u'/', 1), binding});
         }
         if (retained.size() == defaults.size())
             continue;
@@ -158,6 +160,7 @@ void reconcileLocalShortcutDefaults(MaterializedConfiguration& result,
 }
 
 MaterializedConfiguration materializeConfiguration(const QMap<QString, QJsonValue>& overlay,
+                                                   const QMap<QString, QJsonValue>& defaults,
                                                    QJsonObject document, int schemaVersion,
                                                    ConfigurationCompatibility compatibility,
                                                    ConfigurationOverlayPolicy policy) {
@@ -168,6 +171,12 @@ MaterializedConfiguration materializeConfiguration(const QMap<QString, QJsonValu
     const QMap<QString, QJsonValue> currentOverlay =
         mutateDocument ? ConfigurationSchema::migrateLegacyValues(overlay) : overlay;
     if (mutateDocument) {
+        QJsonObject interfaceValues = result.document.value(QStringLiteral("interface")).toObject();
+        if (interfaceValues.contains(QStringLiteral("app_font_size_percentage"))) {
+            interfaceValues.remove(QStringLiteral("app_font_size_percentage"));
+            result.document.insert(QStringLiteral("interface"), interfaceValues);
+            result.dirty = !replaceAll;
+        }
         QJsonObject screenshot = result.document.value(QStringLiteral("screenshot")).toObject();
         if (screenshot.contains(QStringLiteral("auto_save_after_copy"))) {
             screenshot.remove(QStringLiteral("auto_save_after_copy"));
@@ -188,14 +197,15 @@ MaterializedConfiguration materializeConfiguration(const QMap<QString, QJsonValu
         if (entry.key == kSchemaVersionKey) {
             continue;
         }
+        const QJsonValue defaultValue = defaults.value(entry.key);
 
         const bool present = currentOverlay.contains(entry.key);
         if (!present) {
-            result.values.insert(entry.key, entry.defaultValue);
+            result.values.insert(entry.key, defaultValue);
             if (entry.valueKind == ConfigurationValueKind::ShortcutList)
                 defaultedShortcutKeys.insert(entry.key);
             if (mutateDocument) {
-                insertPath(&result.document, entry.key, entry.defaultValue);
+                insertPath(&result.document, entry.key, defaultValue);
                 if (!replaceAll) {
                     result.dirty = true;
                 }
@@ -262,11 +272,11 @@ MaterializedConfiguration materializeConfiguration(const QMap<QString, QJsonValu
         const ConfigurationNormalization normalized =
             ConfigurationSchema::normalize(entry.key, raw);
         if (!normalized.valid) {
-            result.values.insert(entry.key, entry.defaultValue);
+            result.values.insert(entry.key, defaultValue);
             if (entry.valueKind == ConfigurationValueKind::ShortcutList)
                 defaultedShortcutKeys.insert(entry.key);
             if (mutateDocument) {
-                insertPath(&result.document, entry.key, entry.defaultValue);
+                insertPath(&result.document, entry.key, defaultValue);
                 if (!replaceAll) {
                     result.dirty = true;
                 }
@@ -352,13 +362,25 @@ QByteArray serializedDocument(const QJsonObject& document) {
     }
     return bytes;
 }
+
+QMap<QString, QJsonValue> configurationDefaults(ConfigurationDefaults profile) {
+    QMap<QString, QJsonValue> defaults;
+    for (const auto& entry : ConfigurationSchema::entries())
+        defaults.insert(entry.key, entry.defaultValue);
+    if (profile == ConfigurationDefaults::Portable) {
+        defaults.insert(QStringLiteral("system/auto_start_at_boot"), false);
+        defaults.insert(QStringLiteral("system/context_menu_mode"), QStringLiteral("disabled"));
+    }
+    return defaults;
+}
 } // namespace
 
 ConfigurationStore::ConfigurationStore(QString configurationFile, bool readAvailable,
                                        bool writeAvailable, int debounceMilliseconds,
-                                       QObject* parent)
+                                       QObject* parent, ConfigurationDefaults defaults)
     : QObject(parent), m_configurationFile(std::move(configurationFile)),
-      m_readAvailable(readAvailable), m_writeAvailable(writeAvailable) {
+      m_readAvailable(readAvailable), m_writeAvailable(writeAvailable),
+      m_defaults(configurationDefaults(defaults)) {
     m_flushTimer.setSingleShot(true);
     m_flushTimer.setInterval(std::max(0, debounceMilliseconds));
     connect(&m_flushTimer, &QTimer::timeout, this, [this]() { static_cast<void>(flushNow()); });
@@ -371,7 +393,11 @@ int ConfigurationStore::currentSchemaVersion() {
 
 QJsonValue ConfigurationStore::value(const QString& key) const {
     QMutexLocker locker(&m_mutex);
-    return m_values.value(key, ConfigurationSchema::defaultValue(key));
+    return m_values.value(key, defaultValue(key));
+}
+
+QJsonValue ConfigurationStore::defaultValue(const QString& key) const {
+    return m_defaults.value(key);
 }
 
 QMap<QString, QJsonValue> ConfigurationStore::snapshot() const {
@@ -488,8 +514,8 @@ bool ConfigurationStore::applySnapshot(const QMap<QString, QJsonValue>& values, 
     }
 
     MaterializedConfiguration materialized = materializeConfiguration(
-        values, ConfigurationSchema::completeDefaultDocument(), schemaVersion,
-        ConfigurationCompatibility::Current, ConfigurationOverlayPolicy::ReplaceAll);
+        values, m_defaults, {}, schemaVersion, ConfigurationCompatibility::Current,
+        ConfigurationOverlayPolicy::ReplaceAll);
     const QString customModelsError =
         materialized.customConfigurationsRepaired
             ? tr("Some custom API configurations are invalid and were ignored")
@@ -597,11 +623,10 @@ void ConfigurationStore::relocate(const QString& directory) {
 
 void ConfigurationStore::load() {
     cleanupCorruptBackups(m_configurationFile);
-    QMap<QString, QJsonValue> loaded;
-    for (const ConfigurationSchemaEntry& entry : ConfigurationSchema::entries()) {
-        loaded.insert(entry.key, entry.defaultValue);
-    }
-    QJsonObject document = ConfigurationSchema::completeDefaultDocument();
+    QMap<QString, QJsonValue> loaded = m_defaults;
+    QJsonObject document;
+    for (auto it = m_defaults.cbegin(); it != m_defaults.cend(); ++it)
+        insertPath(&document, it.key(), it.value());
     ConfigurationCompatibility compatibility = ConfigurationCompatibility::Current;
     int version = 1;
     bool dirty = false;
@@ -647,8 +672,8 @@ void ConfigurationStore::load() {
                     qCWarning(storageLog) << error << version;
                 }
                 const MaterializedConfiguration materialized = materializeConfiguration(
-                    overlayFromDocument(parsedObject), parsedObject, version, compatibility,
-                    ConfigurationOverlayPolicy::MergeFromDisk);
+                    overlayFromDocument(parsedObject), m_defaults, parsedObject, version,
+                    compatibility, ConfigurationOverlayPolicy::MergeFromDisk);
                 loaded = materialized.values;
                 document = materialized.document;
                 dirty = materialized.dirty;

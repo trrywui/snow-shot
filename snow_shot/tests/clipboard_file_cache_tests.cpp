@@ -1,4 +1,5 @@
 #include "snow_shot/storage/clipboardfilecache.h"
+#include "snow_shot/app/distribution.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -6,6 +7,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 
 #include <cstdlib>
 #include <iostream>
@@ -145,6 +147,79 @@ void unavailableCacheReportsFilesystemFailure() {
     require(!cache.createDirectory(&error, fixtureTime()) && !error.isEmpty(),
             "an unavailable clipboard cache must report its filesystem error");
 }
+
+void emptyRootDoesNotUseTheWorkingDirectory() {
+    QTemporaryDir root;
+    require(root.isValid(), "empty clipboard cache fixture must be available");
+    const QString previousDirectory = QDir::currentPath();
+    const auto restoreDirectory = qScopeGuard([&] { QDir::setCurrent(previousDirectory); });
+    require(QDir::setCurrent(root.path()), "empty clipboard cache fixture must become current");
+    ClipboardFileCache fixture(root.path());
+    QString error;
+    auto retained = fixture.createDirectory(&error, fixtureTime());
+    require(bool(retained), "unrelated clipboard export must be available");
+    const QString path = writeFile(*retained);
+    retained->retain();
+    retained.reset();
+    ClipboardFileCache empty{QString()};
+    require(!empty.createDirectory(&error, fixtureTime()) && !error.isEmpty(),
+            "an empty clipboard cache root must fail without a relative fallback");
+    empty.removeExpired(fixtureTime().addDays(ClipboardFileCache::RetentionDays));
+    require(QFileInfo::exists(path), "empty cache expiry must preserve working-directory exports");
+}
+
+void defaultRootFollowsTheDistributionPolicy() {
+    namespace distribution = snow_shot::app::distribution;
+    if (!distribution::isStoreManaged()) {
+        require(ClipboardFileCache::defaultRootDirectory() ==
+                    QDir::temp().filePath(QStringLiteral("snow-shot-clipboard")),
+                "standalone clipboard cache must retain its native temporary root");
+        return;
+    }
+    QTemporaryDir root;
+    require(root.isValid(), "Store clipboard fixture must be available");
+    const bool hadLocal = qEnvironmentVariableIsSet("LOCALAPPDATA");
+    const QByteArray previousLocal = qgetenv("LOCALAPPDATA");
+    const auto restoreLocal = qScopeGuard([&] {
+        if (hadLocal)
+            qputenv("LOCALAPPDATA", previousLocal);
+        else
+            qunsetenv("LOCALAPPDATA");
+    });
+    require(qputenv("LOCALAPPDATA", root.path().toUtf8()),
+            "Store clipboard LOCALAPPDATA fixture must be set");
+    const QString storeRoot = ClipboardFileCache::defaultRootDirectory();
+    require(!distribution::writableDataDirectory().isEmpty() &&
+                storeRoot == QDir(distribution::writableDataDirectory())
+                                 .filePath(QStringLiteral("cache/clipboard")),
+            "Store clipboard exports must use package LocalState cache storage");
+    ClipboardFileCache native(root.filePath(QStringLiteral("native-clipboard")));
+    ClipboardFileCache store(storeRoot);
+    QString error;
+    auto sharedDirectory = ClipboardFileCache::shared().createDirectory(&error, fixtureTime());
+    require(sharedDirectory && sharedDirectory->path().startsWith(storeRoot + u'/'),
+            "shared Store clipboard exports must use the package cache root");
+    sharedDirectory.reset();
+    auto nativeDirectory = native.createDirectory(&error, fixtureTime());
+    auto storeDirectory = store.createDirectory(&error, fixtureTime());
+    require(nativeDirectory && storeDirectory, "channel clipboard exports must be available");
+    const QString nativePath = writeFile(*nativeDirectory);
+    const QString storePath = writeFile(*storeDirectory);
+    nativeDirectory->retain();
+    storeDirectory->retain();
+    nativeDirectory.reset();
+    storeDirectory.reset();
+    store.removeExpired(fixtureTime().addDays(ClipboardFileCache::RetentionDays));
+    require(!QFileInfo::exists(storePath) && QFileInfo::exists(nativePath),
+            "Store expiry must preserve standalone clipboard exports");
+    require(qunsetenv("LOCALAPPDATA"), "Store clipboard LOCALAPPDATA fixture must be unset");
+    require(ClipboardFileCache::defaultRootDirectory().isEmpty(),
+            "missing Store storage must not fall back to the shared clipboard root");
+    require(qputenv("LOCALAPPDATA", "relative-store-data"),
+            "relative Store clipboard LOCALAPPDATA fixture must be set");
+    require(ClipboardFileCache::defaultRootDirectory().isEmpty(),
+            "relative Store storage must not create working-directory clipboard exports");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -158,6 +233,10 @@ int main(int argc, char** argv) {
         // Simulate process termination before the writer can release its staging lock.
         std::_Exit(EXIT_SUCCESS);
     }
+    defaultRootFollowsTheDistributionPolicy();
+    emptyRootDoesNotUseTheWorkingDirectory();
+    if (app.arguments().contains(QStringLiteral("--distribution-paths-only")))
+        return EXIT_SUCCESS;
     stagingAndRetainedFilesHaveSeparateLifetimes();
     expiryPreservesRecentAndActiveExports();
     newExportsCleanExpiredFilesWithoutRemovingOtherDirectories();

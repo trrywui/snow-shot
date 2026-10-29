@@ -99,6 +99,38 @@ pub unsafe extern "C" fn snow_viewport_take_speech_bubble_text_edit_request(
     })
 }
 /// # Safety
+/// Handles must be live and outputs writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snow_viewport_take_speech_bubble_text_edit_target(
+    runtime: SnowRuntime,
+    viewport: SnowViewport,
+    out_info: *mut SnowTextElementInfo,
+    out_style: *mut SnowTextStyle,
+    out_found: *mut u8,
+) -> SnowError {
+    ffi_error(|| {
+        if out_info.is_null() || out_style.is_null() || out_found.is_null() {
+            return SnowError::InvalidArgument;
+        }
+        ffi_status(with_runtime_viewport_mut(
+            runtime,
+            viewport,
+            |engine, id| {
+                let target = engine
+                    .take_speech_bubble_text_edit_target(id)
+                    .map_err(SnowError::from)?;
+                write_out(out_found, u8::from(target.is_some()));
+                if let Some((info, style)) = target {
+                    write_out(out_info, snow_text_element_info_from_rust(info));
+                    write_out(out_style, style.into());
+                }
+                Ok(())
+            },
+        ))
+    })
+}
+
+/// # Safety
 /// Input must be readable and outputs writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn snow_speech_bubble_resolve_text_layout(
@@ -130,6 +162,9 @@ pub unsafe extern "C" fn snow_speech_bubble_resolve_text_layout(
                 SnowRectangleShape::Rectangle => snow_draw_engine::HighlightShape::Rectangle,
                 SnowRectangleShape::Ellipse => snow_draw_engine::HighlightShape::Ellipse,
                 SnowRectangleShape::Diamond => snow_draw_engine::HighlightShape::Diamond,
+                SnowRectangleShape::ThoughtBubble => {
+                    snow_draw_engine::HighlightShape::ThoughtBubble
+                }
             },
             center: Point::new(info.center_x, info.center_y),
             width: info.bubble_body_width,
@@ -273,12 +308,138 @@ pub unsafe extern "C" fn snow_viewport_apply_speech_bubble_text_layout_metrics_e
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_bubble_requested_text_target_is_independent_of_selection() {
+        use snow_draw_engine::{
+            ActiveTool, InputEvent, Modifiers, PointerButton, PointerButtons, PointerDevice,
+            PointerEvent, PointerEventType, Runtime, ViewportConfig,
+        };
+
+        let mut engine = Runtime::default();
+        let viewport = engine.create_viewport(ViewportConfig::default()).unwrap();
+        engine
+            .set_viewport_surface_size(viewport, 800, 600)
+            .unwrap();
+        engine
+            .set_viewport_active_tool(viewport, ActiveTool::SpeechBubble)
+            .unwrap();
+        for (kind, x, y) in [
+            (PointerEventType::Down, 100.0, 100.0),
+            (PointerEventType::Move, 200.0, 160.0),
+            (PointerEventType::Up, 200.0, 160.0),
+        ] {
+            engine
+                .process_input(
+                    viewport,
+                    InputEvent::Pointer(PointerEvent {
+                        pressure: None,
+                        timestamp_ms: 0,
+                        pointer_id: 1,
+                        event_type: kind,
+                        device: PointerDevice::Mouse,
+                        position: Point::new(x, y),
+                        button: matches!(kind, PointerEventType::Down | PointerEventType::Up)
+                            .then_some(PointerButton::Primary),
+                        buttons: if kind == PointerEventType::Up {
+                            PointerButtons::default()
+                        } else {
+                            PointerButtons(PointerButtons::PRIMARY)
+                        },
+                        modifiers: Modifiers::default(),
+                    }),
+                )
+                .unwrap();
+        }
+        assert!(engine.selected_ids().is_empty());
+        let mut runtime = SnowRuntimeImpl { runtime: engine };
+        let mut viewport = SnowViewportImpl { id: viewport };
+        let mut info = SnowTextElementInfo::default();
+        let mut style = SnowTextStyle::default();
+        let mut found = 0;
+        unsafe {
+            for (runtime_ptr, viewport_ptr, info_ptr, style_ptr, found_ptr) in [
+                (
+                    std::ptr::null_mut(),
+                    &mut viewport as *mut _,
+                    &mut info as *mut _,
+                    &mut style as *mut _,
+                    &mut found as *mut _,
+                ),
+                (
+                    &mut runtime as *mut _,
+                    std::ptr::null_mut(),
+                    &mut info as *mut _,
+                    &mut style as *mut _,
+                    &mut found as *mut _,
+                ),
+                (
+                    &mut runtime as *mut _,
+                    &mut viewport as *mut _,
+                    std::ptr::null_mut(),
+                    &mut style as *mut _,
+                    &mut found as *mut _,
+                ),
+                (
+                    &mut runtime as *mut _,
+                    &mut viewport as *mut _,
+                    &mut info as *mut _,
+                    std::ptr::null_mut(),
+                    &mut found as *mut _,
+                ),
+                (
+                    &mut runtime as *mut _,
+                    &mut viewport as *mut _,
+                    &mut info as *mut _,
+                    &mut style as *mut _,
+                    std::ptr::null_mut(),
+                ),
+            ] {
+                assert_eq!(
+                    snow_viewport_take_speech_bubble_text_edit_target(
+                        runtime_ptr,
+                        viewport_ptr,
+                        info_ptr,
+                        style_ptr,
+                        found_ptr
+                    ),
+                    SnowError::InvalidArgument
+                );
+            }
+            assert_eq!(
+                snow_viewport_take_speech_bubble_text_edit_target(
+                    &mut runtime,
+                    &mut viewport,
+                    &mut info,
+                    &mut style,
+                    &mut found
+                ),
+                SnowError::Ok
+            );
+            assert_eq!(found, 1, "invalid calls must not consume the request");
+            assert_ne!(info.bubble_id.generation, 0);
+            assert_eq!(
+                snow_viewport_take_speech_bubble_text_edit_target(
+                    &mut runtime,
+                    &mut viewport,
+                    &mut info,
+                    &mut style,
+                    &mut found
+                ),
+                SnowError::Ok
+            );
+            assert_eq!(found, 0, "requests are consumed exactly once");
+        }
+        assert!(runtime.runtime.selected_ids().is_empty());
+    }
+
     #[test]
     fn speech_bubble_ffi_constraints_and_null_validation() {
         for shape in [
             SnowRectangleShape::Rectangle,
             SnowRectangleShape::Ellipse,
             SnowRectangleShape::Diamond,
+            SnowRectangleShape::ThoughtBubble,
         ] {
             let info = SnowTextElementInfo {
                 bubble_body_width: 20.0,
@@ -341,6 +502,7 @@ mod tests {
     fn speech_bubble_abi_values_preserve_existing_tools_and_shapes() {
         assert_eq!(SnowActiveTool::SpeechBubble as u32, 20);
         assert_eq!(SnowShapeKind::SpeechBubble as u32, 7);
+        assert_eq!(SnowRectangleShape::ThoughtBubble as u32, 3);
         assert_eq!(SnowStyleToolbarSource::DefaultSpeechBubble as u32, 32);
         assert_eq!(SnowStyleToolbarSource::SelectedSpeechBubble as u32, 33);
         assert_eq!(SnowSceneDisplayItemKind::SpeechBubble as u32, 10);

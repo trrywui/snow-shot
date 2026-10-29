@@ -2,12 +2,13 @@
 name = "snow-shot-rust-ffi"
 version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "GPL-3.0-or-later"
 
 [lib]
 crate-type = ["staticlib"]
 
 [dependencies]
+snow-webcam = { path = "../snow-crates/crates/snow-webcam" }
 snow-core = { path = "../snow-crates/crates/snow-core" }
 snow-visual-region-detector-c = { path = "../snow-crates/crates/snow-visual-region-detector-c" }
 snow-recording-effects-c = { path = "../snow-crates/crates/snow-recording-effects-c" }

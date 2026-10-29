@@ -19,6 +19,10 @@ class QKeyEvent;
 
 namespace snow_shot::shortcuts {
 
+// Application shortcuts treat the two Enter keys as one command. Native hotkeys retain
+// their platform-specific key identities.
+enum class ShortcutPolicy { Native, Application };
+
 enum class ShortcutPlatform {
     MacOS,
 };
@@ -64,40 +68,52 @@ struct ShortcutIdentity {
 [[nodiscard]] QString canonicalPortableText(const QString& text,
                                             bool allowModifierOnlyShift = false,
                                             bool allowModifierOnlyAlt = false,
-                                            bool allowModifierOnlyControl = false);
+                                            bool allowModifierOnlyControl = false,
+                                            ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] ShortcutBinding canonicalBinding(const ShortcutBinding& binding,
                                                bool allowModifierOnlyShift = false,
                                                bool allowModifierOnlyAlt = false,
-                                               bool allowModifierOnlyControl = false);
-[[nodiscard]] ShortcutBinding bindingFromPortableText(const QString& text,
-                                                      bool allowModifierOnlyShift = false,
-                                                      bool allowModifierOnlyAlt = false);
+                                               bool allowModifierOnlyControl = false,
+                                               ShortcutPolicy policy = ShortcutPolicy::Native);
+[[nodiscard]] ShortcutBinding
+bindingFromPortableText(const QString& text, bool allowModifierOnlyShift = false,
+                        bool allowModifierOnlyAlt = false,
+                        ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] ShortcutBinding bindingFromKeyEvent(const QKeyEvent& event,
                                                   bool allowModifierOnlyShift = false,
-                                                  bool allowModifierOnlyAlt = false);
-[[nodiscard]] ShortcutBindingList bindingsFromPortableText(const QStringList& shortcuts,
-                                                           bool allowModifierOnlyShift = false,
-                                                           int maximumItems = -1,
-                                                           bool allowModifierOnlyAlt = false);
+                                                  bool allowModifierOnlyAlt = false,
+                                                  ShortcutPolicy policy = ShortcutPolicy::Native);
+[[nodiscard]] ShortcutBindingList
+bindingsFromPortableText(const QStringList& shortcuts, bool allowModifierOnlyShift = false,
+                         int maximumItems = -1, bool allowModifierOnlyAlt = false,
+                         ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] QStringList portableTextList(const ShortcutBindingList& bindings);
 [[nodiscard]] QJsonObject shortcutBindingToJson(const ShortcutBinding& binding);
 [[nodiscard]] ShortcutBinding
 shortcutBindingFromJson(const QJsonValue& value, bool allowModifierOnlyShift, bool* valid = nullptr,
-                        bool* changed = nullptr, bool allowModifierOnlyAlt = false);
+                        bool* changed = nullptr, bool allowModifierOnlyAlt = false,
+                        ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] QJsonArray shortcutBindingsToJson(const ShortcutBindingList& bindings);
 [[nodiscard]] ShortcutBindingList
 shortcutBindingsFromJson(const QJsonValue& value, bool allowModifierOnlyShift,
                          int maximumItems = -1, bool* valid = nullptr, bool* changed = nullptr,
-                         bool allowModifierOnlyAlt = false);
-[[nodiscard]] ShortcutIdentity effectiveIdentity(const ShortcutBinding& binding);
-[[nodiscard]] bool bindingsConflict(const ShortcutBinding& first, const ShortcutBinding& second);
+                         bool allowModifierOnlyAlt = false,
+                         ShortcutPolicy policy = ShortcutPolicy::Native);
+[[nodiscard]] ShortcutIdentity effectiveIdentity(const ShortcutBinding& binding,
+                                                 ShortcutPolicy policy = ShortcutPolicy::Native);
+[[nodiscard]] bool bindingsConflict(const ShortcutBinding& first, const ShortcutBinding& second,
+                                    ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] bool
 shortcutMatchesEvent(const ShortcutBinding& binding, const QKeyEvent& event,
-                     Qt::KeyboardModifiers allowedAdditionalModifiers = Qt::NoModifier);
+                     Qt::KeyboardModifiers allowedAdditionalModifiers = Qt::NoModifier,
+                     ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] bool shortcutReleaseMatchesEvent(const ShortcutBinding& binding,
-                                               const QKeyEvent& event);
-[[nodiscard]] quint64 shortcutKeyToken(const ShortcutBinding& binding);
-[[nodiscard]] quint64 eventKeyToken(const QKeyEvent& event);
+                                               const QKeyEvent& event,
+                                               ShortcutPolicy policy = ShortcutPolicy::Native);
+[[nodiscard]] quint64 shortcutKeyToken(const ShortcutBinding& binding,
+                                       ShortcutPolicy policy = ShortcutPolicy::Native);
+[[nodiscard]] quint64 eventKeyToken(const QKeyEvent& event,
+                                    ShortcutPolicy policy = ShortcutPolicy::Native);
 [[nodiscard]] std::optional<quint32> macVirtualKeyForBinding(const ShortcutBinding& binding);
 
 } // namespace snow_shot::shortcuts

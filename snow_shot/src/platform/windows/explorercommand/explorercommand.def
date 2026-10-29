@@ -1,0 +1,4 @@
+LIBRARY SnowShotExplorerCommand
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

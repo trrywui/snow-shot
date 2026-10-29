@@ -55,6 +55,28 @@ SnowCanvasSceneItem rectangle(SnowStrokeRenderingStyle style, int shape = 0) {
     return SnowCanvasSceneItem(source);
 }
 
+SnowCanvasSceneItem speechBubbleRectangle(SnowStrokeRenderingStyle style, QPointF center = {},
+                                          double rotation = 0) {
+    SnowSceneDisplayItem source = rectangle(style);
+    source.kind = SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE;
+    source.center_x = center.x();
+    source.center_y = center.y();
+    source.rotation = rotation;
+    const auto transform =
+        snow_canvas_stroke_rendering::localToCanvas(center.x(), center.y(), rotation);
+    std::array<SnowArrowPathCommand, 5> commands{};
+    const std::array<QPointF, 5> vertices{{{-90, -45}, {90, -45}, {90, 45}, {-90, 45}, {-90, -45}}};
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        commands[i].kind =
+            i == 0 ? SNOW_ARROW_PATH_COMMAND_MOVE_TO : SNOW_ARROW_PATH_COMMAND_LINE_TO;
+        const auto point = transform.map(vertices[i]);
+        commands[i].point = {point.x(), point.y()};
+    }
+    source.arrow_path_commands = commands.data();
+    source.arrow_path_command_count = static_cast<std::uint32_t>(commands.size());
+    return SnowCanvasSceneItem(source);
+}
+
 SnowCanvasSceneItem arrow(SnowStrokeRenderingStyle style,
                           SnowArrowType route = SNOW_ARROW_TYPE_STRAIGHT,
                           SnowArrowhead head = SNOW_ARROWHEAD_ARROW) {
@@ -105,6 +127,79 @@ QImage render(const SnowCanvasSceneItem& item, double zoom = 1, double dpr = 1) 
     return image;
 }
 
+void arrowOutlinesCoverGeometryAndPreserveDisabledPixels() {
+    for (const auto style :
+         {SNOW_STROKE_RENDERING_STYLE_ARCHITECT, SNOW_STROKE_RENDERING_STYLE_ARTIST,
+          SNOW_STROKE_RENDERING_STYLE_CARTOONIST}) {
+        for (const auto route :
+             {SNOW_ARROW_TYPE_STRAIGHT, SNOW_ARROW_TYPE_CURVE, SNOW_ARROW_TYPE_ELBOW}) {
+            for (const auto pattern :
+                 {SNOW_STROKE_STYLE_SOLID, SNOW_STROKE_STYLE_DASHED, SNOW_STROKE_STYLE_DOTTED}) {
+                for (const auto head :
+                     {SNOW_ARROWHEAD_ARROW, SNOW_ARROWHEAD_TRIANGLE, SNOW_ARROWHEAD_CIRCLE_OUTLINE,
+                      SNOW_ARROWHEAD_DIAMOND_OUTLINE}) {
+                    auto item = arrow(style, route, head);
+                    item.arrow_stroke_style = pattern;
+                    const QImage plain = render(item);
+                    item.arrow_outline_color = {255, 0, 100, 128};
+                    require(render(item) == plain,
+                            "zero outline width must preserve existing pixels");
+                    item.arrow_outline_width = 8;
+                    item.arrow_outline_color.a = 0;
+                    require(render(item) == plain,
+                            "transparent outline must preserve existing pixels");
+                    item.arrow_outline_color.a = 128;
+                    const QImage outlined = render(item);
+                    require(outlined != plain,
+                            "every arrow route, pattern, and head must support outlines");
+                    const auto bounds =
+                        snow_canvas_render_geometry::sceneItemBounds(displayInfo(), item)
+                            .adjusted(-1, -1, 1, 1)
+                            .toAlignedRect();
+                    bool outerInk = false;
+                    for (int y = 0; y < outlined.height(); ++y) {
+                        for (int x = 0; x < outlined.width(); ++x) {
+                            require(bounds.contains(x, y) || qAlpha(outlined.pixel(x, y)) == 0,
+                                    "outline pixels remain inside culling bounds");
+                            if (qAlpha(plain.pixel(x, y)) == 0 &&
+                                qAlpha(outlined.pixel(x, y)) > 0) {
+                                outerInk = true;
+                                require(
+                                    qAlpha(outlined.pixel(x, y)) <= 129,
+                                    "overlapping outline contours must receive alpha only once");
+                            }
+                        }
+                    }
+                    require(outerInk, "outline extends the rendered arrow silhouette");
+                }
+            }
+        }
+    }
+    auto item = arrow(SNOW_STROKE_RENDERING_STYLE_ARCHITECT);
+    item.arrow_outline_width = 8;
+    item.arrow_outline_color = {255, 0, 100, 128};
+    render(item);
+    snow_canvas_stroke_rendering::takeDiagnostics();
+    item.arrow_outline_color = {30, 180, 10, 200};
+    render(item, 1.5, 2.0);
+    require(snow_canvas_stroke_rendering::takeDiagnostics().geometryBuilds == 0,
+            "outline color, zoom, and DPI changes reuse coverage geometry");
+    item.stroke.a = 0;
+    const auto outlineOnly = render(item);
+    require(qAlpha(outlineOnly.pixel(160, 113)) > 0,
+            "outline remains visible with transparent arrow stroke");
+    item.has_bound_text_element = 1;
+    item.arrow_text_bounds[0] = -22;
+    item.arrow_text_bounds[1] = -9;
+    item.arrow_text_bounds[2] = 22;
+    item.arrow_text_bounds[3] = 9;
+    const auto labeled = render(item);
+    for (int y = 96; y < 124; ++y)
+        for (int x = 133; x < 187; ++x)
+            require(qAlpha(labeled.pixel(x, y)) == 0,
+                    "outline preserves transparent label exclusion");
+}
+
 void architectKeepsTheOriginalFastPath() {
     auto item = rectangle(SNOW_STROKE_RENDERING_STYLE_ARCHITECT);
     const QImage original = render(item);
@@ -127,6 +222,230 @@ void stylesAreStableAndDistinct() {
         require(render(cartoon) == cartoonImage, "repeated rendering must not change the stroke");
         cartoon.stroke_rendering_seed = 0;
         require(render(cartoon) == render(cartoon), "seed zero must remain deterministic");
+    }
+}
+
+void speechBubbleFillsKeepCanvasCoordinates() {
+    for (const QPointF center : {QPointF(), QPointF(13, -9)}) {
+        for (double rotation : {0.0, 0.37}) {
+            for (auto fill : {SNOW_FILL_STYLE_SOLID, SNOW_FILL_STYLE_LINE,
+                              SNOW_FILL_STYLE_CROSS_LINE, SNOW_FILL_STYLE_BORDER}) {
+                auto architect =
+                    speechBubbleRectangle(SNOW_STROKE_RENDERING_STYLE_ARCHITECT, center, rotation);
+                architect.stroke.a = 0;
+                architect.fill = {30, 80, 220, 128};
+                architect.fill_style = fill;
+                architect.opacity = 0.5;
+                for (double zoom : {0.75, 1.25}) {
+                    for (double dpr : {1.0, 1.5}) {
+                        const auto expected = render(architect, zoom, dpr);
+                        for (auto style : {SNOW_STROKE_RENDERING_STYLE_ARTIST,
+                                           SNOW_STROKE_RENDERING_STYLE_CARTOONIST}) {
+                            auto styled = architect;
+                            styled.stroke_rendering_style = style;
+                            require(render(styled, zoom, dpr) == expected,
+                                    "bubble rendering styles preserve canvas-space fill patterns "
+                                    "under translation, rotation, zoom and DPR changes");
+                            styled.stroke.a = 128;
+                            const QRect interior(
+                                static_cast<int>((160 + center.x() * zoom) * dpr) - 8,
+                                static_cast<int>((110 + center.y() * zoom) * dpr) - 8, 16, 16);
+                            require(render(styled, zoom, dpr).copy(interior) ==
+                                        expected.copy(interior),
+                                    "visible styled bubble ink leaves the interior fill unchanged");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void speechBubbleRenderingStylesPreserveDashAndDotMetrics() {
+    for (auto pattern : {SNOW_STROKE_STYLE_DASHED, SNOW_STROKE_STYLE_DOTTED}) {
+        for (auto style :
+             {SNOW_STROKE_RENDERING_STYLE_ARCHITECT, SNOW_STROKE_RENDERING_STYLE_ARTIST,
+              SNOW_STROKE_RENDERING_STYLE_CARTOONIST}) {
+            auto item = speechBubbleRectangle(style);
+            item.stroke_style = pattern;
+            const auto image = render(item);
+            const auto coverage = [&image](int x) {
+                int alpha = 0;
+                for (int y = 58; y <= 72; ++y)
+                    alpha = std::max(alpha, qAlpha(image.pixel(x, y)));
+                return alpha;
+            };
+            // The top edge starts at x=70 with a two-pixel stroke. Check established
+            // mark centers and gaps away from the corners, allowing the styled edge
+            // to bend vertically without changing the dash or dot measurements.
+            const bool dashed = pattern == SNOW_STROKE_STYLE_DASHED;
+            const double period = dashed ? 16.0 : 6.02;
+            for (double distance = period * 2; distance < 160; distance += period) {
+                const int mark = static_cast<int>(70 + distance + (dashed ? 4.0 : 0.0));
+                const int gap = static_cast<int>(70 + distance + (dashed ? 12.0 : 2.5));
+                require(coverage(mark) > 64 && coverage(gap) == 0,
+                        "bubble rendering styles preserve shape dash gaps and circular dots");
+            }
+        }
+    }
+}
+
+void speechBubbleContoursRetainFillsPatternsOpacityAndCaches() {
+    std::vector<SnowArrowPathCommand> commands;
+    QPainterPath contour;
+    contour.setFillRule(Qt::WindingFill);
+    for (double cx : {-50.0, 50.0}) {
+        for (int vertex = 0; vertex <= 70; ++vertex) {
+            const double angle = vertex == 70 ? 0.0 : vertex * 2 * 3.14159265358979323846 / 70;
+            const QPointF point(cx + 25 * std::cos(angle), 25 * std::sin(angle));
+            SnowArrowPathCommand command{};
+            command.kind =
+                vertex == 0 ? SNOW_ARROW_PATH_COMMAND_MOVE_TO : SNOW_ARROW_PATH_COMMAND_LINE_TO;
+            command.point = {point.x(), point.y()};
+            commands.push_back(command);
+            if (vertex == 0)
+                contour.moveTo(point);
+            else
+                contour.lineTo(point);
+        }
+        contour.closeSubpath();
+    }
+    std::vector<SnowPathChunk> chunks;
+    for (std::size_t offset = 0; offset < commands.size(); offset += 64) {
+        SnowPathChunk chunk{};
+        chunk.stable_id = chunks.size() + 1;
+        chunk.command_start = chunk.command_offset = static_cast<std::uint32_t>(offset);
+        chunk.command_count =
+            static_cast<std::uint32_t>(std::min<std::size_t>(64, commands.size() - offset));
+        if (offset != 0) {
+            chunk.start_x = commands[offset - 1].point.x;
+            chunk.start_y = commands[offset - 1].point.y;
+        }
+        chunk.min_x = -75;
+        chunk.min_y = -25;
+        chunk.max_x = 75;
+        chunk.max_y = 25;
+        chunks.push_back(chunk);
+    }
+    SnowPathChunkRange range{};
+    range.insert_chunk_count = static_cast<std::uint32_t>(chunks.size());
+    for (auto style :
+         {SNOW_STROKE_RENDERING_STYLE_ARTIST, SNOW_STROKE_RENDERING_STYLE_CARTOONIST}) {
+        for (auto pattern :
+             {SNOW_STROKE_STYLE_SOLID, SNOW_STROKE_STYLE_DASHED, SNOW_STROKE_STYLE_DOTTED}) {
+            SnowSceneDisplayItem raw = rectangle(style);
+            raw.kind = SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE;
+            raw.stroke_style = pattern;
+            raw.arrow_stroke_style = pattern;
+            raw.stroke.a = 128;
+            raw.opacity = 0.5;
+            raw.arrow_path_commands = commands.data();
+            raw.arrow_path_command_count = static_cast<std::uint32_t>(commands.size());
+            SnowCanvasSceneItem unchunked(raw);
+            raw.arrow_path_commands = nullptr;
+            raw.arrow_path_command_count = 0;
+            SnowCanvasSceneItem chunked(raw);
+            require(chunked.applyPathGeometryPatch(
+                        0, 1, &range, 1, chunks.data(), static_cast<std::uint32_t>(chunks.size()),
+                        commands.data(), static_cast<std::uint32_t>(commands.size()), true, true),
+                    "accept bubble contours crossing chunk boundaries");
+            snow_canvas_stroke_rendering::takeDiagnostics();
+            const QImage original = render(chunked);
+            const auto built = snow_canvas_stroke_rendering::takeDiagnostics();
+            require(built.geometryBuilds == 1 &&
+                        built.strokeBuilds == (pattern == SNOW_STROKE_STYLE_SOLID ? 2u : 1u),
+                    "bubble patterns use the existing single/double trace policy");
+            require(original == render(unchunked),
+                    "chunking must preserve styled disconnected contours");
+            require(snow_canvas_stroke_rendering::geometry(chunked).originalFill == contour,
+                    "hand-drawn bubbles retain their exact original fill contours");
+            auto rotatedCommands = commands;
+            const auto transform = snow_canvas_stroke_rendering::localToCanvas(13, -9, 0.37);
+            for (auto& command : rotatedCommands) {
+                const auto point = transform.map(QPointF(command.point.x, command.point.y));
+                command.point = {point.x(), point.y()};
+            }
+            auto rotatedRaw = raw;
+            rotatedRaw.center_x = 13;
+            rotatedRaw.center_y = -9;
+            rotatedRaw.rotation = 0.37;
+            rotatedRaw.arrow_path_commands = rotatedCommands.data();
+            rotatedRaw.arrow_path_command_count =
+                static_cast<std::uint32_t>(rotatedCommands.size());
+            const SnowCanvasSceneItem rotated(rotatedRaw);
+            const auto& expectedInk = snow_canvas_stroke_rendering::geometry(chunked).ink;
+            const auto& rotatedInk = snow_canvas_stroke_rendering::geometry(rotated).ink;
+            require(expectedInk.elementCount() == rotatedInk.elementCount(),
+                    "bubble transforms preserve seeded contour topology");
+            for (int i = 0; i < expectedInk.elementCount(); ++i) {
+                const auto a = expectedInk.elementAt(i);
+                const auto b = rotatedInk.elementAt(i);
+                require(QLineF(QPointF(a.x, a.y), QPointF(b.x, b.y)).length() < 1e-6,
+                        "bubble transforms preserve local hand-drawn ink");
+            }
+            require(original.pixelColor(160, 110).alpha() == 0,
+                    "disconnected bubble contours never acquire connecting strokes");
+            for (int y = 0; y < original.height(); ++y)
+                for (int x = 0; x < original.width(); ++x)
+                    require(original.pixelColor(x, y).alpha() <= 64,
+                            "translucent bubble strokes apply opacity exactly once");
+            snow_canvas_stroke_rendering::takeDiagnostics();
+            for (double zoom : {0.75, 1.25}) {
+                for (double dpr : {1.0, 1.5, 2.0})
+                    require(render(chunked, zoom, dpr) == render(chunked, zoom, dpr),
+                            "zoom and DPR preserve deterministic bubble coverage");
+                auto info = displayInfo();
+                info.camera_zoom = zoom;
+                QImage full(320, 220, QImage::Format_ARGB32_Premultiplied);
+                full.fill(Qt::transparent);
+                paint(full, chunked, info, QRegion(full.rect()));
+                QImage tiled(full.size(), full.format());
+                tiled.fill(Qt::transparent);
+                for (int y = 0; y < full.height(); y += 64)
+                    for (int x = 0; x < full.width(); x += 64)
+                        paint(tiled, chunked, info, QRegion(QRect(x, y, 64, 64)));
+                require(full == tiled, "partial bubble repaint matches complete coverage");
+                const QRect bounds = snow_canvas_render_geometry::sceneItemBounds(info, chunked)
+                                         .adjusted(-1, -1, 1, 1)
+                                         .toAlignedRect();
+                const QRect coldBounds =
+                    snow_canvas_render_geometry::sceneItemBounds(
+                        info, static_cast<const SnowSceneDisplayItem&>(chunked))
+                        .adjusted(-1, -1, 1, 1)
+                        .toAlignedRect();
+                for (int y = 0; y < full.height(); ++y)
+                    for (int x = 0; x < full.width(); ++x)
+                        require((bounds.contains(x, y) && coldBounds.contains(x, y)) ||
+                                    qAlpha(full.pixel(x, y)) == 0,
+                                "cold and cached bubble bounds include all styled ink");
+            }
+            chunked.stroke = {220, 30, 40, 255};
+            chunked.opacity = 0.75;
+            static_cast<void>(render(chunked));
+            const auto warm = snow_canvas_stroke_rendering::takeDiagnostics();
+            require(warm.geometryBuilds == 0 && warm.strokeBuilds == 0,
+                    "bubble geometry survives recolor, opacity, zoom and DPR changes");
+            chunked.stroke.a = 0;
+            for (auto fill : {SNOW_FILL_STYLE_SOLID, SNOW_FILL_STYLE_LINE,
+                              SNOW_FILL_STYLE_CROSS_LINE, SNOW_FILL_STYLE_BORDER}) {
+                chunked.fill = {30, 80, 220, 128};
+                chunked.fill_style = fill;
+                auto architect = chunked;
+                architect.stroke_rendering_style = SNOW_STROKE_RENDERING_STYLE_ARCHITECT;
+                require(render(chunked) == render(architect),
+                        "all bubble fills stay identical to the original contours");
+            }
+            chunked.stroke.a = 255;
+            chunked.stroke_width = 5;
+            static_cast<void>(render(chunked));
+            require(snow_canvas_stroke_rendering::takeDiagnostics().geometryBuilds == 1,
+                    "stroke width changes invalidate bubble ink geometry");
+            chunked.stroke_rendering_seed = 0;
+            static_cast<void>(render(chunked));
+            require(snow_canvas_stroke_rendering::takeDiagnostics().geometryBuilds == 1 &&
+                        render(chunked) == render(chunked),
+                    "changing to seed zero rebuilds deterministic bubble ink");
+        }
     }
 }
 
@@ -288,12 +607,16 @@ void clippingAndBoundsIncludeStyledInk() {
 
 void retainedOverlayMatchesSceneArrow() {
     auto scene = arrow(SNOW_STROKE_RENDERING_STYLE_CARTOONIST, SNOW_ARROW_TYPE_CURVE);
+    scene.arrow_outline_width = 8;
+    scene.arrow_outline_color = {200, 100, 10, 128};
     SnowOverlayDisplayItem raw{};
     raw.kind = SNOW_OVERLAY_DISPLAY_ITEM_FOCUS_CONNECTION;
     raw.width = scene.width;
     raw.height = scene.height;
     raw.stroke = scene.stroke;
     raw.stroke_width = scene.stroke_width;
+    raw.arrow_outline_color = scene.arrow_outline_color;
+    raw.arrow_outline_width = scene.arrow_outline_width;
     raw.stroke_rendering_style = scene.stroke_rendering_style;
     raw.stroke_rendering_seed = scene.stroke_rendering_seed;
     raw.arrow_type = scene.arrow_type;
@@ -506,6 +829,32 @@ void runtimeArrowRecolourAndOpacityRetainInk() {
                 diagnostics.geometryBuilds == 0 && diagnostics.strokeBuilds == 0 &&
                 diagnostics.coverageUnions == 0 && diagnostics.cacheAllocations == 0,
             "real Rust colour/opacity reset patches must retain native chunks and sketch ink");
+
+    style.arrowOutlineWidth = 8;
+    style.arrowOutlineColor = QColor(12, 160, 240, 128);
+    require(canvas.setCanvasShapeStylePatch(style,
+                                            SnowCanvasShapeStylePropertyArrowOutlineWidth |
+                                                SnowCanvasShapeStylePropertyArrowOutlineColor,
+                                            SnowCanvasShapeKind::Arrow) &&
+                cache.sync(handle, viewport.get()),
+            "enable outline on a retained arrow");
+    const auto outlined = render(cache.sceneItems()[0]);
+    snow_canvas_stroke_rendering::takeDiagnostics();
+    const auto outlinedRevision = cache.sceneItems()[0].strokeRenderingGeometryRevision();
+    const auto outlinedChunk = cache.sceneItems()[0].pathChunks()[0].cacheId;
+    style.arrowOutlineColor = QColor(240, 180, 12, 128);
+    require(canvas.setCanvasShapeStylePatch(style, SnowCanvasShapeStylePropertyArrowOutlineColor,
+                                            SnowCanvasShapeKind::Arrow) &&
+                cache.sync(handle, viewport.get()),
+            "recolour an outlined arrow through Rust and the retained display cache");
+    require(render(cache.sceneItems()[0]) != outlined,
+            "outline recolour updates the exported pixels");
+    require(cache.sceneItems()[0].strokeRenderingGeometryRevision() == outlinedRevision,
+            "outline colour changes preserve native geometry revisions");
+    require(cache.sceneItems()[0].pathChunks()[0].cacheId == outlinedChunk,
+            "outline colour changes preserve retained path chunks");
+    require(snow_canvas_stroke_rendering::takeDiagnostics().geometryBuilds == 0,
+            "outline colour changes reuse cached coverage geometry");
 
     const QPainterPath before = snow_canvas_stroke_rendering::geometry(cache.sceneItems()[0]).ink;
     const auto rotation = snow_canvas_stroke_rendering::localToCanvas(0, 0, 0.37);
@@ -797,8 +1146,18 @@ void writeMatrix(const QString& output, double dpr = 1, bool transparent = false
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
     QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/segoeui.ttf"));
+    if (application.arguments().contains(QStringLiteral("--arrow-outline-only"))) {
+        arrowOutlinesCoverGeometryAndPreserveDisabledPixels();
+        runtimeArrowRecolourAndOpacityRetainInk();
+        retainedOverlayMatchesSceneArrow();
+        return 0;
+    }
+    arrowOutlinesCoverGeometryAndPreserveDisabledPixels();
     architectKeepsTheOriginalFastPath();
     stylesAreStableAndDistinct();
+    speechBubbleFillsKeepCanvasCoordinates();
+    speechBubbleRenderingStylesPreserveDashAndDotMetrics();
+    speechBubbleContoursRetainFillsPatternsOpacityAndCaches();
     serialNumberStrokeTypesOnlyChangeOutlinedRings();
     warmGeometrySurvivesColourAndOpacityChanges();
     translucentInkReceivesOpacityOnce();

@@ -301,6 +301,331 @@
     </message>
 </context>
 <context>
+    <name>ResultDocsPage</name>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="29"/>
+        <source>Success</source>
+        <translation>成功</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="30"/>
+        <source>Confirm a completed operation and offer a next step.</source>
+        <translation>确认操作已完成，并提供下一步操作。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="31"/>
+        <source>Information</source>
+        <translation>信息提示</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="32"/>
+        <source>Explain the current state before the user continues.</source>
+        <translation>在用户继续操作前说明当前状态。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="33"/>
+        <source>Warning</source>
+        <translation>警告</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="34"/>
+        <source>Call attention to a result that needs the user&apos;s review.</source>
+        <translation>提醒用户关注需要确认的结果。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="36"/>
+        <source>Error with details</source>
+        <translation>错误与详情</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="37"/>
+        <source>Provide a concise explanation, recovery actions, and additional details.</source>
+        <translation>提供简明说明、恢复操作和补充详情。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="39"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="110"/>
+        <source>403</source>
+        <translation>403</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="40"/>
+        <source>Explain that the requested page requires permission.</source>
+        <translation>说明访问请求的页面需要相应权限。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="41"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="116"/>
+        <source>404</source>
+        <translation>404</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="42"/>
+        <source>Help the user recover when a page cannot be found.</source>
+        <translation>找不到页面时，帮助用户返回可用页面。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="43"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="122"/>
+        <source>500</source>
+        <translation>500</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="44"/>
+        <source>Offer a recovery path when the server is unavailable.</source>
+        <translation>服务器不可用时，提供恢复操作。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="45"/>
+        <source>Custom icon</source>
+        <translation>自定义图标</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="46"/>
+        <source>Use a QIcon for a custom symbol. A null icon restores the status icon.</source>
+        <translation>使用 QIcon 自定义图标，空图标可恢复默认状态图标。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="48"/>
+        <source>Custom widgets</source>
+        <translation>自定义控件</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="49"/>
+        <source>Supply native Qt widgets for the icon, title, subtitle, actions, or body.</source>
+        <translation>使用原生 Qt 控件自定义图标、标题、副标题、操作区或正文。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="52"/>
+        <source>Component tokens</source>
+        <translation>组件 Token</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="53"/>
+        <source>Adjust title, subtitle, and icon sizes and the space around the actions.</source>
+        <translation>调整标题、副标题、图标的大小，以及操作区周围的间距。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="55"/>
+        <source>Semantic styling</source>
+        <translation>语义化样式</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="56"/>
+        <source>Style the result&apos;s root, icon, title, subtitle, actions, and body independently.</source>
+        <translation>分别设置结果组件的根容器、图标、标题、副标题、操作区和正文样式。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="59"/>
+        <source>Narrow layout</source>
+        <translation>窄屏布局</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="60"/>
+        <source>Text wraps to the available width. A vertical action group fits a narrow panel.</source>
+        <translation>文本根据可用宽度自动换行，垂直排列的操作按钮适合窄面板。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="85"/>
+        <source>Result</source>
+        <translation>结果</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="91"/>
+        <source>Show the outcome of an operation with a clear explanation and next steps.</source>
+        <translation>展示操作结果，并提供清晰说明和后续操作。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="98"/>
+        <source>Your report is ready to review</source>
+        <translation>报告已准备好，可以查看</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="99"/>
+        <source>Review the details before sharing it with your team.</source>
+        <translation>与团队分享前，请先查看详情。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="105"/>
+        <source>Some items need your attention</source>
+        <translation>部分项目需要你关注</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="106"/>
+        <source>Review the highlighted items before continuing.</source>
+        <translation>继续操作前，请先确认突出显示的项目。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="111"/>
+        <source>Sorry, you are not authorized to access this page.</source>
+        <translation>抱歉，你没有访问此页面的权限。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="113"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="119"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="125"/>
+        <source>Back home</source>
+        <translation>返回首页</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="117"/>
+        <source>Sorry, the page you visited does not exist.</source>
+        <translation>抱歉，你访问的页面不存在。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="123"/>
+        <source>Sorry, something went wrong. Please try again later.</source>
+        <translation>抱歉，出现了一些问题，请稍后重试。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="225"/>
+        <source>Your changes have been saved</source>
+        <translation>你的更改已保存</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="226"/>
+        <source>Everything is up to date. You can continue working.</source>
+        <translation>所有内容均已更新，可以继续工作。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="228"/>
+        <source>Run again</source>
+        <translation>再次执行</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="235"/>
+        <source>The operation was completed again successfully.</source>
+        <translation>已再次成功完成操作。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="248"/>
+        <source>Submission failed</source>
+        <translation>提交失败</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="249"/>
+        <source>Please check the following information and try again.</source>
+        <translation>请检查以下信息后重试。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="251"/>
+        <source>Try again</source>
+        <translation>重试</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="252"/>
+        <source>Cancel</source>
+        <translation>取消</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="256"/>
+        <source>The submitted information has these problems:</source>
+        <translation>提交的信息存在以下问题：</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="262"/>
+        <source>The account name is already in use.</source>
+        <translation>该账户名称已被使用。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="264"/>
+        <source>The selected plan is no longer available.</source>
+        <translation>所选方案已不可用。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="271"/>
+        <source>Welcome back</source>
+        <translation>欢迎回来</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="272"/>
+        <source>Choose a custom symbol or restore the default information icon.</source>
+        <translation>使用自定义图标，或恢复默认的信息图标。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="286"/>
+        <source>Use custom icon</source>
+        <translation>使用自定义图标</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="287"/>
+        <source>Use default icon</source>
+        <translation>使用默认图标</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="304"/>
+        <source>Ready</source>
+        <translation>已就绪</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="318"/>
+        <source>Everything is ready</source>
+        <translation>一切准备就绪</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="325"/>
+        <source>Native widgets preserve keyboard navigation, selection, and accessibility.</source>
+        <translation>原生控件保留键盘导航、文本选择和无障碍支持。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="331"/>
+        <source>This selectable body text is an ordinary QLabel supplied by the application.</source>
+        <translation>这段可选择的正文是应用提供的普通 QLabel。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="336"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="352"/>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="362"/>
+        <source>Continue</source>
+        <translation>继续</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="342"/>
+        <source>A compact confirmation</source>
+        <translation>紧凑的确认提示</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="343"/>
+        <source>Smaller type and a 48-pixel icon keep this result compact.</source>
+        <translation>较小的字体和 48 像素图标使结果展示更加紧凑。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="358"/>
+        <source>Styled for your workspace</source>
+        <translation>适合工作区的样式</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="359"/>
+        <source>Semantic styles adapt this result to the current theme.</source>
+        <translation>语义样式使结果组件适应当前主题。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="364"/>
+        <source>The body and title use separate semantic styles.</source>
+        <translation>正文和标题使用各自的语义样式。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="384"/>
+        <source>A few details still need your review</source>
+        <translation>还有一些细节需要你确认</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="385"/>
+        <source>This result is limited to 320 logical pixels so longer text wraps naturally.</source>
+        <translation>此结果组件的宽度限制为 320 个逻辑像素，较长文本会自然换行。</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="390"/>
+        <source>Review details</source>
+        <translation>查看详情</translation>
+    </message>
+    <message>
+        <location filename="../../../examples/theme-demo/result_docs_page.cpp" line="391"/>
+        <source>Do this later</source>
+        <translation>稍后处理</translation>
+    </message>
+</context>
+<context>
     <name>adqt::widgets::AdAlert</name>
     <message>
         <location filename="../src/widgets/alert.cpp" line="529"/>
@@ -657,22 +982,22 @@
 <context>
     <name>adqt::widgets::AdFormItem</name>
     <message>
-        <location filename="../src/widgets/form.cpp" line="1583"/>
+        <location filename="../src/widgets/form.cpp" line="1613"/>
         <source>This field</source>
         <translation>此字段</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="1588"/>
+        <location filename="../src/widgets/form.cpp" line="1618"/>
         <source>%1 is required.</source>
         <translation>%1为必填项。</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="1991"/>
+        <location filename="../src/widgets/form.cpp" line="2027"/>
         <source>(optional)</source>
         <translation>（可选）</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="2261"/>
+        <location filename="../src/widgets/form.cpp" line="2297"/>
         <source>Required</source>
         <translation>必填</translation>
     </message>
@@ -680,30 +1005,30 @@
 <context>
     <name>adqt::widgets::AdFormList</name>
     <message>
-        <location filename="../src/widgets/form.cpp" line="2517"/>
-        <location filename="../src/widgets/form.cpp" line="2731"/>
+        <location filename="../src/widgets/form.cpp" line="2553"/>
+        <location filename="../src/widgets/form.cpp" line="2767"/>
         <source>Add row</source>
         <translation>添加行</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="2666"/>
-        <location filename="../src/widgets/form.cpp" line="2735"/>
+        <location filename="../src/widgets/form.cpp" line="2702"/>
+        <location filename="../src/widgets/form.cpp" line="2771"/>
         <source>Remove</source>
         <translation>移除</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="2667"/>
-        <location filename="../src/widgets/form.cpp" line="2736"/>
+        <location filename="../src/widgets/form.cpp" line="2703"/>
+        <location filename="../src/widgets/form.cpp" line="2772"/>
         <source>Remove row</source>
         <translation>移除行</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="2773"/>
+        <location filename="../src/widgets/form.cpp" line="2809"/>
         <source>Value</source>
         <translation>值</translation>
     </message>
     <message>
-        <location filename="../src/widgets/form.cpp" line="2815"/>
+        <location filename="../src/widgets/form.cpp" line="2851"/>
         <source>Remove row %1</source>
         <translation>移除第 %1 行</translation>
     </message>
@@ -802,121 +1127,121 @@
 <context>
     <name>adqt::widgets::AdModal</name>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="933"/>
+        <location filename="../src/widgets/modal.cpp" line="972"/>
         <source>Information</source>
         <translation>信息</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="936"/>
+        <location filename="../src/widgets/modal.cpp" line="975"/>
         <source>Success</source>
         <translation>成功</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="939"/>
+        <location filename="../src/widgets/modal.cpp" line="978"/>
         <source>Error</source>
         <translation>错误</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="942"/>
+        <location filename="../src/widgets/modal.cpp" line="981"/>
         <source>Warning</source>
         <translation>警告</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="945"/>
+        <location filename="../src/widgets/modal.cpp" line="984"/>
         <source>Confirm</source>
         <translation>确认</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2203"/>
-        <location filename="../src/widgets/modal.cpp" line="2684"/>
-        <location filename="../src/widgets/modal.cpp" line="2883"/>
+        <location filename="../src/widgets/modal.cpp" line="2242"/>
+        <location filename="../src/widgets/modal.cpp" line="2730"/>
+        <location filename="../src/widgets/modal.cpp" line="2929"/>
         <source>Modal</source>
         <translation>对话框</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2367"/>
-        <location filename="../src/widgets/modal.cpp" line="2710"/>
-        <location filename="../src/widgets/modal.cpp" line="2935"/>
+        <location filename="../src/widgets/modal.cpp" line="2413"/>
+        <location filename="../src/widgets/modal.cpp" line="2756"/>
+        <location filename="../src/widgets/modal.cpp" line="2981"/>
         <source>Cancel</source>
         <translation>取消</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2373"/>
-        <location filename="../src/widgets/modal.cpp" line="2703"/>
-        <location filename="../src/widgets/modal.cpp" line="2930"/>
+        <location filename="../src/widgets/modal.cpp" line="2419"/>
+        <location filename="../src/widgets/modal.cpp" line="2749"/>
+        <location filename="../src/widgets/modal.cpp" line="2976"/>
         <source>OK</source>
         <translation>确定</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2680"/>
-        <location filename="../src/widgets/modal.cpp" line="2884"/>
+        <location filename="../src/widgets/modal.cpp" line="2726"/>
+        <location filename="../src/widgets/modal.cpp" line="2930"/>
         <source>Loading...</source>
         <translation>加载中...</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2886"/>
+        <location filename="../src/widgets/modal.cpp" line="2932"/>
         <source>Modal window</source>
         <translation>模态窗口</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2886"/>
+        <location filename="../src/widgets/modal.cpp" line="2932"/>
         <source>Modal overlay</source>
         <translation>模态遮罩</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2901"/>
-        <location filename="../src/widgets/modal.cpp" line="2905"/>
+        <location filename="../src/widgets/modal.cpp" line="2947"/>
+        <location filename="../src/widgets/modal.cpp" line="2951"/>
         <source>Modal content</source>
         <translation>模态内容</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2909"/>
+        <location filename="../src/widgets/modal.cpp" line="2955"/>
         <source>Close</source>
         <translation>关闭</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2910"/>
+        <location filename="../src/widgets/modal.cpp" line="2956"/>
         <source>Close modal</source>
         <translation>关闭对话框</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2913"/>
-        <location filename="../src/widgets/modal.cpp" line="2915"/>
+        <location filename="../src/widgets/modal.cpp" line="2959"/>
+        <location filename="../src/widgets/modal.cpp" line="2961"/>
         <source>Minimize</source>
         <translation>最小化</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2914"/>
+        <location filename="../src/widgets/modal.cpp" line="2960"/>
         <source>Minimize modal window</source>
         <translation>最小化模态窗口</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2919"/>
+        <location filename="../src/widgets/modal.cpp" line="2965"/>
         <source>Restore</source>
         <translation>还原</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2919"/>
+        <location filename="../src/widgets/modal.cpp" line="2965"/>
         <source>Maximize</source>
         <translation>最大化</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2920"/>
+        <location filename="../src/widgets/modal.cpp" line="2966"/>
         <source>Restore modal window</source>
         <translation>还原对话框窗口</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2921"/>
+        <location filename="../src/widgets/modal.cpp" line="2967"/>
         <source>Maximize modal window</source>
         <translation>最大化对话框窗口</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2925"/>
+        <location filename="../src/widgets/modal.cpp" line="2971"/>
         <source>Always on top</source>
         <translation>窗口置顶</translation>
     </message>
     <message>
-        <location filename="../src/widgets/modal.cpp" line="2926"/>
+        <location filename="../src/widgets/modal.cpp" line="2972"/>
         <source>Keep modal window above other windows</source>
         <translation>保持模态窗口位于其他窗口上方</translation>
     </message>
@@ -1237,7 +1562,7 @@
 <context>
     <name>adqt::widgets::AdSegmented</name>
     <message>
-        <location filename="../src/widgets/segmented.cpp" line="798"/>
+        <location filename="../src/widgets/segmented.cpp" line="803"/>
         <source>Segmented control</source>
         <translation>分段控制器</translation>
     </message>

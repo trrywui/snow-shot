@@ -232,6 +232,7 @@ fn draw_template_remaps_serial_number_text() {
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -623,6 +624,7 @@ fn alt_drag_serial_number_copies_bound_text_and_connector() {
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -881,6 +883,7 @@ fn alt_drag_unselected_text_copies_without_starting_text_editing() {
                 ApplyTransactionCommand {
                     transaction,
                     history_undo_snapshot: None,
+                    created_selection_target: None,
                 },
             )
             .unwrap();

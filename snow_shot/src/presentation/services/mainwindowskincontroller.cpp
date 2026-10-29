@@ -957,6 +957,9 @@ struct MainWindowSkinController::Impl {
 MainWindowSkinController::MainWindowSkinController(QObject* parent)
     : QObject(parent), m_impl(std::make_unique<Impl>(*this)) {}
 MainWindowSkinController::~MainWindowSkinController() = default;
+QThreadPool* MainWindowSkinController::executorThreadPoolForTesting() const {
+    return m_impl->executor ? &m_impl->executor->pool : nullptr;
+}
 MainWindowSkinController& MainWindowSkinController::instance() {
     if (!applicationController) {
         applicationController = new MainWindowSkinController(QCoreApplication::instance());

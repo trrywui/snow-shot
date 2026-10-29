@@ -15,6 +15,7 @@ pub mod desktop;
 pub mod microphone;
 pub mod run_loop;
 pub mod time;
+pub mod webcam;
 
 pub mod cursor;
 mod deadline;

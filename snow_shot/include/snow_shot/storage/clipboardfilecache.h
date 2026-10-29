@@ -33,6 +33,7 @@ class ClipboardFileCache final {
     };
 
     explicit ClipboardFileCache(QString root);
+    [[nodiscard]] static QString defaultRootDirectory();
     [[nodiscard]] static ClipboardFileCache& shared();
     [[nodiscard]] std::unique_ptr<ExportDirectory>
     createDirectory(QString* error, QDateTime now = QDateTime::currentDateTimeUtc());

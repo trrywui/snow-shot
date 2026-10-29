@@ -115,8 +115,9 @@ void ScreenshotToolbarPresenter::updateSelectionToolbarState(
         toolbarWidget->setSelectionEditCapabilities(state.selectionEditable,
                                                     state.selectionResizable);
         toolbarWidget->setCornerRadiusApplicable(state.cornerRadiusApplicable);
+        toolbarWidget->setBorderType(state.borderType);
         toolbarWidget->setSelectionState(
-            state.selectionPixels, state.aspectRatioLocked, state.cornerRadius, state.shadowWidth,
+            state.selectionPixels, state.aspectRatioLocked, state.cornerRadius, state.effectWidth,
             state.intelligentSelecting ? ScreenshotSelectionToolbarWidget::DisplayMode::SizeOnly
                                        : ScreenshotSelectionToolbarWidget::DisplayMode::Full,
             conversion.canvasUsesPoints, conversion.selection, state.aspectRatioPreset);

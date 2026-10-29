@@ -4,7 +4,7 @@ use snow_memory::RasterBuffer;
 #[cfg(test)]
 mod tests;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -448,6 +448,11 @@ pub fn render_bundle_range_with_speed(
         builder = builder.hdr10_cpu_input();
     }
     let mut encoder = builder.create()?;
+    encoder.configure_conversion_threads(deferred_conversion_threads(
+        &config,
+        software_threads,
+        output_hdr,
+    ))?;
     let mut video = SequentialVideoSource::open(
         path,
         source.timeline,
@@ -457,8 +462,11 @@ pub fn render_bundle_range_with_speed(
         cancellation,
     )?;
     video.seek_to(first, cancellation)?;
+    let mut webcam = crate::webcam::WebcamReplay::open(path, cancellation)?;
     let mut audio = ExportAudioReplay::open(path, &footer, &config, range, speed)?;
-    let mut rgba = RasterBuffer::zeroed(config.width as usize * config.height as usize * 4);
+    // Allocate only when composition needs storage. A wholly held output never
+    // needs a second canvas, and HDR composition never uses an RGBA canvas.
+    let mut rgba = RasterBuffer::default();
     let mut hdr_conversion = if output_hdr {
         let mut conversion = ffmpeg::software::scaling::Context::get(
             ffmpeg::format::Pixel::RGB48LE,
@@ -495,6 +503,10 @@ pub fn render_bundle_range_with_speed(
     }
     let mut previous_telemetry = Instant::now();
     let mut previous_progress_width = None;
+    let mut previous_effect_identity = None;
+    let mut previous_effects_idle = false;
+    #[cfg(feature = "bench-timing")]
+    let mut skipped_compositions = 0u64;
     for index in 0..total {
         let output_frame = snow_recording_model::RenderFrame {
             index,
@@ -539,7 +551,11 @@ pub fn render_bundle_range_with_speed(
         check_cancel(cancellation)?;
         #[cfg(feature = "bench-timing")]
         let stage_started = Instant::now();
-        video.advance(source_index, cancellation)?;
+        let source_changed = video.advance(source_index, cancellation)?;
+        if let Some(webcam) = &mut webcam {
+            let image = webcam.frame_at(frame.timestamp_ms, cancellation)?;
+            effects.set_webcam_frame(image.as_deref(), webcam.style());
+        }
         #[cfg(feature = "bench-timing")]
         {
             stage_times[1] += stage_started.elapsed();
@@ -561,7 +577,43 @@ pub fn render_bundle_range_with_speed(
         // complete composed images only when the bar could actually be held.
         let playback_unchanged = progress_width == previous_progress_width;
         previous_progress_width = progress_width;
-        if let Some(conversion) = &mut hdr_conversion {
+        let effect_identity = (
+            effects.observation_revision(),
+            snow_recording_effects::playback::playback_content_key(
+                metadata.render.playback_overlay,
+                config.width,
+                snow_recording_model::RenderFrame {
+                    timestamp_ms: playback_ms,
+                    ..frame
+                },
+                Some(timeline),
+            )
+            .map_err(RecordingExportError::Export)?,
+        );
+        // Replay owns all effect mutations through observe/set_webcam_frame. A held
+        // source plus unchanged observations and settled effects proves pixel identity
+        // before copying the canvas. Check both sides of animation expiry: the first
+        // settled frame must still erase the final visible animation pixels.
+        // The encoder retains each format's bounded delay/frame-grid policy when
+        // repeating the pending image, including fixed-rate retimed output.
+        let hold_composition = !source_changed
+            && previous_effects_idle
+            && previous_effect_identity == Some(effect_identity)
+            && reusable_effect_frame(&mut effects, frame.timestamp_ms);
+        if hold_composition {
+            #[cfg(feature = "bench-timing")]
+            {
+                skipped_compositions += 1;
+                stage_times[2] += stage_started.elapsed();
+            }
+            #[cfg(feature = "bench-timing")]
+            let stage_started = Instant::now();
+            encoder.repeat_video_frame_at_pts(frame.pts, fixed_rate_retime)?;
+            #[cfg(feature = "bench-timing")]
+            {
+                stage_times[3] += stage_started.elapsed();
+            }
+        } else if let Some(conversion) = &mut hdr_conversion {
             let rgb = hdr_rgb.as_mut().expect("HDR composition frame");
             video.copy_rgb48(rgb)?;
             let tiles = effects
@@ -569,7 +621,7 @@ pub fn render_bundle_range_with_speed(
                 .map_err(RecordingExportError::Export)?;
             blend_hdr_tiles(rgb, &tiles);
             let converted = hdr_encoded.as_mut().expect("HDR encode frame");
-            let reusable = reusable_effect_frame(&effects, &metadata, frame.timestamp_ms);
+            let reusable = reusable_effect_frame(&mut effects, frame.timestamp_ms);
             #[cfg(feature = "bench-timing")]
             if reusable && playback_unchanged && hdr_valid {
                 hdr_reuse_checks += 1;
@@ -604,6 +656,7 @@ pub fn render_bundle_range_with_speed(
                 stage_times[3] += stage_started.elapsed();
             }
         } else {
+            rgba.resize(config.width as usize * config.height as usize * 4, 0);
             video.copy_rgba(&mut rgba)?;
             effects
                 .apply_rgba_at_playback_time(&mut rgba, frame, playback_ms)
@@ -611,9 +664,7 @@ pub fn render_bundle_range_with_speed(
             // Known changing animations cannot reuse prepared pixels. For
             // other slots, exact complete-pixel equality remains authoritative.
             encoder.set_frame_reuse(
-                if playback_unchanged
-                    && reusable_effect_frame(&effects, &metadata, frame.timestamp_ms)
-                {
+                if playback_unchanged && reusable_effect_frame(&mut effects, frame.timestamp_ms) {
                     if fixed_rate_retime {
                         crate::streaming::VideoFrameReuse::ReuseConversion
                     } else {
@@ -630,12 +681,13 @@ pub fn render_bundle_range_with_speed(
             #[cfg(feature = "bench-timing")]
             let stage_started = Instant::now();
             rgba = encoder.push_raster_rgba_frame_at_pts(frame.pts, rgba)?;
-            rgba.resize(config.width as usize * config.height as usize * 4, 0);
             #[cfg(feature = "bench-timing")]
             {
                 stage_times[3] += stage_started.elapsed();
             }
         }
+        previous_effect_identity = Some(effect_identity);
+        previous_effects_idle = reusable_effect_frame(&mut effects, frame.timestamp_ms);
         #[cfg(feature = "bench-timing")]
         let stage_started = Instant::now();
         audio.emit_until(
@@ -685,6 +737,7 @@ pub fn render_bundle_range_with_speed(
             },
             total.saturating_sub(report.encoded_frames),
         );
+        eprintln!("deferred composition: skipped={skipped_compositions}");
     }
     #[cfg(feature = "bench-timing")]
     let durations = {
@@ -719,23 +772,37 @@ pub fn render_bundle_range_with_speed(
 
 fn deferred_software_threads(config: &StreamingEncoderConfig, physical: usize) -> Option<u8> {
     // Windows 4K/30/VeryFast x264 replay: eight threads saved about 19–21% private
-    // memory, improved moving throughput and traded about 6–7% static throughput. Keep
-    // unmeasured domains and explicit settings on their existing policy.
+    // memory, improved moving throughput and traded about 6–7% static throughput.
+    // 4K/60 reaches the same throughput with four workers while using about
+    // 41% less private memory than twelve. Preserve explicit settings and
+    // unmeasured domains, including the existing eight-worker 30-fps policy.
     (cfg!(windows)
         && config.encode_threads == 0
         && (config.width, config.height) == (3840, 2160)
-        && config.fps == 30
+        && matches!(config.fps, 30 | 60)
         && config.format == crate::ExportFormat::Mp4
         && config.codec == crate::VideoCodec::H264
         && config.software_h264_priority == crate::SoftwareH264Priority::X264First
         && config.video.speed == snow_recording_model::VideoEncodingSpeed::VeryFast)
-        .then(|| physical.clamp(1, 8) as u8)
+        .then(|| physical.clamp(1, if config.fps == 60 { 4 } else { 8 }) as u8)
 }
 
-fn reusable_effect_frame(effects: &RecordedEffects, metadata: &RenderMetadata, at_ms: u64) -> bool {
-    !effects
-        .input_effects
-        .has_active_animation(&metadata.render.effects, at_ms)
+fn deferred_conversion_threads(
+    config: &StreamingEncoderConfig,
+    software_threads: Option<u8>,
+    output_hdr: bool,
+) -> u8 {
+    // Share the measured automatic 4K/60 domain with the encoder policy. HDR
+    // retains its P010 scaler; low-core machines retain the serial converter.
+    if !output_hdr && config.fps == 60 && software_threads.is_some_and(|threads| threads >= 4) {
+        4
+    } else {
+        0
+    }
+}
+
+fn reusable_effect_frame(effects: &mut RecordedEffects, at_ms: u64) -> bool {
+    !effects.needs_frame(at_ms)
 }
 
 fn equal_rgb48(a: &ffmpeg::frame::Video, b: &ffmpeg::frame::Video) -> bool {
@@ -796,7 +863,7 @@ fn blend_hdr_tiles(
     }
 }
 
-struct SequentialVideoSource {
+pub(crate) struct SequentialVideoSource {
     input: ffmpeg::format::context::Input,
     decoder: ffmpeg::decoder::Video,
     stream_index: usize,
@@ -809,14 +876,34 @@ struct SequentialVideoSource {
     next: Option<(u64, ffmpeg::frame::Video)>,
     current: Option<ffmpeg::frame::Video>,
     converted: ffmpeg::frame::Video,
+    tone_mapped: RasterBuffer,
+    tone_mapped_valid: bool,
     conversion: ffmpeg::software::scaling::Context,
     output: (u32, u32),
     hdr: bool,
     decoder_name: String,
 }
 impl SequentialVideoSource {
+    pub(crate) fn recorded_sdr_colors(&mut self) -> Result<()> {
+        // StreamingEncoder stores SDR sources as full-range BT.709. Camera replay
+        // must not let libswscale infer a different matrix from its small dimensions.
+        crate::hdr::scaler_colors(&mut self.conversion, false, true)
+    }
     fn open(
         path: &Path,
+        timeline: FinalizedTimeline,
+        hdr: bool,
+        coded: (u32, u32),
+        output: (u32, u32),
+        cancellation: &CancellationToken,
+    ) -> Result<Self> {
+        let index = VideoIndexReader::from_bundle(path)?
+            .ok_or_else(|| decode("clean source video index is missing"))?;
+        Self::open_indexed(path, index, timeline, hdr, coded, output, cancellation)
+    }
+    pub(crate) fn open_indexed(
+        path: &Path,
+        mut index: VideoIndexReader,
         timeline: FinalizedTimeline,
         hdr: bool,
         coded: (u32, u32),
@@ -831,8 +918,6 @@ impl SequentialVideoSource {
             .best(ffmpeg::media::Type::Video)
             .ok_or_else(|| decode("source video stream missing"))?;
         let stream_index = stream.index();
-        let mut index = VideoIndexReader::from_bundle(path)?
-            .ok_or_else(|| decode("clean source video index is missing"))?;
         if index.remaining() > timeline.frame_count() {
             return Err(decode(
                 "clean source index has more images than output slots",
@@ -890,6 +975,8 @@ impl SequentialVideoSource {
             next: None,
             current: None,
             converted: ffmpeg::frame::Video::empty(),
+            tone_mapped: RasterBuffer::default(),
+            tone_mapped_valid: false,
             conversion,
             output,
             hdr,
@@ -974,7 +1061,7 @@ impl SequentialVideoSource {
             }
         }
     }
-    fn seek_to(&mut self, pts: u64, cancellation: &CancellationToken) -> Result<()> {
+    pub(crate) fn seek_to(&mut self, pts: u64, cancellation: &CancellationToken) -> Result<()> {
         if pts < u64::from(self.timeline.fps()) {
             return Ok(());
         }
@@ -991,7 +1078,7 @@ impl SequentialVideoSource {
         self.next = self.decode_next(cancellation)?;
         Ok(())
     }
-    fn advance(&mut self, pts: u64, cancellation: &CancellationToken) -> Result<()> {
+    pub(crate) fn advance(&mut self, pts: u64, cancellation: &CancellationToken) -> Result<bool> {
         let mut changed = false;
         while self
             .next
@@ -1004,6 +1091,7 @@ impl SequentialVideoSource {
             self.next = self.decode_next(cancellation)?;
         }
         if changed {
+            self.tone_mapped_valid = false;
             self.conversion
                 .run(
                     self.current.as_ref().expect("decoded source"),
@@ -1014,9 +1102,13 @@ impl SequentialVideoSource {
         if self.current.is_none() {
             return Err(decode("clean source contains no video frames"));
         }
-        Ok(())
+        Ok(changed)
     }
-    fn copy_rgba(&self, output: &mut [u8]) -> Result<()> {
+    pub(crate) fn copy_rgba(&mut self, output: &mut [u8]) -> Result<()> {
+        if self.hdr && self.tone_mapped_valid {
+            output.copy_from_slice(&self.tone_mapped);
+            return Ok(());
+        }
         let stride = self.converted.stride(0);
         for y in 0..self.output.1 as usize {
             let row = &self.converted.data(0)
@@ -1028,6 +1120,14 @@ impl SequentialVideoSource {
             } else {
                 dest.copy_from_slice(row);
             }
+        }
+        if self.hdr {
+            // Tone mapping is source work. Repeated composition (e.g. a moving
+            // playback bar over a held HDR picture) must not redo it per slot.
+            // Allocate lazily so HDR-preserving exports need no SDR canvas.
+            self.tone_mapped.resize(output.len(), 0);
+            self.tone_mapped.copy_from_slice(output);
+            self.tone_mapped_valid = true;
         }
         Ok(())
     }
@@ -1049,7 +1149,7 @@ impl SequentialVideoSource {
 }
 
 struct PcmTrack {
-    file: File,
+    file: BufReader<File>,
     remaining: u64,
     id: String,
     channels: usize,
@@ -1150,7 +1250,7 @@ impl AudioReplay {
                 let mut file = File::open(path)?;
                 file.seek(SeekFrom::Start(asset.offset))?;
                 sources.push(PcmTrack {
-                    file,
+                    file: BufReader::with_capacity(crate::clip::audio::PCM_READ_BUFFER_BYTES, file),
                     remaining: asset.len,
                     id: track.track_id.clone(),
                     channels: usize::from(track.channels),

@@ -26,8 +26,8 @@ struct KeyResult {
 
 using MoveCursor = std::function<bool(QTextCursor::MoveOperation, QTextCursor::MoveMode)>;
 
-KeyResult handleKeyPress(QKeyEvent* event, SnowCanvasTextDraft& draft,
-                         const MoveCursor& moveCursor);
+KeyResult handleKeyPress(QKeyEvent* event, SnowCanvasTextDraft& draft, const MoveCursor& moveCursor,
+                         bool deleteTextAfterCursor = false);
 
 struct FontSizeWheelRequest {
     bool hasEvent = false;

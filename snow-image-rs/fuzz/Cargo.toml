@@ -1,0 +1,50 @@
+[package]
+name = "snow-image-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[features]
+default = []
+native-backends = ["snow-image-codecs/native-backends"]
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+snow-image-core = { path = "../crates/snow-image-core" }
+snow-image-codecs = { path = "../crates/snow-image-codecs", default-features = false }
+snow-image-protocol = { path = "../crates/snow-image-protocol" }
+
+[[bin]]
+name = "inspect"
+path = "fuzz_targets/inspect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "animation"
+path = "fuzz_targets/animation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc"
+path = "fuzz_targets/ipc.rs"
+test = false
+doc = false
+bench = false

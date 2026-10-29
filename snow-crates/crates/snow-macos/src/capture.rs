@@ -71,6 +71,18 @@ pub struct NativeFrame {
     observation_generation: u64,
 }
 
+#[cfg(test)]
+impl NativeFrame {
+    pub(crate) fn test_frame(image: PixelBuffer, timestamp: MediaTime) -> Self {
+        Self {
+            image,
+            timestamp,
+            acquired_at: Instant::now(),
+            observation_generation: 0,
+        }
+    }
+}
+
 fn sample_frame(sample: &CMSampleBuffer, color: ColorDescription) -> MacResult<NativeFrame> {
     unsafe {
         if !sample.is_valid() || !sample.data_is_ready() {
@@ -430,6 +442,22 @@ pub struct VideoStream {
 unsafe impl Send for VideoStream {}
 
 impl VideoStream {
+    /// Wait without consuming a frame, error, or cancellation signal. The
+    /// caller drains every ready stream through `next_frame`, which owns the
+    /// generation and terminal-state checks.
+    pub(crate) fn wait_for_any(streams: &[Self], timeout: Duration) {
+        wait_for_observations(
+            streams.iter().map(|stream| {
+                (
+                    &stream.frames,
+                    &stream.errors,
+                    stream.output.ivars().cancellation.receiver(),
+                )
+            }),
+            timeout,
+        );
+    }
+
     pub fn start(options: &CaptureConfig) -> MacResult<Self> {
         Self::start_with(options, None)
     }
@@ -641,6 +669,46 @@ impl VideoStream {
         while self.frames.try_recv().is_ok() {}
         rx.recv_timeout(self.timeout)
             .map_err(|_| MacError::Timeout)?
+    }
+}
+
+fn wait_for_observations<'a, T: 'a, E: 'a>(
+    streams: impl IntoIterator<Item = (&'a Receiver<T>, &'a Receiver<E>, &'a Receiver<()>)>,
+    timeout: Duration,
+) -> bool {
+    let mut ready = crossbeam_channel::Select::new();
+    for (frames, errors, canceled) in streams {
+        ready.recv(frames);
+        ready.recv(errors);
+        ready.recv(canceled);
+    }
+    ready.ready_timeout(timeout).is_ok()
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[test]
+    fn any_display_can_wake_capture_without_consuming_its_observation() {
+        let (first_tx, first) = crossbeam_channel::bounded::<u8>(1);
+        let (second_tx, second) = crossbeam_channel::bounded::<u8>(1);
+        let (error_tx, errors) = crossbeam_channel::bounded::<u8>(1);
+        let (cancel_tx, canceled) = crossbeam_channel::bounded::<()>(1);
+        let streams = [(&first, &errors, &canceled), (&second, &errors, &canceled)];
+        assert!(!wait_for_observations(streams, Duration::ZERO));
+        second_tx.send(2).unwrap();
+        assert!(wait_for_observations(streams, Duration::ZERO));
+        assert_eq!(second.try_recv(), Ok(2));
+        assert!(first.is_empty());
+        first_tx.send(1).unwrap();
+        assert!(wait_for_observations(streams, Duration::ZERO));
+        assert_eq!(first.try_recv(), Ok(1));
+        error_tx.send(3).unwrap();
+        assert!(wait_for_observations(streams, Duration::ZERO));
+        assert_eq!(errors.try_recv(), Ok(3));
+        drop(cancel_tx);
+        assert!(wait_for_observations(streams, Duration::ZERO));
     }
 }
 impl Drop for VideoStream {

@@ -5,6 +5,12 @@ struct RecordingEffectTestState {
     bool active = false;
     int starts = 0;
     int stops = 0;
+    int configurations = 0;
+    int acquisitions = 0;
+    QRect capture;
+    double canvasScale = 0;
+    uint32_t trail = 0;
+    uint32_t click = 0;
     quint64 generation = 0;
     quint64 revision = 0;
     QSize output;
@@ -15,12 +21,19 @@ struct RecordingEffectTestState {
     uint32_t highlight = 0;
     uint32_t highlightRadius = 0;
     bool recordMouseClicks = false;
+    bool recordMouseScrolling = false;
     bool showKeyboard = false;
     uint32_t trailDurationMs = 0;
     uint32_t keyboardBackground = 0;
     uint32_t keyboardForeground = 0;
     uint32_t keyboardBorder = 0;
+    const SnowWebcam* webcam = nullptr;
+    uint32_t webcamSize = 0;
+    uint32_t webcamShape = 0;
+    uint32_t webcamOrientation = 0;
+    QPoint webcamOffset;
     bool fail = false;
+    bool autoPublish = true;
     std::function<void()> notify;
     std::shared_ptr<RecordingEffectsFrame> frame;
     void publish(bool visible = true) {
@@ -51,11 +64,17 @@ class RecordingEffectTestSource final : public RecordingEffectsSource {
         return configure(config, error);
     }
     bool configure(const SnowRecordingEffectsConfig& config, QString& error) override {
+        ++state->configurations;
         if (state->fail) {
             error = QStringLiteral("test preview failure");
             return false;
         }
         state->generation = config.generation;
+        state->capture = QRect(config.x, config.y, static_cast<int>(config.width),
+                               static_cast<int>(config.height));
+        state->canvasScale = config.canvas_scale;
+        state->trail = config.trail_rgba;
+        state->click = config.click_rgba;
         state->keyboardSize = config.keyboard_size;
         state->keyboardFontFamily = config.keyboard_font_family_utf8;
         state->keyboardCjkFontFamily = config.keyboard_cjk_font_family_utf8;
@@ -63,14 +82,22 @@ class RecordingEffectTestSource final : public RecordingEffectsSource {
         state->highlight = config.highlight_rgba;
         state->highlightRadius = config.highlight_radius;
         state->recordMouseClicks = config.record_mouse_clicks != 0;
+        state->recordMouseScrolling = config.record_mouse_scrolling != 0;
         state->showKeyboard = config.show_keyboard != 0;
         state->trailDurationMs = config.trail_duration_ms;
         state->keyboardBackground = config.keyboard_background_rgba;
         state->keyboardForeground = config.keyboard_text_rgba;
         state->keyboardBorder = config.keyboard_border_rgba;
+        state->webcam = config.webcam_source;
+        state->webcamSize = config.webcam_size;
+        state->webcamShape = config.webcam_shape;
+        state->webcamOrientation = config.webcam_orientation;
+        state->webcamOffset = QPoint(static_cast<int>(config.webcam_offset_left),
+                                     static_cast<int>(config.webcam_offset_bottom));
         state->output = QSize(qRound(config.width * config.canvas_scale),
                               qRound(config.height * config.canvas_scale));
-        state->publish();
+        if (state->autoPublish)
+            state->publish();
         return true;
     }
     void stop() override {
@@ -82,6 +109,7 @@ class RecordingEffectTestSource final : public RecordingEffectsSource {
         state->frame.reset();
     }
     std::shared_ptr<RecordingEffectsFrame> acquire() override {
+        ++state->acquisitions;
         return state->frame;
     }
     std::shared_ptr<RecordingEffectTestState> state;

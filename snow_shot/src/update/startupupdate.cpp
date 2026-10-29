@@ -52,6 +52,8 @@ StartupUpdateResult runStartupUpdate(UpdateService& service, const std::function
                                      const std::function<bool()>& foregroundRequested,
                                      std::chrono::milliseconds timeout,
                                      const std::function<QStringList()>& relaunchArguments) {
+    if (service.managedByStore())
+        return StartupUpdateResult::ContinueStartup;
     QEventLoop loop;
     QTimer deadline;
     deadline.setSingleShot(true);

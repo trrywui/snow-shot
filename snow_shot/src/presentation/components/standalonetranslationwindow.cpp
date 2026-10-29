@@ -10,6 +10,7 @@
 #include "widgets/modal.h"
 
 #include <QCursor>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QSize>
@@ -23,24 +24,21 @@ constexpr int TRANSLATION_WINDOW_DEFAULT_WIDTH = 720;
 constexpr int TRANSLATION_WINDOW_DEFAULT_HEIGHT = 500;
 constexpr int TRANSLATION_WINDOW_MIN_WIDTH = 650;
 constexpr int TRANSLATION_WINDOW_MIN_HEIGHT = 400;
+
+QScreen* screenForRememberedGeometry(const QRect& geometry) {
+    QScreen* result = QGuiApplication::primaryScreen();
+    qint64 largestIntersection = 0;
+    for (QScreen* screen : QGuiApplication::screens()) {
+        const QRect intersection = screen->availableGeometry().intersected(geometry);
+        const qint64 area = qint64(intersection.width()) * qint64(intersection.height());
+        if (area > largestIntersection) {
+            largestIntersection = area;
+            result = screen;
+        }
+    }
+    return result;
+}
 } // namespace
-
-std::optional<QSize> restoredTranslationWindowSize(const QSize& minimumSize,
-                                                   const QSize& maximumSize) {
-    const std::optional<QSize> saved = storage::WindowMemorySettings().translationWindowSize();
-    if (!saved.has_value()) {
-        return std::nullopt;
-    }
-    return storage::clampWindowSize(*saved, minimumSize, maximumSize);
-}
-
-void rememberTranslationWindowSize(const QWidget& widget) {
-    const QSize size = persistableWindowSize(widget);
-    if (!size.isValid() || size.isEmpty()) {
-        return;
-    }
-    storage::WindowMemorySettings().setTranslationWindowSize(size);
-}
 
 StandaloneTranslationWindow::StandaloneTranslationWindow(SnowShotApiClient* client, QObject* parent)
     : QObject(parent), m_client(client), m_modal(new adqt::widgets::AdModal(this)) {
@@ -70,11 +68,11 @@ StandaloneTranslationWindow::StandaloneTranslationWindow(SnowShotApiClient* clie
     m_modal->setComponentTokens(tokens);
     connect(m_modal, &AdModal::closed, this, [this] {
         if (m_page) {
-            // The page is detached below; the shared surface is only reachable while
-            // it still hosts the page.
-            if (QWidget* surface = m_page->window()) {
-                rememberTranslationWindowSize(*surface);
+            // AdModal hides its surface before closed; use the last visible geometry.
+            if (m_lastWindowGeometry) {
+                storage::WindowMemorySettings().setTranslationWindowGeometry(*m_lastWindowGeometry);
             }
+            m_lastWindowGeometry.reset();
             // The footer accept button doubles as "copy and close": copy before the
             // page is detached, while the controller result is still reachable.
             if (static_cast<AdModal::DialogCode>(m_modal->result()) ==
@@ -109,6 +107,18 @@ StandaloneTranslationWindow::~StandaloneTranslationWindow() {
 
 void StandaloneTranslationWindow::showTranslation(const QString& text, QScreen* screen) {
     if (!m_page) {
+        QSize preferredSize(TRANSLATION_WINDOW_DEFAULT_WIDTH, TRANSLATION_WINDOW_DEFAULT_HEIGHT);
+        QRect anchor;
+        const storage::WindowMemorySettings settings;
+        if (const auto saved = settings.translationWindowGeometry()) {
+            screen = screenForRememberedGeometry(saved->normalGeometry);
+            preferredSize = saved->normalGeometry.size();
+            // AdModal centers with size / 2; include the rectangle's exclusive edge
+            // so even dimensions restore without a one-pixel position drift.
+            anchor = saved->normalGeometry.adjusted(0, 0, 1, 1);
+        } else if (const auto savedSize = settings.translationWindowSize()) {
+            preferredSize = *savedSize;
+        }
         if (!screen) {
             screen = QGuiApplication::screenAt(QCursor::pos());
         }
@@ -116,13 +126,9 @@ void StandaloneTranslationWindow::showTranslation(const QString& text, QScreen* 
             screen = QGuiApplication::primaryScreen();
         }
         m_modal->setWindowScreen(screen);
-        // Only the size is remembered: the window must keep opening centered on the
-        // screen the translation was triggered from.
-        if (const std::optional<QSize> rememberedSize = restoredTranslationWindowSize(
-                QSize(TRANSLATION_WINDOW_MIN_WIDTH, TRANSLATION_WINDOW_MIN_HEIGHT),
-                screen->availableGeometry().size())) {
-            m_modal->setWindowPreferredSize(*rememberedSize);
-        }
+        // AdModal fits the preferred size and anchor to the selected screen's work area.
+        m_modal->setWindowPreferredSize(preferredSize);
+        m_modal->setWindowAnchorGeometry(anchor);
         m_page = new TranslationPageWidget(nullptr, m_client);
         m_page->setObjectName(QStringLiteral("standalone-translation-page"));
         m_modal->setContentWidget(m_page);
@@ -130,6 +136,8 @@ void StandaloneTranslationWindow::showTranslation(const QString& text, QScreen* 
                 &StandaloneTranslationWindow::close);
     }
     m_modal->present();
+    m_page->window()->installEventFilter(this);
+    m_lastWindowGeometry = persistableNormalGeometry(*m_page->window());
     installWindowCloseShortcut(m_page->window(), [this] { close(); });
     m_page->setSourceText(text);
     if (text.trimmed().isEmpty()) {
@@ -142,5 +150,20 @@ void StandaloneTranslationWindow::showTranslation(const QString& text, QScreen* 
 
 void StandaloneTranslationWindow::close() {
     m_modal->close();
+}
+
+bool StandaloneTranslationWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (m_page && watched == m_page->window() && m_page->window()->isVisible()) {
+        switch (event->type()) {
+        case QEvent::Move:
+        case QEvent::Resize:
+        case QEvent::WindowStateChange:
+            m_lastWindowGeometry = persistableNormalGeometry(*m_page->window());
+            break;
+        default:
+            break;
+        }
+    }
+    return QObject::eventFilter(watched, event);
 }
 } // namespace snow_shot::presentation

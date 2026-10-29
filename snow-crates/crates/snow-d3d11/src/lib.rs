@@ -21,6 +21,16 @@ pub fn h264_encoder(vendor: u32) -> Option<&'static str> {
     }
 }
 
+/// HEVC counterpart, with the same capture-adapter ownership requirement.
+pub fn hevc_encoder(vendor: u32) -> Option<&'static str> {
+    match vendor {
+        0x10de => Some("hevc_nvenc"),
+        0x1002 => Some("hevc_amf"),
+        0x8086 => Some("hevc_qsv"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -30,5 +40,10 @@ mod tests {
         assert_eq!(super::h264_encoder(0x8086), Some("h264_qsv"));
         assert_eq!(super::h264_encoder(0x1414), None);
         assert_eq!(super::h264_encoder(0), None);
+        assert_eq!(super::hevc_encoder(0x10de), Some("hevc_nvenc"));
+        assert_eq!(super::hevc_encoder(0x1002), Some("hevc_amf"));
+        assert_eq!(super::hevc_encoder(0x8086), Some("hevc_qsv"));
+        assert_eq!(super::hevc_encoder(0x1414), None);
+        assert_eq!(super::hevc_encoder(0), None);
     }
 }

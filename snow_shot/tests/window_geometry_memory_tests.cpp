@@ -1,5 +1,4 @@
 #include "snow_shot/presentation/globalshortcutmanager.h"
-#include "snow_shot/presentation/components/standalonetranslationwindow.h"
 #include "snow_shot/presentation/mainwindow.h"
 #include "snow_shot/presentation/settings/settingsbackend.h"
 #include "snow_shot/presentation/settings/settingsruntimesession.h"
@@ -174,7 +173,9 @@ void windowMemorySettingsPersistAcrossReload(const QString& dataDirectory) {
     require(settings.setMainWindowGeometry(QRect(12, 34, 567, 489), true),
             "write remembered main window geometry");
     require(settings.setTranslationWindowSize(QSize(680, 460)),
-            "write remembered translation window size");
+            "write legacy translation window size");
+    require(settings.setTranslationWindowGeometry(QRect(45, 67, 690, 470)),
+            "write remembered translation window geometry");
     auto& applicationStorage = storage::ApplicationStorage::instance();
     require(applicationStorage.configuration().flushNow().success, "flush window memory");
 
@@ -188,7 +189,13 @@ void windowMemorySettingsPersistAcrossReload(const QString& dataDirectory) {
     const std::optional<QSize> size = storage::parseWindowSize(
         reloaded.value(QStringLiteral("interface/translation_window_size")).toObject());
     require(size.has_value() && *size == QSize(680, 460),
-            "remembered size survives a store reload");
+            "legacy translation size survives a store reload");
+    const auto translationGeometry = storage::parseWindowGeometry(
+        reloaded.value(QStringLiteral("interface/translation_window_geometry")).toObject());
+    require(translationGeometry.has_value() &&
+                translationGeometry->normalGeometry == QRect(45, 67, 690, 470) &&
+                !translationGeometry->maximized,
+            "translation position and size survive a store reload");
 }
 
 void persistableCaptureUsesNormalGeometryWhenMaximized() {
@@ -226,25 +233,6 @@ void geometryMemoryAppliesRestoreOnlyAfterShow() {
             "first show applies the fitted geometry");
     window.close();
     flushEvents();
-}
-
-void translationSizeHelpersClampRememberedValues() {
-    require(storage::WindowMemorySettings().setTranslationWindowSize(QSize(40, 40)),
-            "seed tiny translation size");
-    const std::optional<QSize> raised =
-        snow_shot::presentation::restoredTranslationWindowSize(QSize(650, 400), QSize(800, 600));
-    require(raised.has_value() && *raised == QSize(650, 400),
-            "restored translation size is raised to the minimum");
-
-    QWidget window;
-    window.resize(680, 460);
-    window.show();
-    flushEvents();
-    snow_shot::presentation::rememberTranslationWindowSize(window);
-    const std::optional<QSize> remembered = storage::WindowMemorySettings().translationWindowSize();
-    require(remembered.has_value() && *remembered == QSize(680, 460),
-            "translation size helper persists the visible size");
-    window.close();
 }
 
 void mainWindowRemembersGeometryAcrossRecreation() {
@@ -372,7 +360,6 @@ int main(int argc, char** argv) {
     windowMemorySettingsPersistAcrossReload(directory.path());
     persistableCaptureUsesNormalGeometryWhenMaximized();
     geometryMemoryAppliesRestoreOnlyAfterShow();
-    translationSizeHelpersClampRememberedValues();
     mainWindowRemembersGeometryAcrossRecreation();
     mainWindowRemembersMaximizedState();
     mainWindowClampsUnreachableRememberedGeometry();

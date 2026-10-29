@@ -1,4 +1,5 @@
 #include "snow_shot/presentation/screenrecordingfolder.h"
+#include "snow_shot/platform/filemanager.h"
 
 #include "snow_shot/storage/settingsadapters.h"
 #include "snow_shot/storage/exportfilename.h"
@@ -7,7 +8,6 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
-#include <QProcess>
 #include <QStandardPaths>
 #include <QUrl>
 
@@ -86,20 +86,6 @@ bool openScreenRecordingFolder(const storage::ScreenshotWindowNames& names) {
 }
 
 bool revealScreenRecordingFile(const QString& path) {
-    const QFileInfo file(path);
-    if (path.isEmpty() || !file.isFile())
-        return false;
-#ifdef Q_OS_WIN
-    QProcess explorer;
-    explorer.setProgram(QStringLiteral("explorer.exe"));
-    explorer.setNativeArguments(
-        QStringLiteral("/select,\"%1\"").arg(QDir::toNativeSeparators(file.absoluteFilePath())));
-    return explorer.startDetached();
-#elif defined(Q_OS_MACOS)
-    return QProcess::startDetached(QStringLiteral("/usr/bin/open"),
-                                   {QStringLiteral("-R"), file.absoluteFilePath()});
-#else
-    return QDesktopServices::openUrl(QUrl::fromLocalFile(file.absolutePath()));
-#endif
+    return !path.isEmpty() && QFileInfo(path).isFile() && platform::revealInFileManager(path);
 }
 } // namespace snow_shot::presentation::recording

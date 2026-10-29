@@ -405,6 +405,43 @@ mod tests {
     }
 
     #[test]
+    fn native_microphone_failure_is_classified_without_losing_required_error() {
+        for required in [false, true] {
+            let control = AudioControlHandle::new();
+            control.initialize_sources(false, true);
+            let mut config = SourceConfig::default_microphone();
+            config.required = required;
+            let mut status = AudioSourceStatus::Starting;
+            let result = start_source::<()>(
+                AudioSourceKind::Microphone,
+                &config,
+                &CancellationToken::default(),
+                Some(&control),
+                &mut status,
+                || {
+                    Err(MacError::Native {
+                        domain: "com.apple.coreaudio.avfaudio".into(),
+                        code: 0,
+                        message: "microphone install-tap: hardware format mismatch".into(),
+                    })
+                },
+            );
+            assert_eq!(status, AudioSourceStatus::Unavailable);
+            assert_eq!(
+                control.take_levels().microphone.status,
+                AudioSourceStatus::Unavailable
+            );
+            if required {
+                let message = result.unwrap_err().to_string();
+                assert!(message.contains("com.apple.coreaudio.avfaudio"));
+                assert!(message.contains("install-tap: hardware format mismatch"));
+            } else {
+                assert!(result.unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
     fn required_denial_propagates_and_disabled_source_never_starts() {
         let control = AudioControlHandle::new();
         control.initialize_sources(false, true);

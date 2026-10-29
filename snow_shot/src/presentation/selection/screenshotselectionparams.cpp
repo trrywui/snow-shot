@@ -1,6 +1,7 @@
 #include "snow_shot/presentation/screenshotselectionparams.h"
 
 #include "snow_shot/presentation/screenshotselectionlimits.h"
+#include "snow_shot/presentation/screenshotresultcompositor.h"
 
 #include <algorithm>
 
@@ -12,6 +13,17 @@ QRect validBoundsOrFallback(const QRect& bounds) {
     return bounds.isValid() && !bounds.isEmpty() ? bounds : QRect(0, 0, 1, 1);
 }
 } // namespace
+
+ScreenshotResultStyle ScreenshotSelectionParams::resultStyle() const {
+    ScreenshotResultStyle style{radius, shadowWidth, shadowColor};
+    style.borderType = borderType;
+    style.borderWidth = borderWidth;
+    style.borderColor = borderColor;
+    style.backgroundOpacityPercent = backgroundOpacityPercent;
+    if (region)
+        style.region = region->translated(-selection.topLeft());
+    return style;
+}
 
 ScreenshotSelectionParams clampScreenshotSelectionParams(const ScreenshotSelectionParams& params,
                                                          const QRect& bounds) {
@@ -30,6 +42,10 @@ ScreenshotSelectionParams clampScreenshotSelectionParams(const ScreenshotSelecti
     result.backgroundOpacityPercent = std::clamp(result.backgroundOpacityPercent, 0, 100);
     result.radius = std::clamp(result.radius, 0, kScreenshotSelectionCornerRadiusMax);
     result.shadowWidth = std::clamp(result.shadowWidth, 0, kScreenshotSelectionShadowWidthMax);
+    result.borderWidth = std::clamp(result.borderWidth, 0, kScreenshotSelectionShadowWidthMax);
+    if (!result.borderColor.isValid())
+        result.borderColor = QColor(Qt::white);
+    result.borderColor.setAlpha(255);
     if (!result.shadowColor.isValid()) {
         result.shadowColor = QColor(0x33, 0x33, 0x33);
     }

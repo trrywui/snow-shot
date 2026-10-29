@@ -128,6 +128,8 @@ void arrowCreationDefaultsRestoreShaftAndRatio() {
     SnowCanvasWidget canvas;
     auto defaults = screenshotCanvasToolStyleDefaults();
     defaults.arrow.arrowRatio = 2.7;
+    defaults.arrow.arrowOutlineWidth = 8.0;
+    defaults.arrow.arrowOutlineColor = QColor(4, 100, 20, 120);
     defaults.arrow.startArrowhead = SnowCanvasArrowhead::Circle;
     defaults.arrow.endArrowhead = SnowCanvasArrowhead::IndentedTriangle;
     for (const auto arrowType :
@@ -141,6 +143,8 @@ void arrowCreationDefaultsRestoreShaftAndRatio() {
             const auto style = canvas.canvasStyleToolbarState().shapeStyle;
             require(style.arrowShaftType == shaftType &&
                         style.arrowRatio == defaults.arrow.arrowRatio &&
+                        style.arrowOutlineWidth == defaults.arrow.arrowOutlineWidth &&
+                        style.arrowOutlineColor == defaults.arrow.arrowOutlineColor &&
                         style.arrowType == arrowType &&
                         style.startArrowhead == defaults.arrow.startArrowhead &&
                         style.endArrowhead == defaults.arrow.endArrowhead,

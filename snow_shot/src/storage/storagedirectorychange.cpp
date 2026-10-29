@@ -1,4 +1,5 @@
 #include "snow_shot/storage/storagedirectorychange.h"
+#include "snow_shot/app/distribution.h"
 #include "storagedirectoryutils_p.h"
 
 #include <QCoreApplication>
@@ -125,9 +126,11 @@ StorageResult inventory(const QString& root, const QString& relative, QVector<En
 } // namespace
 
 QString storageBootstrapPath(const QString& directory, const QString& executableDirectory) {
-    const auto key = QCryptographicHash::hash(normalized(executableDirectory).toUtf8(),
-                                              QCryptographicHash::Sha256)
-                         .toHex();
+    const auto identity = app::distribution::isStoreManaged()
+                              ? app::distribution::installationIdentity()
+                              : normalized(executableDirectory);
+    const auto key =
+        QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256).toHex();
     return QDir(directory).filePath(
         QStringLiteral(".snow-shot-storage-%1.json").arg(QString::fromLatin1(key)));
 }

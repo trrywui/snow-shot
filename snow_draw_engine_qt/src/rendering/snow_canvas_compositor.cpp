@@ -1,5 +1,4 @@
 #include "snow_canvas_compositor.h"
-#include "snow_canvas_spotlight_renderer.h"
 #include "snow_draw_engine_qt/snow_canvas_custom_renderer.h"
 
 #include <QPainter>
@@ -56,15 +55,6 @@ void renderDocumentDecorations(QPainter& painter, const Frame& frame,
             ? painter.clipRegion()
             : QRegion(QRectF(0, 0, frame.sceneInfo->surface_width, frame.sceneInfo->surface_height)
                           .toAlignedRect());
-    if (frame.sceneInfo != nullptr && frame.spotlightInfo != nullptr) {
-        const QRectF spotlightArea =
-            frame.hasSpotlightRenderArea
-                ? frame.spotlightRenderArea
-                : QRectF(0.0, 0.0, frame.sceneInfo->surface_width, frame.sceneInfo->surface_height);
-        snow_canvas_spotlight_renderer::render(painter, *frame.sceneInfo, *frame.spotlightInfo,
-                                               frame.spotlightCutouts, frame.spotlightCutoutCount,
-                                               spotlightArea, exposedRegion);
-    }
     if (frame.watermarkInfo == nullptr) {
         return;
     }

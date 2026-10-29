@@ -13,7 +13,7 @@ set(_snow_mini_libraries
     snow_shot_cloud_upload snow_shot_storage snow_shot_main_window_skin snow_shot_settings_catalog snow_shot_settings_search
     snow_shot_settings snow_shot_collage snow_shot_image_split snow_shot_global_mouse snow_shot_login_item
     snow_shot_administrator snow_shot_permissions snow_shot_updates
-    snow_shot_diagnostics snow_shot_crash_bridge)
+    snow_shot_diagnostics snow_shot_crash_bridge snow_shot_print snow_shot_airdrop)
 
 if(NOT SNOW_APPS_BUILD_SNOW_SHOT_MINI)
     foreach(_original IN LISTS _snow_mini_libraries)
@@ -48,6 +48,7 @@ function(_snow_mini_rewrite out value)
 endfunction()
 
 function(_snow_mini_copy_build_properties original target)
+    snow_shot_set_source_dependency_edition(${target} mini)
     foreach(_property IN ITEMS INCLUDE_DIRECTORIES INTERFACE_INCLUDE_DIRECTORIES
             INTERFACE_SYSTEM_INCLUDE_DIRECTORIES COMPILE_OPTIONS INTERFACE_COMPILE_OPTIONS
             COMPILE_DEFINITIONS INTERFACE_COMPILE_DEFINITIONS COMPILE_FEATURES
@@ -256,20 +257,29 @@ if(WIN32 AND EXISTS "${SNOW_SHOT_CAMERA_SHUTTER_AUDIO_SOURCE}")
     install(FILES "${SNOW_SHOT_CAMERA_SHUTTER_AUDIO_SOURCE}" DESTINATION "${_mini_bindir}/audios"
         RENAME camera_shutter.mp3 COMPONENT SnowShotMini)
 endif()
-install(FILES LICENSE COPYRIGHT THIRD_PARTY_NOTICES.md
-    DESTINATION "${_mini_datadir}/snow-shot-mini/licenses"
-    COMPONENT SnowShotMini)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../ant_design_qt/THIRD_PARTY_NOTICES.md"
-    DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/third-party/project-notices/ant-design-icons"
-    COMPONENT SnowShotMini)
-install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/third-party-licenses/third-party/"
-    DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/third-party" OPTIONAL COMPONENT SnowShotMini)
-foreach(_project IN ITEMS snow_image ant_design_qt snow-crates snow_draw_engine_qt snow_rust_ffi)
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../${_project}/LICENSE"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../${_project}/COPYRIGHT"
-        DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/components/${_project}"
+if(WIN32)
+    include("${CMAKE_CURRENT_LIST_DIR}/SnowShotLicenseBundle.cmake")
+    snow_install_license_bundle(
+        SOURCE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        THIRD_PARTY_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/third-party-licenses/third-party"
+        DESTINATION "${_mini_datadir}/snow-shot-mini/licenses"
+        COMPONENT SnowShotMini PRODUCT "Snow Shot Mini")
+else()
+    install(FILES LICENSE COPYRIGHT THIRD_PARTY_NOTICES.md
+        DESTINATION "${_mini_datadir}/snow-shot-mini/licenses"
         COMPONENT SnowShotMini)
-endforeach()
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../ant_design_qt/THIRD_PARTY_NOTICES.md"
+        DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/third-party/project-notices/ant-design-icons"
+        COMPONENT SnowShotMini)
+    install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/third-party-licenses/third-party/"
+        DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/third-party" OPTIONAL COMPONENT SnowShotMini)
+    foreach(_project IN ITEMS snow_image ant_design_qt snow-crates snow_draw_engine_qt snow_rust_ffi)
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../${_project}/LICENSE"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../${_project}/COPYRIGHT"
+            DESTINATION "${_mini_datadir}/snow-shot-mini/licenses/components/${_project}"
+            COMPONENT SnowShotMini)
+    endforeach()
+endif()
 if(APPLE)
     include("${CMAKE_CURRENT_LIST_DIR}/SnowShotMiniMacOS.cmake")
 elseif(NOT SNOW_SHOT_QT_STATIC)
@@ -308,11 +318,13 @@ if(SNOW_SHOT_BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/mini_build_contract_tests.py")
     set_tests_properties(snow-shot-mini-build-contract-tests PROPERTIES LABELS unit TIMEOUT 60)
     add_executable(snow-shot-mini-edition-tests tests/mini_edition_tests.cpp)
+    snow_shot_set_source_dependency_edition(snow-shot-mini-edition-tests mini)
     target_include_directories(snow-shot-mini-edition-tests PRIVATE include)
     target_link_libraries(snow-shot-mini-edition-tests PRIVATE
         snow_shot_settings_search_mini snow_shot_storage_mini snow_shot_edition_mini Qt6::Core)
     add_executable(snow-shot-mini-settings-reset-tests tests/mini_settings_reset_tests.cpp
         src/presentation/services/screenshotclipboardservice.cpp)
+    snow_shot_set_source_dependency_edition(snow-shot-mini-settings-reset-tests mini)
     target_include_directories(snow-shot-mini-settings-reset-tests PRIVATE include)
     target_link_libraries(snow-shot-mini-settings-reset-tests PRIVATE
         snow_shot_settings_mini snow_shot_edition_mini snow_shot_image_codec
@@ -363,6 +375,7 @@ if(SNOW_SHOT_BUILD_TESTS)
 
     foreach(_edition IN ITEMS full mini)
         add_executable(snow-shot-${_edition}-mcp-edition-tests tests/mcp_edition_tests.cpp)
+        snow_shot_set_source_dependency_edition(snow-shot-${_edition}-mcp-edition-tests ${_edition})
         target_include_directories(snow-shot-${_edition}-mcp-edition-tests PRIVATE include)
         target_link_libraries(snow-shot-${_edition}-mcp-edition-tests PRIVATE
             snow_shot_edition_${_edition} Qt6::Core)
@@ -380,6 +393,7 @@ if(SNOW_SHOT_BUILD_TESTS)
         endif()
         add_executable(snow-shot-${_edition}-branding-tests ${_branding_sources}
             tests/mini_branding_tests.cpp src/app/updateconfirmationdialog.cpp)
+        snow_shot_set_source_dependency_edition(snow-shot-${_edition}-branding-tests ${_edition})
         target_include_directories(snow-shot-${_edition}-branding-tests PRIVATE include)
         target_compile_definitions(snow-shot-${_edition}-branding-tests PRIVATE
             SNOW_SHOT_TEST_TRANSLATIONS_DIR="${_branding_qm_directory}")
@@ -422,3 +436,16 @@ endif()
 # Keep this after helpers, resources and finalization so transitive link and
 # build dependencies are audited as well as the application's copied sources.
 snow_shot_assert_mini_build_contract(snow_shot_mini)
+
+# Later consumer passes and deferred platform dependencies can extend these
+# graphs. Audit the final edition graphs after those additions as well.
+function(_snow_shot_assert_final_mini_contracts)
+    get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_target IN LISTS _targets)
+        get_target_property(_links ${_target} LINK_LIBRARIES)
+        if(_target STREQUAL "snow_shot_mini" OR "snow_shot_edition_mini" IN_LIST _links)
+            snow_shot_assert_mini_build_contract(${_target})
+        endif()
+    endforeach()
+endfunction()
+cmake_language(DEFER CALL _snow_shot_assert_final_mini_contracts)

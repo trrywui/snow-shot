@@ -29,6 +29,7 @@ struct PinnedBorderAppearance final {
     qreal cornerRadius = 0.0;
     bool hasShadow = false;
     std::optional<ScreenshotRegionGeometry> region;
+    bool hasBorder = false;
 
     friend bool operator==(const PinnedBorderAppearance&, const PinnedBorderAppearance&) = default;
 };

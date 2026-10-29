@@ -47,6 +47,22 @@
     },
     {
       "variant": "outlined",
+      "symbol": "ActualSize",
+      "name": "actual-size",
+      "source": "../src/presentation/components/icons/resources/actual-size.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
+      "symbol": "AirDrop",
+      "name": "air-drop",
+      "source": "../src/presentation/components/icons/resources/air-drop.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
       "symbol": "AlignBottom",
       "name": "align-bottom",
       "source": "../src/presentation/components/icons/resources/align-bottom.svg",
@@ -463,6 +479,22 @@
     },
     {
       "variant": "outlined",
+      "symbol": "CropHorizontal",
+      "name": "crop-horizontal",
+      "source": "../src/presentation/components/icons/resources/crop-horizontal.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
+      "symbol": "CropVertical",
+      "name": "crop-vertical",
+      "source": "../src/presentation/components/icons/resources/crop-vertical.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
       "symbol": "Delete",
       "name": "delete",
       "source": "../src/presentation/components/icons/resources/delete.svg",
@@ -623,6 +655,14 @@
     },
     {
       "variant": "outlined",
+      "symbol": "FlipHorizontal",
+      "name": "flip-horizontal",
+      "source": "../src/presentation/components/icons/resources/flip-horizontal.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
       "symbol": "FlipVertical",
       "name": "flip-vertical",
       "source": "../src/presentation/components/icons/resources/flip-vertical.svg",
@@ -682,6 +722,14 @@
       "symbol": "Html",
       "name": "html",
       "source": "../src/presentation/components/icons/resources/html.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
+      "symbol": "ImageEditing",
+      "name": "image-editing",
+      "source": "../src/presentation/components/icons/resources/image-editing.svg",
       "colorModel": "monochrome",
       "fit": "contain"
     },
@@ -855,6 +903,14 @@
     },
     {
       "variant": "outlined",
+      "symbol": "OpenSpreadsheetFile",
+      "name": "open-spreadsheet-file",
+      "source": "../src/presentation/components/icons/resources/open-spreadsheet-file.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
       "symbol": "PhysicalPixels",
       "name": "physical-pixels",
       "source": "../src/presentation/components/icons/resources/physical-pixels.svg",
@@ -922,6 +978,14 @@
       "symbol": "RecorderDelay",
       "name": "recorder-delay",
       "source": "../src/presentation/components/icons/resources/recorder-delay.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
+      "symbol": "RecordingCamera",
+      "name": "recording-camera",
+      "source": "../src/presentation/components/icons/resources/recording-camera.svg",
       "colorModel": "monochrome",
       "fit": "contain"
     },
@@ -1058,6 +1122,14 @@
       "symbol": "Restart",
       "name": "restart",
       "source": "../src/presentation/components/icons/resources/restart.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
+      "symbol": "RevealInFolder",
+      "name": "reveal-in-folder",
+      "source": "../src/presentation/components/icons/resources/reveal-in-folder.svg",
       "colorModel": "monochrome",
       "fit": "contain"
     },
@@ -1322,6 +1394,14 @@
       "symbol": "ShapeRectangle",
       "name": "shape-rectangle",
       "source": "../src/presentation/components/icons/resources/shape-rectangle.svg",
+      "colorModel": "monochrome",
+      "fit": "contain"
+    },
+    {
+      "variant": "outlined",
+      "symbol": "ShapeThoughtBubble",
+      "name": "shape-thought-bubble",
+      "source": "../src/presentation/components/icons/resources/shape-thought-bubble.svg",
       "colorModel": "monochrome",
       "fit": "contain"
     },

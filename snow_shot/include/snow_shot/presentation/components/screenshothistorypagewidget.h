@@ -31,6 +31,7 @@ struct ScreenshotHistoryResultResolution {
 Q_DECLARE_METATYPE(ScreenshotHistoryResultResolution)
 
 class QEvent;
+class QAction;
 class QBoxLayout;
 class QLabel;
 class QResizeEvent;
@@ -70,6 +71,9 @@ class ScreenshotHistoryPageDataSource : public QObject {
                                       quint64) {}
     virtual void requestResultImage(const snow_shot::storage::CaptureHistoryRecord&, quint64) {}
     virtual void remove(const QString& id) = 0;
+    [[nodiscard]] virtual bool revealRecord(const QString&) {
+        return false;
+    }
     [[nodiscard]] virtual bool requestRemoveMany(const QVector<QString>& ids) = 0;
     virtual void reportReadFailure(const snow_shot::storage::CaptureHistoryRecord&,
                                    const QString&) {}
@@ -102,6 +106,7 @@ class ScreenshotHistoryPageWidget final : public QWidget {
     void pinRequested(const QString& recordId);
     void collageRequested(const QVector<snow_shot::storage::CaptureHistoryRecord>& records);
     void splitRequested(const snow_shot::storage::CaptureHistoryRecord& record);
+    void imageEditingRequested(const snow_shot::storage::CaptureHistoryRecord& record);
 
   protected:
     void changeEvent(QEvent* event) override;
@@ -116,6 +121,7 @@ class ScreenshotHistoryPageWidget final : public QWidget {
     void rebuildPreview();
     void updateHeader();
     void updateSelectionBar();
+    void updateBatchActions();
     void clearSelection();
     void selectCurrentPage();
     void requestDeleteSelected();
@@ -146,7 +152,9 @@ class ScreenshotHistoryPageWidget final : public QWidget {
     QBoxLayout* m_selectionBarLayout = nullptr;
     adqt::widgets::AdButton* m_deleteSelectedButton = nullptr;
     adqt::widgets::AdButton* m_selectAllButton = nullptr;
-    adqt::widgets::AdButton* m_collageButton = nullptr;
+    adqt::widgets::AdButton* m_batchActionsButton = nullptr;
+    QPointer<QAction> m_batchStitchAction;
+    QPointer<QAction> m_batchPinAction;
     adqt::widgets::AdButton* m_deselectAllButton = nullptr;
     adqt::widgets::AdPopconfirm* m_deleteSelectedConfirmation = nullptr;
     adqt::widgets::AdScrollArea* m_scrollArea = nullptr;

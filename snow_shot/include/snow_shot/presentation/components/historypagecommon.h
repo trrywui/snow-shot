@@ -51,11 +51,14 @@ struct TextControls {
 };
 
 void configureSourceFilter(adqt::widgets::AdSelect* filter);
+[[nodiscard]] QString revealActionText();
+void showRevealFailure(QWidget* parent);
 void configureDateFilter(adqt::widgets::AdDateRangePicker* filter);
-void configurePagination(adqt::widgets::AdPagination* pagination);
+void configurePagination(adqt::widgets::AdPagination* pagination, int pageSize);
 void configureSelectionAction(adqt::widgets::AdButton* button, bool destructive);
 void configureDeleteConfirmation(adqt::widgets::AdPopconfirm* confirmation);
 void applyTextTheme(const TextControls& controls, const styles::ThemeColorScheme& scheme);
+void applyEntryDescriptionFont(QLabel* label, const styles::ThemeColorScheme& scheme);
 
 struct RecordFilter {
     QVariantList sources;

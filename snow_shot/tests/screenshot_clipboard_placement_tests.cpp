@@ -2,10 +2,13 @@
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include "snow_shot/presentation/screenshotclipboardservice.h"
 #include "snowimageqtcodec.h"
+#include "../src/presentation/services/screenshotclipboardfilepayload.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QDir>
+#include <QScopeGuard>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDateTime>
@@ -21,10 +24,14 @@
 #include <atomic>
 #if defined(Q_OS_WIN)
 #include <qt_windows.h>
+#include <shellapi.h>
+#include <shlobj.h>
 #endif
 #include <QtEndian>
 #include <iostream>
 #include <stdexcept>
+#include <cstring>
+#include <string>
 
 namespace {
 void require(bool value, const char* message) {
@@ -170,6 +177,18 @@ QImage image() {
     QImage image(640, 400, QImage::Format_ARGB32);
     image.fill(QColor(40, 90, 150, 170));
     return image;
+}
+bool samePixels(const QImage& actual, const QImage& expected) {
+    if (actual.size() != expected.size())
+        return false;
+    const auto actualArgb = actual.convertToFormat(QImage::Format_ARGB32);
+    const auto expectedArgb = expected.convertToFormat(QImage::Format_ARGB32);
+    for (int row = 0; row < actual.height(); ++row) {
+        if (std::memcmp(actualArgb.constScanLine(row), expectedArgb.constScanLine(row),
+                        static_cast<size_t>(actual.width()) * 4) != 0)
+            return false;
+    }
+    return true;
 }
 void payloadUsesRequestedEncoding() {
     const QImage pixels = image();
@@ -436,6 +455,71 @@ void processUntil(const std::function<bool()>& ready) {
     }
     require(ready(), "clipboard commit timed out");
 }
+#ifdef Q_OS_WIN
+void windowsFilePayloadPreservesShellFormats() {
+    using snow_shot::presentation::clipboard_detail::encodeWindowsClipboardFiles;
+    const QList<QUrl> urls{QUrl::fromLocalFile(QStringLiteral("C:/clipboard/first image.png")),
+                           QUrl::fromLocalFile(QStringLiteral("//server/share/雪-📷.png"))};
+    const auto data = encodeWindowsClipboardFiles(urls);
+    require(data.isValid() && data.paths.size() > qsizetype(sizeof(DROPFILES)),
+            "local clipboard files must produce a complete Shell file list");
+    DROPFILES header{};
+    std::memcpy(&header, data.paths.constData(), sizeof(header));
+    require(header.pFiles == sizeof(DROPFILES) && header.fWide,
+            "the Shell file list must use a valid UTF-16 DROPFILES header");
+    const HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(data.paths.size()));
+    require(memory != nullptr, "allocate the Shell file-list parser fixture");
+    const auto free = qScopeGuard([&] { GlobalFree(memory); });
+    void* bytes = GlobalLock(memory);
+    require(bytes != nullptr, "lock the Shell file-list parser fixture");
+    std::memcpy(bytes, data.paths.constData(), static_cast<size_t>(data.paths.size()));
+    GlobalUnlock(memory);
+    const auto drop = static_cast<HDROP>(memory);
+    require(DragQueryFileW(drop, 0xffffffff, nullptr, 0) == static_cast<UINT>(urls.size()),
+            "the Windows Shell must recover every copied path");
+    for (UINT index = 0; index < static_cast<UINT>(urls.size()); ++index) {
+        const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+        std::wstring path(size_t(length) + 1, L'\0');
+        require(DragQueryFileW(drop, index, path.data(), length + 1) == length &&
+                    QString::fromWCharArray(path.data()) ==
+                        QDir::toNativeSeparators(urls[qsizetype(index)].toLocalFile()),
+                "Shell file copying must preserve path order, spaces, Unicode and UNC paths");
+    }
+    require(QString::fromUtf16(reinterpret_cast<const char16_t*>(data.wideUrl.constData())) ==
+                    urls.first().toString() &&
+                QString::fromLocal8Bit(data.url.constData()) == urls.first().toString() &&
+                data.preferredDropEffect.size() == qsizetype(sizeof(DWORD)) &&
+                qFromLittleEndian<quint32>(data.preferredDropEffect.constData()) == DROPEFFECT_COPY,
+            "native file copying must retain URL formats and explicitly prefer copy over move");
+    const QUrl remote(QStringLiteral("https://example.com/image.png"));
+    require(!encodeWindowsClipboardFiles({}).isValid() &&
+                !encodeWindowsClipboardFiles({remote}).isValid() &&
+                !encodeWindowsClipboardFiles({urls.first(), remote}).isValid(),
+            "native file packing must not discard remote entries from general or mixed URLs");
+}
+#endif
+void generalUrlsPreserveQtPublication() {
+    const QUrl first = QUrl::fromLocalFile(QStringLiteral("C:/clipboard/first image.png"));
+    const QUrl second = QUrl::fromLocalFile(QStringLiteral("C:/clipboard/second image.png"));
+    const QUrl remote(QStringLiteral("https://example.com/image.png"));
+    QObject receiver;
+    for (const QList<QUrl>& urls :
+         {QList<QUrl>{first, second}, QList<QUrl>{remote}, QList<QUrl>{first, remote}}) {
+        auto* mime = new QMimeData;
+        mime->setUrls(urls);
+        bool completed = false;
+        auto handle = ScreenshotClipboardService::commitMimeData(
+            QApplication::clipboard(), &receiver, mime,
+            [&](ScreenshotClipboardCommitResult result) {
+                require(result.succeeded(), "Qt URL publication must complete");
+                completed = true;
+            });
+        require(handle.isValid(), "Qt URL publication must be queued");
+        processUntil([&] { return completed; });
+        require(handle.isFinished() && QApplication::clipboard()->mimeData()->urls() == urls,
+                "offscreen local files and general or mixed URLs must retain every Qt URL");
+    }
+}
 void publishFile(const QString& path, bool expectRetry = false) {
     auto value = fixture();
     const QFileInfo info(path);
@@ -463,6 +547,20 @@ void publishFile(const QString& path, bool expectRetry = false) {
     processUntil([&] { return done; });
     require(success, "file commit failed");
     require(!expectRetry || attempts > 1, "file publication must retry with metadata intact");
+#if defined(Q_OS_WIN)
+    if (QGuiApplication::platformName() == QStringLiteral("windows")) {
+        processUntil([] { return OpenClipboard(nullptr) != FALSE; });
+        const auto close = qScopeGuard([] { CloseClipboard(); });
+        const auto native = static_cast<HGLOBAL>(
+            GetClipboardData(RegisterClipboardFormatW(L"Preferred DropEffect")));
+        const auto* effect = native ? static_cast<const DWORD*>(GlobalLock(native)) : nullptr;
+        const bool copy =
+            effect && GlobalSize(native) >= sizeof(DWORD) && *effect == DROPEFFECT_COPY;
+        if (effect)
+            GlobalUnlock(native);
+        require(copy, "native file publication must preserve its copy operation for Shell pasting");
+    }
+#endif
 }
 void scopedPublicationsPreservePlacement() {
     ScreenshotClipboardCommitScope scope;
@@ -505,11 +603,33 @@ void scopedPublicationsPreservePlacement() {
         auto snapshot = ScreenshotClipboardContentReader::snapshot(QApplication::clipboard(), 1);
         require(snapshot.has_value(), "snapshot scoped clipboard publication");
         const auto content = ScreenshotClipboardContentReader::decode(std::move(*snapshot));
+        const bool pixelsPreserved = content && samePixels(content->image, image());
+        if (!content || !content->appearance || !content->placement ||
+            content->appearance->borderAppearance != appearance.borderAppearance ||
+            content->placement->windowRect != placement.windowRect ||
+            content->placement->filePath != placement.filePath ||
+            content->image.size() != placement.rasterSize || !pixelsPreserved) {
+            std::cerr << "scoped publication file=" << file << " content=" << bool(content)
+                      << " appearance=" << bool(content && content->appearance)
+                      << " placement=" << bool(content && content->placement)
+                      << " pixels=" << pixelsPreserved;
+            if (content) {
+                std::cerr << " image=" << content->image.width() << ',' << content->image.height();
+                if (content->placement)
+                    std::cerr << " path=" << content->placement->filePath.toStdString()
+                              << " expected=" << placement.filePath.toStdString()
+                              << " rect=" << content->placement->windowRect.x() << ','
+                              << content->placement->windowRect.y() << ','
+                              << content->placement->windowRect.width() << ','
+                              << content->placement->windowRect.height();
+            }
+            std::cerr << '\n';
+        }
         require(content && content->appearance &&
                     content->appearance->borderAppearance == appearance.borderAppearance &&
                     content->placement && content->placement->windowRect == placement.windowRect &&
                     content->placement->filePath == placement.filePath &&
-                    content->image.size() == placement.rasterSize,
+                    content->image.size() == placement.rasterSize && pixelsPreserved,
                 "retiring scoped image and file publications must preserve placement and pixels");
     }
 }
@@ -565,6 +685,21 @@ void publicationOrderAndCancellation() {
     require(replacement && !replacement->placement && !replacement->appearance,
             "external content retained old placement");
 }
+void publishNativeImage() {
+    QObject receiver;
+    bool done = false;
+    ScreenshotClipboardCommitResult result;
+    auto handle = ScreenshotClipboardService::commit(
+        QApplication::clipboard(), &receiver,
+        ScreenshotClipboardService::prepareImage(image(), {}, fixture(), appearanceFixture()),
+        [&](ScreenshotClipboardCommitResult completed) {
+            result = completed;
+            done = true;
+        });
+    require(handle.isValid(), "native image publication must be queued");
+    processUntil([&] { return done; });
+    require(result.succeeded(), "native image copy failed");
+}
 void nativeRead() {
     const auto snapshot = ScreenshotClipboardContentReader::snapshot(QApplication::clipboard(), 1);
     require(snapshot.has_value(), "native content absent");
@@ -575,7 +710,8 @@ void nativeRead() {
     require(content && content->placement &&
                 content->placement->windowRect == fixture().windowRect &&
                 content->image.size() == image().size() && content->appearance &&
-                content->appearance->borderAppearance == appearanceFixture().borderAppearance,
+                content->appearance->borderAppearance == appearanceFixture().borderAppearance &&
+                samePixels(content->image, image()),
             "native cross-process metadata roundtrip failed");
 }
 void runChild(const QStringList& args) {
@@ -619,10 +755,7 @@ void nativeRoundtrip() {
     } restore{clipboard, saved};
     scopedPublicationsPreservePlacement();
     publicationOrderAndCancellation();
-    require(ScreenshotClipboardService::publish(
-                clipboard, ScreenshotClipboardService::prepareImage(image(), {}, fixture(),
-                                                                    appearanceFixture())),
-            "native image copy failed");
+    publishNativeImage();
     runChild({QStringLiteral("--native-read")});
     runChild({QStringLiteral("--native-image-producer")});
     nativeRead();
@@ -668,11 +801,7 @@ int main(int argc, char** argv) {
         else if (args.contains(QStringLiteral("--native-producer")))
             publishFile(args.last());
         else if (args.contains(QStringLiteral("--native-image-producer")))
-            require(ScreenshotClipboardService::publish(
-                        QApplication::clipboard(),
-                        ScreenshotClipboardService::prepareImage(image(), {}, fixture(),
-                                                                 appearanceFixture())),
-                    "native child image copy failed");
+            publishNativeImage();
         else if (args.contains(QStringLiteral("--native-roundtrip")))
             nativeRoundtrip();
         else {
@@ -682,6 +811,10 @@ int main(int argc, char** argv) {
             payloadUsesRequestedEncoding();
             contentAndPayload();
             appearanceCodecAndContent();
+            generalUrlsPreserveQtPublication();
+#if defined(Q_OS_WIN)
+            windowsFilePayloadPreservesShellFormats();
+#endif
 #if !defined(Q_OS_WIN)
             scopedPublicationsPreservePlacement();
             publicationOrderAndCancellation();

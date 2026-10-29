@@ -7,6 +7,7 @@
 
 #include "snow_shot/image/screenshotlayoutcompaction.h"
 
+#include "snow_shot/image/screenshotselectionbordertype.h"
 #include <QColor>
 #include <QObject>
 #include <QPoint>
@@ -40,8 +41,9 @@ struct ScreenshotToolbarPresentationState {
     ScreenshotSelectionAspectRatioPreset aspectRatioPreset =
         ScreenshotSelectionAspectRatioPreset::Free;
     int cornerRadius = 0;
-    int shadowWidth = 0;
-    QColor shadowColor = QColor(0x33, 0x33, 0x33);
+    ScreenshotSelectionBorderType borderType = ScreenshotSelectionBorderType::Shadow;
+    int effectWidth = 0;
+    QColor effectColor = QColor(0x33, 0x33, 0x33);
     ScreenshotRegionType regionType = ScreenshotRegionType::Rectangle;
     [[nodiscard]] bool operator==(const ScreenshotToolbarPresentationState&) const = default;
 };

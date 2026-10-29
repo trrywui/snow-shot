@@ -70,7 +70,7 @@ struct Plan {
     output_view: ID3D11UnorderedAccessView,
 }
 
-pub(super) struct AreaScaler {
+pub(crate) struct AreaScaler {
     device: SharedDevice,
     horizontal: ID3D11ComputeShader,
     vertical: ID3D11ComputeShader,
@@ -307,7 +307,7 @@ impl Plan {
 
 /// Exact opaque native crop placement. It reuses the compositor's existing
 /// RGBA surface and does not allocate area-filter intermediates.
-pub(super) struct CropCopy {
+pub(crate) struct CropCopy {
     device: SharedDevice,
     shader: ID3D11ComputeShader,
     constants: ID3D11Buffer,

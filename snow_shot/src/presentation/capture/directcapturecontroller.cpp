@@ -167,14 +167,13 @@ class DirectCaptureController::Impl {
                    artifact->requestClipboardFile(
                        &owner, ScreenshotImageFileService::formatForKey(request.imageFormat),
                        request.filenameFormat, request.encoding,
-                       [this, done = std::move(done)](std::unique_ptr<QMimeData> mime,
-                                                      QString error) {
-                           if (!mime) {
-                               done(std::move(error));
+                       [this, done = std::move(done)](ScreenshotExportClipboardResult prepared) {
+                           if (!prepared.succeeded()) {
+                               done(std::move(prepared.error));
                                return;
                            }
-                           clipboard = ScreenshotClipboardService::commitMimeData(
-                               QApplication::clipboard(), &owner, mime.release(),
+                           clipboard = ScreenshotClipboardService::commit(
+                               QApplication::clipboard(), &owner, std::move(prepared.payload),
                                [done](ScreenshotClipboardCommitResult result) {
                                    done(result.succeeded() ? QString() : result.errorString());
                                });

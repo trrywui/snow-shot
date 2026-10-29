@@ -1,0 +1,13 @@
+#ifndef SNOW_SHOT_EXPLORER_SUPPORTEDFORMATS_H
+#define SNOW_SHOT_EXPLORER_SUPPORTEDFORMATS_H
+
+#include <string_view>
+
+namespace snow_shot::platform::windows::explorer {
+
+inline constexpr std::wstring_view kSupportedExtensions[] = {
+@SNOW_EXPLORER_SUFFIXES@};
+
+} // namespace snow_shot::platform::windows::explorer
+
+#endif

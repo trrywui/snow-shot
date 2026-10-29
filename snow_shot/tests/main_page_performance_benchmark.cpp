@@ -79,6 +79,7 @@ class PinnedSource final : public PinnedWindowManagementDataSource {
     void requestPreview(const QString&, quint64, const QSize&) override {}
     void requestFullImage(const QString&, quint64) override {}
     void showRecord(const QString&) override {}
+    void showRecords(const QStringList&) override {}
     void removeRecords(const QVector<QString>&) override {}
 };
 

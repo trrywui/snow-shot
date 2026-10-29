@@ -4,6 +4,31 @@
 
 #include <algorithm>
 #include <utility>
+#include <QCryptographicHash>
+#include <QTextCursor>
+
+namespace {
+struct TextDifference {
+    qsizetype prefix;
+    qsizetype removed;
+    qsizetype inserted;
+};
+TextDifference difference(const QString& before, const QString& after) {
+    const auto size = std::min(before.size(), after.size());
+    qsizetype prefix = 0;
+    while (prefix < size && before.at(prefix) == after.at(prefix))
+        ++prefix;
+    if (prefix > 0 && prefix < size && before.at(prefix).isLowSurrogate())
+        --prefix;
+    qsizetype suffix = 0;
+    while (suffix < size - prefix &&
+           before.at(before.size() - suffix - 1) == after.at(after.size() - suffix - 1))
+        ++suffix;
+    if (suffix > 0 && suffix < before.size() && before.at(before.size() - suffix).isLowSurrogate())
+        --suffix;
+    return {prefix, before.size() - prefix - suffix, after.size() - prefix - suffix};
+}
+} // namespace
 
 ScreenshotOcrTextEditingSession::ScreenshotOcrTextEditingSession(QString originalText,
                                                                  bool preserveSource)
@@ -20,7 +45,7 @@ ScreenshotOcrTextEditingSession::ScreenshotOcrTextEditingSession(QString origina
                                  synchronizePreservedSource(position, removed, added);
                              });
     }
-    m_history.push_back(m_originalText);
+    m_historyText = m_originalText;
     m_documentChangeConnection = QObject::connect(&m_document, &QTextDocument::contentsChanged,
                                                   [this]() { recordCurrentText(); });
 }
@@ -49,6 +74,12 @@ QString ScreenshotOcrTextEditingSession::text() const {
     return m_preserveSource ? m_preservedSource : m_document.toPlainText();
 }
 
+QByteArray ScreenshotOcrTextEditingSession::contentCheckpoint() const {
+    if (m_contentCheckpoint.isEmpty())
+        m_contentCheckpoint = QCryptographicHash::hash(text().toUtf8(), QCryptographicHash::Sha256);
+    return m_contentCheckpoint;
+}
+
 QTextDocument* ScreenshotOcrTextEditingSession::document() {
     return &m_document;
 }
@@ -57,11 +88,7 @@ bool ScreenshotOcrTextEditingSession::replaceText(const QString& text) {
     if (text == this->text()) {
         return false;
     }
-    if (m_historyIndex + 1 < m_history.size()) {
-        m_history.resize(m_historyIndex + 1);
-    }
-    m_history.push_back(text);
-    ++m_historyIndex;
+    appendHistory(text);
     applyText(text);
     return true;
 }
@@ -156,7 +183,8 @@ void ScreenshotOcrTextEditingSession::establishBaseline(const QString& text) {
 
 void ScreenshotOcrTextEditingSession::establishHistory(const QString& text) {
     clearTransforms();
-    m_history = {text};
+    m_history.clear();
+    m_historyText = text;
     m_historyIndex = 0;
     applyText(text);
 }
@@ -172,22 +200,42 @@ void ScreenshotOcrTextEditingSession::recordCurrentText() {
     if (m_preserveSource)
         synchronizePreservedSource();
     const QString current = text();
-    if (current == m_history.at(m_historyIndex)) {
+    m_contentCheckpoint.clear();
+    if (current == m_historyText) {
         return;
     }
     clearTransforms();
-    if (m_historyIndex + 1 < m_history.size()) {
-        m_history.resize(m_historyIndex + 1);
-    }
-    m_history.push_back(current);
+    appendHistory(current);
+}
+
+void ScreenshotOcrTextEditingSession::appendHistory(const QString& text) {
+    const auto change = difference(m_historyText, text);
+    m_history.resize(m_historyIndex);
+    m_history.push_back({change.prefix, m_historyText.mid(change.prefix, change.removed),
+                         text.mid(change.prefix, change.inserted)});
+    m_historyText = text;
     ++m_historyIndex;
 }
 
 void ScreenshotOcrTextEditingSession::applyText(const QString& text) {
     m_applying = true;
+    m_contentCheckpoint.clear();
     if (m_preserveSource)
         m_preservedSource = text;
-    m_document.setPlainText(text);
+    // Qt normalizes line endings to one paragraph separator per document position.
+    // Replace only the changed span so streamed appends retain existing layouts and cursors.
+    QString normalized = text;
+    normalized.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    normalized.replace(QLatin1Char('\n'), QChar::ParagraphSeparator);
+    const auto change = difference(m_document.toRawText(), normalized);
+    if (change.removed || change.inserted) {
+        QTextCursor cursor(&m_document);
+        cursor.setPosition(static_cast<int>(change.prefix));
+        cursor.setPosition(static_cast<int>(change.prefix + change.removed),
+                           QTextCursor::KeepAnchor);
+        cursor.insertText(normalized.mid(change.prefix, change.inserted));
+    }
     if (m_preserveSource)
         updatePreservedSourceMapping();
     m_applying = false;
@@ -259,16 +307,20 @@ void ScreenshotOcrTextEditingSession::undo() {
     }
     --m_historyIndex;
     clearTransforms();
-    applyText(m_history.at(m_historyIndex));
+    const auto& edit = m_history.at(m_historyIndex);
+    m_historyText.replace(edit.position, edit.inserted.size(), edit.removed);
+    applyText(m_historyText);
 }
 
 void ScreenshotOcrTextEditingSession::redo() {
     if (!canRedo()) {
         return;
     }
-    ++m_historyIndex;
     clearTransforms();
-    applyText(m_history.at(m_historyIndex));
+    const auto& edit = m_history.at(m_historyIndex);
+    m_historyText.replace(edit.position, edit.removed.size(), edit.inserted);
+    ++m_historyIndex;
+    applyText(m_historyText);
 }
 
 bool ScreenshotOcrTextEditingSession::canUndo() const {
@@ -276,5 +328,5 @@ bool ScreenshotOcrTextEditingSession::canUndo() const {
 }
 
 bool ScreenshotOcrTextEditingSession::canRedo() const {
-    return m_historyIndex + 1 < m_history.size();
+    return m_historyIndex < m_history.size();
 }

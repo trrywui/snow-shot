@@ -15,14 +15,20 @@ CARGO = shutil.which('cargo')
 class RecordingBuildProfiles(unittest.TestCase):
     def cargo(self, *arguments):
         result = subprocess.run([CARGO, *arguments], cwd=ROOT, capture_output=True,
-                                text=True, timeout=60)
+                                text=True, encoding='utf-8', timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
     def test_application_excludes_capture_compatibility_and_retains_recovery(self):
+        # Match Cargo tree's host-platform scope below. Unfiltered metadata also
+        # loads packages for other platforms, which need not be cached after a
+        # successful native application build (for example macOS accessibility
+        # dependencies on Windows).
+        host = next(line.removeprefix('host: ') for line in self.cargo('-vV').splitlines()
+                    if line.startswith('host: '))
         metadata = json.loads(self.cargo(
             'metadata', '--manifest-path', 'snow_rust_ffi/Cargo.toml', '--locked',
-            '--offline', '--format-version', '1'))
+            '--offline', '--format-version', '1', '--filter-platform', host))
         packages = {package['id']: package['name'] for package in metadata['packages']}
         nodes = {packages[node['id']]: node for node in metadata['resolve']['nodes']}
         for package in ('snow-recording-c', 'snow-screen-recorder', 'snow-recording-runtime'):

@@ -13,6 +13,7 @@ struct RecordingRegionMouseApi {
     decltype(&UnhookWindowsHookEx) removeHook = UnhookWindowsHookEx;
     decltype(&CallNextHookEx) nextHook = CallNextHookEx;
     std::function<bool()> supported;
+    decltype(&GetCursorPos) cursorPosition = GetCursorPos;
 };
 #endif
 

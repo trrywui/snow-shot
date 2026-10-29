@@ -13,6 +13,8 @@ mod abi {
     pub(crate) mod handles;
     pub(crate) mod history_exports;
     pub(crate) mod input_exports;
+    #[cfg(test)]
+    mod layout_tests;
     pub(crate) mod magnifier_exports;
     #[cfg(test)]
     mod magnifier_tests;

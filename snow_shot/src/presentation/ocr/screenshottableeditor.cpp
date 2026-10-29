@@ -593,9 +593,9 @@ void ScreenshotTableEditor::copySelection() {
     }
 }
 
-bool ScreenshotTableEditor::copySelectionToClipboard() {
-    if (m_session == nullptr || QApplication::clipboard() == nullptr) {
-        return false;
+std::unique_ptr<QMimeData> ScreenshotTableEditor::clipboardMimeData() const {
+    if (m_session == nullptr) {
+        return {};
     }
     // A current cell is navigation state, not a text selection. Copy the
     // complete recognized table when the selection model has no indexes.
@@ -605,9 +605,19 @@ bool ScreenshotTableEditor::copySelectionToClipboard() {
                                    m_session->document.columnCount() - 1}
             : selectedRange();
     if (!range.isValid()) {
+        return {};
+    }
+    return m_session->document.toClipboardMimeData(range);
+}
+
+bool ScreenshotTableEditor::copySelectionToClipboard() {
+    if (QApplication::clipboard() == nullptr) {
         return false;
     }
-    auto mimeData = m_session->document.toClipboardMimeData(range);
+    auto mimeData = clipboardMimeData();
+    if (!mimeData) {
+        return false;
+    }
     QApplication::clipboard()->setMimeData(mimeData.release());
     return true;
 }

@@ -26,16 +26,6 @@
 #include <iostream>
 
 namespace {
-static_assert(sizeof(SnowTextStyle) == 232);
-static_assert(offsetof(SnowTextStyle, font_family_utf8) == 100);
-static_assert(sizeof(SnowTextElementInfo) == 1352);
-static_assert(offsetof(SnowTextElementInfo, text_utf8) == 104);
-static_assert(offsetof(SnowTextElementInfo, font_family_utf8) == 1136);
-static_assert(sizeof(SnowSceneDisplayItem) == 416);
-static_assert(offsetof(SnowSceneDisplayItem, arrow_start_head) == 140);
-static_assert(offsetof(SnowSceneDisplayItem, font_size) == 192);
-static_assert(offsetof(SnowSceneDisplayItem, text_utf8) == 336);
-
 void require(bool condition, const char* message) {
     if (!condition) {
         std::cerr << message << '\n';

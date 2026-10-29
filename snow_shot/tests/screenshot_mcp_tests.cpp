@@ -2,7 +2,9 @@
 #include "snow_shot/app/mcp/screenshotmcpsession.h"
 #include "snow_shot/app/mcp/screenshotmcpselection.h"
 #include "snow_shot/app/mcp/mcpstylepatch.h"
+#include "../src/app/mcp/mcpreplayregistry_p.h"
 #include "snow_shot/runtime/runtimeactivitytracker.h"
+#include "snow_shot/storage/applicationstorage.h"
 #include "snowimageqtcodec.h"
 #include <QApplication>
 #include <QClipboard>
@@ -17,6 +19,7 @@
 #include <QLocalSocket>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QScopeGuard>
 #include <QtEndian>
 #include <cstdlib>
 #include <atomic>
@@ -28,6 +31,187 @@ void require(bool condition, const char* message) {
     if (!condition) {
         std::cerr << message << std::endl;
         std::exit(1);
+    }
+}
+void replaySubscriptions() {
+    for (const auto options :
+         {McpReplayRegistry::Options{}, McpReplayRegistry::Options{8 * 1024 * 1024, false, 0}}) {
+        auto owner = std::make_unique<QObject>();
+        McpReplayRegistry registry(*owner, options);
+        ScreenshotMcpRequest original;
+        original.connectionId = 1;
+        original.requestId = QStringLiteral("original");
+        original.idempotencyKey = QStringLiteral("shared");
+        original.method = QStringLiteral("mutation");
+        int originalCalls = 0;
+        auto operation = registry.begin(original, [&](auto response) {
+            require(response.ok, "the original shared operation succeeds");
+            ++originalCalls;
+        });
+        require(static_cast<bool>(operation), "the original starts one operation");
+        for (int index = 0; index < 12; ++index) {
+            auto alias = original;
+            alias.requestId = QString::number(index);
+            int calls = 0;
+            require(!registry.begin(alias,
+                                    [&](auto response) {
+                                        require(response.errorCode == QStringLiteral("canceled") &&
+                                                    response.requestId == alias.requestId,
+                                                "alias cancellation has its own response identity");
+                                        ++calls;
+                                    }),
+                    "duplicates subscribe without executing again");
+            require(registry.cancelAlias(1, alias.requestId) && calls == 1 && originalCalls == 0,
+                    "canceling aliases frees subscription slots and preserves the original");
+        }
+        ScreenshotMcpResponse success;
+        success.ok = true;
+        operation.complete(success);
+        require(originalCalls == 1 && !operation.current(), "the original completes exactly once");
+        operation.complete(success);
+        require(originalCalls == 1, "late duplicate completions are discarded");
+
+        auto next = original;
+        next.idempotencyKey = QStringLiteral("generation");
+        next.requestId = QStringLiteral("generation-original");
+        auto alias = next;
+        alias.requestId = QStringLiteral("reused");
+        auto replacement = alias;
+        replacement.idempotencyKey = QStringLiteral("replacement");
+        McpReplayRegistry::Operation fresh;
+        int replaced = 0;
+        auto generation = registry.begin(next, [&](auto) {
+            require(registry.cancelAlias(1, alias.requestId), "cancel an alias during fanout");
+        });
+        registry.begin(alias, [&](auto response) {
+            require(response.errorCode == QStringLiteral("canceled"), "retire the old alias once");
+            fresh = registry.begin(replacement, [&](auto) { ++replaced; });
+        });
+        generation.complete(success);
+        require(fresh.current() && replaced == 0, "old fanout cannot complete a reused request ID");
+        fresh.complete(success);
+        require(replaced == 1, "a replacement completes only with its own result");
+
+        next.requestId = QStringLiteral("disconnected-original");
+        next.idempotencyKey = QStringLiteral("disconnect");
+        int disconnected = 0;
+        auto payload = std::make_shared<int>(1);
+        const std::weak_ptr<int> retained = payload;
+        auto old = registry.begin(next, [&, payload](auto) {
+            Q_UNUSED(payload);
+            ++disconnected;
+        });
+        payload.reset();
+        registry.disconnected(1);
+        require(retained.expired(),
+                "disconnect releases callbacks while source work is still pending");
+        auto reconnected = registry.begin(next, [&](auto) { ++disconnected; });
+        require(reconnected.current(), "disconnect releases pending replay keys");
+        old.complete(success);
+        require(disconnected == 0 && reconnected.current(),
+                "a retired operation cannot complete a new operation with the same key");
+        reconnected.complete(success);
+        require(disconnected == 1, "only the new operation delivers after disconnect");
+
+        for (int index = 0; index < 129; ++index) {
+            next.requestId = next.idempotencyKey = QStringLiteral("bounded-%1").arg(index);
+            auto bounded = registry.begin(next, [](auto response) {
+                require(response.ok, "completed responses do not prevent new work admission");
+            });
+            require(static_cast<bool>(bounded), "each new key executes once");
+            bounded.complete(success);
+        }
+        next.requestId = QStringLiteral("oldest-retry");
+        next.idempotencyKey = QStringLiteral("bounded-0");
+        auto evicted = registry.begin(next, [](auto) {});
+        require(static_cast<bool>(evicted), "completed replay history evicts its oldest entry");
+        evicted.complete(success);
+
+        next.requestId = next.idempotencyKey = QStringLiteral("destroy-owner");
+        int callbacksAfterDestruction = 0;
+        auto dying = registry.begin(next, [&](auto) { owner.reset(); });
+        alias = next;
+        alias.requestId = QStringLiteral("destroyed-alias");
+        registry.begin(alias, [&](auto) { ++callbacksAfterDestruction; });
+        dying.complete(success);
+        require(callbacksAfterDestruction == 0, "owner destruction suppresses remaining fanout");
+    }
+    QObject owner;
+    McpReplayRegistry registry(owner, {});
+    QList<McpReplayRegistry::Operation> pending;
+    ScreenshotMcpRequest request;
+    request.connectionId = 1;
+    request.method = QStringLiteral("mutation");
+    for (int index = 0; index < 32; ++index) {
+        request.requestId = request.idempotencyKey = QString::number(index);
+        pending.append(registry.begin(request, [](auto) {}));
+        require(static_cast<bool>(pending.last()), "pending replay work is admitted within quota");
+    }
+    request.requestId = request.idempotencyKey = QStringLiteral("overflow");
+    int rejected = 0;
+    require(!registry.begin(request,
+                            [&](auto response) {
+                                require(response.errorCode == QStringLiteral("queue_full"),
+                                        "pending work has a hard quota");
+                                ++rejected;
+                            }) &&
+                rejected == 1,
+            "overload rejects exactly once");
+    registry.shutdown();
+    for (const auto& operation : pending)
+        operation.complete({});
+}
+
+void sessionCompletionReentry() {
+    for (int variant = 0; variant < 4; ++variant) {
+        const bool cancel = variant != 0;
+        const bool restart = variant == 2;
+        QJsonObject editor{{QStringLiteral("capture_phase"), QStringLiteral("idle")}};
+        ScreenshotMcpSession::Ports ports;
+        ports.state = [&] { return editor; };
+        ports.begin = [](const QJsonObject&, QString*) { return true; };
+        ports.cancel = [&] {
+            editor.insert(QStringLiteral("capture_phase"), QStringLiteral("idle"));
+        };
+        std::unique_ptr<ScreenshotMcpSession> session;
+        int staleStateReads = 0;
+        ports.state = [&] {
+            if (!session)
+                ++staleStateReads;
+            return editor;
+        };
+        session = std::make_unique<ScreenshotMcpSession>(ports);
+        ScreenshotMcpRequest begin;
+        begin.connectionId = 1;
+        begin.requestId = begin.idempotencyKey = QStringLiteral("begin");
+        begin.method = QStringLiteral("snow_shot_screenshot_begin");
+        int completions = 0;
+        session->request(begin, [&](auto response) {
+            ++completions;
+            require(cancel ? !response.ok : response.ok, "capture settles with its own outcome");
+            if (restart) {
+                auto fresh = begin;
+                fresh.requestId = fresh.idempotencyKey = QStringLiteral("fresh-begin");
+                session->request(fresh, [](auto response) {
+                    require(response.ok, "a new capture survives the previous cancellation");
+                });
+            } else
+                session.reset();
+        });
+        if (variant == 3)
+            session->shutdown();
+        else if (cancel)
+            require(session->cancelRequest(1, begin.requestId), "cancel a pending capture");
+        else
+            session->capturePresented();
+        require(completions == 1 && staleStateReads == 0,
+                "completion callbacks may destroy a session without subsequent state access");
+        if (restart) {
+            require(session->state().value(QStringLiteral("active")).toBool(),
+                    "old cleanup cannot release a capture started by the callback");
+            session->capturePresented();
+            session->shutdown();
+        }
     }
 }
 template <class F> void await(F predicate) {
@@ -341,6 +525,43 @@ void selection() {
                 "path selection");
     }
 }
+void selectionStyle() {
+    ScreenshotSelectionModel model;
+    model.setSelectionRect(QRect(10, 20, 100, 80));
+    QString field;
+    require(applySelectionStyle(model,
+                                {{QStringLiteral("border_type"), QStringLiteral("border")},
+                                 {QStringLiteral("border_width"), 48},
+                                 {QStringLiteral("border_color"), QJsonArray{20, 80, 180, 50}},
+                                 {QStringLiteral("shadow_width"), 12}},
+                                &field),
+            "MCP can configure independent active border and inactive shadow settings");
+    const auto saved = model.params(QRect(0, 0, 800, 600));
+    const auto state = selectionStyleState(model);
+    require(model.effectWidth() == 48 && model.shadowWidth() == 12 &&
+                state.value(QStringLiteral("border_type")) == QStringLiteral("border") &&
+                state.value(QStringLiteral("border_color")) == QJsonArray{20, 80, 180, 255},
+            "MCP reports the actual normalized border appearance");
+    for (const auto& invalid :
+         {QJsonObject{{QStringLiteral("border_type"), QStringLiteral("outline")}},
+          QJsonObject{{QStringLiteral("border_width"), -1}},
+          QJsonObject{{QStringLiteral("border_width"), 1.5}},
+          QJsonObject{{QStringLiteral("border_color"), QJsonArray{0, 0, 256, 255}}},
+          QJsonObject{{QStringLiteral("border_color"), QJsonArray{0, 0, 0}}}}) {
+        auto patch = invalid;
+        patch.insert(QStringLiteral("shadow_width"), 3);
+        require(!applySelectionStyle(model, patch, &field) && !field.isEmpty() &&
+                    model.params(QRect(0, 0, 800, 600)) == saved,
+                "invalid style patches must leave all model settings unchanged");
+    }
+    require(applySelectionStyle(model,
+                                {{QStringLiteral("border_type"), QStringLiteral("shadow")},
+                                 {QStringLiteral("border_width"), 1000}},
+                                &field) &&
+                model.effectWidth() == 12 && model.borderWidth() == 64,
+            "style switching preserves inactive settings and editor limits remain in canvas units");
+}
+
 void session() {
     QJsonObject editor{{QStringLiteral("capture_phase"), QStringLiteral("idle")}};
     int canceled = 0, artifacts = 0, mutations = 0;
@@ -443,7 +664,8 @@ void session() {
     require(mutations == 0, "stale mutation not applied");
     require(call(QStringLiteral("snow_shot_screenshot_set_selection")).ok,
             "current revision applies");
-    QTemporaryDir coldOutput;
+    QTemporaryDir coldOutput(QDir(QDir::tempPath()).canonicalPath() +
+                             QStringLiteral("/mcp-save-XXXXXX"));
     for (const auto* format : {"jpeg", "pdf"}) {
         const QString coldPath = coldOutput.filePath(QString::fromLatin1(format) + u'.' + format);
         const auto saved = call(QStringLiteral("snow_shot_screenshot_save"),
@@ -939,8 +1161,8 @@ void completeToolStyleContract() {
         return mcpStylePatch(
             styles, styles, {{QStringLiteral("target"), target}, {QStringLiteral("style"), patch}});
     };
-    for (const auto& target :
-         {QStringLiteral("rectangle"), QStringLiteral("arrow"), QStringLiteral("line")}) {
+    for (const auto& target : {QStringLiteral("rectangle"), QStringLiteral("speech_bubble"),
+                               QStringLiteral("arrow"), QStringLiteral("line")}) {
         const QStringList values{QStringLiteral("architect"), QStringLiteral("artist"),
                                  QStringLiteral("cartoonist")};
         for (int index = 0; index < values.size(); ++index) {
@@ -966,8 +1188,8 @@ void completeToolStyleContract() {
                 "sequence MCP stroke types must dispatch only the stroke rendering property");
     }
     const int renderingUpdates = styles.updates;
-    for (const auto& target : {QStringLiteral("freehand"), QStringLiteral("speech_bubble"),
-                               QStringLiteral("text"), QStringLiteral("rectangle_highlight")}) {
+    for (const auto& target : {QStringLiteral("freehand"), QStringLiteral("text"),
+                               QStringLiteral("rectangle_highlight")}) {
         require(
             !apply(target, {{QStringLiteral("stroke_rendering_style"), QStringLiteral("artist")}}),
             "rendering MCP styles should reject unsupported tool targets");
@@ -985,6 +1207,32 @@ void completeToolStyleContract() {
                 (styles.properties & SnowCanvasShapeStylePropertyArrowRatio) &&
                 (styles.properties & SnowCanvasShapeStylePropertyArrowShaftType),
             "arrow shaft and ratio must reach the command sink with exact property flags");
+    require(apply(QStringLiteral("arrow"),
+                  {{QStringLiteral("arrow_outline_width"), 8.0},
+                   {QStringLiteral("arrow_outline_color"), QJsonArray{255, 204, 0, 128}}}) &&
+                styles.state.shapeStyle.arrowOutlineWidth == 8.0 &&
+                styles.state.shapeStyle.arrowOutlineColor == QColor(255, 204, 0, 128) &&
+                styles.properties == (SnowCanvasShapeStylePropertyArrowOutlineColor |
+                                      SnowCanvasShapeStylePropertyArrowOutlineWidth),
+            "MCP arrow outlines preserve alpha and exact property flags");
+    const auto outlineState = styles.state;
+    const auto outlineProperties = styles.properties;
+    const int outlineUpdates = styles.updates;
+    for (const auto& invalidColor :
+         {QJsonValue(QStringLiteral("#80ffcc00")), QJsonValue(QJsonArray{255, 204, 0}),
+          QJsonValue(QJsonArray{255, 204, 0, 128, 255}), QJsonValue(QJsonArray{-1, 204, 0, 128}),
+          QJsonValue(QJsonArray{256, 204, 0, 128}), QJsonValue(QJsonArray{255, 204, 0, 128.5}),
+          QJsonValue(QJsonArray{255, 204, 0, QStringLiteral("128")})}) {
+        require(!apply(QStringLiteral("arrow"),
+                       {{QStringLiteral("arrow_outline_width"), 4.0},
+                        {QStringLiteral("arrow_outline_color"), invalidColor}}) &&
+                    styles.state.shapeStyle == outlineState.shapeStyle &&
+                    styles.properties == outlineProperties && styles.updates == outlineUpdates,
+                "malformed MCP outline colors reject the entire patch before dispatch");
+    }
+    require(!apply(QStringLiteral("line"), {{QStringLiteral("arrow_outline_width"), 2.0}}) &&
+                !apply(QStringLiteral("arrow"), {{QStringLiteral("arrow_outline_width"), 73.0}}),
+            "MCP rejects outlines for other tools and invalid outline widths");
     require(apply(QStringLiteral("arrow"), {{QStringLiteral("arrow_ratio"), 0.5}}) &&
                 styles.state.shapeStyle.arrowRatio == 0.5 &&
                 styles.properties == SnowCanvasShapeStylePropertyArrowRatio,
@@ -1119,12 +1367,37 @@ void completeToolStyleContract() {
 } // namespace
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    QTemporaryDir temporary;
+    auto& storage = snow_shot::storage::ApplicationStorage::instance();
+    require(temporary.isValid() &&
+                storage.initialize({temporary.filePath(QStringLiteral("bin")), temporary.path(), 0})
+                    .success,
+            "isolated MCP test storage");
+    const auto cleanup = qScopeGuard([&] {
+        ScreenshotExportCoordinator::shared().shutdown();
+        storage.shutdown();
+    });
+    if (app.arguments().contains(QStringLiteral("--selection-style-only"))) {
+        selectionStyle();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--session-completion-reentry-only"))) {
+        sessionCompletionReentry();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--replay-lifecycle-only"))) {
+        replaySubscriptions();
+        sessionCompletionReentry();
+        return 0;
+    }
     if (app.arguments().contains(QStringLiteral("--magnifier-only")) ||
         app.arguments().contains(QStringLiteral("--stroke-rendering-only")) ||
         app.arguments().contains(QStringLiteral("--border-fill-only"))) {
         completeToolStyleContract();
         return 0;
     }
+    replaySubscriptions();
+    sessionCompletionReentry();
     serialNumberPatchesPreserveMixedSelectionProperties(false);
     serialNumberPatchesPreserveMixedSelectionProperties(true);
     completeToolStyleContract();
@@ -1133,6 +1406,7 @@ int main(int argc, char** argv) {
     transport();
     descriptorOverride();
     selection();
+    selectionStyle();
     session();
     return 0;
 }

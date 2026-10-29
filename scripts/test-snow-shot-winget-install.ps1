@@ -21,7 +21,6 @@ if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows'
 $hostArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
 if ($hostArchitecture -cne $Architecture) { throw 'WinGet lifecycle validation must run on the matching native Windows host.' }
 $product = Get-SnowShotEdition $Edition $Architecture
-$installerVariant = 'offline'
 $version = Get-SnowShotWingetVersion $Tag
 $previousVersion = if ($SkipUpgrade) { $version } else { Get-SnowShotWingetVersion $PreviousTag }
 if (-not $SkipUpgrade -and $version -eq $previousVersion) { throw 'The upgrade fixture requires two different releases.' }
@@ -38,43 +37,8 @@ Start-Transcript -Path (Join-Path $output 'installation.log')
 $app = $null
 $reputationPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
 $savedReputationPolicy = $null
-Add-Type @'
-using System;
-using System.Text;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
-public static class WinGetWindowDiagnostics {
-    private delegate bool Callback(IntPtr window, IntPtr data);
-    [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr window, Callback callback, IntPtr data);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
-    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
-    public static string Read(IntPtr window) {
-        var lines = new List<string>();
-        Callback callback = (child, data) => {
-            var text = new StringBuilder(2048);
-            GetWindowText(child, text, text.Capacity);
-            if (text.Length > 0) lines.Add(text.ToString());
-            return true;
-        };
-        callback(window, IntPtr.Zero);
-        EnumChildWindows(window, callback, IntPtr.Zero);
-        return string.Join(Environment.NewLine, lines);
-    }
-    public static void ConfirmVerifiedFile(IntPtr window, string fileName) {
-        if (Read(window).IndexOf(fileName, StringComparison.OrdinalIgnoreCase) < 0)
-            throw new InvalidOperationException("The launch warning does not identify the verified installer.");
-        IntPtr runButton = IntPtr.Zero;
-        EnumChildWindows(window, (child, data) => {
-            var text = new StringBuilder(2048);
-            GetWindowText(child, text, text.Capacity);
-            if (text.ToString().Replace("&", "").Trim() == "Run") runButton = child;
-            return true;
-        }, IntPtr.Zero);
-        if (runButton == IntPtr.Zero || !PostMessage(runButton, 0x00F5, IntPtr.Zero, IntPtr.Zero))
-            throw new InvalidOperationException("Could not acknowledge the verified installer's Run button.");
-    }
-}
-'@
+$savedAttachmentPolicy = $null
+. (Join-Path $PSScriptRoot 'snow-shot-winget-test-windows.ps1')
 function Invoke-WingetBounded([string[]]$Arguments) {
     Write-Host "WinGet: $($Arguments -join ' ')"
     $info = [Diagnostics.ProcessStartInfo]::new($Winget)
@@ -93,39 +57,27 @@ function Invoke-WingetBounded([string[]]$Arguments) {
     while (-not $process.WaitForExit(1000)) {
         if ([DateTime]::UtcNow -ge $deadline) { break }
         $process.Refresh()
-        if ($AllowUnrecognizedRelease -and $process.MainWindowTitle -eq 'Open File - Security Warning' -and
-            $Arguments[0] -in @('install', 'upgrade')) {
-            $manifestIndex = [Array]::IndexOf($Arguments, '--manifest')
-            if ($manifestIndex -lt 0) { throw 'Installer consent requires a validated local manifest.' }
-            $manifest = Get-Content -LiteralPath (Join-Path $Arguments[$manifestIndex + 1] "$($product.Winget).installer.yaml") -Raw
-            $packageVersion = [regex]::Match($manifest, "(?m)^PackageVersion: '([^']+)'$").Groups[1].Value
-            $nativeEntry = [regex]::Match($manifest, "(?ms)^  - Architecture: $Architecture\r?\n(?<entry>.*?)(?=^  - Architecture: |\z)").Groups['entry'].Value
-            $expectedHash = [regex]::Match($nativeEntry, '(?m)^    InstallerSha256: ([A-Fa-f0-9]{64})$').Groups[1].Value
-            if (-not $expectedHash) { throw 'The manifest has no matching native installer.' }
-            $fileName = "$($product.Product)-$packageVersion-windows-$Architecture-$installerVariant.exe"
-            $cachedInstaller = Join-Path $env:TEMP "WinGet/$($product.Winget).$packageVersion/$fileName"
-            if ((Get-FileHash -LiteralPath $cachedInstaller -Algorithm SHA256).Hash -ine $expectedHash) {
-                throw 'Refusing consent: the cached installer hash does not match the manifest.'
+        # Process.MainWindowHandle excludes owned dialogs, including launch warnings.
+        foreach ($window in [WinGetWindowDiagnostics]::ForProcess($process.Id)) {
+            $title = [WinGetWindowDiagnostics]::Title($window)
+            if ($title -in @('Window Dialog', 'Open File - Security Warning')) {
+                $dialogText = [WinGetWindowDiagnostics]::Read($window)
+                if ($title -eq 'Window Dialog' -and
+                    -not (Test-SnowShotWingetInteractiveDialog $title $dialogText)) { continue }
+                Write-Host $dialogText
+                Add-Type -AssemblyName System.Windows.Forms
+                $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+                $bitmap = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+                $graphics = [Drawing.Graphics]::FromImage($bitmap)
+                try {
+                    $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
+                    $bitmap.Save((Join-Path $output 'blocking-dialog.png'), [Drawing.Imaging.ImageFormat]::Png)
+                } finally { $graphics.Dispose(); $bitmap.Dispose() }
+                $dialog = $true
+                break
             }
-            Write-Host ([WinGetWindowDiagnostics]::Read($process.MainWindowHandle))
-            [WinGetWindowDiagnostics]::ConfirmVerifiedFile($process.MainWindowHandle, $fileName)
-            Write-Host "Acknowledged Windows launch warning for verified $fileName."
-            continue
         }
-        if ($process.MainWindowTitle -eq 'Window Dialog') {
-            if ($process.WaitForExit(2000)) { break }
-            Write-Host ([WinGetWindowDiagnostics]::Read($process.MainWindowHandle))
-            Add-Type -AssemblyName System.Windows.Forms
-            $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bitmap = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
-            $graphics = [Drawing.Graphics]::FromImage($bitmap)
-            try {
-                $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
-                $bitmap.Save((Join-Path $output 'blocking-dialog.png'), [Drawing.Imaging.ImageFormat]::Png)
-            } finally { $graphics.Dispose(); $bitmap.Dispose() }
-            $dialog = $true
-            break
-        }
+        if ($dialog) { break }
         if ([DateTime]::UtcNow -ge $deadline) { break }
     }
     if (-not $process.HasExited) {
@@ -158,6 +110,8 @@ function Assert-InstalledVersion([string]$Expected) {
     Invoke-WingetChecked @('list', '--name', $product.Name, '--exact', '--accept-source-agreements')
 }
 try {
+    . (Join-Path $PSScriptRoot 'snow-shot-winget-test-desktop.ps1')
+    Initialize-SnowShotWingetTestDesktop
     $current = New-SnowShotWingetManifest $Tag $output $Edition
     $previous = if ($SkipUpgrade) { $current } else { New-SnowShotWingetManifest $PreviousTag $output $Edition }
     foreach ($directory in @($current, $previous)) {
@@ -174,6 +128,7 @@ try {
         $savedReputationPolicy = @{ Present = ($null -ne $property); Value = if ($property) { $property.Value } else { 0 } }
         if (-not (Test-Path -LiteralPath $reputationPolicy)) { $null = New-Item -Path $reputationPolicy -Force }
         $null = New-ItemProperty -LiteralPath $reputationPolicy -Name EnableSmartScreen -Value 0 -PropertyType DWord -Force
+        $savedAttachmentPolicy = Enable-SnowShotWingetTestAttachmentConsent
         Write-Host 'Temporarily allowing unsigned release fixtures in this disposable VM; hash verification remains enabled.'
     }
     & $Winget settings --enable LocalManifestFiles
@@ -278,6 +233,7 @@ try {
     Write-Output "PASS: real native $Architecture WinGet install, detection, upgrade when requested, uninstall, reinstall, and data preservation."
 } finally {
     if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id }
+    if ($savedAttachmentPolicy) { Restore-SnowShotWingetTestAttachmentConsent $savedAttachmentPolicy }
     if ($savedReputationPolicy) {
         if ($savedReputationPolicy.Present) {
             $null = New-ItemProperty -LiteralPath $reputationPolicy -Name EnableSmartScreen `

@@ -16,22 +16,6 @@ namespace snow_shot::scrolling_benchmark {
 namespace {
 namespace perf = capture_detail::scrolling_perf;
 constexpr qint64 secondNs = 1'000'000'000;
-constexpr std::array<const char*, 16> rustStages{"rust.frame_freeze",
-                                                 "rust.duplicate_check",
-                                                 "rust.reference_preparation",
-                                                 "rust.grayscale",
-                                                 "rust.similarity_maps",
-                                                 "rust.feature_extraction",
-                                                 "rust.descriptor_matching",
-                                                 "rust.candidate_scoring",
-                                                 "rust.refinement",
-                                                 "rust.region_update",
-                                                 "rust.canvas_composition",
-                                                 "rust.reference_synthesis",
-                                                 "rust.preview_scaling",
-                                                 "rust.push_total",
-                                                 "rust.initialization",
-                                                 "rust.reserved"};
 
 class ReplaySource final : public ScrollingFrameSource {
   public:
@@ -244,8 +228,8 @@ QJsonObject replayReport(const ReplayState& state, qint64 finishedAt) {
     QJsonObject dispositions;
     QJsonObject outcomes;
     std::array<std::vector<qint64>, static_cast<std::size_t>(perf::Stage::Count)> stages;
-    std::array<std::vector<qint64>, 16> rust;
-    std::array<quint64, 16> calls{};
+    std::array<std::vector<qint64>, perf::rustStageNames.size()> rust;
+    std::array<quint64, perf::rustStageNames.size()> calls{};
     std::set<int> sampledOffsets;
     qint64 painted = 0;
     std::size_t mailboxDepth = 0;
@@ -271,11 +255,11 @@ QJsonObject replayReport(const ReplayState& state, qint64 finishedAt) {
         for (std::size_t i = 0; i < rust.size(); ++i) {
             if (trace->rustCalls[i] == 0)
                 continue;
-            timings[QString::fromLatin1(rustStages[i])] =
+            timings[QString::fromLatin1(perf::rustStageNames[i])] =
                 static_cast<qint64>(trace->rustElapsed[i]);
             rust[i].push_back(static_cast<qint64>(trace->rustElapsed[i]));
             calls[i] += trace->rustCalls[i];
-            rustCallCounts[QString::fromLatin1(rustStages[i])] =
+            rustCallCounts[QString::fromLatin1(perf::rustStageNames[i])] =
                 static_cast<qint64>(trace->rustCalls[i]);
         }
         frames.append(QJsonObject{
@@ -304,7 +288,7 @@ QJsonObject replayReport(const ReplayState& state, qint64 finishedAt) {
             continue;
         auto summary = distribution(std::move(rust[i]));
         summary[QStringLiteral("calls")] = static_cast<qint64>(calls[i]);
-        summaries[QString::fromLatin1(rustStages[i])] = summary;
+        summaries[QString::fromLatin1(perf::rustStageNames[i])] = summary;
     }
     const auto start = state.motionStart.load();
     const double elapsed = start == 0 ? 0 : static_cast<double>(finishedAt - start) / secondNs;

@@ -1,3 +1,4 @@
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/presentation/components/clouduploadsettingswidget.h"
 #include "snow_shot/presentation/components/settingscustomwidget.h"
 #include "snow_shot/presentation/components/formfields.h"
@@ -9,7 +10,7 @@
 #include "snow_shot/presentation/components/texttranslationsettingswidget.h"
 #endif
 
-#include "snow_shot/presentation/editionfeatures.h"
+#include "snow_shot/app/editionfeatures.h"
 
 #include "snow_shot/presentation/components/toolbareditorsettingswidget.h"
 #include "snow_shot/presentation/components/storagestatussettingswidget.h"
@@ -1480,8 +1481,10 @@ class McpStatusSettingsWidget final : public SettingsCustomWidget {
             "Keep Snow Shot running while using MCP."));
 #endif
         updateCopyText();
-        const QString executable = QDir(QCoreApplication::applicationDirPath())
-                                       .filePath(snow_shot::app::edition::mcpName());
+        const QString executable = snow_shot::app::distribution::isStoreManaged()
+                                       ? snow_shot::app::distribution::mcpCommand()
+                                       : QDir(QCoreApplication::applicationDirPath())
+                                             .filePath(snow_shot::app::edition::mcpName());
         QJsonObject server;
         server.insert(QStringLiteral("command"), executable);
         server.insert(QStringLiteral("args"), QJsonArray{});
@@ -1491,9 +1494,12 @@ class McpStatusSettingsWidget final : public SettingsCustomWidget {
         config.insert(QStringLiteral("mcpServers"), servers);
         m_config->setPlainText(QString::fromUtf8(QJsonDocument(config).toJson()));
         const QString endpoint =
-            QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
-                .filePath(snow_shot::app::edition::registryName() + QStringLiteral("/mcp/") +
-                          snow_shot::app::edition::productId() + QStringLiteral("-mcp.json"));
+            snow_shot::app::distribution::isStoreManaged()
+                ? QDir(snow_shot::app::distribution::mcpRuntimeDirectory())
+                      .filePath(QStringLiteral("snow-shot-mcp.json"))
+                : QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+                      .filePath(snow_shot::app::edition::registryName() + QStringLiteral("/mcp/") +
+                                snow_shot::app::edition::productId() + QStringLiteral("-mcp.json"));
         m_endpoint->setText(
             QCoreApplication::translate("ScreenshotMcpSettings", "Local endpoint descriptor: %1")
                 .arg(QDir::toNativeSeparators(endpoint)));

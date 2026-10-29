@@ -44,6 +44,14 @@ Pushing a version tag does not start a GitHub Actions build or create a release
 draft. The remaining Actions workflows handle package-manager publication and
 verification.
 
+Stable Windows x64 packaging also builds the Store preset and saves an unsigned
+MSIX, its SHA-256 sidecar and audit manifest in `artifacts/msix/<version>/` for
+later Microsoft Store submission. These files remain local during GitHub/Gitee
+publication. See [Store packaging](snow-shot-msix.md) for SDK prerequisites and
+the separate Store build tree. `package-snow-shot.ps1 -SkipBuild` requires matching
+standalone and Store builds; the publisher's `-SkipBuild` reuses existing packages
+without invoking either packager.
+
 The local publisher signs and audits all Windows packages, optionally packages a
 macOS DMG and standalone installer, publishes GitHub assets, verifies their bytes,
 then publishes the release. With `-DeployWebsite`, it then runs the separate official
@@ -150,10 +158,10 @@ viewer and use bundled codecs to match the Debug runtime. Windows bootstrap also
 discovers kits under `.tools/qt/<version>/`.
 
 For a Release development kit used by `windows-msvc-performance`, pass
-`-DevelopmentModules` to `scripts/build-static-qt.ps1`. It enables Test and
-Concurrent and can add them incrementally to an already validated production
-kit. Performance discovery requires these modules. They are separate static
-libraries and are not linked into the production Snow Shot executable.
+`-DevelopmentModules` to `scripts/build-static-qt.ps1`. It enables Qt Test and
+can add it incrementally to an already validated production kit. Performance
+discovery requires Test and Concurrent. Production kits always include Concurrent
+for cloud uploads and printing; Qt Test is not linked into the shipping application.
 
 macOS continues using Cocoa time-zone names; Qt already excludes these CLDR
 tables on Apple platforms. Its static kit uses the same feature policy and
@@ -458,9 +466,12 @@ Maintainer setup:
 
 1. Use a GitHub account with a fork of `microsoft/winget-pkgs` (WinGetCreate can also
    create the fork). Complete any upstream contributor requirements when prompted.
-2. Create a **classic** personal access token with `public_repo` scope. Fine-grained
+2. Create a **classic** personal access token with `public_repo` and `workflow` scopes. Fine-grained
    tokens are not supported by WinGetCreate. Store it as the repository Actions secret
    `WINGET_CREATE_GITHUB_TOKEN`; the default Actions token cannot submit cross-repository PRs.
+   WinGetCreate synchronizes the account's fork before opening a PR. The `workflow` scope
+   lets that synchronization include upstream changes under `.github/workflows/`, even
+   though the Snow Shot submission itself only adds manifests.
 3. Publish a release or manually run **Snow Shot WinGet** with its tag. The workflow
    uploads manifests before validation/submission, validates them using WinGet, and
    submits with WinGetCreate 1.12.13.0 (verified against its pinned SHA-256).
@@ -472,6 +483,13 @@ available. Retry the workflow after correcting credentials or validation errors.
 Runs are serialized per version across both tag styles. Already merged versions and
 matching open PRs are reported and skipped; closed, unmerged submissions can be retried.
 GitHub lookup failures stop submission instead of treating a failed lookup as absence.
+Before invoking WinGetCreate, submission verifies the token's repository and `workflow`
+scopes using the same read-only check as the credential verification script. If older
+credentials have only `public_repo`, add `workflow` to that PAT (or replace the repository
+secret with a PAT that has both scopes), then rerun **Snow Shot WinGet** for the tag.
+WinGetCreate 1.12.13.0 reports HTTP 422 from fork synchronization only as
+"The forked repository could not be synced with the upstream commits." A missing
+`workflow` scope can cause that response when the fork is behind upstream workflow changes.
 This workflow does not publish application releases.
 
 For local generation and validation (PowerShell 7, WinGet 1.29.380 or newer, and
@@ -771,6 +789,21 @@ All workflow versions share one concurrency group, and pushes are never forced.
 If a push fails, rerun after resolving the tap's branch policy or concurrent edits.
 An archive may remain published after a failed tap push; retry safely reuses it.
 
+To remove the deprecated Ruby `preflight` from existing published casks, migrate
+the local tap checkout without repackaging or uploading release assets:
+
+```sh
+python3 scripts/snow-shot-homebrew.py migrate-casks --tap /path/to/homebrew-tap
+git -C /path/to/homebrew-tap diff -- Casks
+```
+
+This explicit compatibility migration changes only the recognized preparation
+artifact block in Full/Mini stable/beta casks. Versions, URLs, checksums and archive
+bytes remain unchanged. Unknown or conflicting hooks abort validation before any
+cask is changed. Review and commit the tap diff through the normal review process.
+Repeating the migration is harmless; the release publisher's same-version and
+immutable-asset guards remain in effect.
+
 Missing macOS assets fail without updating the tap. After uploading the missing
 pair, retry with Actions → Publish Snow Shot Homebrew cask → Run workflow, supplying
 the stable tag. With GitHub CLI:
@@ -799,22 +832,25 @@ A nonexistent `--current-cask` means first publication. The output includes the
 archives and `Casks/snow-shot.rb`; it performs no network or Git writes. Run
 `python3 scripts/test-snow-shot-homebrew.py` for the release helper's focused tests.
 With Homebrew installed and the generated cask in the tap, run
-`brew style --cask --except Cask/InstallSteps mg-chao/tap/snow-shot` and
+`brew style --cask mg-chao/tap/snow-shot` and
 `brew audit --cask mg-chao/tap/snow-shot`. Native installation/upgrade qualification
 is described in `docs-macos-build.md` and is required separately from these tests.
 
 The pull-request workflow `snow-shot-homebrew-checks.yml` runs the two focused
 Python suites plus Homebrew style and offline metadata auditing on macOS. Its
-generated fixture is never published or installed. The third-party cask uses the
-supported (but deprecated) third-party Ruby preflight API: Homebrew 7's declarative sandbox substitutes HOME
-and blocks account lookup, so it cannot preserve this installer's persistent
-Keychain identity as-is. The workflow excludes only `Cask/InstallSteps`, the
-rule requiring official taps to use declarative hooks. All other style checks
-and offline audits run normally; no runtime security settings are changed.
+generated fixture is never published or installed as a real application. The cask
+uses Homebrew's supported `installer script:` artifact to prepare a locally signed
+app before Homebrew moves it into the configured app directory. Vendor installer
+scripts preserve the installing account's HOME and Keychain access; declarative
+flight steps substitute a temporary HOME and cannot reuse this installer's signing
+identity. Full style checks run without a `Cask/InstallSteps` exception.
 
-Use `brew style --cask --except Cask/InstallSteps mg-chao/tap/snow-shot` for this
-third-party cask. The release's `prepare-snow-shot-homebrew.sh` wrapper handles
-rollback without requiring the unavailable signing key again.
+`scripts/test-snow-shot-homebrew-installer.rb` exercises the native Homebrew
+artifacts with harmless installer probes and disposable ad-hoc-signed app bundles,
+preserving the real HOME without creating or changing Keychain identities. The release's
+`prepare-snow-shot-homebrew.sh` wrapper handles rollback without requiring the
+unavailable signing key again. Uninstall removes prepared and installed copies
+while retaining signing state and user data.
 
 After saving or rotating the tap token, run **Check Snow Shot Homebrew support**
 manually. In addition to the focused tests, its manual-only job checks out the

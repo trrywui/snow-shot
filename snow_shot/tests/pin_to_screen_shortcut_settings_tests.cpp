@@ -74,6 +74,27 @@ int main(int argc, char** argv) {
         require(session.reset(settings::SettingsSectionReset::PinToScreenShortcuts) &&
                     pinned.allShortcuts() == defaults,
                 "reset accepts the mutually exclusive default Space assignments");
+        require(session.applyLocalShortcuts(scope, QStringLiteral("next_frame"),
+                                            {QStringLiteral("Return")}) &&
+                    pinned.shortcuts(QStringLiteral("next_frame")) ==
+                        snow_shot::shortcuts::ShortcutBindingList{QStringLiteral("Enter")},
+                "settings writes must canonicalize legacy Return to Enter");
+        const auto enterConflict = backend.validateLocalShortcut(
+            scope, QStringLiteral("previous_frame"), {QStringLiteral("Num+Enter")});
+        require(!enterConflict.supported &&
+                    enterConflict.failureReason ==
+                        snow_shot::presentation::GlobalShortcutFailureReason::AlreadyInUse &&
+                    !session.applyLocalShortcuts(scope, QStringLiteral("previous_frame"),
+                                                 {QStringLiteral("Num+Return")}),
+                "both Enter keys must conflict across simultaneously available commands");
+        require(session.applyLocalShortcuts(scope, QStringLiteral("previous_frame"),
+                                            {QStringLiteral("Ctrl+Num+Return")}) &&
+                    pinned.shortcuts(QStringLiteral("previous_frame")) ==
+                        snow_shot::shortcuts::ShortcutBindingList{QStringLiteral("Ctrl+Enter")},
+                "modified Enter must remain independently assignable");
+        require(session.reset(settings::SettingsSectionReset::PinToScreenShortcuts) &&
+                    pinned.allShortcuts() == defaults,
+                "reset must restore defaults after Enter assignments");
         for (const QString& id : {QStringLiteral("always_on_top"), QStringLiteral("show_border"),
                                   QStringLiteral("show_shadow"), QStringLiteral("toggle_lock"),
                                   QStringLiteral("print")}) {

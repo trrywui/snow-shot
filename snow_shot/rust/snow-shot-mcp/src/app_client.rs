@@ -616,6 +616,14 @@ fn request_id() -> Result<String, AppClientError> {
 }
 fn default_descriptor_path() -> PathBuf {
     if cfg!(windows) {
+        if let Some(family) = package_family_name() {
+            return packaged_descriptor_path(
+                std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_default(),
+                &family,
+            );
+        }
         std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_default()
@@ -650,12 +658,84 @@ fn default_descriptor_path() -> PathBuf {
     }
 }
 
+fn packaged_descriptor_path(local: PathBuf, family: &str) -> PathBuf {
+    if !local.is_absolute() {
+        return PathBuf::new();
+    }
+    local
+        .join("Packages")
+        .join(family)
+        .join("LocalState/mcp/snow-shot-mcp.json")
+}
+
+fn package_family_name() -> Option<String> {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentPackageFamilyName(length: *mut u32, name: *mut u16) -> i32;
+        }
+        let mut length = 0u32;
+        // The first call queries the required UTF-16 buffer, including its terminator.
+        if unsafe { GetCurrentPackageFamilyName(&mut length, std::ptr::null_mut()) } == 122
+            && length > 1
+        {
+            let mut name = vec![0u16; length as usize];
+            if unsafe { GetCurrentPackageFamilyName(&mut length, name.as_mut_ptr()) } == 0 {
+                return String::from_utf16(&name[..length as usize - 1]).ok();
+            }
+        }
+    }
+    cfg!(feature = "store").then(|| "SnowApps.SnowShot_3pp9w6ncw7bs0".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::wire::{read_frame, write_frame};
     use interprocess::local_socket::{ListenerOptions, Stream};
     use serde_json::json;
+    #[test]
+    fn store_descriptor_is_stable_and_separate_from_desktop() {
+        let local = std::env::temp_dir().join("snow-shot-store-descriptor-test");
+        assert!(local.is_absolute());
+        let family = "SnowApps.SnowShot_3pp9w6ncw7bs0";
+        let path = packaged_descriptor_path(local.clone(), family);
+        assert_eq!(
+            path,
+            local
+                .join("Packages")
+                .join(family)
+                .join("LocalState/mcp/snow-shot-mcp.json")
+        );
+        assert_ne!(path, local.join("SnowShot/mcp/snow-shot-mcp.json"));
+        assert_ne!(
+            path,
+            packaged_descriptor_path(local, "Other.Package_family")
+        );
+        assert!(!path.to_string_lossy().contains("WindowsApps"));
+    }
+    #[test]
+    fn store_descriptor_rejects_missing_or_relative_local_data() {
+        for local in [PathBuf::new(), PathBuf::from("local-data")] {
+            assert!(
+                packaged_descriptor_path(local, "SnowApps.SnowShot_family")
+                    .as_os_str()
+                    .is_empty()
+            );
+        }
+        #[cfg(windows)]
+        for local in [
+            PathBuf::from(r"\local-data"),
+            PathBuf::from(r"C:local-data"),
+        ] {
+            assert!(
+                packaged_descriptor_path(local, "SnowApps.SnowShot_family")
+                    .as_os_str()
+                    .is_empty()
+            );
+        }
+    }
     fn response(request: &AppRequest) -> AppResponse {
         AppResponse {
             protocol: PROTOCOL.into(),

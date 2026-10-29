@@ -7,6 +7,9 @@ pub use snow_recording_model::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+pub use snow_recording_model::input::ScrollDirection;
+pub const SCROLL_GAP_MS: u64 = 250;
+
 pub const MOVE_MS: u64 = 180;
 pub const HOLD_MS: u64 = 1_200;
 pub const FADE_MS: u64 = 400;
@@ -35,6 +38,8 @@ fn modifier_order(key: u16) -> u16 {
 #[derive(Debug)]
 struct Row {
     keys: Vec<(u16, String)>,
+    is_scroll: bool,
+    scroll_last: Option<u64>,
     born: u64,
     released: Option<u64>,
     from: f32,
@@ -66,7 +71,9 @@ impl KeyboardModel {
     pub fn reset(&mut self, now: u64) {
         self.held.clear();
         for row in &mut self.rows {
-            if row.released.is_none() {
+            row.scroll_last = None;
+            if row.released.is_none() || (row.is_scroll && row.released.is_some_and(|at| at > now))
+            {
                 row.released = Some(now);
             }
         }
@@ -84,11 +91,75 @@ impl KeyboardModel {
         }
     }
 
+    fn make_room(&mut self, now: u64) {
+        if self.rows.len() < MAX_ROWS {
+            return;
+        }
+        // Keep the visible scroll indicator and a held chord when inputs add history.
+        let oldest_history = self
+            .rows
+            .iter()
+            .position(|row| {
+                if row.is_scroll {
+                    row.scroll_last.is_none() || row.opacity(now) == 0.0
+                } else {
+                    row.released.is_some()
+                }
+            })
+            .unwrap_or(0);
+        self.rows.remove(oldest_history);
+    }
+
+    pub fn scroll_event(&mut self, event: KeyEvent) -> bool {
+        let now = event.at_ms;
+        if let Some(row) = self.rows.iter_mut().rev().find(|row| row.is_scroll)
+            && row.scroll_last.is_some_and(|last| now >= last)
+            && row.opacity(now) > 0.0
+        {
+            // A new burst can begin while the previous one is holding or fading.
+            // Reuse that row so a brief pause never creates stacked scroll history.
+            let content_changed = row.keys[0].0 != event.key || row.keys[0].1 != event.label;
+            let changed = content_changed || row.opacity(now) < 1.0;
+            if content_changed {
+                row.keys[0] = (event.key, event.label);
+            }
+            row.scroll_last = Some(now);
+            row.released = Some(now.saturating_add(SCROLL_GAP_MS));
+            self.dirty |= changed;
+            return changed;
+        }
+        // Reset or expired rows may still be present before the next rendered frame.
+        self.rows.retain(|row| !row.is_scroll);
+        self.make_room(now);
+        self.rows.push_back(Row {
+            keys: vec![(event.key, event.label)],
+            is_scroll: true,
+            scroll_last: Some(now),
+            born: now,
+            released: Some(now.saturating_add(SCROLL_GAP_MS)),
+            from: -0.3,
+            target: 0.0,
+            moved: now,
+        });
+        self.retarget(now);
+        self.dirty = true;
+        true
+    }
+
     pub fn event(&mut self, event: KeyEvent) {
+        if ScrollDirection::from_key(event.key).is_some() {
+            self.scroll_event(event);
+            return;
+        }
         let now = event.at_ms;
         if !event.down {
             self.held.remove(&event.key);
-            if let Some(row) = self.rows.back_mut().filter(|row| row.released.is_none()) {
+            if let Some(row) = self
+                .rows
+                .iter_mut()
+                .rev()
+                .find(|row| !row.is_scroll && row.released.is_none())
+            {
                 let non_modifiers: Vec<_> =
                     row.keys.iter().filter(|(key, _)| !modifier(*key)).collect();
                 let active = if non_modifiers.is_empty() {
@@ -107,15 +178,18 @@ impl KeyboardModel {
             return;
         }
         let mut modifiers = event.modifiers;
-        modifiers.sort_by_key(|(key, _)| modifier_order(*key));
-        modifiers.dedup_by(|a, b| a.1 == b.1);
-        let extend = self.rows.back().is_some_and(|row| row.released.is_none());
+        modifiers.sort_by_key(|(key, _)| (modifier_order(*key), *key));
+        modifiers.dedup_by_key(|(key, _)| *key);
+        let extend = self
+            .rows
+            .iter()
+            .any(|row| !row.is_scroll && row.released.is_none());
         if !extend {
-            if self.rows.len() == MAX_ROWS {
-                self.rows.pop_front();
-            }
+            self.make_room(now);
             self.rows.push_back(Row {
                 keys: vec![],
+                is_scroll: false,
+                scroll_last: None,
                 born: now,
                 released: None,
                 from: -0.3,
@@ -123,7 +197,12 @@ impl KeyboardModel {
                 moved: now,
             });
         }
-        let row = self.rows.back_mut().expect("row was created");
+        let row = self
+            .rows
+            .iter_mut()
+            .rev()
+            .find(|row| !row.is_scroll && row.released.is_none())
+            .expect("row was created");
         // Modifier snapshots also collapse Windows' synthetic Ctrl + right Alt into AltGr.
         row.keys.retain(|(key, _)| !modifier(*key));
         modifiers.append(&mut row.keys);
@@ -171,9 +250,101 @@ pub struct Keycap {
     pub pixels: Vec<u8>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum KeycapIcon {
+    Mouse,
+    Scroll(ScrollDirection),
+}
+
+impl KeycapIcon {
+    fn from_key(key: u16) -> Option<Self> {
+        if (0x200..=0x204).contains(&key) {
+            Some(Self::Mouse)
+        } else {
+            ScrollDirection::from_key(key).map(Self::Scroll)
+        }
+    }
+
+    fn covers(self, x: f32, y: f32) -> bool {
+        match self {
+            Self::Mouse => {
+                // Capsule body, button divider and wheel, in keycap-height units.
+                let dy = (y.abs() - 0.10).max(0.0);
+                let distance = x.hypot(dy);
+                let outline = (0.145..=0.18).contains(&distance);
+                let divider = x.abs() <= 0.16 && (y + 0.065).abs() <= 0.0175;
+                let wheel = x.abs() <= 0.018 && (-0.20..=-0.11).contains(&y);
+                outline || divider || wheel
+            }
+            Self::Scroll(direction) => {
+                let y = if direction == ScrollDirection::Up {
+                    y
+                } else {
+                    -y
+                };
+                let shaft = x.abs() <= 0.025 && (-0.19..=0.22).contains(&y);
+                let head = x.abs() <= 0.18 && (y - (x.abs() - 0.22)).abs() <= 0.035;
+                shaft || head
+            }
+        }
+    }
+}
+
+fn paint_keycap_icon(cap: &mut Keycap, icon: KeycapIcon, color: [u8; 4]) {
+    let h = cap.height as f32;
+    let cx = h * 0.65;
+    let cy = h * 0.5;
+    // Supersample geometry independently of font glyph coverage on every platform.
+    for y in 0..cap.height {
+        for x in 0..cap.width.min(cap.height) {
+            let mut covered = 0u32;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let px = (x as f32 + (sx as f32 + 0.5) / 4.0 - cx) / h;
+                    let py = (y as f32 + (sy as f32 + 0.5) / 4.0 - cy) / h;
+                    covered += u32::from(icon.covers(px, py));
+                }
+            }
+            if covered == 0 {
+                continue;
+            }
+            let alpha = u32::from(color[3]) * covered / 16;
+            let i = ((y * cap.width + x) * 4) as usize;
+            for (channel, value) in color.iter().enumerate().take(3) {
+                cap.pixels[i + channel] = ((u32::from(*value) * alpha
+                    + u32::from(cap.pixels[i + channel]) * (255 - alpha)
+                    + 127)
+                    / 255) as u8;
+            }
+            cap.pixels[i + 3] = (alpha + u32::from(cap.pixels[i + 3]) * (255 - alpha) / 255) as u8;
+        }
+    }
+}
+
 pub trait KeycapRasterizer {
     /// Scale is relative to the default 64-pixel keycap height.
     fn rasterize(&mut self, label: &str, scale: f32) -> Result<Keycap, String>;
+    fn rasterize_scroll(
+        &mut self,
+        label: &str,
+        scale: f32,
+        direction: ScrollDirection,
+        color: [u8; 4],
+    ) -> Result<Keycap, String> {
+        let mut cap = self.rasterize(&format!("\u{2003}\u{2003}{label}"), scale)?;
+        paint_keycap_icon(&mut cap, KeycapIcon::Scroll(direction), color);
+        Ok(cap)
+    }
+    fn rasterize_mouse(
+        &mut self,
+        label: &str,
+        scale: f32,
+        color: [u8; 4],
+    ) -> Result<Keycap, String> {
+        let mut cap = self.rasterize(&format!("\u{2003}\u{2003}{label}"), scale)?;
+        paint_keycap_icon(&mut cap, KeycapIcon::Mouse, color);
+        Ok(cap)
+    }
     /// A single playback-time glyph. Native adapters keep the requested font size.
     /// Bitmaps must share a vertical origin so numerals and punctuation retain one baseline.
     fn rasterize_glyph(&mut self, label: &str, font_pixels: f32) -> Result<Keycap, String> {
@@ -184,7 +355,8 @@ pub trait KeycapRasterizer {
 pub struct KeyboardOverlay {
     pub model: KeyboardModel,
     rasterizer: Box<dyn KeycapRasterizer>,
-    cache: BTreeMap<String, (Arc<Keycap>, u64)>,
+    cache: BTreeMap<(Option<KeycapIcon>, String), (Arc<Keycap>, u64)>,
+    icon_color: [u8; 4],
     cache_bytes: usize,
     cache_clock: u64,
     #[cfg(feature = "bench-timing")]
@@ -221,6 +393,7 @@ impl KeyboardOverlay {
             model: KeyboardModel::default(),
             rasterizer,
             cache: BTreeMap::new(),
+            icon_color: [255; 4],
             cache_bytes: 0,
             cache_clock: 0,
             #[cfg(feature = "bench-timing")]
@@ -238,6 +411,11 @@ impl KeyboardOverlay {
         self
     }
 
+    pub fn with_icon_color(mut self, color: [u8; 4]) -> Self {
+        self.icon_color = color;
+        self
+    }
+
     /// Keep history below the playback badge without moving the bottom baseline.
     pub fn set_top_reservation(&mut self, pixels: u32) {
         self.top_reservation = pixels.min(self.output.1);
@@ -248,9 +426,11 @@ impl KeyboardOverlay {
         (self.cache_hits, self.cache_misses)
     }
 
-    fn keycap(&mut self, label: &str) -> Result<Arc<Keycap>, String> {
+    fn keycap(&mut self, key: u16, label: &str) -> Result<Arc<Keycap>, String> {
+        let icon = KeycapIcon::from_key(key);
+        let cache_key = (icon, label.to_owned());
         self.cache_clock = self.cache_clock.wrapping_add(1);
-        if let Some((cap, used)) = self.cache.get_mut(label) {
+        if let Some((cap, used)) = self.cache.get_mut(&cache_key) {
             #[cfg(feature = "bench-timing")]
             {
                 self.cache_hits += 1;
@@ -262,7 +442,17 @@ impl KeyboardOverlay {
         {
             self.cache_misses += 1;
         }
-        let cap = Arc::new(self.rasterizer.rasterize(label, self.scale)?);
+        let cap = Arc::new(match icon {
+            Some(KeycapIcon::Scroll(direction)) => {
+                self.rasterizer
+                    .rasterize_scroll(label, self.scale, direction, self.icon_color)?
+            }
+            Some(KeycapIcon::Mouse) => {
+                self.rasterizer
+                    .rasterize_mouse(label, self.scale, self.icon_color)?
+            }
+            None => self.rasterizer.rasterize(label, self.scale)?,
+        });
         let bytes = cap.pixels.len();
         if bytes <= MAX_CACHE_BYTES {
             while !self.cache.is_empty()
@@ -279,7 +469,7 @@ impl KeyboardOverlay {
             }
             self.cache_bytes += bytes;
             self.cache
-                .insert(label.to_owned(), (Arc::clone(&cap), self.cache_clock));
+                .insert(cache_key, (Arc::clone(&cap), self.cache_clock));
         }
         Ok(cap)
     }
@@ -333,10 +523,10 @@ impl KeyboardOverlay {
             }
             let row_y = row.y(now);
             let opacity = row.opacity(now);
-            let labels: Vec<_> = row.keys.iter().map(|(_, label)| label.clone()).collect();
+            let labels: Vec<_> = row.keys.clone();
             let caps: Vec<_> = labels
                 .iter()
-                .map(|label| self.keycap(label))
+                .map(|(key, label)| self.keycap(*key, label))
                 .collect::<Result<_, _>>()?;
             let width = caps.iter().map(|cap| cap.width as f32).sum::<f32>()
                 + gap * caps.len().saturating_sub(1) as f32;
@@ -572,6 +762,321 @@ fn blend_faded_pixel<const OPAQUE: bool>(dst: &mut [u8], src: &[u8], opacity: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scroll(at_ms: u64, direction: ScrollDirection) -> KeyEvent {
+        KeyEvent {
+            at_ms,
+            key: direction.key(),
+            down: true,
+            label: direction.label().into(),
+            modifiers: vec![],
+        }
+    }
+    #[test]
+    fn scrolling_visible_indicator_is_reused_across_wheel_gaps() {
+        let mut model = KeyboardModel::default();
+        assert!(model.scroll_event(scroll(0, ScrollDirection::Down)));
+        model.advance(MOVE_MS);
+        for at in [400, 800, 1800, 2800] {
+            assert!(!model.scroll_event(scroll(at, ScrollDirection::Down)));
+            assert_eq!(
+                model.rows.len(),
+                1,
+                "visible scroll indicators must not stack"
+            );
+            assert_eq!((model.rows[0].born, model.rows[0].moved), (0, 0));
+            assert!(!model.needs_frame(at));
+            assert_eq!(model.next_frame_at(at), Some(at + SCROLL_GAP_MS + HOLD_MS));
+        }
+        assert!(model.scroll_event(scroll(3200, ScrollDirection::Up)));
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!((model.rows[0].born, model.rows[0].moved), (0, 0));
+        assert_eq!(model.rows[0].keys[0].0, ScrollDirection::Up.key());
+    }
+
+    #[test]
+    fn scrolling_during_fade_restores_one_indicator_and_expired_rows_restart() {
+        let mut model = KeyboardModel::default();
+        model.scroll_event(scroll(0, ScrollDirection::Down));
+        let fading_at = SCROLL_GAP_MS + HOLD_MS + FADE_MS / 2;
+        model.advance(fading_at);
+        assert_eq!(model.rows[0].opacity(fading_at), 0.5);
+        assert!(model.scroll_event(scroll(fading_at, ScrollDirection::Down)));
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!(model.rows[0].opacity(fading_at), 1.0);
+        assert_eq!((model.rows[0].born, model.rows[0].moved), (0, 0));
+        assert!(model.dirty);
+        model.advance(fading_at);
+        assert!(!model.scroll_event(scroll(fading_at + 1, ScrollDirection::Down)));
+        assert!(!model.dirty);
+
+        let expired_at = fading_at + 1 + SCROLL_GAP_MS + HOLD_MS + FADE_MS;
+        // Expiration must work even if no frame has pruned the old row yet.
+        assert!(model.scroll_event(scroll(expired_at, ScrollDirection::Down)));
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!(
+            (model.rows[0].born, model.rows[0].moved),
+            (expired_at, expired_at)
+        );
+        let next_at = expired_at + SCROLL_GAP_MS + HOLD_MS + FADE_MS;
+        model.advance(next_at);
+        assert!(model.rows.is_empty());
+        assert!(model.scroll_event(scroll(next_at, ScrollDirection::Down)));
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!(model.rows[0].born, next_at);
+    }
+
+    #[test]
+    fn scrolling_coalesces_without_restarting_or_dirtying_and_reverses_in_place() {
+        let mut model = KeyboardModel::default();
+        assert!(model.scroll_event(scroll(0, ScrollDirection::Up)));
+        model.advance(180);
+        assert!(!model.needs_frame(180));
+        for at in (200..=2000).step_by(200) {
+            assert!(!model.scroll_event(scroll(at, ScrollDirection::Up)));
+            assert!(!model.needs_frame(at));
+            assert_eq!(model.rows.len(), 1);
+            assert_eq!((model.rows[0].born, model.rows[0].moved), (0, 0));
+        }
+        assert!(model.scroll_event(scroll(2250, ScrollDirection::Down)));
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!((model.rows[0].born, model.rows[0].moved), (0, 0));
+        assert_eq!(model.rows[0].keys[0].0, ScrollDirection::Down.key());
+        model.advance(2250);
+        assert_eq!(model.rows[0].opacity(3700), 1.0);
+        assert!((model.rows[0].opacity(3900) - 0.5).abs() < 0.001);
+        model.advance(4100);
+        assert!(model.rows.is_empty());
+    }
+    #[test]
+    fn scrolling_gap_reset_and_held_keys_are_independent() {
+        let mut model = KeyboardModel::default();
+        model.event(KeyEvent {
+            at_ms: 0,
+            key: 65,
+            down: true,
+            label: "A".into(),
+            modifiers: vec![],
+        });
+        model.scroll_event(scroll(10, ScrollDirection::Up));
+        model.event(KeyEvent {
+            at_ms: 20,
+            key: 65,
+            down: false,
+            label: "A".into(),
+            modifiers: vec![],
+        });
+        assert!(model.held.is_empty());
+        assert_eq!(model.rows[0].released, Some(20));
+        assert!(!model.scroll_event(scroll(260, ScrollDirection::Up)));
+        assert!(!model.scroll_event(scroll(511, ScrollDirection::Up)));
+        assert_eq!(model.rows.len(), 2);
+        model.reset(520);
+        assert!(model.scroll_event(scroll(530, ScrollDirection::Up)));
+        assert_eq!(model.rows.len(), 2);
+        assert_eq!(model.rows.back().unwrap().born, 530);
+    }
+    #[test]
+    fn scrolling_survives_input_history_pressure_without_renewing_old_rows_on_reset() {
+        let mut model = KeyboardModel::default();
+        model.scroll_event(scroll(0, ScrollDirection::Up));
+        for at in (100..1000).step_by(100) {
+            model.event(KeyEvent {
+                at_ms: at,
+                key: 65,
+                down: true,
+                label: "A".into(),
+                modifiers: vec![],
+            });
+            model.event(KeyEvent {
+                at_ms: at + 1,
+                key: 65,
+                down: false,
+                label: "A".into(),
+                modifiers: vec![],
+            });
+        }
+        assert!(!model.scroll_event(scroll(1000, ScrollDirection::Up)));
+        assert_eq!(model.rows.iter().find(|r| r.is_scroll).unwrap().born, 0);
+        model.reset(2000);
+        assert_eq!(
+            model.rows.iter().find(|r| r.is_scroll).unwrap().released,
+            Some(1250)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_scroll_keycaps_render_all_localized_labels() {
+        let style = KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0, 0, 0, 204],
+            text_rgba: [255; 4],
+            border_rgba: [64, 64, 64, 204],
+            labels: Default::default(),
+        };
+        let mut rasterizer = crate::keyboard_rasterizer::create(&style).unwrap();
+        for (index, label) in [
+            "Scroll up",
+            "Scroll down",
+            "向上滚动",
+            "向下滚动",
+            "向上捲動",
+            "向下捲動",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let direction = if index % 2 == 0 {
+                ScrollDirection::Up
+            } else {
+                ScrollDirection::Down
+            };
+            let cap = rasterizer
+                .rasterize_scroll(label, 1.0, direction, style.text_rgba)
+                .unwrap();
+            assert_eq!(cap.height, 64);
+            assert!(cap.width > 100);
+            if let Some(path) = std::env::var_os("SNOW_SCROLL_KEYCAP_SNAPSHOT_DIR") {
+                let path = std::path::PathBuf::from(path);
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::write(
+                    path.join(format!("scroll-{index}-{}-{}.rgba", cap.width, cap.height)),
+                    &cap.pixels,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_icons_are_scaled_tinted_and_distinct_from_keyboard_and_scroll() {
+        struct Blank;
+        impl KeycapRasterizer for Blank {
+            fn rasterize(&mut self, _: &str, scale: f32) -> Result<Keycap, String> {
+                let height = (64.0 * scale) as u32;
+                Ok(Keycap {
+                    width: height * 4,
+                    height,
+                    pixels: vec![0; (height * height * 16) as usize],
+                })
+            }
+        }
+        for size in [32, 64, 128] {
+            let mut overlay = KeyboardOverlay::new((640, 480), Box::new(Blank))
+                .with_keycap_size(size)
+                .with_icon_color([240, 80, 40, 128]);
+            let keyboard = overlay.keycap(0x25, "Left").unwrap();
+            let mouse = overlay.keycap(0x200, "Left").unwrap();
+            assert_eq!(mouse.height, size);
+            assert_ne!(mouse.pixels, keyboard.pixels);
+            assert!(
+                mouse
+                    .pixels
+                    .chunks_exact(4)
+                    .any(|p| p == [120, 40, 20, 128])
+            );
+            assert!(
+                mouse
+                    .pixels
+                    .chunks_exact(4)
+                    .all(|p| p[0] <= p[3] && p[3] <= 128)
+            );
+            assert!(
+                mouse
+                    .pixels
+                    .chunks_exact((mouse.width * 4) as usize)
+                    .all(|row| row[(size * 4) as usize..].iter().all(|v| *v == 0))
+            );
+            for key in 0x200..=0x204 {
+                assert!(Arc::ptr_eq(&mouse, &overlay.keycap(key, "Left").unwrap()));
+            }
+            let scroll = overlay.keycap(0x205, "Left").unwrap();
+            assert_ne!(mouse.pixels, scroll.pixels);
+            assert_eq!(overlay.cache.len(), 3);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_mouse_keycaps_render_localized_labels_at_all_sizes() {
+        let style = KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0, 0, 0, 204],
+            text_rgba: [255; 4],
+            border_rgba: [64, 64, 64, 204],
+            labels: Default::default(),
+        };
+        let mut rasterizer = crate::keyboard_rasterizer::create(&style).unwrap();
+        for size in [32, 64, 128] {
+            for (index, label) in [
+                "Left", "Right", "Middle", "Button 4", "Button 5", "左键", "右键", "中键",
+                "按键 4", "按键 5", "左鍵", "右鍵", "中鍵", "按鍵 4", "按鍵 5",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let scale = size as f32 / 64.0;
+                let plain = rasterizer
+                    .rasterize(&format!("\u{2003}\u{2003}{label}"), scale)
+                    .unwrap();
+                let cap = rasterizer
+                    .rasterize_mouse(label, scale, style.text_rgba)
+                    .unwrap();
+                assert_eq!(cap.height, size);
+                assert_eq!(cap.width, plain.width);
+                assert_ne!(cap.pixels, plain.pixels);
+                for (actual, expected) in cap
+                    .pixels
+                    .chunks_exact((cap.width * 4) as usize)
+                    .zip(plain.pixels.chunks_exact((plain.width * 4) as usize))
+                {
+                    assert_eq!(
+                        &actual[(size * 4) as usize..],
+                        &expected[(size * 4) as usize..]
+                    );
+                }
+                if let Ok(path) = std::env::var("SNOW_MOUSE_KEYCAP_DUMP") {
+                    let path = std::path::PathBuf::from(path);
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(
+                        path.join(format!("mouse-{index}-{}-{}.rgba", cap.width, cap.height)),
+                        &cap.pixels,
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_icons_are_geometric_and_cached_by_direction() {
+        struct Blank;
+        impl KeycapRasterizer for Blank {
+            fn rasterize(&mut self, _: &str, _: f32) -> Result<Keycap, String> {
+                Ok(Keycap {
+                    width: 300,
+                    height: 64,
+                    pixels: vec![0; 300 * 64 * 4],
+                })
+            }
+        }
+        let mut overlay = KeyboardOverlay::new((640, 480), Box::new(Blank));
+        let up = overlay.keycap(0x205, "Same localized label").unwrap();
+        let same = overlay.keycap(0x205, "Same localized label").unwrap();
+        let down = overlay.keycap(0x206, "Same localized label").unwrap();
+        assert!(Arc::ptr_eq(&up, &same));
+        assert_ne!(up.pixels, down.pixels);
+        assert!(up.pixels.iter().any(|v| *v != 0));
+        assert!(
+            up.pixels
+                .chunks_exact(300 * 4)
+                .all(|row| row[64 * 4..].iter().all(|v| *v == 0))
+        );
+        assert_eq!(overlay.cache.len(), 2);
+    }
     fn event(at: u64, key: u16, down: bool, mods: &[u16]) -> KeyEvent {
         KeyEvent {
             at_ms: at,
@@ -602,6 +1107,63 @@ mod tests {
     }
 
     #[test]
+    fn physical_modifiers_are_not_deduplicated_by_their_labels() {
+        let mut model = KeyboardModel::default();
+        let mut input = event(0, 65, true, &[0xa2, 0xa3]);
+        for (_, label) in &mut input.modifiers {
+            *label = "Ctrl".into();
+        }
+        model.event(input);
+        assert_eq!(
+            model.rows[0]
+                .keys
+                .iter()
+                .map(|key| key.0)
+                .collect::<Vec<_>>(),
+            [0xa2, 0xa3, 65]
+        );
+    }
+
+    #[test]
+    fn mouse_chords_preserve_both_modifier_sides() {
+        use crate::keyboard_hook::MODIFIER_KEYS;
+        use crate::mouse_hook::{MouseClickObservation, ObservedMouseButton};
+        let style = KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0; 4],
+            text_rgba: [255; 4],
+            border_rgba: [0; 4],
+            labels: Default::default(),
+        };
+        let click = MouseClickObservation {
+            at: std::time::Instant::now(),
+            x: 0,
+            y: 0,
+            button: ObservedMouseButton::Left,
+            down: true,
+            modifiers: [true; 8],
+        };
+        let input = click.event(0, &style, true);
+        assert_eq!(
+            input
+                .modifiers
+                .iter()
+                .map(|(key, _)| *key)
+                .collect::<Vec<_>>(),
+            MODIFIER_KEYS
+        );
+        for pair in input.modifiers.chunks_exact(2) {
+            assert!(pair[0].1.starts_with("Left "));
+            assert!(pair[1].1.starts_with("Right "));
+        }
+        let mut model = KeyboardModel::default();
+        model.event(input);
+        assert_eq!(model.rows[0].keys.len(), 9);
+        assert!(click.event(1, &style, false).modifiers.is_empty());
+    }
+
+    #[test]
     fn mouse_buttons_share_hold_release_and_fade_without_colliding_with_keys() {
         use crate::mouse_hook::{MouseClickObservation, ObservedMouseButton};
         let style = KeyboardOverlayConfig {
@@ -610,7 +1172,7 @@ mod tests {
             background_rgba: [0; 4],
             text_rgba: [255; 4],
             border_rgba: [0; 4],
-            labels: [(0x11, "Ctrl".into()), (0x203, "Side four".into())].into(),
+            labels: [(0xa2, "Left Ctrl".into()), (0x203, "Side four".into())].into(),
         };
         for button in [
             ObservedMouseButton::Left,
@@ -626,7 +1188,7 @@ mod tests {
                 y: 0,
                 button,
                 down: true,
-                modifiers: [true, false, false, false],
+                modifiers: [true, false, false, false, false, false, false, false],
             };
             let mut default_style = style.clone();
             default_style.labels.clear();
@@ -646,7 +1208,7 @@ mod tests {
             assert!(model.rows[0].released.is_none());
             assert_eq!(
                 observation.event(20, &style, true).modifiers,
-                [(0x11, "Ctrl".into())]
+                [(0xa2, "Left Ctrl".into())]
             );
             observation.down = false;
             model.event(observation.event(100, &style, false));
@@ -986,12 +1548,12 @@ mod tests {
     fn keycap_cache_is_bounded_and_keeps_recent_labels() {
         let mut overlay = KeyboardOverlay::new((3840, 2160), Box::new(Solid));
         for index in 0..1000 {
-            overlay.keycap(&format!("Label {index}")).unwrap();
+            overlay.keycap(0, &format!("Label {index}")).unwrap();
         }
         assert_eq!(overlay.cache.len(), MAX_CACHE);
         assert!(overlay.cache_bytes <= MAX_CACHE_BYTES);
-        assert!(overlay.cache.contains_key("Label 999"));
-        assert!(!overlay.cache.contains_key("Label 0"));
+        assert!(overlay.cache.contains_key(&(None, "Label 999".into())));
+        assert!(!overlay.cache.contains_key(&(None, "Label 0".into())));
     }
 
     #[test]
@@ -1008,17 +1570,17 @@ mod tests {
             }
         }
         let mut overlay = KeyboardOverlay::new((3840, 2160), Box::new(Large));
-        overlay.keycap("a").unwrap();
-        overlay.keycap("b").unwrap();
-        overlay.keycap("a").unwrap();
-        overlay.keycap("c").unwrap();
+        overlay.keycap(0, "a").unwrap();
+        overlay.keycap(0, "b").unwrap();
+        overlay.keycap(0, "a").unwrap();
+        overlay.keycap(0, "c").unwrap();
         assert_eq!(overlay.cache_bytes, MAX_CACHE_BYTES);
         assert_eq!(overlay.cache.len(), 2);
-        assert!(overlay.cache.contains_key("a"));
-        assert!(!overlay.cache.contains_key("b"));
-        let cap = overlay.keycap("oversized").unwrap();
+        assert!(overlay.cache.contains_key(&(None, "a".into())));
+        assert!(!overlay.cache.contains_key(&(None, "b".into())));
+        let cap = overlay.keycap(0, "oversized").unwrap();
         assert!(cap.pixels.len() > MAX_CACHE_BYTES);
-        assert!(!overlay.cache.contains_key("oversized"));
+        assert!(!overlay.cache.contains_key(&(None, "oversized".into())));
         assert_eq!(overlay.cache_bytes, MAX_CACHE_BYTES);
     }
 
@@ -1161,7 +1723,11 @@ mod tests {
     fn modifier_release_does_not_dismantle_chord_and_sides_release_independently() {
         let mut m = KeyboardModel::default();
         m.event(event(0, 0xa2, true, &[0xa2]));
-        m.event(event(10, 0xa3, true, &[0xa2]));
+        m.event(event(10, 0xa3, true, &[0xa2, 0xa3]));
+        assert_eq!(
+            m.rows[0].keys.iter().map(|key| key.0).collect::<Vec<_>>(),
+            [0xa2, 0xa3]
+        );
         m.event(event(20, 0xa2, false, &[0xa3]));
         assert!(m.rows[0].released.is_none());
         m.event(event(30, 83, true, &[0xa3]));

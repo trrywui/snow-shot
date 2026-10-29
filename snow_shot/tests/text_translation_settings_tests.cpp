@@ -13,6 +13,7 @@
 #include "widgets/input_password_edit.h"
 #include "widgets/input_number.h"
 #include "widgets/combo_box.h"
+#include "widgets/tag.h"
 #include <QApplication>
 #include <QPointer>
 #include <QFontDatabase>
@@ -88,7 +89,7 @@ void contracts(QApplication& app) {
         auto* applicationId = body->findChild<AdLineEdit*>(QStringLiteral("applicationId"));
         require(name && url && secret && provider && limit && applicationId,
                 "all configuration fields");
-        require(!secret->textVisible() && limit->value() == 4 && limit->minimum() == 1 &&
+        require(!secret->textVisible() && limit->value() == 8 && limit->minimum() == 1 &&
                     limit->maximum() == 16,
                 "masked secret and concurrency defaults");
         require(!applicationId->isVisible(), "DeepL hides application ID");
@@ -220,6 +221,82 @@ void contracts(QApplication& app) {
         confirmation->acceptButton()->click();
         settle();
         require(session.textTranslationConfigurations().size() == 1, "delete saved");
+        {
+            auto* deepLXModal = open();
+            auto* deepLXBody = deepLXModal->contentWidget();
+            auto* deepLXProvider =
+                deepLXBody->findChild<AdComboBox*>(QStringLiteral("translationProvider"));
+            deepLXProvider->setCurrentValue(QStringLiteral("deeplx"));
+            settle();
+            require(deepLXProvider->currentValue().toString() == QStringLiteral("deeplx") &&
+                        !deepLXBody->findChild<AdLineEdit*>(QStringLiteral("applicationId"))
+                             ->isVisible(),
+                    "DeepLX is selectable and hides application ID");
+            deepLXBody->findChild<AdLineEdit*>(QStringLiteral("modelName"))
+                ->setText(QStringLiteral("My DeepLX"));
+            const QString endpoint = QStringLiteral("http://localhost:1188/custom?route=deeplx");
+            deepLXBody->findChild<AdLineEdit*>(QStringLiteral("apiUrl"))->setText(endpoint);
+            deepLXModal->acceptButton()->click();
+            settle();
+            const auto deepLX = session.textTranslationConfigurations().last();
+            require(
+                session.textTranslationConfigurations().size() == 2 &&
+                    deepLX.provider == QStringLiteral("deeplx") && deepLX.endpoint == endpoint &&
+                    deepLX.apiKey.isEmpty() && deepLX.applicationId.isEmpty() &&
+                    deepLX.concurrency == 8,
+                "DeepLX saves with its endpoint, optional credentials, and default concurrency");
+            auto* row =
+                widget->findChild<QWidget*>(QStringLiteral("textTranslationRow:") + deepLX.id);
+            require(row && row->findChild<AdTag*>() &&
+                        row->findChild<AdTag*>()->text() == QStringLiteral("DeepLX"),
+                    "DeepLX configuration displays its provider badge");
+            widget->findChild<AdButton*>(QStringLiteral("edit:") + deepLX.id)->click();
+            settle();
+            deepLXModal = widget->findChild<AdModal*>(QStringLiteral("textTranslationEditor"));
+            deepLXBody = deepLXModal->contentWidget();
+            deepLXProvider =
+                deepLXBody->findChild<AdComboBox*>(QStringLiteral("translationProvider"));
+            auto* deepLXSecret = deepLXBody->findChild<AdPasswordEdit*>(QStringLiteral("apiKey"));
+            require(deepLXProvider->currentValue().toString() == QStringLiteral("deeplx") &&
+                        deepLXSecret && !deepLXSecret->textVisible() &&
+                        deepLXBody->findChild<AdLineEdit*>(QStringLiteral("apiUrl"))->text() ==
+                            endpoint,
+                    "DeepLX reopens with its saved format, endpoint, and masked token");
+            form_fields::FormField* tokenField = nullptr;
+            for (auto* field : deepLXBody->findChildren<form_fields::FormField*>()) {
+                if (field->metadata().id == QStringLiteral("apiKey"))
+                    tokenField = field;
+            }
+            require(tokenField && tokenField->item()->label() == QStringLiteral("API Key") &&
+                        tokenField->metadata().description.translated() ==
+                            QStringLiteral("Optional access token sent as a Bearer token."),
+                    "DeepLX explains optional Bearer authentication");
+            deepLXSecret->setText(QStringLiteral("access-token"));
+            for (const auto& language :
+                 {QStringLiteral("zh_CN"), QStringLiteral("zh_TW"), QStringLiteral("en_US")}) {
+                require(presentation::LanguageManager::instance().setLanguage(language),
+                        "switch DeepLX editor language");
+                settle();
+                require(
+                    deepLXProvider->currentValue().toString() == QStringLiteral("deeplx") &&
+                        !deepLXBody->findChild<AdLineEdit*>(QStringLiteral("applicationId"))
+                             ->isVisible() &&
+                        deepLXSecret->text() == QStringLiteral("access-token"),
+                    "language switching preserves DeepLX selection, visibility, and draft token");
+                require(tokenField->metadata().description.translated().contains(
+                            QStringLiteral("Bearer")) &&
+                            (language == QStringLiteral("en_US") ||
+                             tokenField->metadata().description.translated() !=
+                                 QStringLiteral("Optional access token sent as a Bearer token.")),
+                        "DeepLX Bearer help is translated in each language");
+            }
+            deepLXModal->acceptButton()->click();
+            settle();
+            require(session.textTranslationConfigurations().last().id == deepLX.id &&
+                        session.textTranslationConfigurations().last().apiKey ==
+                            QStringLiteral("access-token"),
+                    "editing DeepLX saves its token and preserves identity");
+        }
         const CustomAiModelConfiguration ai{QUuid::createUuid().toString(QUuid::WithoutBraces),
                                             QStringLiteral("AI"),
                                             QStringLiteral("http://localhost/v1"),

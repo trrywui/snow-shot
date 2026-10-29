@@ -1,4 +1,5 @@
 #include "snow_shot/platform/applicationqos.h"
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/runtime/runtimeactivitytracker.h"
 #include "snow_shot/presentation/screenshotocrassets.h"
 #include "snow_shot/platform/minizippath.h"
@@ -925,7 +926,11 @@ class ScreenshotOcrAssets::Impl final {
         if (cancelled())
             return false;
         auto descriptor = loadDescriptor(options.offlineRoot, error);
+        const bool requireBundledRuntime =
+            options.requireBundledRuntime || snow_shot::app::distribution::isStoreManaged();
         if (!descriptor.has_value()) {
+            if (requireBundledRuntime)
+                *error = QStringLiteral("store_runtime_invalid");
 #ifdef Q_OS_MACOS
             *error = QStringLiteral("bundled_runtime_invalid");
 #endif
@@ -950,6 +955,13 @@ class ScreenshotOcrAssets::Impl final {
                 : validateComponent(runtimeDirectory(offlineRuntimeRoot, *descriptor),
                                     descriptor->runtimeFiles, descriptor->runtimeVersion, true,
                                     &validationError);
+        if (requireBundledRuntime &&
+            (!offlineRuntime ||
+             !verifyComponentIntegrity(runtimeDirectory(offlineRuntimeRoot, *descriptor),
+                                       descriptor->runtimeFiles, &validationError))) {
+            *error = QStringLiteral("store_runtime_invalid");
+            return false;
+        }
         if (descriptor->bundled && !offlineRuntime) {
             *error = QStringLiteral("bundled_runtime_invalid");
             return false;
@@ -972,7 +984,7 @@ class ScreenshotOcrAssets::Impl final {
             *error = QStringLiteral("timed out waiting for OCR component storage");
             return false;
         }
-        bool cachedRuntime = !descriptor->bundled &&
+        bool cachedRuntime = !requireBundledRuntime && !descriptor->bundled &&
                              validateComponent(runtimeDirectory(options.cacheRoot, *descriptor),
                                                descriptor->runtimeFiles, descriptor->runtimeVersion,
                                                true, &validationError);

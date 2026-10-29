@@ -1033,9 +1033,12 @@ CollagePreviewCanvas::CollagePreviewCanvas(CollageDocument* document, QWidget* p
     d.toolbar = new CanvasActionToolbar(this);
     d.toolbar->setObjectName(QStringLiteral("collageImageToolbar"));
     const std::array<adqt::icons::IconRef, 6> refs{
-        icons::RotateRight(), icons::RotateLeft(),
-        icons::Swap(),        snow_shot::presentation::icons::custom::outlined::FlipVertical(),
-        icons::Reload(),      icons::IconDelete()};
+        icons::RotateRight(),
+        icons::RotateLeft(),
+        snow_shot::presentation::icons::custom::outlined::FlipHorizontal(),
+        snow_shot::presentation::icons::custom::outlined::FlipVertical(),
+        icons::Reload(),
+        icons::IconDelete()};
     const std::array<const char*, 6> names{
         "collageRotateClockwise", "collageRotateCounterclockwise", "collageFlipHorizontal",
         "collageFlipVertical",    "collageResetTransform",         "collageDeleteSelected"};

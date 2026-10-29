@@ -614,24 +614,20 @@ fn fast_9_16_with_border(
             let last_y = (first_y + ROWS_PER_TASK).min(height - border);
             let mut keypoints = Vec::new();
             for y in first_y..last_y {
-                for x in border..width - border {
-                    let response = scores[(y * width + x) as usize];
-                    if response == 0 {
-                        continue;
-                    }
-                    let is_best = [-1_i32, 0, 1].into_iter().all(|offset_y| {
-                        [-1_i32, 0, 1].into_iter().all(|offset_x| {
-                            (offset_x == 0 && offset_y == 0)
-                                || response
-                                    > scores[((y as i32 + offset_y) as u32 * width
-                                        + (x as i32 + offset_x) as u32)
-                                        as usize]
-                        })
-                    });
-                    if is_best {
-                        keypoints.push(FastKeypoint { x, y, response });
-                    }
+                #[cfg(target_arch = "aarch64")]
+                // SAFETY: Scores cover the image, and border >= 3 leaves a complete
+                // suppression neighborhood around every candidate pixel.
+                unsafe {
+                    neon::suppress_nonmax_row(width, scores, y, border, &mut keypoints);
                 }
+                #[cfg(not(target_arch = "aarch64"))]
+                suppress_nonmax_row_scalar(
+                    width,
+                    scores,
+                    y,
+                    border..width - border,
+                    &mut keypoints,
+                );
             }
             keypoints
         })
@@ -639,6 +635,33 @@ fn fast_9_16_with_border(
         .into_iter()
         .flatten()
         .collect()
+}
+
+fn suppress_nonmax_row_scalar(
+    width: u32,
+    scores: &[u8],
+    y: u32,
+    columns: std::ops::Range<u32>,
+    keypoints: &mut Vec<FastKeypoint>,
+) {
+    for x in columns {
+        let response = scores[(y * width + x) as usize];
+        if response == 0 {
+            continue;
+        }
+        let is_best = [-1_i32, 0, 1].into_iter().all(|offset_y| {
+            [-1_i32, 0, 1].into_iter().all(|offset_x| {
+                (offset_x == 0 && offset_y == 0)
+                    || response
+                        > scores[((y as i32 + offset_y) as u32 * width
+                            + (x as i32 + offset_x) as u32)
+                            as usize]
+            })
+        });
+        if is_best {
+            keypoints.push(FastKeypoint { x, y, response });
+        }
+    }
 }
 
 fn cv_round(value: f32) -> i32 {

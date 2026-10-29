@@ -11,6 +11,8 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QTimer>
+#include <QTimerEvent>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -108,6 +110,20 @@ int incrementCounter(const QString& path) {
     return value;
 }
 
+void waitForRelease(const QString& cache, const QString& operation) {
+    touch(QDir(cache).filePath(operation + QStringLiteral("-blocked")));
+    const QString release = QDir(cache).filePath(operation + QStringLiteral("-release"));
+    QElapsedTimer deadline;
+    deadline.start();
+    while (!QFileInfo::exists(release) && deadline.elapsed() < 10000)
+        QThread::msleep(1);
+    require(QFileInfo::exists(release), "parent releases the blocked sidecar operation");
+}
+
+void releaseSidecar(const QString& cache, const QString& operation) {
+    touch(QDir(cache).filePath(operation + QStringLiteral("-release")));
+}
+
 int fakeSidecar(int argc, char** argv) {
     const QString scenario = QUrl(argument(argc, argv, "--github-api-url")).path().mid(1);
     require(!argument(argc, argv, "--gitee-api-url").isEmpty(), "Gitee endpoint supplied");
@@ -134,7 +150,7 @@ int fakeSidecar(int argc, char** argv) {
         if (name == u"handoff_decision") {
             writeJson(QDir(cache).filePath(QStringLiteral("handoff.json")), command);
             if (scenario == u"delayed-handoff")
-                QThread::msleep(80);
+                waitForRelease(cache, QStringLiteral("handoff"));
             if (scenario == u"retry-shell-handoff")
                 rejectedHandoff =
                     incrementCounter(QDir(cache).filePath(QStringLiteral("handoff-count"))) == 1;
@@ -193,7 +209,7 @@ int fakeSidecar(int argc, char** argv) {
             if ((scenario == u"manual-scheduling" || scenario == u"manual-failure") &&
                 trigger == u"user") {
                 status("Checking");
-                QThread::msleep(80);
+                waitForRelease(cache, QStringLiteral("manual-check"));
                 const bool failed = scenario == u"manual-failure";
                 status(failed ? "Failed" : "Idle");
                 complete(operation, failed ? "failed" : "success", failed ? "Failed" : "Idle");
@@ -221,9 +237,10 @@ int fakeSidecar(int argc, char** argv) {
                 incrementCounter(completionCounter);
                 return 0;
             }
-            if (scenario == u"adapter-download-policy") {
+            if (scenario == u"adapter-download-policy" || scenario == u"gated-download-policy") {
                 status("Checking");
-                QThread::msleep(80);
+                if (scenario == u"gated-download-policy")
+                    waitForRelease(cache, QStringLiteral("check"));
                 status("Available");
                 complete(operation, "success", "Available");
                 incrementCounter(completionCounter);
@@ -281,7 +298,7 @@ int fakeSidecar(int argc, char** argv) {
         } else if (name == u"cancel") {
             incrementCounter(QDir(cache).filePath(QStringLiteral("cancel-count")));
             if (scenario == u"policy-resume")
-                QThread::msleep(80);
+                waitForRelease(cache, QStringLiteral("cancel"));
             complete(QStringLiteral("download"), "cancelled", "Available");
             return 0;
         } else if (name == u"handoff_decision") {
@@ -315,13 +332,24 @@ int counterValue(const QString& path) {
     return file.open(QIODevice::ReadOnly) ? file.readAll().trimmed().toInt() : 0;
 }
 
-void processFor(int duration) {
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < duration) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
-        QThread::msleep(1);
+QTimer* scheduledTimer(UpdateService& service, std::chrono::milliseconds interval) {
+    QTimer* scheduled = nullptr;
+    for (auto* timer : service.findChildren<QTimer*>()) {
+        if (timer->isActive() && timer->isSingleShot() && timer->intervalAsDuration() == interval) {
+            require(scheduled == nullptr, "exactly one updater timer owns the expected deadline");
+            scheduled = timer;
+        }
     }
+    require(scheduled != nullptr, "the automatic update deadline must be armed");
+    return scheduled;
+}
+
+void expireScheduledTimer(UpdateService& service, std::chrono::milliseconds interval) {
+    auto* timer = scheduledTimer(service, interval);
+    // Exercise Qt's normal single-shot expiry and the service's connected scheduling logic.
+    // Long real intervals keep machine load from advancing the next phase of this fixture.
+    QTimerEvent expiration(timer->timerId());
+    QCoreApplication::sendEvent(timer, &expiration);
 }
 } // namespace
 
@@ -352,8 +380,42 @@ int main(int argc, char** argv) {
         value.cacheDirectory = directory.filePath(QStringLiteral("cache-%1").arg(++cacheIndex));
         value.githubApiUrl = QUrl(QStringLiteral("https://updates.example.test/") + scenario);
         value.giteeApiUrl = QUrl(QStringLiteral("https://updates.example.test/") + scenario);
+        value.storeManaged = false;
+        value.startupCheckDelay = std::chrono::hours(1);
+        value.automaticCheckInterval = std::chrono::hours(2);
         return value;
     };
+
+    {
+        auto storeOptions = options(QStringLiteral("store-managed"));
+        const QString cache = storeOptions.cacheDirectory;
+        storeOptions.storeManaged = true;
+        storeOptions.startupCheckDelay = std::chrono::milliseconds(1);
+        UpdateService service(std::move(storeOptions));
+        int completions = 0;
+        bool restart = false;
+        bool handoff = false;
+        QObject::connect(&service, &UpdateService::operationFinished, &app,
+                         [&](const QString&, const QString& outcome) {
+                             require(outcome == u"unsupported", "Store rejects native operations");
+                             ++completions;
+                         });
+        QObject::connect(&service, &UpdateService::restartRequested, &app, [&] { restart = true; });
+        QObject::connect(&service, &UpdateService::handoffReady, &app, [&] { handoff = true; });
+        service.setMode(QStringLiteral("next_launch"));
+        service.start();
+        service.check();
+        service.download();
+        service.beginApply();
+        service.applyAtStartup();
+        service.requestRestart();
+        service.cancel();
+        QCoreApplication::processEvents();
+        require(service.managedByStore() && !service.busy() && !service.handoffPending() &&
+                    service.status().state == UpdateState::Unavailable && completions == 4 &&
+                    !restart && !handoff && !QFileInfo::exists(cache),
+                "Store policy never starts the available helper or its background schedule");
+    }
 
     {
         UpdateService service(options(QStringLiteral("default")));
@@ -497,48 +559,62 @@ int main(int argc, char** argv) {
 
     {
         auto scheduledOptions = options(QStringLiteral("scheduled"));
-        scheduledOptions.startupCheckDelay = std::chrono::milliseconds(25);
-        scheduledOptions.automaticCheckInterval = std::chrono::milliseconds(40);
         const QString launches =
             QDir(scheduledOptions.cacheDirectory).filePath(QStringLiteral("launch-count"));
         UpdateService service(std::move(scheduledOptions));
         service.setMode(QStringLiteral("check"));
         service.start();
-        require(waitUntil([&] { return counterValue(launches) >= 3; }, 3000),
+        require(waitUntil([&] { return counterValue(launches) == 1 && !service.busy(); }),
+                "the startup probe finishes before its automatic check is due");
+        expireScheduledTimer(service, std::chrono::hours(1));
+        require(waitUntil([&] { return counterValue(launches) == 2 && !service.busy(); }),
+                "the startup deadline launches a short-lived check");
+        expireScheduledTimer(service, std::chrono::hours(2));
+        require(waitUntil([&] { return counterValue(launches) == 3 && !service.busy(); }),
                 "probe, startup check, and interval each launch a short-lived sidecar");
+        scheduledTimer(service, std::chrono::hours(2));
     }
 
     {
         auto manualOptions = options(QStringLiteral("scheduled"));
-        manualOptions.startupCheckDelay = std::chrono::milliseconds(20);
-        manualOptions.automaticCheckInterval = std::chrono::milliseconds(30);
         const QString launches =
             QDir(manualOptions.cacheDirectory).filePath(QStringLiteral("launch-count"));
         UpdateService service(std::move(manualOptions));
         service.setMode(QStringLiteral("manual"));
         service.start();
-        require(waitUntil([&] { return counterValue(launches) == 1; }),
+        require(waitUntil([&] { return counterValue(launches) == 1 && !service.busy(); }),
                 "manual mode launches the startup probe");
-        processFor(120);
-        require(counterValue(launches) == 1,
-                "manual mode leaves no resident or scheduled updater process");
+        for (auto* timer : service.findChildren<QTimer*>())
+            require(!timer->isActive(),
+                    "manual mode leaves no resident or scheduled updater process");
     }
 
     {
         auto failureOptions = options(QStringLiteral("scheduled-failure"));
-        failureOptions.startupCheckDelay = std::chrono::milliseconds(25);
-        failureOptions.automaticCheckInterval = std::chrono::milliseconds(40);
         const QString launches =
             QDir(failureOptions.cacheDirectory).filePath(QStringLiteral("launch-count"));
         UpdateService service(std::move(failureOptions));
         service.setMode(QStringLiteral("check"));
         service.start();
-        require(waitUntil([&] { return counterValue(launches) >= 3; }, 3000),
+        require(waitUntil([&] { return counterValue(launches) == 1 && !service.busy(); }),
+                "the failure fixture finishes its startup probe");
+        expireScheduledTimer(service, std::chrono::hours(1));
+        require(waitUntil([&] {
+                    return counterValue(launches) == 2 && !service.busy() &&
+                           service.status().state == UpdateState::Failed;
+                }),
+                "the first automatic failure finishes before the next interval");
+        expireScheduledTimer(service, std::chrono::hours(2));
+        require(waitUntil([&] {
+                    return counterValue(launches) == 3 && !service.busy() &&
+                           service.status().state == UpdateState::Failed;
+                }),
                 "automatic failures schedule only the next fixed interval");
+        scheduledTimer(service, std::chrono::hours(2));
     }
 
     {
-        auto policyOptions = options(QStringLiteral("adapter-download-policy"));
+        auto policyOptions = options(QStringLiteral("gated-download-policy"));
         const QString cache = policyOptions.cacheDirectory;
         const QString check = QDir(cache).filePath(QStringLiteral("check-periodic-complete"));
         const QString download =
@@ -555,6 +631,7 @@ int main(int argc, char** argv) {
         service.check(false);
         require(waitUntil([&] { return service.status().state == UpdateState::Checking; }),
                 "download-policy check starts");
+        releaseSidecar(cache, QStringLiteral("check"));
         require(waitUntil([&] {
                     return counterValue(check) == 1 && counterValue(download) == 1 &&
                            service.status().state == UpdateState::Ready;
@@ -625,7 +702,7 @@ int main(int argc, char** argv) {
     }
 
     {
-        auto policyOptions = options(QStringLiteral("adapter-download-policy"));
+        auto policyOptions = options(QStringLiteral("gated-download-policy"));
         const QString cache = policyOptions.cacheDirectory;
         const QString check = QDir(cache).filePath(QStringLiteral("check-periodic-complete"));
         const QString download =
@@ -638,20 +715,18 @@ int main(int argc, char** argv) {
         require(waitUntil([&] { return service.status().state == UpdateState::Checking; }),
                 "changed-policy check starts");
         service.setMode(QStringLiteral("check"));
+        releaseSidecar(cache, QStringLiteral("check"));
         require(waitUntil([&] {
-                    return counterValue(check) == 1 &&
+                    return counterValue(check) == 1 && !service.busy() &&
                            service.status().state == UpdateState::Available;
                 }),
                 "changed policy keeps metadata-only result available");
-        processFor(100);
         require(counterValue(download) == 0,
                 "leaving download mode prevents a queued payload operation");
     }
 
     {
         auto manualCheckOptions = options(QStringLiteral("manual-scheduling"));
-        manualCheckOptions.startupCheckDelay = std::chrono::milliseconds(25);
-        manualCheckOptions.automaticCheckInterval = std::chrono::milliseconds(100);
         const QString cache = manualCheckOptions.cacheDirectory;
         const QString userComplete = QDir(cache).filePath(QStringLiteral("check-user-complete"));
         const QString periodic = QDir(cache).filePath(QStringLiteral("check-periodic-count"));
@@ -659,19 +734,21 @@ int main(int argc, char** argv) {
         service.setMode(QStringLiteral("check"));
         service.start();
         service.check(true);
-        require(waitUntil([&] { return counterValue(userComplete) == 1; }),
+        require(waitUntil([&] { return service.status().state == UpdateState::Checking; }),
+                "user check remains in progress until its automatic deadline is delivered");
+        expireScheduledTimer(service, std::chrono::hours(1));
+        releaseSidecar(cache, QStringLiteral("manual-check"));
+        require(waitUntil([&] { return counterValue(userComplete) == 1 && !service.busy(); }),
                 "successful user check completes while the startup timer is due");
-        processFor(40);
         require(counterValue(periodic) == 0,
                 "successful user check removes a queued automatic check and resets its timer");
-        require(waitUntil([&] { return counterValue(periodic) == 1; }),
+        expireScheduledTimer(service, std::chrono::hours(2));
+        require(waitUntil([&] { return counterValue(periodic) == 1 && !service.busy(); }),
                 "successful user check schedules the next automatic interval");
     }
 
     {
         auto manualCheckOptions = options(QStringLiteral("manual-failure"));
-        manualCheckOptions.startupCheckDelay = std::chrono::milliseconds(25);
-        manualCheckOptions.automaticCheckInterval = std::chrono::milliseconds(100);
         const QString cache = manualCheckOptions.cacheDirectory;
         const QString userComplete = QDir(cache).filePath(QStringLiteral("check-user-complete"));
         const QString periodic = QDir(cache).filePath(QStringLiteral("check-periodic-count"));
@@ -679,10 +756,15 @@ int main(int argc, char** argv) {
         service.setMode(QStringLiteral("check"));
         service.start();
         service.check(true);
+        require(waitUntil([&] { return service.status().state == UpdateState::Checking; }),
+                "failing user check remains in progress until the automatic deadline is due");
+        expireScheduledTimer(service, std::chrono::hours(1));
+        releaseSidecar(cache, QStringLiteral("manual-check"));
         require(waitUntil([&] { return counterValue(userComplete) == 1; }),
                 "failed user check completes while the startup timer is due");
-        require(waitUntil([&] { return counterValue(periodic) >= 1; }, 500),
+        require(waitUntil([&] { return counterValue(periodic) == 1 && !service.busy(); }),
                 "failed user check does not postpone an already queued automatic check");
+        scheduledTimer(service, std::chrono::hours(2));
     }
 
     {
@@ -838,6 +920,12 @@ int main(int argc, char** argv) {
                 service.setMode(QStringLiteral("next_launch"));
         }
         require(waitUntil([&] {
+                    return QFileInfo::exists(
+                        QDir(cache).filePath(QStringLiteral("cancel-blocked")));
+                }),
+                "the original download remains owned until its cancellation is acknowledged");
+        releaseSidecar(cache, QStringLiteral("cancel"));
+        require(waitUntil([&] {
                     return !service.busy() &&
                            service.status().state ==
                                (explicitCancel ? UpdateState::Available : UpdateState::Ready) &&
@@ -845,7 +933,6 @@ int main(int argc, char** argv) {
                                "download-policyChange-count"))) == (explicitCancel ? 1 : 2);
                 }),
                 "download cancellation and any requested resumption finish");
-        processFor(100);
         require(counterValue(QDir(cache).filePath(QStringLiteral("download-policyChange-count"))) ==
                     (explicitCancel ? 1 : 2),
                 "only a reversed policy cancellation resumes the automatic download exactly once");
@@ -889,8 +976,13 @@ int main(int argc, char** argv) {
                          [&] { committed = true; });
         service.setMode(QStringLiteral("next_launch"));
         service.applyAtStartup();
-        require(waitUntil([&] { return prepared; }), "cached startup apply prepares handoff");
+        require(waitUntil([&] {
+                    return prepared && QFileInfo::exists(
+                                           QDir(cache).filePath(QStringLiteral("handoff-blocked")));
+                }),
+                "cached startup apply prepares handoff");
         require(!committed, "application remains alive before updater handoff acknowledgement");
+        releaseSidecar(cache, QStringLiteral("handoff"));
         require(waitUntil([&] { return committed; }), "updater acknowledges committed handoff");
         const auto execute = readJson(QDir(cache).filePath(QStringLiteral("execute.json")));
         require(execute.value(QStringLiteral("operation")).toString() == u"apply" &&

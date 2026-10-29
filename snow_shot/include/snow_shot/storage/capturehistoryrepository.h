@@ -42,6 +42,10 @@ class CaptureHistoryRepository {
     virtual ~CaptureHistoryRepository() = default;
 
     [[nodiscard]] virtual QVector<CaptureHistoryRecord> records() const = 0;
+    // Resolves the managed file or entry directory without reading payloads or repairing records.
+    [[nodiscard]] virtual std::optional<QString> revealPath(const QString&) const {
+        return std::nullopt;
+    }
     [[nodiscard]] virtual CaptureHistorySnapshot recordsSnapshot() const {
         return {0, records()};
     }
@@ -60,6 +64,11 @@ class CaptureHistoryRepository {
     publish(CaptureHistoryDraft draft) = 0;
     [[nodiscard]] virtual std::optional<CaptureHistoryPayload>
     load(const CaptureHistoryRecord& record) const = 0;
+    // Read-only editor import: failures must never prune the source record.
+    [[nodiscard]] virtual std::optional<CaptureHistoryPayload>
+    loadPreservingRecord(const CaptureHistoryRecord&) const {
+        return std::nullopt;
+    }
     [[nodiscard]] virtual std::optional<CaptureHistoryAssetSet>
     displayAssets(const CaptureHistoryRecord& record) const = 0;
     [[nodiscard]] virtual std::optional<QImage>

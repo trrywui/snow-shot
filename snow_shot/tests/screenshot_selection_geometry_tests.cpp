@@ -1295,7 +1295,7 @@ void shadowWidthPreservesSelectionAndToolbarPlacement() {
                 require(selection.normalizedSelection() == originalSelection &&
                             selection.pixelSelection() == originalPixels,
                         "shadow width must preserve the selection area and capture pixels");
-                state.shadowWidth = selection.shadowWidth();
+                state.effectWidth = selection.shadowWidth();
                 const auto placement = snow_shot::presentation::screenshotToolbarPlacement(
                     state, geometry, &display, toolbar, display.logicalRect, 4);
                 require(placement.contentPosition == baseline.contentPosition &&
@@ -1637,8 +1637,9 @@ void selectionResultPixelSizeMatchesExportLayout() {
     const qreal scale = 1.5;
     const int shadowWidth = 1;
     const QSize content = screenshotSelectionRenderedPixelSize(selection, scale);
-    const int shadowPixels = screenshotSelectionRenderedShadowPixels(shadowWidth, scale);
-    const ScreenshotResultStyle style{0, shadowPixels, QColor(0x33, 0x33, 0x33)};
+    const auto style = ScreenshotResultCompositor::scaledStyle(
+        ScreenshotResultStyle{0, shadowWidth, QColor(0x33, 0x33, 0x33)}, scale);
+    const int shadowPixels = style.effectWidth();
     const auto layout = ScreenshotResultCompositor::layoutForContent(content, style);
     require(content == QSize(152, 75) && shadowPixels == 2 && layout.isValid() &&
                 layout.outputRect.size() == QSize(156, 79),

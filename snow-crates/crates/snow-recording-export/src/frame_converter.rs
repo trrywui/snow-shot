@@ -1,39 +1,58 @@
-//! Refcounted input for the legacy swscale frame API and its bounded row workers.
+//! Refcounted raster ownership for swscale's bounded row workers, without an input copy.
+use std::sync::Arc;
+
 use crate::error::{RecordingExportError, Result};
 use ffmpeg_next as ffmpeg;
+use snow_memory::RasterBuffer;
 
 pub(crate) struct FrameConverter {
     context: *mut ffmpeg::ffi::SwsContext,
     input: ffmpeg::frame::Video,
+    width: u32,
+    height: u32,
+    output_format: ffmpeg::format::Pixel,
 }
 
 impl Drop for FrameConverter {
     fn drop(&mut self) {
         // SAFETY: this converter exclusively owns the context, including failed initialization.
-        unsafe {
-            ffmpeg::ffi::sws_freeContext(self.context);
-        }
+        unsafe { ffmpeg::ffi::sws_freeContext(self.context) };
     }
+}
+
+unsafe extern "C" fn release_raster(opaque: *mut std::ffi::c_void, _: *mut u8) {
+    // SAFETY: bind_input transfers one Arc into the AVBuffer. FFmpeg invokes
+    // this callback exactly once, after the last AVBufferRef is released.
+    drop(unsafe { Arc::from_raw(opaque.cast::<RasterBuffer>()) });
 }
 
 impl FrameConverter {
     pub(crate) fn use_bt709(&mut self) -> Result<()> {
         unsafe { crate::streaming::configure_bt709_scaler(self.context) }
     }
-    #[cfg(any(test, feature = "bench-experiments"))]
+
     pub(crate) fn thread_count(&self) -> Option<usize> {
         // SAFETY: this converter owns its initialized context.
         unsafe { crate::streaming::swscale_thread_count(self.context) }
     }
 
-    #[cfg(any(test, feature = "bench-experiments"))]
     pub(crate) fn new(
         width: u32,
         height: u32,
         pixel: ffmpeg::format::Pixel,
         threads: u8,
     ) -> Result<Self> {
-        // SAFETY: all fields/options are initialized before use; Drop releases the context on error.
+        if width == 0
+            || height == 0
+            || width > i32::MAX as u32 / 4
+            || height > i32::MAX as u32
+            || !(1..=4).contains(&threads)
+        {
+            return Err(RecordingExportError::InvalidConfig(
+                "invalid frame converter geometry or worker count".into(),
+            ));
+        }
+        // SAFETY: all options are initialized before use; Drop releases the context on error.
         unsafe {
             let context = ffmpeg::ffi::sws_alloc_context();
             if context.is_null() {
@@ -41,17 +60,13 @@ impl FrameConverter {
                     "failed to allocate frame converter".into(),
                 ));
             }
-            let mut result = Self {
+            let result = Self {
                 context,
-                input: ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, width, height),
+                input: ffmpeg::frame::Video::empty(),
+                width,
+                height,
+                output_format: pixel,
             };
-            // Initialize the complete allocation, including row and SIMD tail
-            // padding, before a retaining converter can observe any byte.
-            for buffer in (*result.input.as_mut_ptr()).buf {
-                if !buffer.is_null() {
-                    std::ptr::write_bytes((*buffer).data, 0, (*buffer).size);
-                }
-            }
             let rgba: ffmpeg::ffi::AVPixelFormat = ffmpeg::format::Pixel::RGBA.into();
             let output: ffmpeg::ffi::AVPixelFormat = pixel.into();
             for (key, value) in [
@@ -87,51 +102,73 @@ impl FrameConverter {
         }
     }
 
-    pub(crate) fn ensure_input_writable(&mut self) -> Result<()> {
-        // av_frame_make_writable copies visible planes when it replaces shared
-        // storage; it does not promise to initialize the new allocation's row
-        // or SIMD padding. The caller fills every visible pixel after this call.
-        // SAFETY: this converter exclusively owns the input AVFrame object.
-        let shared = unsafe { ffmpeg::ffi::av_frame_is_writable(self.input.as_mut_ptr()) == 0 };
-        crate::codec::ensure_video_frame_writable(&mut self.input)?;
-        if shared {
-            // SAFETY: make_writable succeeded, so every buffer is exclusively
-            // writable. Initialize all bytes before the retaining API sees it.
-            unsafe {
-                for buffer in (*self.input.as_mut_ptr()).buf {
-                    if !buffer.is_null() {
-                        std::ptr::write_bytes((*buffer).data, 0, (*buffer).size);
-                    }
-                }
+    fn bind_input(&mut self, pixels: Arc<RasterBuffer>) -> Result<()> {
+        let data = pixels.as_ptr().cast_mut();
+        let len = pixels.len();
+        let opaque = Arc::into_raw(pixels).cast_mut().cast();
+        // SAFETY: the AVBuffer owns the raster through its Arc callback. Its
+        // initialized SIMD padding is part of len. READONLY prevents FFmpeg
+        // from treating this shared input as writable storage.
+        unsafe {
+            let buffer = ffmpeg::ffi::av_buffer_create(
+                data,
+                len,
+                Some(release_raster),
+                opaque,
+                ffmpeg::ffi::AV_BUFFER_FLAG_READONLY,
+            );
+            if buffer.is_null() {
+                release_raster(opaque, data);
+                return Err(RecordingExportError::Encode(
+                    "failed to retain conversion raster".into(),
+                ));
             }
+            ffmpeg::ffi::av_frame_unref(self.input.as_mut_ptr());
+            let frame = &mut *self.input.as_mut_ptr();
+            frame.format = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_RGBA as i32;
+            frame.width = self.width as i32;
+            frame.height = self.height as i32;
+            frame.buf[0] = buffer;
+            frame.data[0] = data;
+            frame.linesize[0] = (self.width * 4) as i32;
+            frame.extended_data = frame.data.as_mut_ptr();
         }
         Ok(())
     }
 
-    pub(crate) fn copy_input(&mut self, pixels: &[u8]) -> Result<()> {
-        let row_bytes = self.input.width() as usize * 4;
-        let height = self.input.height() as usize;
-        if pixels.len() < row_bytes * height {
+    pub(crate) fn convert(
+        &mut self,
+        pixels: RasterBuffer,
+        output: &mut ffmpeg::frame::Video,
+    ) -> Result<RasterBuffer> {
+        let required = (self.width as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| n.checked_add(ffmpeg::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize));
+        if required.is_none_or(|required| pixels.len() < required)
+            || output.format() != self.output_format
+            || (output.width(), output.height()) != (self.width, self.height)
+        {
             return Err(RecordingExportError::InvalidConfig(
-                "short frame converter input".into(),
+                "invalid owned frame conversion layout".into(),
             ));
         }
-        let stride = self.input.stride(0);
-        for (source, destination) in pixels
-            .chunks_exact(row_bytes)
-            .take(height)
-            .zip(self.input.data_mut(0).chunks_mut(stride))
-        {
-            destination[..row_bytes].copy_from_slice(source);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn convert_prepared(&mut self, output: &mut ffmpeg::frame::Video) -> Result<()> {
-        // SAFETY: both AVFrames own refcounted buffers. The initialized legacy
-        // context preserves the original color/scaling semantics and dimensions.
+        let owner = Arc::new(pixels);
+        self.bind_input(Arc::clone(&owner))?;
+        // SAFETY: source and destination both own refcounted buffers. The
+        // explicitly initialized context retains the legacy color semantics.
+        // Conversion joins its slice workers before returning. frame_end also
+        // releases a source retained by a partially failed sws_frame_start;
+        // sws_scale_frame's early-error path does not perform that cleanup.
         let code = unsafe {
-            ffmpeg::ffi::sws_scale_frame(self.context, output.as_mut_ptr(), self.input.as_ptr())
+            let code = ffmpeg::ffi::sws_scale_frame(
+                self.context,
+                output.as_mut_ptr(),
+                self.input.as_ptr(),
+            );
+            ffmpeg::ffi::sws_frame_end(self.context);
+            ffmpeg::ffi::av_frame_unref(self.input.as_mut_ptr());
+            code
         };
         if code < 0 {
             return Err(RecordingExportError::Encode(format!(
@@ -139,18 +176,12 @@ impl FrameConverter {
                 ffmpeg::Error::from(code)
             )));
         }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn convert(
-        &mut self,
-        pixels: &[u8],
-        output: &mut ffmpeg::frame::Video,
-    ) -> Result<()> {
-        self.ensure_input_writable()?;
-        self.copy_input(pixels)?;
-        self.convert_prepared(output)
+        // Never recycle storage while a foreign reference could still read it.
+        Arc::try_unwrap(owner).map_err(|_| {
+            RecordingExportError::Encode(
+                "frame converter retained its input after completion".into(),
+            )
+        })
     }
 }
 
@@ -158,13 +189,41 @@ impl FrameConverter {
 mod tests {
     use super::*;
 
+    fn pixels(width: usize, height: usize) -> RasterBuffer {
+        let mut pixels = RasterBuffer::from(vec![123; width * height * 4]);
+        pixels.resize(
+            pixels.len() + ffmpeg::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize,
+            0,
+        );
+        pixels
+    }
+
     #[test]
-    fn shared_input_replacement_initializes_padding_and_preserves_retained_storage() {
-        ffmpeg::init().unwrap();
-        let mut converter = FrameConverter::new(19, 13, ffmpeg::format::Pixel::YUV420P, 2).unwrap();
-        converter.copy_input(&[123; 19 * 13 * 4]).unwrap();
+    fn conversion_recycles_exact_storage_and_releases_frame_references() {
+        let mut converter =
+            FrameConverter::new(640, 480, ffmpeg::format::Pixel::YUV420P, 4).unwrap();
+        let mut output = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::YUV420P, 640, 480);
+        let mut raster = pixels(640, 480);
+        assert!(raster.is_page_backed());
+        let address = raster.as_ptr();
+        for value in [123, 80, 20] {
+            raster[..640 * 480 * 4].fill(value);
+            raster = converter.convert(raster, &mut output).unwrap();
+            assert_eq!(raster.as_ptr(), address);
+            assert!(raster[..640 * 480 * 4].iter().all(|&v| v == value));
+            assert!(raster[640 * 480 * 4..].iter().all(|&v| v == 0));
+            assert!(unsafe { (*converter.input.as_ptr()).buf[0].is_null() });
+        }
+    }
+
+    #[test]
+    fn foreign_frame_reference_keeps_raster_alive_after_converter_is_dropped() {
+        let mut converter = FrameConverter::new(19, 13, ffmpeg::format::Pixel::NV12, 2).unwrap();
+        let owner = Arc::new(pixels(19, 13));
+        let weak = Arc::downgrade(&owner);
+        let address = owner.as_ptr();
+        converter.bind_input(owner).unwrap();
         let mut retained = ffmpeg::frame::Video::empty();
-        // SAFETY: retain an owning reference in a separate live AVFrame.
         unsafe {
             assert_eq!(
                 ffmpeg::ffi::av_frame_ref(retained.as_mut_ptr(), converter.input.as_ptr()),
@@ -175,26 +234,25 @@ mod tests {
                 0
             );
         }
-        let previous = retained.data(0).as_ptr();
-        converter.ensure_input_writable().unwrap();
-        assert_ne!(converter.input.data(0).as_ptr(), previous);
-        assert_eq!(retained.data(0)[0], 123);
-        // Check the complete FFmpeg allocation, including bytes outside the
-        // visible plane. Subsequent copy_input repopulates only visible rows.
-        // SAFETY: the converter keeps every inspected AVBufferRef alive.
-        unsafe {
-            for buffer in (*converter.input.as_ptr()).buf {
-                if !buffer.is_null() {
-                    let bytes = std::slice::from_raw_parts((*buffer).data, (*buffer).size);
-                    assert!(bytes.iter().all(|&byte| byte == 0));
-                }
-            }
-        }
-        converter.copy_input(&[42; 19 * 13 * 4]).unwrap();
-        for row in converter.input.data(0).chunks(converter.input.stride(0)) {
-            assert!(row[..19 * 4].iter().all(|&byte| byte == 42));
-            assert!(row[19 * 4..].iter().all(|&byte| byte == 0));
-        }
-        assert_eq!(retained.data(0)[0], 123);
+        drop(converter);
+        assert!(weak.upgrade().is_some());
+        assert_eq!(retained.data(0).as_ptr(), address);
+        assert!(retained.data(0).iter().all(|&v| v == 123));
+        drop(retained);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn invalid_conversion_layout_does_not_poison_the_next_frame() {
+        let mut converter = FrameConverter::new(19, 13, ffmpeg::format::Pixel::NV12, 2).unwrap();
+        let mut output = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::NV12, 19, 13);
+        assert!(
+            converter
+                .convert(RasterBuffer::zeroed(19 * 13 * 4), &mut output)
+                .is_err()
+        );
+        let mut wrong = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, 19, 13);
+        assert!(converter.convert(pixels(19, 13), &mut wrong).is_err());
+        converter.convert(pixels(19, 13), &mut output).unwrap();
     }
 }

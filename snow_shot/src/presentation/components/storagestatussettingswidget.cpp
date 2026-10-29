@@ -274,7 +274,7 @@ void StorageStatusSettingsWidget::retranslateUi() {
     m_copyLogButton->setText(tr("Copy today's log file"));
     m_copyLogButton->setAccessibleName(tr("Copy today's log file"));
     m_copyLogFeedback->setText(
-        m_copyLogOutcome > 0   ? tr("Log file copied.")
+        m_copyLogOutcome > 0   ? tr("Log file copied")
         : m_copyLogOutcome < 0 ? tr("Could not copy the log file: %1")
                                      .arg(QCoreApplication::translate(
                                          "DiagnosticsService", m_copyLogError.toUtf8().constData()))
@@ -616,7 +616,7 @@ void StorageStatusSettingsWidget::finishDirectoryChange(
     AdMessage::Request message;
     if (result.success) {
         message.content =
-            result.warning.isEmpty() ? tr("Storage migration complete.") : result.warning;
+            result.warning.isEmpty() ? tr("Storage migration complete") : result.warning;
         for (auto* field :
              m_directoryForm
                  ->findChildren<snow_shot::presentation::components::form_fields::FormField*>()) {

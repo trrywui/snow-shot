@@ -61,6 +61,74 @@ void bandsPreserveArrangement() {
             "invalid dimensions/scales must fail");
 }
 
+void activeEffectDefinesAllOutputFootprints() {
+    for (auto type :
+         {ScreenshotSelectionBorderType::Shadow, ScreenshotSelectionBorderType::Border}) {
+        for (qreal scale : {1.0, 1.25, 2.0}) {
+            ScreenshotResultStyle style;
+            style.region = regions({{0, 0, 100, 80}, {220, 0, 100, 80}});
+            style.borderType = type;
+            style.shadowWidth = 6;
+            style.borderWidth = 6;
+            const QSize pixels(qRound(320 * scale), qRound(80 * scale));
+            const auto plan = ScreenshotResultCompositor::layoutCompactionForContent(
+                pixels, style, {true, 4}, scale);
+            const auto outputStyle = ScreenshotResultCompositor::scaledStyle(style, scale);
+            const auto layout =
+                ScreenshotResultCompositor::layoutForContent(plan->outputSize, outputStyle);
+            const int padding = qRound(6 * scale);
+            require(layout.outputRect.size() ==
+                        QSize(2 * (qRound(100 * scale) + 2 * padding) + qRound(4 * scale),
+                              qRound(80 * scale) + 2 * padding),
+                    "compaction and composition agree on scaled effect footprints");
+            for (int inactive : {0, 17, 64}) {
+                if (type == ScreenshotSelectionBorderType::Border)
+                    style.shadowWidth = inactive;
+                else
+                    style.borderWidth = inactive;
+                const auto alternate = ScreenshotResultCompositor::layoutCompactionForContent(
+                    pixels, style, {true, 4}, scale);
+                require(alternate->outputSize == plan->outputSize &&
+                            alternate->mapPath(style.region->path()) ==
+                                plan->mapPath(style.region->path()),
+                        "inactive effect settings cannot alter component spacing or placement");
+            }
+            require(!ScreenshotResultCompositor::layoutCompactionForContent(pixels, style,
+                                                                            {false, 4}, scale),
+                    "disabled compaction has no plan");
+            style.region.reset();
+            require(!ScreenshotResultCompositor::layoutCompactionForContent(pixels, style,
+                                                                            {true, 4}, scale),
+                    "plain rectangles have no compaction plan");
+        }
+    }
+}
+
+void scaledCompactionRetainsLargeEffectFootprints() {
+    for (const auto type :
+         {ScreenshotSelectionBorderType::Shadow, ScreenshotSelectionBorderType::Border}) {
+        for (const qreal scale : {1.25, 2.0}) {
+            ScreenshotResultStyle style;
+            style.region = regions({{0, 0, 100, 80}, {500, 0, 100, 80}});
+            style.borderType = type;
+            style.shadowWidth = style.borderWidth = 64;
+            const QSize pixels(qRound(600 * scale), qRound(80 * scale));
+            const auto plan = ScreenshotResultCompositor::layoutCompactionForContent(
+                pixels, style, {true, 4}, scale);
+            require(plan && plan->isValid() && plan->changed, "compact distant scaled components");
+            const auto compacted = compactedScreenshotResultStyle(
+                ScreenshotResultCompositor::scaledStyle(style, scale), *plan);
+            const auto layout =
+                ScreenshotResultCompositor::layoutForContent(plan->outputSize, compacted);
+            const int padding = qRound(64 * scale);
+            require(layout.outputRect.size() ==
+                        QSize(2 * (qRound(100 * scale) + 2 * padding) + qRound(4 * scale),
+                              qRound(80 * scale) + 2 * padding),
+                    "compaction, compacted style and output layout retain the full scaled effect");
+        }
+    }
+}
+
 void contoursRetainHolesAndCurves() {
     require(!screenshot_layout_compaction::hasMultipleComponents(
                 regions({{0, 0, 10, 10}, {10, 10, 10, 10}})),
@@ -329,6 +397,8 @@ void sparseRasterMatchesReference(int decoration) {
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     bandsPreserveArrangement();
+    activeEffectDefinesAllOutputFootprints();
+    scaledCompactionRetainsLargeEffectFootprints();
     invalidRasterRequestsFailBeforeAllocation();
     contoursRetainHolesAndCurves();
     shadowFootprintsDefineSpacing();

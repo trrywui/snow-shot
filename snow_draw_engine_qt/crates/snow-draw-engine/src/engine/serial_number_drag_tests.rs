@@ -545,6 +545,7 @@ fn serial_number_content_edits_preserve_mixed_stored_sizes_through_history_and_s
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -1043,6 +1044,7 @@ fn serial_number_creation_follows_imported_numbers_without_explicit_start() {
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -1134,6 +1136,7 @@ fn serial_number_import_preserves_explicit_creation_counters() {
                 ApplyTransactionCommand {
                     transaction,
                     history_undo_snapshot: None,
+                    created_selection_target: None,
                 },
             )
             .unwrap();

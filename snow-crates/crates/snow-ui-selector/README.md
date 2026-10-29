@@ -38,6 +38,11 @@ its enclosing window. Native AX objects never cross worker threads.
   They do not depend on `AXWindow`, which can be absent or return a stale WebKit proxy
   despite a valid parent chain. Frames are clipped to the visible display; duplicate
   rectangles and hidden, unrelated, or broken parent branches are rejected.
+- Windows owned by the selector's process use their clipped Quartz snapshot bounds in
+  both window and element modes. They are never activated or traversed through AX:
+  macOS dispatches in-process AX requests directly on the calling worker, which would
+  access AppKit/Qt UI objects outside the GUI thread. Foreground and refinement queries
+  share this boundary; element traversal remains available for other applications.
 - Child enumeration prefers `AXVisibleChildren`, falling back to `AXChildren` when unsupported.
   Pages contain at most 32 references; traversal is limited to 512 visited nodes, 64 levels,
   and 48 distinct frames. Missing bounds do not hide a container's descendants.

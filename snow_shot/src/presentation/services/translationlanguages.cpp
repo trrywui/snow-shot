@@ -30,11 +30,12 @@ QString defaultTranslationTargetLanguage(const QLocale& locale) {
 }
 
 int translationModelIndex(const QVector<SnowShotChatModel>& models, const QString& preferredId) {
+    const QString resolvedId = snowShotResolvedBuiltInModelId(models, preferredId);
     int first = -1;
     int general = -1;
     for (int index = 0; index < models.size(); ++index) {
         const auto& model = models.at(index);
-        if (model.id == preferredId) {
+        if (model.id == resolvedId) {
             return index;
         }
         if (first < 0) {

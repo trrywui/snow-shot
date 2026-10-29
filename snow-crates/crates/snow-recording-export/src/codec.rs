@@ -242,7 +242,7 @@ pub(crate) fn select_video_codec(
         let (encoder_name, codec_name) = exact_mp4_encoder(requested_codec);
         if matches!(mode, ExportExecutionMode::HardwareOnly) {
             return Err(ScreenRecorderError::Export(format!(
-                "HardwareOnly mode cannot satisfy the requested {codec_name} export; SnowShot requires {encoder_name}"
+                "no hardware encoder is available for the requested {codec_name} export in HardwareOnly mode"
             )));
         }
         return ffmpeg::encoder::find_by_name(encoder_name).ok_or_else(|| {
@@ -322,7 +322,7 @@ pub(crate) fn should_use_x265_options(codec: &ffmpeg::Codec) -> bool {
     codec.name().eq_ignore_ascii_case("libx265")
 }
 
-pub(crate) fn is_hardware_h264_encoder(codec: &ffmpeg::Codec) -> bool {
+pub(crate) fn is_hardware_video_encoder(codec: &ffmpeg::Codec) -> bool {
     let name = codec.name().to_ascii_lowercase();
     name.contains("nvenc")
         || name.contains("qsv")
@@ -350,11 +350,7 @@ pub(crate) fn opened_video_encoder_uses_hardware(
                 && enabled == 1;
         }
     }
-    is_hardware_h264_encoder(&codec)
-}
-
-pub(crate) fn is_hardware_video_encoder(codec: &ffmpeg::Codec) -> bool {
-    is_hardware_h264_encoder(codec)
+    is_hardware_video_encoder(&codec)
 }
 
 pub(crate) fn select_software_h264_codec(priority: SoftwareH264Priority) -> Option<ffmpeg::Codec> {
@@ -390,7 +386,10 @@ pub(crate) fn hardware_codec_candidates(codec: VideoCodec) -> Vec<ffmpeg::Codec>
                 .into_iter()
                 .filter_map(ffmpeg::encoder::find_by_name)
                 .collect(),
-            VideoCodec::H265 => Vec::new(),
+            VideoCodec::H265 => ["hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_mf"]
+                .into_iter()
+                .filter_map(ffmpeg::encoder::find_by_name)
+                .collect(),
         }
     }
 }
@@ -400,6 +399,24 @@ pub(crate) enum VideoEncoderPurpose {
     LiveOutput,
     OfflineOutput,
     RecordingSource,
+}
+
+/// Optional offline features (notably HEVC B-frames on older NVENC GPUs)
+/// must not turn a usable hardware encoder into a software fallback. Retry once
+/// with the bounded live profile before moving to the next device or software.
+pub(crate) fn open_with_hardware_compatibility<T>(
+    purpose: VideoEncoderPurpose,
+    hardware: bool,
+    mut open: impl FnMut(VideoEncoderPurpose) -> Result<T>,
+) -> Result<T> {
+    match open(purpose) {
+        Err(primary) if hardware && purpose == VideoEncoderPurpose::OfflineOutput => {
+            open(VideoEncoderPurpose::LiveOutput).map_err(|compatible| {
+                ScreenRecorderError::Export(format!("{primary}; compatibility retry: {compatible}"))
+            })
+        }
+        result => result,
+    }
 }
 
 pub(crate) fn open_video_encoder(
@@ -523,9 +540,14 @@ pub(crate) fn apply_hardware_encoder_options(
             },
         );
         options.set("global_quality", &qp);
-        options.set("look_ahead", if offline { "1" } else { "0" });
-        if offline {
-            options.set("look_ahead_depth", "16");
+        // HEVC QSV has no look_ahead option. Its look_ahead_depth applies to
+        // extended VBR, not the ICQ quality mode used here. Keep ICQ on HEVC;
+        // H.264 can use LA_ICQ for offline compression.
+        if name == "h264_qsv" {
+            options.set("look_ahead", if offline { "1" } else { "0" });
+            if offline {
+                options.set("look_ahead_depth", "16");
+            }
         }
         options.set("async_depth", if offline { "4" } else { "1" });
         options.set("bf", if offline { "3" } else { "0" });
@@ -645,12 +667,83 @@ mod tests {
     use super::*;
 
     #[test]
+    fn offline_hardware_retries_bounded_options_before_software_fallback() {
+        for (hardware, purpose, retries) in [
+            (true, VideoEncoderPurpose::OfflineOutput, true),
+            (false, VideoEncoderPurpose::OfflineOutput, false),
+            (true, VideoEncoderPurpose::LiveOutput, false),
+            (true, VideoEncoderPurpose::RecordingSource, false),
+        ] {
+            let mut attempts = Vec::new();
+            let result = open_with_hardware_compatibility(purpose, hardware, |profile| {
+                attempts.push(profile);
+                if attempts.len() == 1 {
+                    Err(ScreenRecorderError::Export("unsupported B-frames".into()))
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.is_ok(), retries);
+            assert_eq!(attempts[0], purpose);
+            assert_eq!(attempts.len(), if retries { 2 } else { 1 });
+            if retries {
+                assert_eq!(attempts[1], VideoEncoderPurpose::LiveOutput);
+            }
+        }
+        let mut calls = 0;
+        open_with_hardware_compatibility(VideoEncoderPurpose::OfflineOutput, true, |_| {
+            calls += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn hevc_qsv_keeps_icq_without_h264_only_lookahead_options() {
+        for purpose in [
+            VideoEncoderPurpose::LiveOutput,
+            VideoEncoderPurpose::OfflineOutput,
+            VideoEncoderPurpose::RecordingSource,
+        ] {
+            let mut options = ffmpeg::Dictionary::new();
+            assert!(apply_hardware_encoder_options(
+                &mut options,
+                "hevc_qsv",
+                80,
+                purpose
+            ));
+            assert_eq!(options.get("global_quality"), Some("18"));
+            assert_eq!(options.get("look_ahead"), None);
+            assert_eq!(options.get("look_ahead_depth"), None);
+        }
+    }
+
+    #[test]
+    fn hardware_candidates_never_change_the_requested_codec() {
+        crate::ffmpeg_util::ensure_ffmpeg_initialized().unwrap();
+        for (requested, id) in [
+            (VideoCodec::H264, ffmpeg::codec::Id::H264),
+            (VideoCodec::H265, ffmpeg::codec::Id::HEVC),
+        ] {
+            for codec in hardware_codec_candidates(requested) {
+                assert_eq!(codec.id(), id);
+                assert!(is_hardware_video_encoder(&codec));
+            }
+        }
+    }
+
+    #[test]
     fn hardware_output_quality_is_explicit_for_every_supported_encoder() {
         for (name, keys) in [
             ("h264_nvenc", &["qp"][..]),
+            ("hevc_nvenc", &["qp"][..]),
             ("h264_qsv", &["global_quality"][..]),
+            ("hevc_qsv", &["global_quality"][..]),
             ("h264_amf", &["qp_i", "qp_p"][..]),
+            ("hevc_amf", &["qp_i", "qp_p"][..]),
             ("h264_mf", &["quality"][..]),
+            ("hevc_mf", &["quality"][..]),
         ] {
             let mut lower = ffmpeg::Dictionary::new();
             let mut higher = ffmpeg::Dictionary::new();
@@ -670,7 +763,7 @@ mod tests {
                 let low: u8 = lower.get(key).unwrap().parse().unwrap();
                 let high: u8 = higher.get(key).unwrap().parse().unwrap();
                 assert!(
-                    if name == "h264_mf" {
+                    if name.ends_with("_mf") {
                         high > low
                     } else {
                         high < low
@@ -691,8 +784,11 @@ mod tests {
     fn live_output_and_clean_sources_keep_their_bounded_presets() {
         for (name, key, output, source) in [
             ("h264_nvenc", "preset", "p4", "p1"),
+            ("hevc_nvenc", "preset", "p4", "p1"),
             ("h264_amf", "quality", "balanced", "speed"),
+            ("hevc_amf", "quality", "balanced", "speed"),
             ("h264_qsv", "preset", "medium", "veryfast"),
+            ("hevc_qsv", "preset", "medium", "veryfast"),
         ] {
             for (purpose, expected) in [
                 (VideoEncoderPurpose::LiveOutput, output),
@@ -710,9 +806,13 @@ mod tests {
         crate::ffmpeg_util::ensure_ffmpeg_initialized().unwrap();
         for (name, quality_key, b_frames) in [
             ("h264_nvenc", "cq", "3"),
+            ("hevc_nvenc", "cq", "3"),
             ("h264_amf", "qp_p", "0"),
+            ("hevc_amf", "qp_p", "0"),
             ("h264_qsv", "global_quality", "3"),
+            ("hevc_qsv", "global_quality", "3"),
             ("h264_mf", "quality", "0"),
+            ("hevc_mf", "quality", "0"),
             ("h264_videotoolbox", "", "2"),
             ("hevc_videotoolbox", "", "2"),
         ] {
@@ -733,7 +833,7 @@ mod tests {
             if !quality_key.is_empty() {
                 assert_eq!(
                     options.get(quality_key),
-                    Some(if name == "h264_mf" { "80" } else { "18" })
+                    Some(if name.ends_with("_mf") { "80" } else { "18" })
                 );
             }
             // Parse against the packaged FFmpeg without requiring a physical GPU.

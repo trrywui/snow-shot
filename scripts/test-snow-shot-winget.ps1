@@ -1,6 +1,8 @@
 #Requires -Version 7.0
 # Deterministic fixtures only: no GitHub requests, installer execution, or PR submissions.
 $ErrorActionPreference = 'Stop'
+# Load the web exception types before replacing Invoke-WebRequest with a fixture.
+Import-Module Microsoft.PowerShell.Utility
 . (Join-Path $PSScriptRoot 'snow-shot-winget.ps1')
 $root = Join-Path ([IO.Path]::GetTempPath()) "snow-shot-winget-tests-$([guid]::NewGuid().ToString('N'))"
 $originalToken = $env:WINGET_CREATE_GITHUB_TOKEN
@@ -8,6 +10,11 @@ $script:submitted = 0
 $script:submitExitCode = 0
 $script:requests = @()
 $script:mode = 'missing'
+$script:downloadFailures = @()
+$script:downloadAttempts = 0
+$script:submissionScopes = @('public_repo', 'workflow')
+$script:credentialRequests = 0
+$script:credentialFailure = $null
 
 function Require($Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -41,8 +48,25 @@ function Invoke-SnowShotWingetApi([string]$Path) {
         })
     }
 }
-function Invoke-WebRequest([string]$Uri, [string]$OutFile, [int]$TimeoutSec) {
+function Invoke-WebRequest([string]$Uri, [string]$OutFile, [int]$TimeoutSec, [hashtable]$Headers) {
+    if ($Uri -ceq 'https://api.github.com/user') {
+        Require ($Headers.Authorization -ceq 'Bearer fixture-token') 'Credential checks must use the submission token'
+        $script:credentialRequests++
+        if ($script:credentialFailure) { throw $script:credentialFailure }
+        return @{
+            Content = '{"login":"fixture-account"}'
+            Headers = @{ 'X-OAuth-Scopes' = $script:submissionScopes -join ', ' }
+        }
+    }
     Require ($Uri -ceq $script:release.assets[0].browser_download_url) 'Wrong download URL'
+    Require (-not (Test-Path -LiteralPath $OutFile)) 'A partial installer download was reused'
+    $script:downloadAttempts++
+    if ($script:downloadFailures.Count) {
+        $failure = $script:downloadFailures[0]
+        $script:downloadFailures = @($script:downloadFailures | Select-Object -Skip 1)
+        [IO.File]::WriteAllBytes($OutFile, [byte[]](9))
+        throw $failure
+    }
     [IO.File]::WriteAllBytes($OutFile, [byte[]](1, 2, 3, 4))
 }
 function Invoke-FixtureSubmit {
@@ -74,6 +98,65 @@ try {
     Expect-Failure { & (Join-Path $PSScriptRoot 'test-snow-shot-winget-install.ps1') -Edition Mini } 'Mini'
     Require ($script:requests.Count -eq $requestsBeforeMini -and $script:submitted -eq 0) 'Unsupported Mini requests must fail before network or submission.'
     Require (-not (Test-Path -LiteralPath $root)) 'Unsupported Mini requests must not generate manifests.'
+    # Only transient transport/HTTP failures may retry; partial bytes must never be hashed.
+    & {
+        function Start-Sleep([int]$Seconds) { $script:retrySleeps += $Seconds }
+        $transientFailures = @(
+            [Net.Http.HttpRequestException]::new('Fixture connection timeout',
+                [Net.Sockets.SocketException]::new(10060))
+            [Net.Http.HttpRequestException]::new('Fixture connection reset',
+                [Net.Sockets.SocketException]::new(10054))
+            [Threading.Tasks.TaskCanceledException]::new('Fixture request timeout',
+                [TimeoutException]::new('Fixture timeout'))
+        )
+        foreach ($status in @(408, 429, 500, 502, 503, 504)) {
+            $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$status)
+            $transientFailures += [Microsoft.PowerShell.Commands.HttpResponseException]::new('Fixture transient HTTP failure', $response)
+        }
+        foreach ($failure in $transientFailures) {
+            Set-FixtureRelease 'v1.3.6_snow-shot'
+            $script:downloadAttempts = 0
+            $script:retrySleeps = @()
+            $script:downloadFailures = @($failure, $failure)
+            $directory = New-SnowShotWingetManifest 'v1.3.6_snow-shot' (Join-Path $root 'recovered')
+            Require ($script:downloadAttempts -eq 3) 'Transient downloads must recover within the attempt limit'
+            Require (($script:retrySleeps -join ',') -ceq '2,4') 'Retries must use bounded backoff'
+            $installer = Get-Content -LiteralPath (Join-Path $directory 'mg-chao.snow-shot.installer.yaml') -Raw
+            $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]](1, 2, 3, 4)))
+            Require ($installer.Contains("InstallerSha256: $hash")) 'Recovered installer hash is incorrect'
+            Require (@(Get-ChildItem -LiteralPath (Join-Path $root 'recovered') -Filter '*.exe').Count -eq 0) 'Recovered downloads must be cleaned up'
+        }
+        $permanentFailures = @(
+            [IO.IOException]::new('Fixture disk failure')
+            [Net.Http.HttpRequestException]::new('Fixture TLS failure',
+                [Security.Authentication.AuthenticationException]::new('Fixture certificate failure'))
+            [Net.Http.HttpRequestException]::new('Fixture unknown HTTP client failure')
+            [Threading.Tasks.TaskCanceledException]::new('Fixture cancellation without timeout')
+        )
+        foreach ($status in @(400, 401, 403, 404, 501)) {
+            $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$status)
+            $permanentFailures += [Microsoft.PowerShell.Commands.HttpResponseException]::new('Fixture permanent HTTP failure', $response)
+        }
+        foreach ($failure in @($transientFailures[0]) + $permanentFailures) {
+            $script:downloadAttempts = 0
+            $script:retrySleeps = @()
+            $script:downloadFailures = @($failure, $failure, $failure)
+            $failedOutput = Join-Path $root "failed-$([guid]::NewGuid().ToString('N'))"
+            Expect-Failure { New-SnowShotWingetManifest 'v1.3.6_snow-shot' $failedOutput } ([regex]::Escape($failure.Message))
+            $transient = $failure -eq $transientFailures[0]
+            Require ($script:downloadAttempts -eq $(if ($transient) { 3 } else { 1 })) 'Permanent errors must fail immediately and transient retries must be bounded'
+            Require ($script:retrySleeps.Count -eq $(if ($transient) { 2 } else { 0 })) 'Unexpected retry delay after failure'
+            Require (@(Get-ChildItem -LiteralPath $failedOutput -Recurse -File).Count -eq 0) 'Failed downloads must leave no installer or manifest files'
+        }
+        $script:downloadFailures = @()
+        $script:downloadAttempts = 0
+        $script:retrySleeps = @()
+        $script:release.assets[0].size = 5
+        $invalidOutput = Join-Path $root 'invalid-size'
+        Expect-Failure { New-SnowShotWingetManifest 'v1.3.6_snow-shot' $invalidOutput } 'size does not match'
+        Require ($script:downloadAttempts -eq 1 -and $script:retrySleeps.Count -eq 0) 'Validation failures must not retry'
+        Require (@(Get-ChildItem -LiteralPath $invalidOutput -Recurse -File).Count -eq 0) 'Invalid installers must be cleaned up'
+    }
     # Here-string line endings follow the checkout, while generated YAML must always use LF.
     $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'snow-shot-winget.ps1')).Replace("`r`n", "`n")
     $expectedManifests = @{}
@@ -169,20 +252,81 @@ try {
         Require ($result -match 'https://github.com/microsoft/winget-pkgs/') 'Missing duplicate link'
     }
     Require ($script:submitted -eq 0) 'Duplicate submitted'
+    Require ($script:credentialRequests -eq 0) 'Duplicate submissions must not require credentials'
     $script:mode = 'missing'
     Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'repository secret'
+    Require ($script:credentialRequests -eq 0) 'Missing tokens must fail without authentication requests'
     $env:WINGET_CREATE_GITHUB_TOKEN = 'fixture-token'
+    # A fork can be fast-forwarded through commits that change workflows only with workflow scope.
+    foreach ($scopes in @('public_repo', 'repo')) {
+        $script:submissionScopes = @($scopes)
+        Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'workflow.*WINGET_CREATE_GITHUB_TOKEN'
+        Require ($script:submitted -eq 0) 'Tokens without workflow scope must fail before WinGetCreate'
+    }
+    foreach ($scopes in @('', 'workflow')) {
+        $script:submissionScopes = @($scopes)
+        Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'classic token with public_repo'
+        Require ($script:submitted -eq 0) 'Tokens without repository scope must fail before WinGetCreate'
+    }
+    foreach ($status in @(401, 403, 500)) {
+        $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$status)
+        $script:credentialFailure = [Microsoft.PowerShell.Commands.HttpResponseException]::new('Fixture credential failure', $response)
+        Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'Fixture credential failure'
+        Require ($script:submitted -eq 0) 'Authentication failures must stop submission'
+    }
+    $script:credentialFailure = $null
+    $script:submissionScopes = @('public_repo', 'workflow')
     Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit'
     Require ($script:submitted -eq 1) 'New version not submitted'
+    $script:submissionScopes = @('repo', 'workflow')
+    Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit'
+    Require ($script:submitted -eq 2) 'Full repository scope with workflow must also submit'
+    $requestsBeforeLookupFailure = $script:credentialRequests
     $script:mode = 'rate-limit'
     Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'Fixture HTTP failure'
     $script:mode = 'incomplete'
     Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'incomplete submission search'
-    Require ($script:submitted -eq 1) 'Failed duplicate lookup must not submit'
+    Require ($script:submitted -eq 2) 'Failed duplicate lookup must not submit'
+    Require ($script:credentialRequests -eq $requestsBeforeLookupFailure) 'Failed duplicate lookup must not authenticate'
     $script:mode = 'missing'
     $script:submitExitCode = 1
     Expect-Failure { Submit-SnowShotWingetManifest 'v1.1.5-beta' $directory 'Invoke-FixtureSubmit' } 'submission failed'
     $global:LASTEXITCODE = 0
+    # The standalone read-only check must enforce the same scopes and still validate fork access.
+    & {
+        $script:forkRequests = 0
+        $script:fixtureFork = @{
+            fork = $true
+            parent = @{ full_name = 'microsoft/winget-pkgs' }
+            permissions = @{ push = $true }
+            full_name = 'fixture-account/winget-pkgs'
+        }
+        function Invoke-RestMethod([string]$Uri, [hashtable]$Headers, [string]$Method = 'Get') {
+            Require ($Uri -ceq 'https://api.github.com/repos/fixture-account/winget-pkgs') 'Wrong submission account fork'
+            Require ($Headers.Authorization -ceq 'Bearer fixture-token') 'Fork checks must use the submission token'
+            Require ($Method -ceq 'Get') 'Credential checks must remain read-only'
+            $script:forkRequests++
+            return $script:fixtureFork
+        }
+        $credentialTest = Join-Path $PSScriptRoot 'test-snow-shot-winget-credentials.ps1'
+        $script:submissionScopes = @('public_repo')
+        Expect-Failure { . $credentialTest } 'workflow.*WINGET_CREATE_GITHUB_TOKEN'
+        Require ($script:forkRequests -eq 0) 'Invalid scopes must fail before checking the fork'
+        foreach ($repositoryScope in @('public_repo', 'repo')) {
+            $script:submissionScopes = @($repositoryScope, 'workflow')
+            $result = . $credentialTest
+            Require ($result -match 'PASS:.*fixture-account.*repository and workflow scopes') 'Credential check must report verified scopes'
+            Require (-not ($result -match 'fixture-token')) 'Credential output must not expose the token'
+        }
+        $script:fixtureFork.fork = $false
+        Expect-Failure { . $credentialTest } 'writable fork'
+        $script:fixtureFork.fork = $true
+        $script:fixtureFork.parent.full_name = 'unrelated/winget-pkgs'
+        Expect-Failure { . $credentialTest } 'writable fork'
+        $script:fixtureFork.parent.full_name = 'microsoft/winget-pkgs'
+        $script:fixtureFork.permissions.push = $false
+        Expect-Failure { . $credentialTest } 'writable fork'
+    }
     # Real installer checks and reputation-policy changes must never act on a developer PC.
     $runnerEnvironment = $env:RUNNER_ENVIRONMENT
     $runnerOs = $env:RUNNER_OS
@@ -195,6 +339,9 @@ try {
         $env:RUNNER_ENVIRONMENT = $runnerEnvironment
         $env:RUNNER_OS = $runnerOs
     }
+    & (Join-Path $PSScriptRoot 'test-snow-shot-winget-desktop.ps1')
+    & (Join-Path $PSScriptRoot 'test-snow-shot-winget-attachment.ps1')
+    & (Join-Path $PSScriptRoot 'test-snow-shot-winget-windows.ps1')
     # Provisioning must upgrade older clients using the requested official bundle.
     function Get-Command { param($Name, $ErrorAction); return @{ Source = 'Invoke-FixtureWinget' } }
     function Get-AppxPackage { param($Name); return @() }
@@ -206,12 +353,17 @@ try {
     }
     function Expand-Archive {
         param($LiteralPath, $DestinationPath, [switch]$Force)
-        $null = New-Item -ItemType Directory -Force -Path (Join-Path $DestinationPath 'x64')
-        [IO.File]::WriteAllText((Join-Path $DestinationPath 'x64/dependency.appx'), 'fixture')
+        foreach ($nativeArchitecture in @('x64', 'arm64')) {
+            $null = New-Item -ItemType Directory -Force -Path (Join-Path $DestinationPath $nativeArchitecture)
+            [IO.File]::WriteAllText((Join-Path $DestinationPath "$nativeArchitecture/dependency.appx"), 'fixture')
+        }
     }
     function Add-AppxPackage {
         param($Path, $DependencyPath, [switch]$ForceApplicationShutdown)
         Require ($DependencyPath.Count -gt 0) 'Client provisioning must install matching dependencies'
+        $nativeArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+        Require (@($DependencyPath | Where-Object { (Split-Path (Split-Path $_ -Parent) -Leaf) -cne $nativeArchitecture }).Count -eq 0) `
+            'Client provisioning must select only the host architecture dependencies.'
         if ($script:dependenciesInUse -and -not $ForceApplicationShutdown) {
             throw 'Fixture dependency is in use (0x80073D02).'
         }

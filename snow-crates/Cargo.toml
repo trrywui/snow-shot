@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/snow-memory",
+    "crates/snow-webcam",
     "crates/snow-media",
     "crates/snow-macos",
     "crates/visual-region-detector",
@@ -35,7 +36,7 @@ exclude = ["crates/simd-paddle-ocr-rs"]
 resolver = "3"
 
 [workspace.package]
-license = "Apache-2.0"
+license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 anyhow = "1.0.102"

@@ -29,9 +29,9 @@ QPoint globalMousePosition(const QMouseEvent* event) {
 
 ScreenshotToolPaletteHost::ScreenshotToolPaletteHost(const ScreenshotToolPalette::Options& options,
                                                      QWidget* parent)
-    : QWidget(parent) {
-    setAttribute(Qt::WA_TranslucentBackground, true);
-    setAttribute(Qt::WA_NoSystemBackground, true);
+    : QWidget(parent), m_preserveParentBackground(options.preserveParentBackground) {
+    setAttribute(Qt::WA_TranslucentBackground, !m_preserveParentBackground);
+    setAttribute(Qt::WA_NoSystemBackground, !m_preserveParentBackground);
     setAutoFillBackground(false);
     setFocusPolicy(Qt::NoFocus);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -380,6 +380,8 @@ bool ScreenshotToolPaletteHost::eventFilter(QObject* watched, QEvent* event) {
 
 void ScreenshotToolPaletteHost::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
+    if (m_preserveParentBackground)
+        return;
 
     QPainter painter(this);
     painter.setCompositionMode(QPainter::CompositionMode_Source);

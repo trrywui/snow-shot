@@ -1,4 +1,5 @@
 #include "snow_shot/runtime/runtimeactivitytracker.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 #include "recordingtrimsession.h"
 #include "recordingrenderdialog.h"
 #include "recordingtrimtoolbar.h"
@@ -16,6 +17,7 @@
 #include <QMimeData>
 #include <QSaveFile>
 #include <QUrl>
+#include <QUuid>
 #include <climits>
 #include <thread>
 
@@ -58,6 +60,7 @@ RecordingTrimSession::RecordingTrimSession(ScreenRecordingAreaWindow* area,
     m_panel->commitControlScale(adqt::widgets::controlScaleContextFor(m_toolbar->palette()));
     m_area->setTrimming(true);
     m_panel->replayRequested = [this] { seek(static_cast<int>(m_first), true); };
+    m_panel->playbackToggleRequested = [this] { togglePlayback(); };
     m_panel->seekRequested = [this](int frame) { seek(frame, false); };
     m_panel->rangeChanged = [this](int first, int end, int preview) {
         m_first = static_cast<quint64>(first);
@@ -104,6 +107,9 @@ void RecordingTrimSession::open(const QString& sourcePath, const QString& output
     m_windowNames = std::move(windowNames);
     m_saveWhenReady = saveWhenReady;
     m_deferred = deferred;
+    m_options = options;
+    m_operation = QUuid::createUuid().toString(QUuid::Id128);
+    report(QStringLiteral("recording.trim_open_started"));
     m_openFuture = std::async(
         std::launch::async, snow_shot::runtime::trackRuntimeWork([sourcePath, options, deferred] {
             snow_shot::platform::applyApplicationQoSToCurrentThread();
@@ -137,10 +143,35 @@ void RecordingTrimSession::setBusy(bool busy) {
         m_toolbar->palette()->setRecordingTrimPanel(m_panel, busy);
 }
 void RecordingTrimSession::seek(int frame, bool play) {
-    if (!m_clip || m_busy || m_detached)
+    if (!ready() || m_detached || m_previewFailed)
         return;
+    const auto revision =
+        snow_recording_clip_seek(m_clip, static_cast<quint64>(frame), m_end, play ? 1 : 0);
+    if (!revision)
+        return;
+    m_revision = revision;
+    m_position = snow_recording_clip_boundary(m_clip, static_cast<quint64>(frame));
+    m_playing = play;
+    m_panel->setPlaying(m_playing);
     m_timer.setInterval(16);
-    m_revision = snow_recording_clip_seek(m_clip, static_cast<quint64>(frame), m_end, play ? 1 : 0);
+}
+void RecordingTrimSession::togglePlayback() {
+    if (!ready() || m_detached || m_previewFailed)
+        return;
+    quint64 frame = m_first;
+    if (m_playing || m_position < snow_recording_clip_boundary(m_clip, m_end)) {
+        // Find the frame containing the displayed position, including variable-duration frames.
+        quint64 low = m_first, high = m_end;
+        while (low + 1 < high) {
+            const quint64 middle = low + (high - low) / 2;
+            if (snow_recording_clip_boundary(m_clip, middle) <= m_position)
+                low = middle;
+            else
+                high = middle;
+        }
+        frame = low;
+    }
+    seek(static_cast<int>(frame), !m_playing);
 }
 void RecordingTrimSession::setSpeed(quint32 percent) {
     if (!ready() || m_detached || percent == m_speedPercent)
@@ -173,6 +204,10 @@ void RecordingTrimSession::poll() {
         }
         if (!m_clip || !snow_recording_clip_info(m_clip, &m_info) || m_info.frame_count > INT_MAX) {
             m_timer.stop();
+            report(QStringLiteral("recording.trim_open_failed"),
+                   result.error.isEmpty() ? QStringLiteral("Invalid clip metadata or frame count")
+                                          : result.error,
+                   QtWarningMsg);
             if (reportError)
                 reportError(trimText(QT_TRANSLATE_NOOP("RecordingTrimSession",
                                                        "Unable to preview recording: %1"))
@@ -184,6 +219,7 @@ void RecordingTrimSession::poll() {
             return snow_recording_clip_boundary(m_clip, static_cast<quint64>(frame));
         });
         m_phase = Phase::Trimming;
+        report(QStringLiteral("recording.trim_ready"));
         setBusy(false);
         if (m_saveWhenReady)
             exportClip(true);
@@ -212,13 +248,14 @@ void RecordingTrimSession::poll() {
                 m_cachedSelection = m_pendingSelection;
                 publish();
             } else
-                finishExport(false, error);
+                finishExport(false, error, state == SNOW_RECORDING_RENDER_STATE_CANCELED);
         }
     }
     if (m_publishFuture.valid() &&
         m_publishFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
         const auto result = m_publishFuture.get();
-        finishExport(result.ok, result.error);
+        finishExport(result.ok, result.error,
+                     m_publication && m_publication->state.load() == Publication::Canceled);
     }
     if (m_dialog) {
         m_dialog->percent = m_percent;
@@ -240,7 +277,10 @@ void RecordingTrimSession::poll() {
             },
             lease);
         m_area->setPreviewFrame(frame);
+        m_position = preview.position_us;
+        m_playing = preview.playing != 0;
         m_panel->setPosition(preview.position_us);
+        m_panel->setPlaying(m_playing);
         m_timer.setInterval(preview.playing ? 16 : 100);
     } else if (lease)
         snow_recording_clip_frame_destroy(lease);
@@ -249,6 +289,10 @@ void RecordingTrimSession::poll() {
     });
     if (!error.isEmpty()) {
         m_previewFailed = true;
+        report(QStringLiteral("recording.trim_preview_failed"), error, QtWarningMsg);
+        m_playing = false;
+        m_panel->setPlaying(false);
+        m_panel->setPlaybackAvailable(false);
         if (reportError)
             reportError(trimText(QT_TRANSLATE_NOOP("RecordingTrimSession",
                                                    "Unable to preview recording: %1"))
@@ -288,13 +332,19 @@ void RecordingTrimSession::exportClip(bool save) {
     m_percent = 0;
     m_phase = Phase::Exporting;
     m_pendingSelection = {m_first, m_end, m_speedPercent};
+    m_pendingStartUs = snow_recording_clip_boundary(m_clip, m_pendingSelection.first);
+    m_pendingEndUs = snow_recording_clip_boundary(m_clip, m_pendingSelection.end);
+    ++m_exportAttempt;
+    m_exportTimer.start();
     setBusy(true);
     if (!m_deferred && m_pendingSelection.first == 0 &&
         m_pendingSelection.end == m_info.frame_count && m_pendingSelection.speedPercent == 100) {
         m_cachePath = m_sourcePath;
         m_cachedSelection = m_pendingSelection;
     }
-    if (m_cachedSelection == m_pendingSelection && QFileInfo::exists(m_cachePath)) {
+    m_cacheHit = m_cachedSelection == m_pendingSelection && QFileInfo::exists(m_cachePath);
+    report(QStringLiteral("recording.trim_export_started"));
+    if (m_cacheHit) {
         publish();
         return;
     }
@@ -360,7 +410,14 @@ void RecordingTrimSession::publish() {
             showProgress();
     });
 }
-void RecordingTrimSession::finishExport(bool ok, const QString& error) {
+void RecordingTrimSession::finishExport(bool ok, const QString& error, bool canceled) {
+    report(ok         ? QStringLiteral("recording.trim_export_succeeded")
+           : canceled ? QStringLiteral("recording.trim_export_canceled")
+                      : QStringLiteral("recording.trim_export_failed"),
+           !ok && !canceled && error.isEmpty()
+               ? QStringLiteral("Recording export failed without a native error message")
+               : error,
+           !ok && !canceled ? QtWarningMsg : QtInfoMsg);
     m_publication.reset();
     m_phase = Phase::Trimming;
     if (m_dialog) {
@@ -408,6 +465,8 @@ void RecordingTrimSession::showProgress() {
 }
 void RecordingTrimSession::detach() {
     m_detached = true;
+    if (m_panel)
+        m_panel->setPlaybackAvailable(false);
     if (m_toolbar)
         m_toolbar->palette()->setRecordingTrimPanel(nullptr, false);
     if (m_panel)
@@ -424,7 +483,62 @@ void RecordingTrimSession::detach() {
     if (!m_export && !m_publishFuture.valid() && !m_openFuture.valid())
         releaseMedia();
 }
+void RecordingTrimSession::prepareForSessionEnd() {
+    m_timer.stop();
+    reportError = {};
+    exported = {};
+    m_detached = true;
+    if (m_dialog)
+        m_dialog->cancel = {};
+    // Keep pending native open/export/publication owners alive until process exit. Their
+    // destructors may cancel work or join, which is unsuitable during session termination.
+    setParent(nullptr);
+}
+QString RecordingTrimSession::sourcePath() const {
+    return m_sourcePath;
+}
+QString RecordingTrimSession::outputPath() const {
+    return m_destination.isEmpty() ? m_outputPath : m_destination;
+}
 void RecordingTrimSession::releaseMedia() {
     m_timer.stop();
     deleteLater();
+}
+
+void RecordingTrimSession::report(const QString& event, const QString& message, QtMsgType level) {
+    const bool exporting = m_phase == Phase::Exporting;
+    const Selection selection =
+        exporting ? m_pendingSelection : Selection{m_first, m_end, m_speedPercent};
+    const auto boundary = [this](quint64 frame) {
+        return m_phase == Phase::Trimming && m_clip ? snow_recording_clip_boundary(m_clip, frame)
+                                                    : 0;
+    };
+    snow_shot::diagnostics::DiagnosticsService::instance().record(
+        level, QStringLiteral("snow_shot.recording"), event, message,
+        {{QStringLiteral("operation"), m_operation},
+         {QStringLiteral("export_attempt"), m_exportAttempt},
+         {QStringLiteral("stage"), m_publication ? QStringLiteral("publish") : phase()},
+         {QStringLiteral("action"),
+          exporting ? (m_copy ? QStringLiteral("copy") : QStringLiteral("save"))
+                    : (m_saveWhenReady ? QStringLiteral("save") : QStringLiteral("preview"))},
+         {QStringLiteral("deferred"), m_deferred},
+         {QStringLiteral("detached"), m_detached},
+         {QStringLiteral("cache_hit"), exporting && m_cacheHit},
+         {QStringLiteral("width"), static_cast<int>(m_info.width)},
+         {QStringLiteral("height"), static_cast<int>(m_info.height)},
+         {QStringLiteral("fps"), static_cast<int>(m_options.fps)},
+         {QStringLiteral("format"), static_cast<int>(m_options.format)},
+         {QStringLiteral("codec"), static_cast<int>(m_options.codec)},
+         {QStringLiteral("hardware"), m_options.hardware != 0},
+         {QStringLiteral("quality"), static_cast<int>(m_options.quality)},
+         {QStringLiteral("encoding_preset"), static_cast<int>(m_options.preset)},
+         {QStringLiteral("first_frame"), static_cast<qint64>(selection.first)},
+         {QStringLiteral("end_frame"), static_cast<qint64>(selection.end)},
+         {QStringLiteral("start_us"),
+          static_cast<qint64>(exporting ? m_pendingStartUs : boundary(selection.first))},
+         {QStringLiteral("end_us"),
+          static_cast<qint64>(exporting ? m_pendingEndUs : boundary(selection.end))},
+         {QStringLiteral("speed_percent"), static_cast<int>(selection.speedPercent)},
+         {QStringLiteral("worker_ms"),
+          exporting && m_exportTimer.isValid() ? m_exportTimer.elapsed() : 0}});
 }

@@ -169,9 +169,10 @@ void TextTranslationSettingsWidget::rebuild(bool force) {
         layout->setContentsMargins(12, 8, 12, 8);
         layout->setSpacing(4);
         layout->addWidget(new ConfigurationNameLabel(model.name, row));
-        auto* tag = new AdTag(model.provider == QStringLiteral("deepl")   ? tr("DeepL")
-                              : model.provider == QStringLiteral("baidu") ? tr("Baidu")
-                                                                          : tr("Youdao"),
+        auto* tag = new AdTag(model.provider == QStringLiteral("deepl")    ? tr("DeepL")
+                              : model.provider == QStringLiteral("deeplx") ? tr("DeepLX")
+                              : model.provider == QStringLiteral("baidu")  ? tr("Baidu")
+                                                                           : tr("Youdao"),
                               row);
         layout->addWidget(tag);
         layout->addStretch(1);
@@ -481,11 +482,13 @@ void TextTranslationSettingsWidget::translateModal() {
         }
         const QString provider = m_provider->currentValue().toString();
         const bool deepL = provider.isEmpty() || provider == QStringLiteral("deepl");
+        const bool deepLX = provider == QStringLiteral("deeplx");
         const char* labels[] = {
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "Configuration Name"),
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "API URL"),
-            deepL ? QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "API Key")
-                  : QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "Application Secret"),
+            (deepL || deepLX)
+                ? QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "API Key")
+                : QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "Application Secret"),
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "Application ID"),
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "Service Format"),
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget", "Concurrency")};
@@ -494,8 +497,10 @@ void TextTranslationSettingsWidget::translateModal() {
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget",
                               "The full translation endpoint. Its path and query are used as "
                               "entered."),
-            QT_TRANSLATE_NOOP("TextTranslationSettingsWidget",
-                              "Optional for servers that do not require authentication."),
+            deepLX ? QT_TRANSLATE_NOOP("TextTranslationSettingsWidget",
+                                       "Optional access token sent as a Bearer token.")
+                   : QT_TRANSLATE_NOOP("TextTranslationSettingsWidget",
+                                       "Optional for servers that do not require authentication."),
             nullptr,
             nullptr,
             QT_TRANSLATE_NOOP("TextTranslationSettingsWidget",
@@ -507,12 +512,12 @@ void TextTranslationSettingsWidget::translateModal() {
             metadata.description = {"TextTranslationSettingsWidget", descriptions[i]};
             m_formFields[i]->setMetadata(metadata);
         }
-        m_formFields[3]->setFieldVisible(!deepL);
+        m_formFields[3]->setFieldVisible(!deepL && !deepLX);
         const QSignalBlocker blocker(m_provider);
         QVector<AdComboBox::Option> options;
-        const QStringList ids{QStringLiteral("deepl"), QStringLiteral("baidu"),
-                              QStringLiteral("youdao")};
-        const QStringList names{tr("DeepL"), tr("Baidu"), tr("Youdao")};
+        const QStringList ids{QStringLiteral("deepl"), QStringLiteral("deeplx"),
+                              QStringLiteral("baidu"), QStringLiteral("youdao")};
+        const QStringList names{tr("DeepL"), tr("DeepLX"), tr("Baidu"), tr("Youdao")};
         for (int i = 0; i < ids.size(); ++i) {
             AdComboBox::Option option;
             option.value = ids[i];

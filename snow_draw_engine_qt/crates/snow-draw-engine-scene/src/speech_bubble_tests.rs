@@ -52,17 +52,78 @@ fn frame() -> FrameView {
     }
 }
 #[test]
+fn speech_bubble_styles_reach_scene_paths_and_damage_without_replacing_contours() {
+    use snow_draw_engine_core::arrow::StrokeRenderingStyle;
+    for shape in [
+        HighlightShape::Rectangle,
+        HighlightShape::Ellipse,
+        HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
+    ] {
+        let id = ElementId {
+            index: 1,
+            generation: 1,
+        };
+        let mut value = bubble(shape);
+        value.body.stroke_rendering_seed = 142857;
+        let before = scene_item_from_speech_bubble(id, &value);
+        let bounds = scene_display_item_bounds(&before, frame()).unwrap();
+        for (style, extra) in [
+            (StrokeRenderingStyle::Artist, 2.0),
+            (StrokeRenderingStyle::Cartoonist, 4.0),
+        ] {
+            value.body.stroke_rendering_style = style;
+            let after = scene_item_from_speech_bubble(id, &value);
+            let SceneDisplayItem::SpeechBubble(item) = &after else {
+                panic!("bubble display")
+            };
+            assert_eq!(item.body.stroke_rendering_style, style);
+            assert_eq!(item.path.stroke_rendering_style, style);
+            assert_eq!(item.path.stroke_rendering_seed, 142857);
+            let styled = scene_display_item_bounds(&after, frame()).unwrap();
+            assert!((styled.min_x - (bounds.min_x - extra)).abs() < 1e-9);
+            assert!((styled.max_y - (bounds.max_y + extra)).abs() < 1e-9);
+            let (patch, _) = build_scene_layer_patch(
+                std::slice::from_ref(&before),
+                1,
+                std::slice::from_ref(&after),
+                frame(),
+                false,
+                false,
+            );
+            assert!(!patch.ops.is_empty());
+            let SceneDisplayItem::SpeechBubble(previous) = &before else {
+                panic!("bubble display")
+            };
+            assert_eq!(item.path.geometry, previous.path.geometry);
+            assert!(
+                patch
+                    .dirty_regions
+                    .iter()
+                    .any(|dirty| dirty.min_x <= styled.min_x
+                        && dirty.min_y <= styled.min_y
+                        && dirty.max_x >= styled.max_x
+                        && dirty.max_y >= styled.max_y)
+            );
+        }
+    }
+}
+
+#[test]
 fn speech_bubble_scene_tail_edits_publish_closed_geometry_and_complete_damage() {
     for shape in [
         HighlightShape::Rectangle,
         HighlightShape::Ellipse,
         HighlightShape::Diamond,
+        HighlightShape::ThoughtBubble,
     ] {
         let owner = ElementId {
             index: 1,
             generation: 1,
         };
-        let before = bubble(shape);
+        let mut before = bubble(shape);
+        before.body.stroke_rendering_style =
+            snow_draw_engine_core::arrow::StrokeRenderingStyle::Cartoonist;
         let mut after = before.clone();
         after.tails[0].tip = Point::new(-110.0, 170.0);
         let before = scene_item_from_speech_bubble(owner, &before);

@@ -474,6 +474,9 @@ UpdateService::~UpdateService() {
 const UpdateStatus& UpdateService::status() const {
     return m_impl->status;
 }
+bool UpdateService::managedByStore() const {
+    return false;
+}
 bool UpdateService::busy() const {
     return m_impl->busy();
 }

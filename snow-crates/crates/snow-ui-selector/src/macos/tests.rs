@@ -253,6 +253,50 @@ fn window_mode_uses_z_order_and_snapshot_without_accessibility() {
 }
 
 #[test]
+fn own_windows_keep_snapshot_bounds_without_worker_accessibility() {
+    let snapshot = WindowSnapshot {
+        windows: vec![WindowInfo {
+            pid: std::process::id() as i32,
+            bounds: rect(-10., 10., 60., 60.),
+            ..window()
+        }],
+        displays: vec![display()],
+        ..WindowSnapshot::default()
+    };
+    let expected = vec![ElementRect::new(
+        display().to_pixels(rect(0., 10., 50., 60.)).unwrap(),
+    )];
+    std::thread::spawn(move || {
+        let mut service = ElementRegionService::from_snapshot(&snapshot).unwrap();
+        for window_id in [None, Some(7)] {
+            for control in [
+                QueryControl::foreground(),
+                QueryControl::refinement(&|| false),
+            ] {
+                let result = service
+                    .query(
+                        Point {
+                            x: 30,
+                            y: 30,
+                            display_id: 1,
+                            window_id,
+                        },
+                        HitTestMode::UiElement,
+                        &control,
+                        &mut |_| panic!("own windows must not publish worker AX frames"),
+                    )
+                    .unwrap();
+                assert_eq!(result.reason, StopReason::Complete);
+                assert_eq!(result.path.unwrap(), expected);
+            }
+        }
+        service.release_cache();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn native_mouse_hit_bypasses_full_screen_surfaces_and_validates_snapshot_geometry() {
     let app = rect(10., 10., 60., 60.);
     let snapshot = WindowSnapshot {

@@ -1,0 +1,17 @@
+[package]
+name = "snow-webcam"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+snow-core = { path = "../snow-core" }
+snow-recording-model = { path = "../snow-recording-model" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_Media_MediaFoundation", "Win32_System_Variant", "Devices_Enumeration", "Foundation_Collections"] }
+windows-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+snow-macos = { path = "../snow-macos" }

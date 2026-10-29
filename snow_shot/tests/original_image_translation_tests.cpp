@@ -10,6 +10,10 @@
 
 #include <QCoreApplication>
 #include <QClipboard>
+#include <QApplication>
+#include <QScrollBar>
+#include <QScopeGuard>
+#include <QTextEdit>
 #include <QDataStream>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -49,6 +53,10 @@
 #endif
 
 namespace {
+// The built-in eight-slot policy is independently covered by TranslationService tests. Only
+// scenarios that need queued work use this boundary; presentation fixtures use fixed small inputs.
+constexpr int kBuiltInTranslationConcurrency = 8;
+
 #if defined(SNOW_SHOT_TEST_PINNED_TRANSLATION)
 QList<QGraphicsItem*> ocrGlyphItems(QGraphicsView* layer) {
     if (layer == nullptr || layer->scene() == nullptr) {
@@ -259,6 +267,7 @@ struct SessionProbe {
     int backgrounds = 0;
     bool streaming = false;
     bool overlayState = false;
+    std::function<QImage()> renderImage;
 
     ~SessionProbe() {
         controller.reset();
@@ -270,6 +279,7 @@ struct SessionProbe {
                  ScreenshotRecognitionWindow* recognitionWindow = nullptr,
                  const QStringList& sourceTexts = {}) {
         ScreenshotRecognitionSessionActions actions;
+        actions.renderTranslationImage = [this] { return renderImage ? renderImage() : QImage{}; };
         if (recognitionWindow != nullptr) {
             actions.ensureContent = [recognitionWindow]() { return recognitionWindow; };
         }
@@ -311,7 +321,8 @@ struct SessionProbe {
         };
         controller = std::make_unique<ScreenshotRecognitionSessionController>(ocr, nullptr, api,
                                                                               std::move(actions));
-        source->selection = QRect(0, 0, 160, 240);
+        const int imageHeight = std::max(240, boxes * 25);
+        source->selection = QRect(0, 0, 160, imageHeight);
         for (int index = 0; index < boxes; ++index) {
             const qreal top = index * 25.0;
             source->lines.push_back(
@@ -322,7 +333,7 @@ struct SessionProbe {
         source->prepareForRendering();
         ScreenshotRecognitionTarget target;
         target.key = key;
-        target.image = QImage(160, 240, QImage::Format_ARGB32_Premultiplied);
+        target.image = QImage(160, imageHeight, QImage::Format_ARGB32_Premultiplied);
         target.image.fill(Qt::white);
         target.canvasRect = source->selection;
         if (formatted) {
@@ -339,6 +350,94 @@ struct SessionProbe {
         controller->activate(ScreenshotRecognitionSessionController::Mode::Text);
     }
 };
+
+void translationImageCopyHonorsSelectionAndSnapshots() {
+    const snow_shot::storage::ScreenshotTranslationSettings settings;
+    const auto restore =
+        qScopeGuard([&] { static_cast<void>(settings.setCopyTranslationResultsAsImage(false)); });
+    for (const bool overlay : {true, false}) {
+        configureTranslation(overlay);
+        TranslationServer server;
+        SnowShotApiClient api(server.url());
+        ScreenshotRecognitionWindow window({});
+        SessionProbe session(&api, 1, QStringLiteral("image-copy"), false, nullptr, nullptr,
+                             &window);
+        window.resize(240, 90);
+        window.show();
+        session.renderImage = [&] {
+            QImage background(160, 240, QImage::Format_ARGB32_Premultiplied);
+            background.fill(Qt::white);
+            auto snapshot =
+                window.imageSnapshot(background, session.source->selection, {}, {}, {}, true);
+            return snapshot ? renderScreenshotRecognitionImage(*snapshot) : QImage{};
+        };
+        session.controller->beginTextTranslation();
+        server.waitForStreams(1);
+        const QString result = QString::fromUtf8("Translated text \xE4\xB8\xAD\xE6\x96\x87\n") +
+                               QStringLiteral("Another translated paragraph\n").repeated(40);
+        server.delta(0, result);
+        waitUntil([&] { return session.controller->textDraft() == result; },
+                  "stream image-copy result");
+        require(session.controller->recognitionClipboardMimeData()->text() == result,
+                "disabled image copying preserves translation text");
+        const qsizetype requests = server.streams.size();
+        require(settings.setCopyTranslationResultsAsImage(true),
+                "enable translation image copying");
+        auto* editor = window.findChild<QTextEdit*>();
+        int scroll = 0;
+        int revision = 0;
+        if (!overlay) {
+            require(editor != nullptr, "text translation owns an editor");
+            editor->verticalScrollBar()->setValue(editor->verticalScrollBar()->maximum());
+            scroll = editor->verticalScrollBar()->value();
+            revision = editor->document()->revision();
+        }
+        auto mime = session.controller->recognitionClipboardMimeData();
+        require(mime && mime->hasImage() && !mime->hasText(),
+                "unselected translation copies only an image");
+        const QImage image = qvariant_cast<QImage>(mime->imageData());
+        require(!image.isNull() && (overlay ? image.size() == QSize(160, 240)
+                                            : image.height() > editor->viewport()->height()),
+                "image export covers the full source image or complete scrolled document");
+        require(window.copyVisibleContentToClipboard() &&
+                    QApplication::clipboard()->mimeData()->hasImage(),
+                "recognition-window copying shares the translation image policy");
+        if (overlay) {
+            session.displayed->beginTextSelection(ScreenshotOcrTextPosition{0, 0});
+            session.displayed->updateTextSelection(ScreenshotOcrTextPosition{0, 10});
+            session.displayed->finishTextSelection();
+        } else {
+            require(editor->document()->revision() == revision &&
+                        editor->verticalScrollBar()->value() == scroll &&
+                        editor->toPlainText() == result,
+                    "full-document rendering preserves live content, revision and scroll");
+            auto cursor = editor->textCursor();
+            cursor.setPosition(0);
+            cursor.setPosition(10, QTextCursor::KeepAnchor);
+            editor->setTextCursor(cursor);
+        }
+        mime = session.controller->recognitionClipboardMimeData();
+        require(mime && !mime->hasImage() && mime->text() == QStringLiteral("Translated"),
+                "selected translation text takes precedence over image copying");
+        if (overlay) {
+            session.displayed->clearTextSelection();
+            session.displayed->selectAll();
+            mime = session.controller->recognitionClipboardMimeData();
+            require(mime && mime->hasText() && !mime->hasImage(), "OCR box selection copies text");
+            session.displayed->clearTextSelection();
+            session.renderImage = {};
+            QApplication::clipboard()->setText(QStringLiteral("keep clipboard"));
+            require(!window.copyVisibleContentToClipboard() &&
+                        QApplication::clipboard()->text() == QStringLiteral("keep clipboard"),
+                    "render failure preserves the clipboard and reports failure");
+        }
+        require(session.streaming && server.streams.size() == requests,
+                "image copy and preference changes leave the streaming job intact");
+        server.finish(0);
+        waitUntil([&] { return !session.streaming; }, "finish image-copy translation");
+        require(settings.setCopyTranslationResultsAsImage(false), "restore image-copy preference");
+    }
+}
 
 void customModelPageAndScreenshotParity(bool originalImage) {
     TranslationServer server;
@@ -610,7 +709,7 @@ void sourceSelectionSurvivesOriginalImageTranslation() {
             "reinstalling an explicitly cleared model cannot revive its retired character gesture");
 }
 
-void queueStreamsIndividualBoxesAndKeepsOriginals() {
+void streamsIndividualBoxesAndKeepsOriginals() {
     configureTranslation();
     TranslationServer server;
     SnowShotApiClient api(server.url());
@@ -618,9 +717,9 @@ void queueStreamsIndividualBoxesAndKeepsOriginals() {
     session.controller->beginTextTranslation();
     require(session.streaming && session.overlayState && !session.controller->editing(),
             "overlay mode should be busy during model discovery without entering the editor");
-    server.waitForStreams(4);
+    server.waitForStreams(6);
     require(server.modelRequests == 1, "resolve translation models once per image run");
-    for (int index = 0; index < 4; ++index) {
+    for (int index = 0; index < 6; ++index) {
         require(server.streams[index].text == session.source->lines[index].text,
                 "each request must carry exactly its source OCR box");
     }
@@ -632,7 +731,7 @@ void queueStreamsIndividualBoxesAndKeepsOriginals() {
     require(session.displayed->lines[2].text == QStringLiteral("third") &&
                 session.displayed->lines[1].text == QStringLiteral("source 1") &&
                 session.displayed->lines[5].text == QStringLiteral("source 5"),
-            "streaming and queued boxes should retain independent display content");
+            "streaming boxes should retain independent display content");
     const auto snapshot = session.controller->recognitionResultsSnapshot();
     require(snapshot.text.has_value() &&
                 snapshot.text->presentation->lines[2].text == QStringLiteral("source 2"),
@@ -666,7 +765,8 @@ void queueStreamsIndividualBoxesAndKeepsOriginals() {
             "streaming translations expose mixed add/remove previews from the press baseline");
     server.delta(2, QStringLiteral(" box"));
     server.finish(2);
-    server.waitForStreams(5);
+    waitUntil([&] { return session.displayed->lines[2].text == QStringLiteral("third box"); },
+              "the streamed delta reaches the selected translated box");
     require(snapshot.translatedText->lines[2].text == QStringLiteral("third"),
             "later translation deltas must not modify a previously captured pin snapshot");
     require(session.displayed->selectedText() == QStringLiteral("first\nthird box") &&
@@ -687,7 +787,6 @@ void queueStreamsIndividualBoxesAndKeepsOriginals() {
                 session.backgrounds == backgrounds,
             "stream updates should preserve unrelated selection and the OCR background");
     server.finish(0);
-    server.waitForStreams(6);
     for (const int index : {1, 3, 4, 5}) {
         server.delta(index, QStringLiteral("result %1").arg(index));
         server.finish(index);
@@ -735,36 +834,37 @@ void fourBoxesAndOwnerClosure() {
     waitUntil([&]() { return !session.streaming; }, "all four boxes should complete");
     require(session.controller->textDraft() == QStringLiteral("four 0\nfour 1\nfour 2\nfour 3"),
             "four concurrent results must preserve OCR order after reverse completion");
-    SessionProbe closing(&api, 6);
+    SessionProbe closing(&api, kBuiltInTranslationConcurrency + 2);
     closing.controller->beginTextTranslation();
-    server.waitForStreams(8);
+    const int requests = 4 + kBuiltInTranslationConcurrency;
+    server.waitForStreams(requests);
     closing.controller.reset();
-    for (int index = 4; index < 8; ++index) {
+    for (int index = 4; index < requests; ++index) {
         waitUntil([&]() { return server.disconnected(index); }, "owner destruction closes streams");
     }
-    require(server.streams.size() == 8, "owner destruction must discard queued boxes");
+    require(server.streams.size() == requests, "owner destruction must discard queued boxes");
 }
 
 void partialFailuresRetryOnlyFailedBoxes() {
     configureTranslation();
     TranslationServer server;
     SnowShotApiClient api(server.url());
-    SessionProbe session(&api, 5);
+    SessionProbe session(&api, 4);
     session.controller->beginTextTranslation();
     server.waitForStreams(4);
     server.delta(0, QStringLiteral("partial"));
     server.fail(0);
-    server.waitForStreams(5);
     waitUntil([&]() { return server.disconnected(0); },
               "terminal SSE error must close its HTTP reply");
     server.fail(1);
     server.finish(2);
     server.delta(3, QStringLiteral("complete"));
     server.finish(3);
-    server.delta(4, QStringLiteral("last"));
-    server.finish(4);
     waitUntil([&]() { return !session.streaming; }, "partial failure run should settle");
     require(session.errors.size() == 1, "partial failure should report exactly one error summary");
+    require(session.errors.first().contains(QStringLiteral("test failure")) ||
+                session.errors.first().contains(QStringLiteral("The model returned no content")),
+            "overlay failure summary includes the underlying reason");
     require(session.displayed->lines[0].text == QStringLiteral("partial"),
             "the first failed box should keep its partial output");
     require(session.displayed->lines[1].text == QStringLiteral("source 1"),
@@ -773,14 +873,14 @@ void partialFailuresRetryOnlyFailedBoxes() {
             "empty completion should keep the third source box");
     session.controller->endTextEditing();
     session.controller->beginTextTranslation();
-    server.waitForStreams(8);
+    server.waitForStreams(7);
     require(session.displayed->lines[0].text == QStringLiteral("partial") &&
                 session.displayed->lines[3].text == QStringLiteral("complete"),
             "retry should retain previous partial and completed output until new deltas");
-    for (int index = 5; index < 8; ++index) {
-        require(server.streams[index].text == QStringLiteral("source %1").arg(index - 5),
+    for (int index = 4; index < 7; ++index) {
+        require(server.streams[index].text == QStringLiteral("source %1").arg(index - 4),
                 "retry only failed boxes using source text");
-        server.delta(index, QStringLiteral("retry %1").arg(index - 5));
+        server.delta(index, QStringLiteral("retry %1").arg(index - 4));
         server.finish(index);
     }
     waitUntil([&]() { return !session.streaming; }, "retry should settle");
@@ -794,12 +894,14 @@ void rateLimitingStopsQueuedBoxesAndRetryPreservesCompletedResults() {
     TranslationServer server;
     server.holdStreamHeaders = true;
     SnowShotApiClient api(server.url());
-    SessionProbe session(&api, 8);
+    constexpr int boxes = kBuiltInTranslationConcurrency + 4;
+    constexpr int accepted = kBuiltInTranslationConcurrency + 1;
+    SessionProbe session(&api, boxes);
     session.controller->beginTextTranslation();
-    server.waitForStreams(4);
+    server.waitForStreams(kBuiltInTranslationConcurrency);
     server.delta(0, QStringLiteral("completed before limit"));
     server.finish(0);
-    server.waitForStreams(5);
+    server.waitForStreams(accepted);
     bool rateLimitHandled = false;
     QObject completionObserver;
     for (auto* reply : api.findChildren<QNetworkReply*>()) {
@@ -810,36 +912,44 @@ void rateLimitingStopsQueuedBoxesAndRetryPreservesCompletedResults() {
     }
     server.rateLimit(1);
     waitUntil([&] { return rateLimitHandled; }, "client must observe the rate-limit response");
-    for (int index = 2; index < 5; ++index) {
+    for (int index = 2; index < accepted; ++index) {
         server.delta(index, QStringLiteral("in flight %1").arg(index));
         server.finish(index);
     }
-    waitUntil([&] { return !session.streaming || server.streams.size() > 5; },
+    waitUntil([&] { return !session.streaming || server.streams.size() > accepted; },
               "rate-limited batch should stop after its in-flight work finishes");
-    require(server.streams.size() == 5, "HTTP 429 must stop dispatch of queued translation boxes");
+    require(server.streams.size() == accepted,
+            "HTTP 429 must stop dispatch of queued translation boxes");
     require(!session.streaming && session.errors.size() == 1,
             "rate-limited batch should leave busy state and report one failure");
     require(session.displayed->lines[0].text == QStringLiteral("completed before limit") &&
-                session.displayed->lines[4].text == QStringLiteral("in flight 4") &&
+                session.displayed->lines[accepted - 1].text ==
+                    QStringLiteral("in flight %1").arg(accepted - 1) &&
                 session.displayed->lines[1].text == QStringLiteral("source 1") &&
-                session.displayed->lines[7].text == QStringLiteral("source 7"),
+                session.displayed->lines[boxes - 1].text ==
+                    QStringLiteral("source %1").arg(boxes - 1),
             "rate limiting must retain translations and the original text of unsent boxes");
     session.controller->endTextEditing();
     session.controller->beginTextTranslation();
-    server.waitForStreams(9);
+    QStringList expectedRetry{QStringLiteral("source 1")};
+    for (int index = accepted; index < boxes; ++index)
+        expectedRetry.append(QStringLiteral("source %1").arg(index));
+    expectedRetry.sort();
+    const int requests = accepted + static_cast<int>(expectedRetry.size());
+    server.waitForStreams(requests);
     QStringList retried;
-    for (int index = 5; index < 9; ++index) {
+    for (int index = accepted; index < requests; ++index) {
         retried.append(server.streams[index].text);
         server.delta(index, QStringLiteral("retried %1").arg(server.streams[index].text));
         server.finish(index);
     }
-    require(retried == QStringList{QStringLiteral("source 1"), QStringLiteral("source 5"),
-                                   QStringLiteral("source 6"), QStringLiteral("source 7")},
+    require(retried == expectedRetry,
             "explicit retry must send only the rejected and previously unsent boxes");
     waitUntil([&] { return !session.streaming; }, "explicit rate-limit retry should finish");
     require(session.errors.size() == 1 &&
                 session.displayed->lines[0].text == QStringLiteral("completed before limit") &&
-                session.displayed->lines[7].text == QStringLiteral("retried source 7"),
+                session.displayed->lines[boxes - 1].text ==
+                    QStringLiteral("retried source %1").arg(boxes - 1),
             "successful retry must retain earlier results and clear the failed batch state");
 }
 
@@ -986,7 +1096,7 @@ void invalidationAndModeChangesCancelOldWork() {
     configureTranslation();
     TranslationServer server;
     SnowShotApiClient api(server.url());
-    SessionProbe session(&api, 5);
+    SessionProbe session(&api, 4);
     session.controller->beginTextTranslation();
     server.waitForStreams(4);
     require(snow_shot::storage::ScreenshotTranslationSettings().setOriginalImageTranslationEnabled(
@@ -999,7 +1109,7 @@ void invalidationAndModeChangesCancelOldWork() {
     server.waitForStreams(5);
     require(session.controller->editing() && !session.overlayState &&
                 server.streams.last().text ==
-                    QStringLiteral("source 0\nsource 1\nsource 2\nsource 3\nsource 4"),
+                    QStringLiteral("source 0\nsource 1\nsource 2\nsource 3"),
             "disabled mode must use one whole-text editor request");
     for (int index = 0; index < 4; ++index) {
         waitUntil([&]() { return server.disconnected(index); },
@@ -1020,7 +1130,7 @@ void invalidationAndModeChangesCancelOldWork() {
                   "target invalidation should cancel all streams");
     }
     require(server.streams.size() == 9 && !session.controller->hasTarget(),
-            "invalidated queue must never dispatch its remaining box");
+            "invalidated translation must never dispatch more requests");
 }
 
 void quickPrimaryTargetRestartsOriginalBlocks() {
@@ -1119,7 +1229,7 @@ void languageChangesRestartAndProviderDestructionCancels() {
     configureTranslation();
     TranslationServer server;
     auto api = std::make_unique<SnowShotApiClient>(server.url());
-    SessionProbe session(api.get(), 5);
+    SessionProbe session(api.get(), 4);
     session.controller->beginTextTranslation();
     server.waitForStreams(4);
     server.delta(0, QStringLiteral("old"));
@@ -1144,7 +1254,7 @@ void languageChangesRestartAndProviderDestructionCancels() {
     api.reset();
     waitUntil([&]() { return !session.streaming; }, "provider destruction clears busy state");
     require(session.errors.size() == 1 && server.streams.size() == 8,
-            "provider loss should report one failure and discard queued work");
+            "provider loss should report one failure and cancel active work");
 }
 
 void emptyFormattedAndPreparationFailures() {
@@ -1221,7 +1331,7 @@ void renderSnapshotsAndLateCallbacksStayIsolated() {
     TranslationServer server;
     SnowShotApiClient api(server.url());
     auto ocr = std::make_unique<SnapshotOcr>();
-    SessionProbe session(&api, 5, QStringLiteral("snapshot"), false, ocr.get());
+    SessionProbe session(&api, 4, QStringLiteral("snapshot"), false, ocr.get());
     session.controller->beginTextTranslation();
     server.waitForStreams(4);
     const auto snapshot = ocr->snapshot;
@@ -1287,6 +1397,7 @@ void fragmentedUnicodeStreamsUpdateOnlyCompleteEvents() {
 } // namespace
 
 void runOriginalImageTranslationTests() {
+    translationImageCopyHonorsSelectionAndSnapshots();
     mixedOriginalBoxesShareOneDetectedTarget();
     quickPrimaryTargetRestartsOriginalBlocks();
     customModelPageAndScreenshotParity(false);
@@ -1295,7 +1406,7 @@ void runOriginalImageTranslationTests() {
     confirmingTranslationDisplayModeRestartsTranslation();
     smartLayoutStreamsParagraphsAndSwitchesModes();
     sourceSelectionSurvivesOriginalImageTranslation();
-    queueStreamsIndividualBoxesAndKeepsOriginals();
+    streamsIndividualBoxesAndKeepsOriginals();
     fourBoxesAndOwnerClosure();
     partialFailuresRetryOnlyFailedBoxes();
     rateLimitingStopsQueuedBoxesAndRetryPreservesCompletedResults();
@@ -1438,6 +1549,20 @@ void runPinnedOriginalImageTranslationTests() {
     require(ocrGlyphItems(layer) == items && controller->recognitionClipboardMimeData()->text() ==
                                                  QStringLiteral("translated\nsource 1"),
             "pinned overlay must update existing text items and copy translated display text");
+    {
+        const snow_shot::storage::ScreenshotTranslationSettings settings;
+        const auto restore = qScopeGuard(
+            [&] { static_cast<void>(settings.setCopyTranslationResultsAsImage(false)); });
+        require(settings.setCopyTranslationResultsAsImage(true),
+                "enable pinned translation image copy");
+        const auto mime = controller->recognitionClipboardMimeData();
+        require(mime && mime->hasImage() && !mime->hasText() &&
+                    qvariant_cast<QImage>(mime->imageData()).size() == background.size(),
+                "pinned translation copies its full rendered image at source resolution");
+        require(content->copyVisibleContentToClipboard() &&
+                    QApplication::clipboard()->mimeData()->hasImage(),
+                "embedded pinned copy uses the shared translation policy");
+    }
     const auto partialRecord = pinned->persistenceSnapshot();
     const auto partialResults = controller->recognitionResultsSnapshot();
     QByteArray legacyPayload;

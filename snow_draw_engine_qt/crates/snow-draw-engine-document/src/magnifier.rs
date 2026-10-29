@@ -179,6 +179,7 @@ impl MagnifierData {
         let metric = match self.shape {
             HighlightShape::Rectangle => (x.abs() / half_w).max(y.abs() / half_h),
             HighlightShape::Ellipse => (x / half_w).hypot(y / half_h),
+            HighlightShape::ThoughtBubble => return None,
             HighlightShape::Diamond => x.abs() / half_w + y.abs() / half_h,
         };
         let radii = self.magnified_rect().corner_radii;
@@ -250,6 +251,9 @@ impl MagnifierData {
 }
 
 pub fn validate_magnifier(value: &MagnifierData) -> Result<(), ErrorCode> {
+    if value.shape == HighlightShape::ThoughtBubble {
+        return Err(ErrorCode::InvalidArgument);
+    }
     if [
         value.source_center.x,
         value.source_center.y,
@@ -387,7 +391,7 @@ pub(crate) fn contour_distance(
     let y = y.abs();
     match shape {
         HighlightShape::Rectangle => unreachable!(),
-        HighlightShape::Diamond => unreachable!(),
+        HighlightShape::Diamond | HighlightShape::ThoughtBubble => unreachable!(),
         HighlightShape::Ellipse => {
             if (x / a).hypot(y / b) <= 1.0 {
                 return 0.0;

@@ -758,6 +758,10 @@ Files:
             <translation>焦點視窗</translation>
         </message>
         <message>
+            <source>Image Editing</source>
+            <translation>影像編輯</translation>
+        </message>
+        <message>
             <source>Loading preview…</source>
             <translation>正在載入預覽…</translation>
         </message>
@@ -808,6 +812,48 @@ Files:
         <message>
             <source>This screenshot cannot be pinned</source>
             <translation>此截圖無法固定到螢幕</translation>
+        </message>
+    </context>
+    <context>
+        <name>HistoryFileLocation</name>
+        <message>
+            <source>Open Containing Folder</source>
+            <translation>開啟所在資料夾</translation>
+        </message>
+        <message>
+            <source>Open in Explorer</source>
+            <translation>在檔案總管中開啟</translation>
+        </message>
+        <message>
+            <source>Reveal in Finder</source>
+            <translation>在 Finder 中顯示</translation>
+        </message>
+        <message>
+            <source>Unable to open this entry's file location.</source>
+            <translation>無法開啟此項目的檔案位置。</translation>
+        </message>
+    </context>
+    <context>
+        <name>ImageEditingWindow</name>
+        <message>
+            <source>%1 px</source>
+            <translation>%1 像素</translation>
+        </message>
+        <message>
+            <source>No available output filename was found.</source>
+            <translation>找不到可用的輸出檔名。</translation>
+        </message>
+        <message>
+            <source>The editing content could not be prepared for export.</source>
+            <translation>無法準備要匯出的編輯內容。</translation>
+        </message>
+        <message>
+            <source>The image could not be loaded.</source>
+            <translation>無法載入影像。</translation>
+        </message>
+        <message>
+            <source>The save directory is not available.</source>
+            <translation>儲存目錄無法使用。</translation>
         </message>
     </context>
     <context>
@@ -1181,6 +1227,10 @@ Files:
             <translation>所有來源</translation>
         </message>
         <message>
+            <source>Batch Actions</source>
+            <translation>批次操作</translation>
+        </message>
+        <message>
             <source>Bulk actions for selected pinned windows</source>
             <translation>對選取的固定到螢幕視窗執行批次操作</translation>
         </message>
@@ -1199,14 +1249,6 @@ Files:
         <message>
             <source>Closed</source>
             <translation>已關閉</translation>
-        </message>
-        <message>
-            <source>Collage</source>
-            <translation>圖片拼接</translation>
-        </message>
-        <message>
-            <source>Create a collage from selected pinned windows</source>
-            <translation>使用選取的固定到螢幕視窗建立圖片拼接</translation>
         </message>
         <message>
             <source>Date</source>
@@ -1263,6 +1305,10 @@ Files:
             <translation>已隱藏</translation>
         </message>
         <message>
+            <source>Image Editing</source>
+            <translation>影像編輯</translation>
+        </message>
+        <message>
             <source>Image Splitting</source>
             <translation>圖片分割</translation>
         </message>
@@ -1293,6 +1339,10 @@ Files:
         <message>
             <source>Pin to Screen Management</source>
             <translation>固定到螢幕管理</translation>
+        </message>
+        <message>
+            <source>Pin to screen</source>
+            <translation>固定到螢幕</translation>
         </message>
         <message>
             <source>Pinned images and text will appear here</source>
@@ -1329,6 +1379,10 @@ Files:
         <message>
             <source>Select all entries on this page</source>
             <translation>選取此頁的所有項目</translation>
+        </message>
+        <message>
+            <source>Select pinned windows from the same group to pin them to the screen.</source>
+            <translation>請選取同一群組中的固定視窗，以將它們固定到螢幕。</translation>
         </message>
         <message>
             <source>Select record</source>
@@ -1394,6 +1448,10 @@ Files:
             <translation>所有來源</translation>
         </message>
         <message>
+            <source>Batch Actions</source>
+            <translation>批次操作</translation>
+        </message>
+        <message>
             <source>Bulk actions for selected screenshot history entries</source>
             <translation>所選截圖歷史記錄的批次操作</translation>
         </message>
@@ -1406,20 +1464,12 @@ Files:
             <translation>變更來源或日期範圍以查看更多歷史記錄</translation>
         </message>
         <message>
-            <source>Collage</source>
-            <translation>圖片拼接</translation>
-        </message>
-        <message>
             <source>Copied and pinned screenshots will appear here</source>
             <translation>已複製或固定到螢幕的截圖會顯示在這裡</translation>
         </message>
         <message>
             <source>Copy to clipboard</source>
             <translation>複製到剪貼簿</translation>
-        </message>
-        <message>
-            <source>Create a collage from selected screenshots</source>
-            <translation>使用選取的截圖建立圖片拼接</translation>
         </message>
         <message>
             <source>Current monitor</source>
@@ -1510,6 +1560,10 @@ Files:
             <translation>開始日期</translation>
         </message>
         <message>
+            <source>Stitch Image</source>
+            <translation>圖片拼接</translation>
+        </message>
+        <message>
             <source>This action cannot be undone</source>
             <translation>此操作無法撤銷</translation>
         </message>
@@ -1523,6 +1577,10 @@ Files:
         <message>
             <source>%1%</source>
             <translation>%1%</translation>
+        </message>
+        <message>
+            <source>AirDrop</source>
+            <translation>AirDrop</translation>
         </message>
         <message>
             <source>Always on Top</source>
@@ -1651,6 +1709,10 @@ Files:
         <message>
             <source>Hide to Top</source>
             <translation>頂部隱藏</translation>
+        </message>
+        <message>
+            <source>Image Editing</source>
+            <translation>圖片編輯</translation>
         </message>
         <message>
             <source>Image file</source>
@@ -1834,6 +1896,77 @@ Files:
         <message>
             <source>Windows · not closed / total</source>
             <translation>視窗 · 未關閉 / 總數</translation>
+        </message>
+    </context>
+    <context>
+        <name>snow_shot::presentation::ImageEditingWindow</name>
+        <message>
+            <source>Configure cloud upload before uploading an image.</source>
+            <translation>上傳影像前請先設定雲端上傳。</translation>
+        </message>
+        <message>
+            <source>Continue Editing</source>
+            <translation>繼續編輯</translation>
+        </message>
+        <message>
+            <source>Discard Changes</source>
+            <translation>捨棄變更</translation>
+        </message>
+        <message>
+            <source>Discard Changes?</source>
+            <translation>捨棄變更？</translation>
+        </message>
+        <message>
+            <source>Export completed</source>
+            <translation>匯出完成</translation>
+        </message>
+        <message>
+            <source>Export could not be started.</source>
+            <translation>無法開始匯出。</translation>
+        </message>
+        <message>
+            <source>Exporting…</source>
+            <translation>正在匯出…</translation>
+        </message>
+        <message>
+            <source>Fit image to window</source>
+            <translation>符合視窗大小</translation>
+        </message>
+        <message>
+            <source>Image Editing</source>
+            <translation>影像編輯</translation>
+        </message>
+        <message>
+            <source>Loading image…</source>
+            <translation>正在載入圖像…</translation>
+        </message>
+        <message>
+            <source>No recognition result is available to export.</source>
+            <translation>沒有可匯出的辨識結果。</translation>
+        </message>
+        <message>
+            <source>Printing is unavailable.</source>
+            <translation>列印功能無法使用。</translation>
+        </message>
+        <message>
+            <source>Save as file</source>
+            <translation>另存為檔案</translation>
+        </message>
+        <message>
+            <source>Text files (*.txt)</source>
+            <translation>文字檔案 (*.txt)</translation>
+        </message>
+        <message>
+            <source>The image could not be loaded.</source>
+            <translation>無法載入影像。</translation>
+        </message>
+        <message>
+            <source>This editing window has unsaved changes.</source>
+            <translation>此編輯視窗有尚未儲存的變更。</translation>
+        </message>
+        <message>
+            <source>View at actual size (100%)</source>
+            <translation>以實際大小檢視（100%）</translation>
         </message>
     </context>
     <context>

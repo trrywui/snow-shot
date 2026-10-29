@@ -1,3 +1,5 @@
+#include "snow_shot/presentation/screenshotdrawingtoolbaroptions.h"
+#include "snow_shot/presentation/screenshotcanvasoperations.h"
 #include "snow_shot/presentation/screenshotcanvastools.h"
 #include "snow_shot/presentation/canvashistoryshortcuts.h"
 #include "snow_shot/shortcuts/shortcutbinding.h"
@@ -41,49 +43,6 @@
 
 namespace {
 constexpr int kToolbarGap = 4;
-ScreenshotToolPalette::Options pinnedEditToolbarOptions() {
-    ScreenshotToolPalette::Options options;
-    options.showDragHandle = true;
-    options.showHistoryActions = true;
-    options.showMoveTool = true;
-    options.moveToolPresentation = ScreenshotToolPalette::MoveToolPresentation::ResizeWindow;
-    options.showSelectTool = true;
-    options.showShapeTool = true;
-    options.showSpeechBubbleTool = true;
-    options.showArrowTool = true;
-    options.showLineTool = true;
-    options.showDistanceTool = true;
-    options.showAngleTool = true;
-    options.showFreeDrawTool = true;
-    options.showHighlightTool = true;
-    options.showSpotlightTool = true;
-    options.showMagnifierTool = true;
-    options.showEraserTool = true;
-    options.showFilterTool = true;
-    options.showWatermarkTool = true;
-    options.showTextTool = true;
-    options.showSerialNumberTool = true;
-    options.showOcrTool = true;
-    options.showTextTranslationTool = true;
-    options.showTableTool = true;
-    options.showQrTool = true;
-    options.showImageConversionTools = true;
-    options.toolbarLayout = snow_shot::storage::ScreenshotToolbarSettings().layout(
-        snow_shot::storage::ScreenshotToolbarLayoutKind::DrawingTools);
-    options.actionToolsLayoutKind =
-        snow_shot::storage::ScreenshotToolbarLayoutKind::PinnedActionTools;
-    options.actionToolsLayout =
-        snow_shot::storage::ScreenshotToolbarSettings().layout(options.actionToolsLayoutKind);
-    options.showSaveButton = true;
-    options.saveButtonWithResultActions = true;
-    options.copyButtonWithNeutralIcon = true;
-    options.separatorAfterSelect = true;
-    options.separatorBeforeConfirm = true;
-    options.showDrawingModeShortcutOnConfirm = true;
-    options.actions = ScreenshotToolPalette::CopyAction | ScreenshotToolPalette::ConfirmAction;
-    options.styleDefaults = snow_shot::presentation::screenshotCanvasStyleDefaults();
-    return options;
-}
 
 } // namespace
 
@@ -422,7 +381,9 @@ void ScreenshotPinnedEditController::ensureToolbar() {
         return;
     }
 
-    m_toolbarWindow = new ScreenshotFloatingToolPaletteWindow(pinnedEditToolbarOptions());
+    auto options = snow_shot::presentation::screenshotDrawingToolbarOptions();
+    options.showAirDropButton = true;
+    m_toolbarWindow = new ScreenshotFloatingToolPaletteWindow(options);
     m_toolbarWindow->setAttribute(Qt::WA_DeleteOnClose, false);
     m_toolbarWindow->setTransientOwnerWindow(&m_pinnedWindow);
     m_toolbarWindow->setStyleToolbarAboveMain(false);
@@ -496,52 +457,7 @@ void ScreenshotPinnedEditController::ensureToolbar() {
             prepareRecognitionToolActivation();
             emit textTranslationRequested();
         });
-        connect(toolbar, &ScreenshotToolPalette::serialNumberDecrementRequested, this,
-                [this]() { m_canvas.adjustSelectedSerialNumbers(-1); });
-        connect(toolbar, &ScreenshotToolPalette::serialNumberIncrementRequested, this,
-                [this]() { m_canvas.adjustSelectedSerialNumbers(1); });
-        connect(toolbar, &ScreenshotToolPalette::serialNumberCreateTextRequested, this,
-                [this]() { m_canvas.createSerialNumberText(); });
-        connect(toolbar, &ScreenshotToolPalette::sendSelectionToBackRequested, this,
-                [this]() { m_canvas.reorderSelected(SnowCanvasSelectionOrder::SendToBack); });
-        connect(toolbar, &ScreenshotToolPalette::sendSelectionBackwardRequested, this,
-                [this]() { m_canvas.reorderSelected(SnowCanvasSelectionOrder::SendBackward); });
-        connect(toolbar, &ScreenshotToolPalette::bringSelectionForwardRequested, this,
-                [this]() { m_canvas.reorderSelected(SnowCanvasSelectionOrder::BringForward); });
-        connect(toolbar, &ScreenshotToolPalette::bringSelectionToFrontRequested, this,
-                [this]() { m_canvas.reorderSelected(SnowCanvasSelectionOrder::BringToFront); });
-        connect(toolbar, &ScreenshotToolPalette::alignSelectionLeftRequested, this,
-                [this]() { m_canvas.alignSelected(SnowCanvasSelectionAlignment::AlignLeft); });
-        connect(toolbar, &ScreenshotToolPalette::alignSelectionCenterHorizontallyRequested, this,
-                [this]() {
-                    m_canvas.alignSelected(SnowCanvasSelectionAlignment::AlignCenterHorizontally);
-                });
-        connect(toolbar, &ScreenshotToolPalette::alignSelectionRightRequested, this,
-                [this]() { m_canvas.alignSelected(SnowCanvasSelectionAlignment::AlignRight); });
-        connect(toolbar, &ScreenshotToolPalette::alignSelectionTopRequested, this,
-                [this]() { m_canvas.alignSelected(SnowCanvasSelectionAlignment::AlignTop); });
-        connect(toolbar, &ScreenshotToolPalette::alignSelectionCenterVerticallyRequested, this,
-                [this]() {
-                    m_canvas.alignSelected(SnowCanvasSelectionAlignment::AlignCenterVertically);
-                });
-        connect(toolbar, &ScreenshotToolPalette::alignSelectionBottomRequested, this,
-                [this]() { m_canvas.alignSelected(SnowCanvasSelectionAlignment::AlignBottom); });
-        connect(toolbar, &ScreenshotToolPalette::distributeSelectionHorizontallyRequested, this,
-                [this]() {
-                    m_canvas.alignSelected(SnowCanvasSelectionAlignment::DistributeHorizontally);
-                });
-        connect(toolbar, &ScreenshotToolPalette::distributeSelectionVerticallyRequested, this,
-                [this]() {
-                    m_canvas.alignSelected(SnowCanvasSelectionAlignment::DistributeVertically);
-                });
-        connect(toolbar, &ScreenshotToolPalette::selectionOpacityChanged, this,
-                [this](qreal opacity) { m_canvas.setSelectedOpacity(opacity); });
-        connect(toolbar, &ScreenshotToolPalette::duplicateSelectionRequested, this,
-                [this]() { m_canvas.duplicateSelected(); });
-        connect(toolbar, &ScreenshotToolPalette::deleteSelectionRequested, this,
-                [this]() { m_canvas.deleteSelected(); });
-        connect(toolbar, &ScreenshotToolPalette::resetCanvasRequested, this,
-                [this]() { m_canvas.deleteAllElements(); });
+        snow_shot::presentation::bindScreenshotCanvasOperations(toolbar, m_canvas, this);
 
         connect(toolbar, &ScreenshotToolPalette::textStylePopupInteractionBegan, this,
                 [this]() { m_canvas.beginTextStylePopupInteraction(); });

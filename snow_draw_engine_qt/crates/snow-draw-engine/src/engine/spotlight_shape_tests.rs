@@ -49,6 +49,7 @@ fn fixture(shape: HighlightShape) -> (Engine, ViewportId, ElementId) {
     let display_shape = match shape {
         HighlightShape::Rectangle => DisplayRectangleShape::Rectangle,
         HighlightShape::Ellipse => DisplayRectangleShape::Ellipse,
+        HighlightShape::ThoughtBubble => unreachable!("not a spotlight shape"),
         HighlightShape::Diamond => DisplayRectangleShape::Diamond,
     };
     assert_eq!(cutout.shape, display_shape);
@@ -375,6 +376,7 @@ fn spotlight_shapes_survive_edits_history_duplication_and_transforms() {
         let next_shape = match shape {
             HighlightShape::Rectangle => HighlightShape::Ellipse,
             HighlightShape::Ellipse => HighlightShape::Diamond,
+            HighlightShape::ThoughtBubble => unreachable!("not a spotlight shape"),
             HighlightShape::Diamond => HighlightShape::Rectangle,
         };
         shape_patch(&mut engine, viewport, ShapeKind::Spotlight, next_shape);

@@ -1,7 +1,7 @@
 #ifndef SNOW_SHOT_STORAGE_FLOATINGTOOLBARSETTINGS_H
 #define SNOW_SHOT_STORAGE_FLOATINGTOOLBARSETTINGS_H
 
-#include "snow_shot/presentation/editionfeatures.h"
+#include "snow_shot/app/editionfeatures.h"
 #include "snow_shot/storage/settingsadapters.h"
 
 #include <QJsonObject>
@@ -19,9 +19,7 @@ inline ScreenshotToolbarLayout defaultFloatingToolbarLayout() {
           QStringLiteral("text-recognition")}},
         {QStringLiteral("save-as-file"), QStringLiteral("convert-to-markdown"),
          QStringLiteral("convert-to-html")}};
-    const auto unavailable = [](const QString& id) {
-        return !presentation::editionActionToolAvailable(id);
-    };
+    const auto unavailable = [](const QString& id) { return !app::editionActionToolAvailable(id); };
     for (auto& position : layout.positions)
         position.removeIf(unavailable);
     layout.positions.removeIf([](const QStringList& position) { return position.isEmpty(); });

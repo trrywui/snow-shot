@@ -2,6 +2,7 @@
 #include "snow_shot/presentation/crosshaircursor.h"
 
 #include "../capture/screenshotcaptureperfinstrumentation.h"
+#include "screenshotoverlaycursor.h"
 #include "screenshotoverlayframepresenter.h"
 #include "snow_shot/presentation/screenshotmessageservice.h"
 #include "snow_shot/presentation/screenshotcanvasrenderer.h"
@@ -12,6 +13,7 @@
 #include <QEvent>
 #include <QBackingStore>
 #include <QCoreApplication>
+#include <QCursor>
 #include "snow_shot/platform/windows/windowchrome.h"
 #ifdef Q_OS_MACOS
 #include "snow_shot/platform/screenshotnative.h"
@@ -228,8 +230,8 @@ void ScreenshotOverlayWindow::setScreenshotSelection(const QRectF& selection, bo
     state.present = normalizedSelection.isValid() && !normalizedSelection.isEmpty();
     state.handlesVisible = handlesVisible;
     state.cornerRadius = cornerRadius;
-    state.shadowWidth = shadowWidth;
-    state.shadowColor = shadowColor;
+    state.effectWidth = shadowWidth;
+    state.effectColor = shadowColor;
     state.toolbarHovered = selectionToolbarHovered;
     setScreenshotSelectionState(state);
 }
@@ -347,8 +349,11 @@ void ScreenshotOverlayWindow::resetScreenshotRendering() {
 
 void ScreenshotOverlayWindow::commitInitialSelectionCursor() {
 #if defined(Q_OS_WIN) || defined(_WIN32)
-    static_cast<void>(snow_shot::presentation::applyNativeCrosshairCursor(
-        m_canvas ? m_canvas->devicePixelRatioF() : devicePixelRatioF()));
+    snow_shot::presentation::detail::commitOverlayCursor(
+        captureGeometry(), QCursor::pos(), [this]() {
+            static_cast<void>(snow_shot::presentation::applyNativeCrosshairCursor(
+                m_canvas ? m_canvas->devicePixelRatioF() : devicePixelRatioF()));
+        });
 #endif
 }
 

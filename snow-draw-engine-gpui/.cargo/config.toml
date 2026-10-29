@@ -1,0 +1,4 @@
+[build]
+target-dir = "../build/snow-draw-gpui"
+jobs = 2
+rustflags = ["-Dwarnings"]

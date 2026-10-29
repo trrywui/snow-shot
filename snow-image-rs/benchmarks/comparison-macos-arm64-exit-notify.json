@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "threshold_percent": 10,
+  "records": [
+    {
+      "name": "png-1920x1080",
+      "legacy_median_ms": 19.024041,
+      "engine_median_ms": 13.201167,
+      "change_percent": -30.607976507199496,
+      "legacy_bytes": 34098,
+      "engine_bytes": 28700,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "png-alpha-1920x1080",
+      "legacy_median_ms": 25.387459,
+      "engine_median_ms": 14.239042,
+      "change_percent": -43.913087166384,
+      "legacy_bytes": 73241,
+      "engine_bytes": 47062,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "jpeg-1920x1080",
+      "legacy_median_ms": 8.800125,
+      "engine_median_ms": 9.584125,
+      "change_percent": 8.908964361301685,
+      "legacy_bytes": 1570998,
+      "engine_bytes": 1570998,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "preview-1920x1080",
+      "legacy_median_ms": 8.126166,
+      "engine_median_ms": 8.953291,
+      "change_percent": 10.178539301313805,
+      "legacy_bytes": 8294400,
+      "engine_bytes": 8294400,
+      "common_path_gate": true,
+      "latency_passed": false,
+      "preview_reference": {
+        "rgba_psnr_db": null,
+        "maximum_channel_error": 0,
+        "changed_samples": 0,
+        "samples": 8294400
+      }
+    },
+    {
+      "name": "png-3840x2160",
+      "legacy_median_ms": 75.114,
+      "engine_median_ms": 49.3175,
+      "change_percent": -34.343131773038316,
+      "legacy_bytes": 115940,
+      "engine_bytes": 96829,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "png-alpha-3840x2160",
+      "legacy_median_ms": 100.579208,
+      "engine_median_ms": 55.097666,
+      "change_percent": -45.21962630686056,
+      "legacy_bytes": 271246,
+      "engine_bytes": 164786,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "jpeg-3840x2160",
+      "legacy_median_ms": 36.16625,
+      "engine_median_ms": 35.500125,
+      "change_percent": -1.841841495869767,
+      "legacy_bytes": 6279534,
+      "engine_bytes": 6279534,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "preview-3840x2160",
+      "legacy_median_ms": 53.16475,
+      "engine_median_ms": 56.462666,
+      "change_percent": 6.203200428855582,
+      "legacy_bytes": 9437184,
+      "engine_bytes": 9437184,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": {
+        "rgba_psnr_db": 65.85611598888853,
+        "maximum_channel_error": 24,
+        "changed_samples": 4853,
+        "samples": 9437184
+      }
+    },
+    {
+      "name": "png-7680x4320",
+      "legacy_median_ms": 301.059458,
+      "engine_median_ms": 193.657333,
+      "change_percent": -35.67472210090805,
+      "legacy_bytes": 417317,
+      "engine_bytes": 348662,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "png-alpha-7680x4320",
+      "legacy_median_ms": 414.774208,
+      "engine_median_ms": 214.25025,
+      "change_percent": -48.345329611237545,
+      "legacy_bytes": 1029388,
+      "engine_bytes": 596745,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "jpeg-7680x4320",
+      "legacy_median_ms": 142.122791,
+      "engine_median_ms": 136.49883300000002,
+      "change_percent": -3.9571119877599314,
+      "legacy_bytes": 25153744,
+      "engine_bytes": 25153744,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "preview-7680x4320",
+      "legacy_median_ms": 141.181583,
+      "engine_median_ms": 143.14554199999998,
+      "change_percent": 1.3910872496733395,
+      "legacy_bytes": 9437184,
+      "engine_bytes": 9437184,
+      "common_path_gate": true,
+      "latency_passed": true,
+      "preview_reference": {
+        "rgba_psnr_db": 62.412912962304716,
+        "maximum_channel_error": 19,
+        "changed_samples": 7252,
+        "samples": 9437184
+      }
+    },
+    {
+      "name": "tall-png-256x131072",
+      "legacy_median_ms": 424.786375,
+      "engine_median_ms": 291.412833,
+      "change_percent": -31.39779189010006,
+      "legacy_bytes": 1496157,
+      "engine_bytes": 1205322,
+      "common_path_gate": false,
+      "latency_passed": true,
+      "preview_reference": null
+    },
+    {
+      "name": "four-animations-32-frames",
+      "legacy_median_ms": 6.25,
+      "engine_median_ms": 3.603583,
+      "change_percent": -42.342672,
+      "legacy_bytes": 0,
+      "engine_bytes": 0,
+      "common_path_gate": false,
+      "latency_passed": true,
+      "preview_reference": null
+    }
+  ],
+  "latency_gate_passed": false
+}

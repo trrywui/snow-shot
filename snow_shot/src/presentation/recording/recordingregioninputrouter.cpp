@@ -30,8 +30,15 @@ class RecordingRegionInputRouter::Impl final {
         QObject::connect(&thread, &QThread::started, worker, [this] {
             current = this;
             hook = this->api.installHook(WH_MOUSE_LL, mouseCallback, GetModuleHandleW(nullptr), 0);
-            if (!hook)
+            if (!hook) {
                 qWarning("Failed to observe recording region pointer input: %lu", GetLastError());
+            } else {
+                // Movement can occur while the observer thread starts. Publish the current
+                // position after installing the hook so routing does not await another move.
+                POINT point{};
+                if (this->api.cursorPosition(&point))
+                    observe(point);
+            }
         });
         thread.setObjectName(QStringLiteral("RecordingRegionMouseObserver"));
         thread.start();

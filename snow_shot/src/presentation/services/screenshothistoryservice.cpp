@@ -80,6 +80,7 @@ persistedSelection(const ScreenshotSelectionParams& selection) {
         selection.selection,   selection.radius,           selection.shadowWidth,
         selection.shadowColor, selection.lockAspectRatio,  selection.lockDragAspectRatio,
         selection.region,      selection.layoutCompaction, selection.backgroundOpacityPercent,
+        selection.borderType,  selection.borderWidth,      selection.borderColor,
     };
 }
 
@@ -91,6 +92,9 @@ presentationSelection(const snow_shot::storage::PersistedSelection& selection) {
     result.layoutCompaction = selection.layoutCompaction;
     result.backgroundOpacityPercent = selection.backgroundOpacityPercent;
     result.radius = selection.cornerRadius;
+    result.borderType = selection.borderType;
+    result.borderWidth = selection.borderWidth;
+    result.borderColor = selection.borderColor;
     result.shadowWidth = selection.shadowWidth;
     result.shadowColor = selection.shadowColor;
     result.lockAspectRatio = selection.lockAspectRatio;

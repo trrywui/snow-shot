@@ -451,8 +451,8 @@ void applyResizeSelection(BenchmarkFixture& fixture, const QRectF& selection) {
     ScreenshotSelectionVisualState state;
     state.bounds = selection;
     state.present = true;
-    state.shadowWidth = 16;
-    state.shadowColor = QColor(0x59, 0x59, 0x59);
+    state.effectWidth = 16;
+    state.effectColor = QColor(0x59, 0x59, 0x59);
     fixture.renderer->applySelectionState(state);
     fixture.canvas->setDecorationRenderAreas({selection, selection});
 }
@@ -726,8 +726,8 @@ int main(int argc, char** argv) {
         ScreenshotSelectionVisualState initial;
         initial.bounds = baseSelection;
         initial.present = true;
-        initial.shadowWidth = 16;
-        initial.shadowColor = shadowColor;
+        initial.effectWidth = 16;
+        initial.effectColor = shadowColor;
         renderer.applySelectionState(initial);
         QApplication::processEvents();
         const DwmSnapshot before = dwmSnapshot(fixture.window);
@@ -981,8 +981,8 @@ int main(int argc, char** argv) {
         state.bounds = QRectF(moved.boundingRect());
         state.present = true;
         state.handlesVisible = false;
-        state.shadowWidth = 16;
-        state.shadowColor = shadowColor;
+        state.effectWidth = 16;
+        state.effectColor = shadowColor;
         state.region = moved;
         state.confirmedRegion = moved;
         state.dangerColor = Qt::red;
@@ -1118,8 +1118,8 @@ int main(int argc, char** argv) {
                            .subtracted(QRect(-surfaceSize.width() / 6, -surfaceSize.height() / 2,
                                              surfaceSize.width() / 3, surfaceSize.height()));
         state.cornerRadius = 18;
-        state.shadowWidth = 16;
-        state.shadowColor = shadowColor;
+        state.effectWidth = 16;
+        state.effectColor = shadowColor;
         state.toolbarHovered = true;
         state.handlesVisible = false;
         state.backgroundOpacityPercent = 50;
@@ -1133,12 +1133,12 @@ int main(int argc, char** argv) {
     run(QStringLiteral("compound-shadow-width-sweep"), [&](int index) {
         static constexpr std::array<int, 8> widths = {1, 4, 16, 32, 64, 32, 16, 4};
         auto state = compoundEffectState();
-        state.shadowWidth = widths[static_cast<std::size_t>(index) % widths.size()];
+        state.effectWidth = widths[static_cast<std::size_t>(index) % widths.size()];
         renderer.applySelectionState(state);
     });
     run(QStringLiteral("compound-shadow-color-sweep"), [&](int index) {
         auto state = compoundEffectState();
-        state.shadowColor = QColor::fromHsv((index * 13) % 360, 150, 140, 100 + index % 156);
+        state.effectColor = QColor::fromHsv((index * 13) % 360, 150, 140, 100 + index % 156);
         renderer.applySelectionState(state);
     });
     run(QStringLiteral("compound-corner-radius-sweep"), [&](int index) {

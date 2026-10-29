@@ -388,7 +388,6 @@ enum UnmatchedReason {
     LowInformation,
     Ambiguous,
     ConflictingReferences,
-    FixedContentDominated,
     VerificationFailed,
 }
 
@@ -397,7 +396,6 @@ struct MatchMetrics {
     score: f32,
     second_score: f32,
     content_coverage: f32,
-    fixed_coverage: f32,
     inlier_ratio: f32,
     feature_support: u32,
     reference_count: u32,
@@ -605,8 +603,9 @@ fn unmatched_reason(diagnostics: Option<&MotionDiagnostics>) -> UnmatchedReason 
         Some(MotionStage::NoMatches) => UnmatchedReason::InsufficientOverlap,
         Some(MotionStage::NoCandidates) => UnmatchedReason::ConflictingReferences,
         Some(MotionStage::LowConfidence) => UnmatchedReason::Ambiguous,
-        Some(MotionStage::SceneCut) => UnmatchedReason::FixedContentDominated,
-        Some(MotionStage::SelectedNoMotion) => UnmatchedReason::VerificationFailed,
+        Some(MotionStage::SceneCut | MotionStage::SelectedNoMotion) => {
+            UnmatchedReason::VerificationFailed
+        }
         Some(MotionStage::IdenticalInterior | MotionStage::Selected) | None => {
             UnmatchedReason::VerificationFailed
         }
@@ -626,19 +625,10 @@ fn match_metrics(confidence: Option<f32>, diagnostics: &MotionDiagnostics) -> Ma
         .map(|candidate| candidate.score)
         .collect::<Vec<_>>();
     scores.sort_by(|left, right| right.total_cmp(left));
-    let total_tiles = diagnostics.regions.fixed_tiles
-        + diagnostics.regions.scrolling_tiles
-        + diagnostics.regions.dynamic_tiles
-        + diagnostics.regions.neutral_tiles;
     MatchMetrics {
         score: confidence.unwrap_or_default(),
         second_score: scores.get(1).copied().unwrap_or_default(),
         content_coverage: selected.map_or(0.0, |candidate| candidate.spatial_coverage),
-        fixed_coverage: if total_tiles == 0 {
-            0.0
-        } else {
-            diagnostics.regions.fixed_tiles as f32 / total_tiles as f32
-        },
         inlier_ratio: selected.map_or(0.0, |candidate| candidate.weighted_inlier_share),
         feature_support: selected.map_or(0, |candidate| candidate.raw_inliers),
         reference_count: 1,
@@ -693,8 +683,7 @@ pub enum SnowStitchUnmatchedReason {
     LowInformation = 2,
     Ambiguous = 3,
     ConflictingReferences = 4,
-    FixedContentDominated = 5,
-    VerificationFailed = 6,
+    VerificationFailed = 5,
 }
 
 #[repr(C)]
@@ -716,7 +705,6 @@ pub struct SnowStitchMatchMetrics {
     score: f32,
     second_score: f32,
     content_coverage: f32,
-    fixed_coverage: f32,
     inlier_ratio: f32,
     feature_support: u32,
     reference_count: u32,
@@ -888,9 +876,6 @@ fn ffi_unmatched_reason(reason: Option<UnmatchedReason>) -> SnowStitchUnmatchedR
         Some(UnmatchedReason::ConflictingReferences) => {
             SnowStitchUnmatchedReason::ConflictingReferences
         }
-        Some(UnmatchedReason::FixedContentDominated) => {
-            SnowStitchUnmatchedReason::FixedContentDominated
-        }
         Some(UnmatchedReason::VerificationFailed) => SnowStitchUnmatchedReason::VerificationFailed,
     }
 }
@@ -900,7 +885,6 @@ fn ffi_metrics(metrics: MatchMetrics) -> SnowStitchMatchMetrics {
         score: metrics.score,
         second_score: metrics.second_score,
         content_coverage: metrics.content_coverage,
-        fixed_coverage: metrics.fixed_coverage,
         inlier_ratio: metrics.inlier_ratio,
         feature_support: metrics.feature_support,
         reference_count: metrics.reference_count,
@@ -1570,6 +1554,25 @@ pub extern "C" fn snow_stitch_last_error_message() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_cuts_do_not_report_fixed_content_classification() {
+        let diagnostics = MotionDiagnostics {
+            stage: MotionStage::SceneCut,
+            reference_keypoints: 0,
+            incoming_keypoints: 0,
+            mutual_matches: 0,
+            direct_similarity: 0.0,
+            selected_offset: None,
+            candidates: Vec::new(),
+        };
+        assert!(matches!(
+            unmatched_reason(Some(&diagnostics)),
+            UnmatchedReason::VerificationFailed
+        ));
+        let metrics = ffi_metrics(match_metrics(Some(0.25), &diagnostics));
+        assert_eq!(metrics.score, 0.25);
+    }
 
     struct ExternalTestPixels {
         pixels: Vec<u8>,

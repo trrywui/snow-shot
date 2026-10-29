@@ -90,11 +90,32 @@ struct WheelFixture {
     }
 };
 
+void borderWidthWheelUsesActiveValuesAndWording() {
+    WheelFixture f;
+    auto& p = f.presentation;
+    static_cast<void>(p.selection.setShadowWidth(19));
+    p.selection.setBorderType(ScreenshotSelectionBorderType::Border);
+    p.selection.setBorderWidth(4);
+    f.select(p.selection.normalizedSelection());
+    QLabel* target = nullptr;
+    for (auto* label : p.coordinator.selectionToolbar()->findChildren<QLabel*>())
+        if (label->toolTip() == QStringLiteral("Border width") &&
+            label->property("selectionToolbarField").isValid())
+            target = label;
+    require(target, "border toolbar must describe the active effect");
+    QWheelEvent event(target->rect().center(), target->mapToGlobal(target->rect().center()), {},
+                      QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(target, &event);
+    p.flushFrame();
+    require(event.isAccepted() && p.selection.borderWidth() == 5 && p.selection.shadowWidth() == 19,
+            "width wheel modifies only the border while Border is active");
+}
+
 void effectWheelBurstsPreserveDeltasAndCoalesceFrames() {
     WheelFixture fixture;
     auto& p = fixture.presentation;
     fixture.workflow->setSelectionCornerRadiusFromToolbar(250);
-    fixture.workflow->setSelectionShadowWidthFromToolbar(63);
+    fixture.workflow->setSelectionEffectWidthFromToolbar(63);
     p.resetCounters();
     auto* toolbar = p.coordinator.selectionToolbar();
     const auto wheel = [&](const char* source, int direction) {
@@ -125,19 +146,19 @@ void effectWheelBurstsPreserveDeltasAndCoalesceFrames() {
         "wheel deltas must clamp individually and reverse immediately without toolbar feedback");
     auto* renderer = p.overlay.screenshotRendererForTesting();
     require(p.stateNotifications == 0 && renderer->selectionCornerRadius() == 250 &&
-                renderer->selectionShadowWidth() == 63 &&
+                renderer->selectionEffectWidth() == 63 &&
                 p.services->frameSchedulerForTesting().active(),
             "wheel bursts must defer presentation to one pending frame");
     p.flushFrame();
     require(p.stateNotifications == 1 && renderer->selectionCornerRadius() == 249 &&
-                renderer->selectionShadowWidth() == 61 &&
+                renderer->selectionEffectWidth() == 61 &&
                 !p.services->frameSchedulerForTesting().active(),
             "one frame must publish the latest effects and leave no idle polling");
     p.resetCounters();
     wheel("Corner radius", 1);
-    fixture.workflow->setSelectionShadowWidthFromToolbar(12);
+    fixture.workflow->setSelectionEffectWidthFromToolbar(12);
     require(p.stateNotifications == 1 && renderer->selectionCornerRadius() == 250 &&
-                renderer->selectionShadowWidth() == 12,
+                renderer->selectionEffectWidth() == 12,
             "ordinary commands must flush pending wheel edits synchronously");
     p.flushFrame();
     require(p.stateNotifications == 1, "superseded wheel frames must not publish twice");
@@ -312,7 +333,7 @@ void wheelDoesNotReplaceCustomRegionsOrInterruptSelectionGestures() {
     fixture.presentation.interaction.finishDrag();
     fixture.presentation.interaction.setMoveTool(true, false);
     require(fixture.presentation.interaction.beginEffectDrag(
-                {ScreenshotSelectionEffectHandle::Shadow, {}, 0, 0, 0, 1, {}}),
+                {ScreenshotSelectionEffectHandle::Width, {}, 0, 0, 0, 1, {}}),
             "start a selection effect drag");
     require(!fixture.scroll(QPoint(0, 120)) && fixture.selection() == original,
             "wheel edits must not interrupt a selection effect drag");
@@ -339,6 +360,7 @@ int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     application.setQuitOnLastWindowClosed(false);
     selection_presentation_test::IsolatedStorage storage;
+    borderWidthWheelUsesActiveValuesAndWording();
     effectWheelBurstsPreserveDeltasAndCoalesceFrames();
     opacityWheelSharesTheEffectFrame();
     wheelMovesEveryEdgeByOneUnitAndSynchronizesToolbars();

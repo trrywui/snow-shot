@@ -12,6 +12,7 @@
 
 #include "antd_icons.h"
 #include "theme/theme.h"
+#include "widgets/form.h"
 #include "widgets/segmented.h"
 
 using adqt::widgets::AdSegmented;
@@ -44,6 +45,9 @@ class SegmentedTest final : public QObject {
  private slots:
   void firstEnabledOptionBecomesSelected();
   void valuesAndSignalsFollowQtProperties();
+  void formBindingRestoresAndObservesSelection_data();
+  void formBindingRestoresAndObservesSelection();
+  void formListBindingRestoresAndObservesSelection();
   void dynamicOptionsKeepSelectionConsistent();
   void optionUpdatesHaveDeterministicSignals();
   void disabledOptionsAreSkippedByKeyboard();
@@ -118,6 +122,81 @@ void SegmentedTest::valuesAndSignalsFollowQtProperties() {
   QCOMPARE(segmented.currentIndex(), -1);
   QCOMPARE(indexChanged.count(), 3);
   QCOMPARE(valueChanged.count(), 3);
+}
+
+void SegmentedTest::formBindingRestoresAndObservesSelection_data() {
+  QTest::addColumn<QVariant>("first");
+  QTest::addColumn<QVariant>("second");
+  QTest::newRow("string-values") << QVariant(QStringLiteral("shadow"))
+                                 << QVariant(QStringLiteral("border"));
+  QTest::newRow("integer-values") << QVariant(0) << QVariant(1);
+}
+
+void SegmentedTest::formBindingRestoresAndObservesSelection() {
+  QFETCH(QVariant, first);
+  QFETCH(QVariant, second);
+  adqt::widgets::AdForm form;
+  auto* segmented = new AdSegmented;
+  segmented->setAnimated(false);
+  segmented->addOption(QStringLiteral("First"), first);
+  segmented->addOption(QStringLiteral("Second"), second);
+  const QString key = QStringLiteral("choice");
+  form.setInitialValues({{key, second}});
+  form.addField(QStringLiteral("Choice"), segmented, key);
+  QCOMPARE(segmented->currentValue(), second);
+  QCOMPARE(form.value(key), second);
+  QVERIFY(optionButtons(segmented).at(1)->isChecked());
+
+  form.show();
+  QCoreApplication::processEvents();
+  QSignalSpy fieldChanged(&form, &adqt::widgets::AdForm::fieldValueChanged);
+  QSignalSpy controlChanged(segmented, &AdSegmented::currentValueChanged);
+  form.setValues({{key, first}});
+  QCOMPARE(segmented->currentValue(), first);
+  QCOMPARE(form.values().value(key), first);
+  QVERIFY(optionButtons(segmented).at(0)->isChecked());
+  QCOMPARE(fieldChanged.count(), 1);
+  QCOMPARE(controlChanged.count(), 0);
+
+  fieldChanged.clear();
+  QTest::mouseClick(optionButtons(segmented).at(1), Qt::LeftButton);
+  QCOMPARE(form.value(key), second);
+  QCOMPARE(fieldChanged.count(), 1);
+  QCOMPARE(fieldChanged.first().at(1), second);
+  QCOMPARE(controlChanged.count(), 1);
+
+  form.setValue(key, QVariant());
+  QCOMPARE(segmented->currentIndex(), -1);
+  QVERIFY(!form.value(key).isValid());
+  for (QRadioButton* button : optionButtons(segmented)) {
+    QVERIFY(!button->isChecked());
+  }
+  form.resetFields();
+  QCOMPARE(segmented->currentValue(), second);
+  QCOMPARE(form.value(key), second);
+  QVERIFY(optionButtons(segmented).at(1)->isChecked());
+  QVERIFY(!form.isFieldDirty(key));
+}
+
+void SegmentedTest::formListBindingRestoresAndObservesSelection() {
+  adqt::widgets::AdFormList list;
+  list.setRowFactory([](int, QWidget* parent) {
+    auto* segmented = new AdSegmented(parent);
+    segmented->addOption(QStringLiteral("First"), 0);
+    segmented->addOption(QStringLiteral("Second"), 1);
+    return segmented;
+  });
+  list.setValues({1, 0});
+  QCOMPARE(list.values(), QVariantList({1, 0}));
+  auto* first = qobject_cast<AdSegmented*>(list.rowWidget(0));
+  QVERIFY(first);
+  QCOMPARE(first->currentIndex(), 1);
+  QSignalSpy changed(&list, &adqt::widgets::AdFormList::valuesChanged);
+  first->setCurrentIndex(0);
+  QCOMPARE(list.values(), QVariantList({0, 0}));
+  QCOMPARE(changed.count(), 1);
+  list.setValues({0, 1});
+  QCOMPARE(list.values(), QVariantList({0, 1}));
 }
 
 void SegmentedTest::dynamicOptionsKeepSelectionConsistent() {

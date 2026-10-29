@@ -207,6 +207,10 @@ class NoOpToolbarCommands final : public ScreenshotToolbarCommandSink {
         static_cast<void>(snow_shot::storage::ScreenshotUiSettings().setSelectionDisplayUnit(
             screenshotSelectionDisplayUnitId(unit)));
     }
+    int airDropCount = 0;
+    void airDropSelection() override {
+        ++airDropCount;
+    }
     int printCount = 0;
     void printSelection() override {
         ++printCount;
@@ -236,6 +240,10 @@ class NoOpToolbarCommands final : public ScreenshotToolbarCommandSink {
     void setTextTool() override {}
     void setSerialNumberTool() override {}
     void setOcrTool() override {}
+    void openSpreadsheetFile() override {
+        ++openSpreadsheetCount;
+    }
+    int openSpreadsheetCount = 0;
     void setTextTranslationTool() override {
         ++textTranslationToolCount;
     }
@@ -705,7 +713,7 @@ void physicalDragMovesWithoutRefreshingGeometry() {
 #endif
 }
 
-void physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(
+bool physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(
     [[maybe_unused]] bool reverseDirection) {
 #if defined(Q_OS_WIN) || defined(_WIN32)
     const NativeGeometryWarningScope geometryWarningScope;
@@ -720,7 +728,7 @@ void physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(
     if (!findMixedDpiMonitorBench(monitors, &monitorA, &monitorB)) {
         std::cout << "SKIP: hardware drag scenario requires a 150% monitor immediately right of "
                      "a 100% monitor; this machine does not provide that bench layout\n";
-        return;
+        return false;
     }
 
     const HardwareMonitor* source = monitorA;
@@ -1065,15 +1073,10 @@ void physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(
         }
         throw std::runtime_error(message.str());
     }
+    return true;
+#else
+    return false;
 #endif
-}
-
-[[maybe_unused]] void physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable() {
-    physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(false);
-}
-
-void physicalDragFromDestinationMonitorAndBackKeepsPhysicalGeometryStable() {
-    physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(true);
 }
 
 // Regression scenario for a toolbar captured on the 150% monitor A whose frame is dragged
@@ -1081,7 +1084,7 @@ void physicalDragFromDestinationMonitorAndBackKeepsPhysicalGeometryStable() {
 // seam the whole time, so the majority of its frame - and with it the window DPI - flips on
 // every crossing while the capture display remains the palette's scale reference. After the
 // round trip the content must still render once at 150%, not at 150% * 150%.
-void slowSeamStraddlingDragKeepsToolbarContentUnmagnified() {
+bool slowSeamStraddlingDragKeepsToolbarContentUnmagnified() {
 #if defined(Q_OS_WIN) || defined(_WIN32)
     const NativeGeometryWarningScope geometryWarningScope;
     std::vector<HardwareMonitor> monitors;
@@ -1097,7 +1100,7 @@ void slowSeamStraddlingDragKeepsToolbarContentUnmagnified() {
     if (!findMixedDpiMonitorBench(monitors, &monitorA, &monitorB)) {
         std::cout << "SKIP: seam-straddle scenario requires a 150% monitor immediately right of "
                      "a 100% monitor; this machine does not provide that bench layout\n";
-        return;
+        return false;
     }
 
     const int seamX = monitorA->bounds.left;
@@ -1278,6 +1281,9 @@ void slowSeamStraddlingDragKeepsToolbarContentUnmagnified() {
         }
         throw std::runtime_error(message.str());
     }
+    return true;
+#else
+    return false;
 #endif
 }
 
@@ -1870,11 +1876,21 @@ void screenshotActionLayoutReloadIsWindowScopedAndFitsThePreset() {
     auto& applicationStorage = snow_shot::storage::ApplicationStorage::instance();
     require(applicationStorage.initialize({executableDirectory, temporary.path(), 60000}).success,
             "failed to initialize isolated action-layout test storage");
+    const auto storageLifetime = qScopeGuard([&] { applicationStorage.shutdown(); });
 
     const QStringList actionIds = snow_shot::presentation::toolbar_layout::defaultOrder(
         snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools);
-    const int expectedActionButtonCount = static_cast<int>(actionIds.size());
-    constexpr int expectedDefaultActionButtonCount = 7;
+    const int expectedActionButtonCount =
+        static_cast<int>(std::count_if(actionIds.cbegin(), actionIds.cend(), [](const QString& id) {
+            return !snow_shot::presentation::toolbar_layout::isSeparator(id);
+        }));
+    const auto defaultPositions = snow_shot::presentation::toolbar_layout::defaultPositions(
+        snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools);
+    const int expectedDefaultActionButtonCount = static_cast<int>(std::count_if(
+        defaultPositions.cbegin(), defaultPositions.cend(), [](const QStringList& position) {
+            return !std::any_of(position.cbegin(), position.cend(),
+                                snow_shot::presentation::toolbar_layout::isSeparator);
+        }));
     const snow_shot::storage::ScreenshotToolbarSettings toolbarSettings;
     require(toolbarSettings.setLayout(snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools,
                                       snow_shot::storage::ScreenshotToolbarLayout{{}, actionIds}),
@@ -1901,7 +1917,7 @@ void screenshotActionLayoutReloadIsWindowScopedAndFitsThePreset() {
             hasCopy = hasCopy || button->accessibleName() == QStringLiteral("Copy to clipboard");
         }
         require(hasCancel && hasCopy,
-                "an all-hidden screenshot action layout should retain fixed result actions");
+                "an all-hidden screenshot action layout should retain reusable result sources");
 
         ScreenshotToolPalette::Options genericOptions;
         genericOptions.showSelectTool = false;
@@ -1951,8 +1967,6 @@ void screenshotActionLayoutReloadIsWindowScopedAndFitsThePreset() {
         require(actionToolbarButtonCount(*genericToolbar.palette()) == 2,
                 "restoring the screenshot layout must not modify generic palettes");
     }
-
-    applicationStorage.shutdown();
 }
 
 void floatingToolbarsUseTheFixedWindowPreset() {
@@ -3118,10 +3132,16 @@ int main(int argc, char* argv[]) {
             return reusedToolbarFitsOnFirstShowAcrossScreens() ? 0 : 77;
         }
         if (app.arguments().contains(QStringLiteral("--quick-save-only")) ||
-            app.arguments().contains(QStringLiteral("--print-only"))) {
+            app.arguments().contains(QStringLiteral("--print-only")) ||
+            app.arguments().contains(QStringLiteral("--airdrop-only"))) {
             NoOpToolbarCommands commands;
             ScreenshotToolbarWindow window(commands);
             require(window.palette(), "screenshot toolbar palette unavailable");
+            window.palette()->openSpreadsheetFileRequested();
+            require(commands.openSpreadsheetCount == 1,
+                    "spreadsheet opening forwards exactly one command to the screenshot host");
+            window.palette()->airDropRequested();
+            require(commands.airDropCount == 1, "AirDrop forwards exactly one screenshot command");
             window.palette()->printRequested();
             require(commands.printCount == 1,
                     "Print must forward exactly one command to the screenshot sink");
@@ -3140,11 +3160,21 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (app.arguments().contains(QStringLiteral("--selection-reset-only"))) {
+            QTemporaryDir temporary;
+            require(temporary.isValid(), "reset command requires isolated application storage");
+            auto& storage = snow_shot::storage::ApplicationStorage::instance();
+            require(storage
+                        .initialize(
+                            {temporary.filePath(QStringLiteral("bin")), temporary.path(), 60000})
+                        .success,
+                    "initialize reset command application storage");
+            const auto storageLifetime = qScopeGuard([&] { storage.shutdown(); });
             NoOpToolbarCommands commands;
             ScreenshotToolbarWindow window(commands);
             auto* palette = window.palette();
             require(palette != nullptr, "screenshot toolbar should expose its palette");
-            palette->setActiveTool(ScreenshotToolPalette::Tool::Select);
+            palette->setActiveTool(ScreenshotToolPalette::Tool::Eraser);
+            window.prepareForDisplay();
             auto* reset = palette->findChild<adqt::widgets::AdButton*>(
                 QStringLiteral("screenshotResetCanvasButton"));
             require(reset != nullptr && reset->isEnabled(),
@@ -3189,41 +3219,17 @@ int main(int argc, char* argv[]) {
             prewarmedToolbarSurfaceStaysHiddenUntilShown();
             return 0;
         }
+        if (app.arguments().contains(QStringLiteral("--hardware-drag-only"))) {
+            return physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(false) ? 0 : 77;
+        }
         if (app.arguments().contains(QStringLiteral("--reverse-hardware-drag-only"))) {
-            physicalDragFromDestinationMonitorAndBackKeepsPhysicalGeometryStable();
-            return 0;
+            return physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(true) ? 0 : 77;
         }
         if (app.arguments().contains(QStringLiteral("--seam-straddle-drag-only"))) {
-            slowSeamStraddlingDragKeepsToolbarContentUnmagnified();
-            return 0;
+            return slowSeamStraddlingDragKeepsToolbarContentUnmagnified() ? 0 : 77;
         }
         logicalDragMovesWithoutRefreshingGeometry();
         physicalDragMovesWithoutRefreshingGeometry();
-        std::vector<std::string> hardwareDragFailures;
-        for (const bool reverseDirection : {false, true}) {
-            try {
-                physicalDragAcrossHardwareMonitorsKeepsPhysicalGeometryStable(reverseDirection);
-            } catch (const std::exception& error) {
-                hardwareDragFailures.push_back(
-                    std::string(reverseDirection ? "B-to-A-to-B: " : "A-to-B-to-A: ") +
-                    error.what());
-            }
-        }
-        try {
-            slowSeamStraddlingDragKeepsToolbarContentUnmagnified();
-        } catch (const std::exception& error) {
-            hardwareDragFailures.push_back(std::string("seam straddle: ") + error.what());
-        }
-        if (!hardwareDragFailures.empty()) {
-            std::ostringstream message;
-            for (std::size_t index = 0; index < hardwareDragFailures.size(); ++index) {
-                if (index != 0) {
-                    message << "\n";
-                }
-                message << hardwareDragFailures.at(index);
-            }
-            throw std::runtime_error(message.str());
-        }
         dpiScaledSizeMessagePreservesThePhysicalWindowSize();
         logicalMetricsIgnorePhysicalPlacementBounds();
         styleToolChangesKeepThePresetWindowSize();

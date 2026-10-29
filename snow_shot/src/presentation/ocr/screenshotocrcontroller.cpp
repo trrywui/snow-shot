@@ -6,7 +6,7 @@
 #include <QDataStream>
 #include <QIODevice>
 
-#include "snow_shot/presentation/editionfeatures.h"
+#include "snow_shot/app/editionfeatures.h"
 
 #include "snow_shot/presentation/screenshotcapturestate.h"
 #include "snow_shot/presentation/screenshotdisplaysession.h"
@@ -18,6 +18,7 @@
 #include "snow_shot/presentation/screenshotoverlaywindow.h"
 #include "snow_shot/presentation/screenshotselectionmodel.h"
 #include "snow_shot/presentation/screenshotsourceimagecomposer.h"
+#include "snow_shot/presentation/screenshotcursorimagesource.h"
 #include "snow_shot/presentation/screenshottableeditor.h"
 #include "snow_shot/presentation/screenshottoolbarwindow.h"
 
@@ -290,6 +291,26 @@ ScreenshotOcrController::ScreenshotOcrController(ScreenshotOcrControllerContext 
                         state);
                 }
             },
+            [this]() -> QImage {
+                if (!m_recognitionWindow || m_surfaceKey != currentCacheKey())
+                    return {};
+                auto snapshot = m_recognitionWindow->imageSnapshot(
+                    m_surfaceImage, QRectF(m_context.selection.pixelSelection()), m_filteredImage,
+                    m_filteredCanvasRect, m_context.selection.resultStyle(), true);
+                if (snapshot) {
+                    snapshot->layoutCompaction = m_context.selection.exportLayoutCompaction();
+                    if (snapshot->resultStyle.backgroundOpacityPercent > 0) {
+                        m_context.displaySession.forEachImageSource(
+                            [&](qsizetype, const CapturedDisplayModel& display) {
+                                for (const auto& layer : screenshotDisplayImageLayers(
+                                         display, m_context.displaySession.cursorVisible))
+                                    snapshot->backgroundSources.append(
+                                        {layer.image, layer.destinationCanvasRect});
+                            });
+                    }
+                }
+                return snapshot ? renderScreenshotRecognitionImage(*snapshot) : QImage{};
+            },
         },
         this);
     connect(m_session.get(), &ScreenshotRecognitionSessionController::textEditingChanged, this,
@@ -397,9 +418,9 @@ QImage clipRecognitionSelection(QImage image, const ScreenshotSelectionModel& se
         return image;
     auto style = selection.resultStyle();
     const qreal scale = qreal(image.width()) / selection.pixelSelection().width();
-    style.regionScale = scale;
-    style.cornerRadius = qRound(style.cornerRadius * scale);
+    style = ScreenshotResultCompositor::scaledStyle(style, scale);
     style.shadowWidth = 0;
+    style.borderWidth = 0;
     style.backgroundOpacityPercent = 0;
     return ScreenshotResultCompositor::compose(image, style);
 }
@@ -428,7 +449,7 @@ void ScreenshotOcrController::activateMode(Mode mode, bool textTranslation,
                             : mode == Mode::Markdown ? 3
                             : mode == Mode::Html     ? 4
                                                      : 5;
-    if (!snow_shot::presentation::editionRecognitionModeAvailable(sessionMode))
+    if (!snow_shot::app::editionRecognitionModeAvailable(sessionMode))
         return;
     const QRect selection = m_context.selection.pixelSelection();
     if (selection.width() < 1 || selection.height() < 1) {
@@ -540,6 +561,10 @@ bool ScreenshotOcrController::copyRecognitionToClipboard(bool endCapture) {
         std::unique_ptr<QMimeData> mimeData =
             m_session->recognitionClipboardMimeData(m_presentation.get());
         if (mimeData == nullptr) {
+            if (m_session->translating())
+                showStatus(QCoreApplication::translate("ScreenshotRecognitionSessionController",
+                                                       "Unable to copy translation results"),
+                           true);
             return false;
         }
         QApplication::clipboard()->setMimeData(mimeData.release(), QClipboard::Clipboard);
@@ -560,6 +585,10 @@ void ScreenshotOcrController::splitTableSelection() {
 
 void ScreenshotOcrController::resetTable() {
     m_session->resetTable();
+}
+
+bool ScreenshotOcrController::openSpreadsheetFile() {
+    return m_session->openSpreadsheetFile();
 }
 
 void ScreenshotOcrController::undoTableEdit() {

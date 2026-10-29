@@ -14,9 +14,8 @@ screenshotSelectionPinRequest(const ScreenshotDisplaySession& displaySession,
     QSize contentSize = selection.size();
     auto outputStyle = request.resultStyle;
     if (compaction.enabled && style.region) {
-        request.layoutPlan =
-            screenshotLayoutCompactionPlan(*style.region, contentSize, style.regionScale,
-                                           compaction, request.resultStyle.shadowWidth);
+        request.layoutPlan = ScreenshotResultCompositor::layoutCompactionForContent(
+            contentSize, request.resultStyle, compaction);
         if (!request.layoutPlan->isValid())
             return {};
         contentSize = request.layoutPlan->outputSize;

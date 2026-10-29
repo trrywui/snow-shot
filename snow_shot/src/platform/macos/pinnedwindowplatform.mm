@@ -1,6 +1,8 @@
 #include "../../presentation/pinned/pinnedwindowplatform.h"
 #include "capturewindowlayers_p.h"
 #include "windowcursorcoordinator.h"
+#include "widgets/detail/native_window_policy_mac_p.h"
+#include "widgets/detail/window_surface_observer.h"
 
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -21,6 +23,12 @@ NSRect cocoaRect(const QRectF& rect) {
 }
 QRectF desktopRect(NSRect rect) {
     return {rect.origin.x, desktopTop() - NSMaxY(rect), rect.size.width, rect.size.height};
+}
+
+bool hasPinnedLayer(QWidget* widget) {
+    using namespace snow_shot::platform::detail;
+    return widget && widget->property(kScreenshotLayer).isValid() &&
+           widget->property(kCaptureFamily).toInt() == static_cast<int>(CaptureFamily::Pinned);
 }
 
 class CocoaPinnedWakeNotifications final : public QObject {
@@ -75,14 +83,20 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
     CocoaPinnedWindowPlatform(QWidget* window, Role role) : PinnedWindowPlatform(window, role) {
         if (role == Role::Image)
             snow_shot::platform::macos::configureWindowCursorUpdates(window);
+        m_nativeObserver = std::make_unique<adqt::widgets::detail::WindowSurfaceObserver>(
+            window, [this] { static_cast<void>(attach()); }, this);
     }
     ~CocoaPinnedWindowPlatform() override {
+        m_nativeObserver.reset();
         detach();
     }
     bool attach() override {
         if (m_detaching || !m_window || !m_window->internalWinId() ||
             QThread::currentThread() != qApp->thread())
             return false;
+        if (m_attaching)
+            return m_native != nil;
+        const QScopedValueRollback attaching(m_attaching, true);
         observeNativeSurface();
         NSView* view = reinterpret_cast<NSView*>(m_window->internalWinId());
         NSWindow* window = view.window;
@@ -91,14 +105,6 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
         if (window != m_native) {
             detach();
             m_native = [window retain];
-            m_styleMask = window.styleMask;
-            m_movable = window.movable;
-            m_movableByWindowBackground = window.movableByWindowBackground;
-            m_hasShadow = window.hasShadow;
-            m_level = window.level;
-            m_behavior = window.collectionBehavior;
-            m_ignoresMouse = window.ignoresMouseEvents;
-            m_hidesOnDeactivate = window.hidesOnDeactivate;
             m_observers = [[NSMutableArray alloc] init];
             for (NSNotificationName name in @[
                      NSWindowDidChangeScreenNotification,
@@ -116,10 +122,12 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
             }
             m_wakeNotifications = pinnedWakeNotifications();
             m_wakeNotifications->add(this);
-            // Register each native surface once. Descendants then inherit the
-            // same stacking policy as recording windows, including modal sessions.
-            snow_shot::platform::detail::setPinnedWindowLayer(m_window, m_staysOnTop);
         }
+        adqt::widgets::detail::NativeWindowConstraints constraints;
+        const bool pinnedLayer = hasPinnedLayer(m_window);
+        const bool otherLayer =
+            m_window->property(snow_shot::platform::detail::kScreenshotLayer).isValid() &&
+            !pinnedLayer;
         if (m_role == Role::Image) {
             // The shared pin controller owns proportional edge resizing and background
             // dragging. Qt leaves these native policies enabled on its frameless NSPanel,
@@ -128,31 +136,30 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
             constexpr NSWindowStyleMask nativeChrome =
                 NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                 NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
-            const NSWindowStyleMask currentStyle = window.styleMask;
-            const NSWindowStyleMask desiredStyle = currentStyle & ~nativeChrome;
-            if (currentStyle != desiredStyle)
-                window.styleMask = desiredStyle;
-            if (window.movable)
-                window.movable = NO;
-            if (window.movableByWindowBackground)
-                window.movableByWindowBackground = NO;
-            if (window.hasShadow)
-                window.hasShadow = NO;
+            constraints.excludedStyleMask = nativeChrome;
+            constraints.movable = false;
+            constraints.movableByWindowBackground = false;
+            constraints.hasShadow = false;
         }
-        if (!m_staysOnTop && window.level != NSNormalWindowLevel)
-            window.level = NSNormalWindowLevel;
-        const NSWindowCollectionBehavior currentBehavior = window.collectionBehavior;
-        const NSWindowCollectionBehavior desiredBehavior =
-            (currentBehavior & ~(NSWindowCollectionBehaviorMoveToActiveSpace |
-                                 NSWindowCollectionBehaviorFullScreenPrimary)) |
-            NSWindowCollectionBehaviorCanJoinAllSpaces |
-            NSWindowCollectionBehaviorFullScreenAuxiliary;
-        if (currentBehavior != desiredBehavior)
-            window.collectionBehavior = desiredBehavior;
-        if (window.hidesOnDeactivate)
-            window.hidesOnDeactivate = NO;
-        if (window.ignoresMouseEvents != m_transparent)
-            window.ignoresMouseEvents = m_transparent;
+        if (!m_staysOnTop && !otherLayer)
+            constraints.level = NSNormalWindowLevel;
+        constraints.requiredCollectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                                 NSWindowCollectionBehaviorFullScreenAuxiliary;
+        constraints.excludedCollectionBehavior = NSWindowCollectionBehaviorMoveToActiveSpace |
+                                                 NSWindowCollectionBehaviorFullScreenPrimary |
+                                                 NSWindowCollectionBehaviorFullScreenNone;
+        constraints.hidesOnDeactivate = false;
+        // Normal pins leave temporary Qt input ownership (for example recapture)
+        // intact. Click-through pins require pass-through until explicitly exited.
+        if (m_transparent)
+            constraints.ignoresMouseEvents = true;
+        // Release the old level owner before applying its replacement. Otherwise
+        // capture's unchanged-level fast path can bypass the normal-level setter.
+        if (pinnedLayer && !m_staysOnTop)
+            snow_shot::platform::detail::setPinnedWindowLayer(m_window, false);
+        m_interactionPolicy.apply(window, constraints);
+        if (!pinnedLayer && !otherLayer && m_staysOnTop)
+            snow_shot::platform::detail::setPinnedWindowLayer(m_window, true);
         return true;
     }
     void detach() override {
@@ -172,15 +179,14 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
             // surface. Clear our attachment first so that notification cannot
             // recursively restore a partially updated NSWindow.
             m_native = nil;
-            snow_shot::platform::detail::setPinnedWindowLayer(m_window, false);
-            native.styleMask = m_styleMask;
-            native.movable = m_movable;
-            native.movableByWindowBackground = m_movableByWindowBackground;
-            native.hasShadow = m_hasShadow;
-            native.level = m_level;
-            native.collectionBehavior = m_behavior;
-            native.ignoresMouseEvents = m_ignoresMouse;
-            native.hidesOnDeactivate = m_hidesOnDeactivate;
+            if (hasPinnedLayer(m_window))
+                snow_shot::platform::detail::setPinnedWindowLayer(m_window, false);
+            NSView* view = m_window && m_window->internalWinId()
+                               ? reinterpret_cast<NSView*>(m_window->internalWinId())
+                               : nil;
+            if (view.window != native)
+                snow_shot::platform::detail::releaseNativeWindowLayer(native);
+            m_interactionPolicy.reset();
             [native release];
         }
         m_detaching = false;
@@ -245,20 +251,21 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
                                QSize(qRound(rect.width()), qRound(rect.height()))};
     }
     bool setInputTransparent(bool transparent) override {
-        if (!attach())
-            return false;
-        if (m_native.ignoresMouseEvents != transparent)
-            m_native.ignoresMouseEvents = transparent;
-        if (m_native.ignoresMouseEvents != transparent)
-            return false;
+        const bool previous = m_transparent;
         m_transparent = transparent;
-        return true;
+        if (attach()) {
+            if (!transparent)
+                m_native.ignoresMouseEvents = NO;
+            if (m_native.ignoresMouseEvents == transparent)
+                return true;
+        }
+        m_transparent = previous;
+        return false;
     }
     bool setStaysOnTop(bool staysOnTop) override {
         m_staysOnTop = staysOnTop;
         if (!attach())
             return false;
-        snow_shot::platform::detail::setPinnedWindowLayer(m_window, staysOnTop);
         return m_native.level == (staysOnTop ? snow_shot::platform::detail::pinnedWindowLevel()
                                              : NSNormalWindowLevel);
     }
@@ -290,16 +297,11 @@ class CocoaPinnedWindowPlatform final : public PinnedWindowPlatform {
     NSWindow* m_native = nil;
     NSMutableArray* m_observers = nil;
     QPointer<CocoaPinnedWakeNotifications> m_wakeNotifications;
-    NSWindowStyleMask m_styleMask = NSWindowStyleMaskBorderless;
-    bool m_movable = true;
-    bool m_movableByWindowBackground = false;
-    bool m_hasShadow = true;
-    NSInteger m_level = NSNormalWindowLevel;
-    NSWindowCollectionBehavior m_behavior = NSWindowCollectionBehaviorDefault;
-    bool m_ignoresMouse = false;
-    bool m_hidesOnDeactivate = false;
+    adqt::widgets::detail::MacNativeWindowPolicy m_interactionPolicy;
+    std::unique_ptr<adqt::widgets::detail::WindowSurfaceObserver> m_nativeObserver;
     bool m_applying = false;
     bool m_detaching = false;
+    bool m_attaching = false;
     bool m_staysOnTop = true;
 };
 } // namespace

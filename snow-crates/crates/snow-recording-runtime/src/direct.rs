@@ -64,7 +64,7 @@ use buffer::VideoBuffer;
 pub(crate) mod capture;
 #[cfg(windows)]
 #[path = "direct_gpu.rs"]
-mod gpu;
+pub(crate) mod gpu;
 use capture::{DirectCapture, DirectCaptureEvent, DirectFrame};
 
 const AUDIO_SAMPLE_RATE: u32 = 48_000;
@@ -134,6 +134,7 @@ impl RecordingAudioMode {
 
 #[derive(Clone, Debug)]
 pub struct DirectRecordingConfig {
+    pub webcam: Option<snow_webcam::Config>,
     /// Whether animated image outputs repeat indefinitely.
     pub loop_animated_images: bool,
     pub region: RecordingRegion,
@@ -162,6 +163,7 @@ pub struct DirectRecordingConfig {
     pub mouse_highlight_radius: u32,
     pub mouse_highlight_rgba: [u8; 4],
     pub record_mouse_clicks: bool,
+    pub record_mouse_scrolling: bool,
     pub show_keyboard: bool,
     pub excluded_windows: Arc<[u32]>,
     pub excluded_processes: Arc<[i32]>,
@@ -183,6 +185,7 @@ impl DirectRecordingConfig {
                 keyboard: self.keyboard.clone(),
                 show_keyboard: self.show_keyboard,
                 record_mouse_clicks: self.record_mouse_clicks,
+                record_mouse_scrolling: self.record_mouse_scrolling,
                 mouse_trail_rgba: self.mouse_trail_rgba,
                 mouse_trail_duration_ms: self.mouse_trail_duration_ms,
                 mouse_click_rgba: self.mouse_click_rgba,
@@ -197,6 +200,9 @@ impl DirectRecordingConfig {
     }
 
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(webcam) = &self.webcam {
+            webcam.style.validate()?;
+        }
         if !snow_recording_model::render::MOUSE_HIGHLIGHT_RADIUS_RANGE
             .contains(&self.mouse_highlight_radius)
         {
@@ -287,6 +293,16 @@ impl DirectRecordingConfig {
                 160,
             ),
         }
+    }
+
+    #[cfg(any(windows, test))]
+    fn retry_hardware_with_cpu_input(&self) -> bool {
+        // HEVC may be available through a CPU-input MFT (notably ARM64), or
+        // on a device without compatible native-surface interop. Retain the
+        // validated complete software fallback policy for H.264.
+        self.format == ExportFormat::Mp4
+            && self.codec == VideoCodec::H265
+            && self.prefer_hardware_encoder
     }
 
     fn software_policy_domain(&self) -> bool {
@@ -775,7 +791,7 @@ impl DirectRecordingSession {
                 .clicks
                 .try_send(MouseClickObservation {
                     down: true,
-                    modifiers: [false; 4],
+                    modifiers: [false; 8],
                     at: Instant::now(),
                     x,
                     y,
@@ -936,9 +952,8 @@ impl DirectRecordingSession {
                         snow_recording_model::PlaybackOverlay::None,
                     );
                     compositor.effects = Some(render.effects.clone());
-                    compositor.mouse_input_style = render
-                        .effects
-                        .record_mouse_clicks
+                    compositor.mouse_input_style = (render.effects.record_mouse_clicks
+                        || render.effects.record_mouse_scrolling)
                         .then(|| render.effects.keyboard.clone())
                         .flatten();
                     compositor.include_mouse_modifiers = render.effects.show_keyboard;
@@ -951,13 +966,16 @@ impl DirectRecordingSession {
                         compositor.direct_output = bench_pixel_paths.1;
                     }
                     if let Some(style) = render.effects.keyboard.as_ref().filter(|_| {
-                        render.effects.show_keyboard || render.effects.record_mouse_clicks
+                        render.effects.show_keyboard
+                            || render.effects.record_mouse_clicks
+                            || render.effects.record_mouse_scrolling
                     }) {
                         match crate::keyboard_rasterizer::create(style) {
                             Ok(rasterizer) => {
                                 compositor.input_effects.keyboard = Some(
                                     KeyboardOverlay::new(config.output_dimensions(), rasterizer)
-                                        .with_keycap_size(style.keycap_size),
+                                        .with_keycap_size(style.keycap_size)
+                                        .with_icon_color(style.text_rgba),
                                 )
                             }
                             Err(error) => {
@@ -986,8 +1004,8 @@ impl DirectRecordingSession {
                         mut gpu_compositor,
                         streaming_config,
                         mut fallback_reason,
-                    ) = match gpu_setup {
-                        Ok(Some((stream, processor, device))) => (
+                    ) = match negotiation.fallback(gpu_setup)? {
+                        Some((stream, processor, device)) => (
                             DirectCapture::Gpu(stream),
                             Some(processor),
                             streaming_config
@@ -995,14 +1013,9 @@ impl DirectRecordingSession {
                                 .recoverable(),
                             None,
                         ),
-                        Err(ScreenRecorderError::Capture(error))
-                            if !error.allows_backend_fallback() =>
-                        {
-                            return Err(error.into());
-                        }
-                        result => {
-                            let reason = result.err().map(|error| error.to_string());
-                            if gpu::eligible(&config) {
+                        None => {
+                            let reason = negotiation.fallback_reason();
+                            if gpu::eligible(&config) && !config.retry_hardware_with_cpu_input() {
                                 streaming_config = streaming_config.software_only();
                             }
                             (
@@ -1018,7 +1031,11 @@ impl DirectRecordingSession {
                     let clock = RecordingClock::new(Instant::now());
                     *control_clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock.clone());
                     #[cfg(windows)]
-                    let fallback_config = streaming_config.clone().software_only();
+                    let fallback_config = if config.retry_hardware_with_cpu_input() {
+                        streaming_config.clone().cpu_input()
+                    } else {
+                        streaming_config.clone().software_only()
+                    };
                     #[cfg(windows)]
                     let asynchronous = asynchronous && gpu_compositor.is_none();
                     let created = RecordingEncoder::new(
@@ -1033,11 +1050,12 @@ impl DirectRecordingSession {
                         Ok(encoder) => encoder,
                         #[cfg(windows)]
                         Err(error) if gpu_compositor.is_some() => {
+                            negotiation.stage = Some("encoder_startup".into());
+                            negotiation.fallback::<()>(Err(error))?;
+                            fallback_reason = negotiation.fallback_reason();
                             capture_stream.stop();
                             gpu_compositor.take();
                             capture_stream = DirectCapture::cpu(&config, include_cursor)?;
-                            fallback_reason = Some(format!("encoder startup: {error}"));
-                            negotiation.stage = Some("encoder_startup".into());
                             RecordingEncoder::new(
                                 fallback_config,
                                 start_optional_audio_stream(&config, audio_control.clone()),
@@ -1270,6 +1288,11 @@ impl DirectRecordingSession {
         runtime.control_tx.try_send(command).map_err(|_| {
             ScreenRecorderError::Encode("direct recording worker stopped".to_string())
         })?;
+        if let Some(webcam) = &self.config.webcam {
+            webcam
+                .source
+                .set_recording_active(next == RecordingState::Running);
+        }
         self.state.store(state_to_u8(next), Ordering::Release);
         Ok(())
     }
@@ -1446,6 +1469,7 @@ struct DirectWorkerInputs {
 }
 
 fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport> {
+    let mut webcam_capture = crate::webcam::CaptureLease::new(&inputs.config);
     let DirectWorkerInputs {
         stop_boundary,
         cancel_requested,
@@ -1463,7 +1487,7 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
         #[cfg(windows)]
         mut fallback_reason,
         #[cfg(windows)]
-        mut negotiation,
+        negotiation,
         control_rx,
         clock,
         asynchronous,
@@ -1472,8 +1496,6 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
     } = inputs;
     #[cfg(windows)]
     let mut capture_stream = capture_stream;
-    #[cfg(windows)]
-    let adapter = negotiation.adapter.take();
     #[cfg(windows)]
     let mut gpu_metrics = gpu::Metrics::default();
     #[cfg(feature = "bench-pipeline-timing")]
@@ -1671,11 +1693,6 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
                     .push_back(event.event(clock.active_elapsed_ms(event.at), style));
             }
         }
-        compositor
-            .input_effects
-            .pending_keys
-            .make_contiguous()
-            .sort_by_key(|event| event.at_ms);
         if !stopping
             && !canceled
             && let Err(error) = encoder.tick()
@@ -1830,13 +1847,17 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
             });
             latest_frame = Some(frame);
         }
+        if let Some(webcam) = &config.webcam {
+            let snapshot = webcam.source.recording_snapshot(&clock, slot.at);
+            changed |= compositor.webcam.prepare(
+                snapshot.frame.as_deref(),
+                webcam.style,
+                compositor.output_size,
+            );
+        }
         let timestamp_ms = slot.at.as_millis() as u64;
         let active = compositor.has_active_animation(&config, timestamp_ms);
-        #[cfg(windows)]
-        let needs_recovery_image = encoder.needs_recovery_image();
-        #[cfg(not(windows))]
-        let needs_recovery_image = false;
-        if (changed || active || overlay_was_active || needs_recovery_image)
+        if encoder.needs_video_frame(changed || active || overlay_was_active)
             && let Some(frame) = latest_frame.as_ref()
         {
             #[cfg(feature = "bench-pipeline-timing")]
@@ -1954,6 +1975,7 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
     }
 
     // Stop observation before potentially expensive encoder draining/finalization.
+    webcam_capture.stop();
     drop(keyboard_input.take());
     if canceled {
         capture_stream.stop();
@@ -1995,6 +2017,12 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
         .max(1)
         .min(u128::from(u64::MAX)) as u64;
     let report = encoder.finish_at_duration_ms(endpoint, duration_ms)?;
+    #[cfg(windows)]
+    let report = {
+        let mut report = report;
+        negotiation.apply(&mut report);
+        report
+    };
     clock_controller.finalize(final_at);
     #[cfg(feature = "bench-pipeline-timing")]
     let report = {
@@ -2039,14 +2067,7 @@ fn run_direct_worker(inputs: DirectWorkerInputs) -> Result<DirectRecordingReport
         .into();
         report.fallback_reason = fallback_reason.or(report.fallback_reason);
         report.hardware_fallback |= report.fallback_reason.is_some();
-        report.adapter = adapter;
-        if negotiation.encoder_attempts.last() != Some(&report.video_encoder) {
-            negotiation
-                .encoder_attempts
-                .push(report.video_encoder.clone());
-        }
-        report.encoder_attempts = negotiation.encoder_attempts;
-        report.fallback_stage = negotiation.stage.or_else(|| {
+        report.fallback_stage = report.fallback_stage.or_else(|| {
             report.fallback_reason.as_deref().map(|reason| {
                 if reason.contains("stop") || reason.contains("Stop") {
                     "stop"
@@ -2099,11 +2120,11 @@ fn report_from_encoder(
         pixel_counters: Default::default(),
         gpu_memory_bytes: 0,
         recovery_count: report.recovery_count,
-        adapter: None,
+        adapter: report.startup.adapter,
         selected_pipeline: "software".into(),
-        fallback_reason: report.recovery_reason,
-        fallback_stage: None,
-        encoder_attempts: Vec::new(),
+        fallback_reason: report.startup.fallback_reason.or(report.recovery_reason),
+        fallback_stage: report.startup.fallback_stage,
+        encoder_attempts: report.startup.encoder_attempts,
         abandoned_video_frames: report.abandoned_frames,
         overlay_upload_bytes: 0,
         half_resize: false,
@@ -2456,7 +2477,7 @@ fn frame_instant(frame: &CapturedFrame) -> Instant {
 
 #[derive(Default)]
 struct CaptureInbox {
-    frames: VecDeque<(DirectFrame, Instant, Instant)>,
+    frames: crate::capture_queue::CaptureQueue<(DirectFrame, Instant, Instant)>,
     superseded: u64,
     #[cfg(any(test, feature = "bench-synthetic-input"))]
     damage: Damage,
@@ -2475,19 +2496,14 @@ impl CaptureInbox {
 
     fn push(&mut self, frame: impl Into<DirectFrame>, received: Instant) {
         let frame = frame.into();
-        // Keep enough history to select the most recent frame at the output deadline,
-        // including one frame that arrived just after it. No unbounded backlog.
-        if self.frames.len() == 2 {
+        let at = frame.instant();
+        if let Some((frame, _, _)) = self.frames.push((frame, received, at)) {
             #[cfg(any(test, feature = "bench-synthetic-input"))]
-            if let Some((frame, _, _)) = self.frames.pop_front() {
-                self.observe_damage(&frame);
-            }
+            self.observe_damage(&frame);
             #[cfg(not(any(test, feature = "bench-synthetic-input")))]
-            self.frames.pop_front();
+            let _ = frame;
             self.superseded += 1;
         }
-        let at = frame.instant();
-        self.frames.push_back((frame, received, at));
     }
 
     #[cfg(any(test, feature = "bench-synthetic-input"))]
@@ -2506,19 +2522,16 @@ impl CaptureInbox {
 
     fn select(&mut self, clock: &RecordingClock, at: Duration) -> Option<(DirectFrame, Instant)> {
         let mut selected = None;
-        while self
+        while let Some((frame, received, _)) = self
             .frames
-            .front()
-            .is_some_and(|(_, _, captured)| clock.active_elapsed_duration(*captured) <= at)
+            .pop_if(|(_, _, captured)| clock.active_elapsed_duration(*captured) <= at)
         {
             if selected.is_some() {
                 self.superseded += 1;
             }
-            if let Some((frame, received, _)) = self.frames.pop_front() {
-                #[cfg(any(test, feature = "bench-synthetic-input"))]
-                self.observe_damage(&frame);
-                selected = Some((frame, received));
-            }
+            #[cfg(any(test, feature = "bench-synthetic-input"))]
+            self.observe_damage(&frame);
+            selected = Some((frame, received));
         }
         selected
     }
@@ -2577,7 +2590,16 @@ fn drain_click_observations(
         {
             continue;
         }
-        if let Some(style) = &compositor.mouse_input_style {
+        let enabled = compositor.effects.as_ref().is_some_and(|effects| {
+            if observation.button.scroll_direction().is_some() {
+                effects.record_mouse_scrolling
+            } else {
+                effects.record_mouse_clicks
+            }
+        });
+        if let Some(style) = &compositor.mouse_input_style
+            && enabled
+        {
             let event = observation.event(
                 clock.active_elapsed_ms(observation.at),
                 style,
@@ -2625,6 +2647,7 @@ impl ResizeFrameDomain {
 }
 
 struct VisualCompositor {
+    webcam: snow_recording_effects::webcam::WebcamOverlay,
     output_size: (u32, u32),
     background: RasterBuffer,
     rgba: RasterBuffer,
@@ -2656,6 +2679,7 @@ struct VisualCompositor {
 impl VisualCompositor {
     fn new(output_size: (u32, u32)) -> Self {
         Self {
+            webcam: Default::default(),
             output_size,
             background: RasterBuffer::new(),
             rgba: RasterBuffer::new(),
@@ -2751,6 +2775,7 @@ impl VisualCompositor {
         let bytes = self.output_size.0 as usize * self.output_size.1 as usize * 4;
         #[cfg(any(test, feature = "bench-synthetic-input"))]
         if self.direct_output
+            && !self.webcam.visible()
             && !effects.show_cursor
             && effects.mouse_trail_rgba[3] == 0
             && effects.mouse_click_rgba[3] == 0
@@ -2869,6 +2894,18 @@ impl VisualCompositor {
             .record("compose.restore", restore_started.elapsed());
         #[cfg(feature = "bench-compositor-timing")]
         self.timings.record("compose.resize", stage.elapsed());
+        if let Some(rows) = touched.as_mut() {
+            self.webcam.draw_to(&mut TrackedSurface {
+                pixels: &mut rgba,
+                rows,
+            });
+        } else {
+            self.webcam
+                .draw_to(&mut snow_recording_effects::surface::RgbaSurface {
+                    pixels: &mut rgba,
+                    dimensions: self.output_size,
+                });
+        }
         let cursor = cursor.cloned();
         if effects.show_cursor
             && effects.mouse_highlight_rgba[3] != 0
@@ -3048,7 +3085,7 @@ impl VisualCompositor {
         Ok(rgba)
     }
 
-    fn has_active_animation(&self, config: &DirectRecordingConfig, timestamp_ms: u64) -> bool {
+    fn has_active_animation(&mut self, config: &DirectRecordingConfig, timestamp_ms: u64) -> bool {
         let fallback;
         let effects = if let Some(effects) = &self.effects {
             effects
@@ -3509,6 +3546,7 @@ mod tests {
 
     fn config() -> DirectRecordingConfig {
         DirectRecordingConfig {
+            webcam: None,
             audio_mode: Default::default(),
             system_audio_gain_db: 0,
             microphone_gain_db: 0,
@@ -3537,6 +3575,7 @@ mod tests {
             mouse_highlight_radius: snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
             mouse_highlight_rgba: [0; 4],
             record_mouse_clicks: false,
+            record_mouse_scrolling: false,
             show_keyboard: true,
         }
     }
@@ -3664,6 +3703,122 @@ mod tests {
     }
 
     #[test]
+    fn webcam_disconnect_keeps_clean_screen_exporting_in_every_direct_format() {
+        struct Camera(
+            crossbeam_channel::Receiver<std::result::Result<snow_webcam::RawFrame, String>>,
+        );
+        impl snow_webcam::CameraBackend for Camera {
+            fn poll(
+                &mut self,
+                timeout: Duration,
+            ) -> std::result::Result<Option<snow_webcam::RawFrame>, String> {
+                match self.0.recv_timeout(timeout) {
+                    Ok(frame) => frame.map(Some),
+                    Err(_) => Ok(None),
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        for format in [
+            ExportFormat::Mp4,
+            ExportFormat::Gif,
+            ExportFormat::Apng,
+            ExportFormat::Webp,
+        ] {
+            let (sender, receiver) = crossbeam_channel::bounded(1);
+            let source = snow_webcam::Source::with_backend(
+                snow_webcam::CaptureOptions { size: 50, fps: 10 },
+                move |_| Ok(Box::new(Camera(receiver.clone()))),
+            )
+            .unwrap();
+            let mut settings = config();
+            settings.region.width = 240;
+            settings.region.height = 180;
+            settings.maximum_width = None;
+            settings.maximum_height = None;
+            settings.output_fps = 10;
+            settings.capture_fps = 10;
+            settings.format = format;
+            settings.output_path = directory
+                .path()
+                .join(format!("camera.{}", format.file_extension()));
+            settings.prefer_hardware_encoder = false;
+            settings.enable_microphone = false;
+            settings.enable_system_audio = false;
+            settings.show_cursor = false;
+            settings.keyboard = None;
+            settings.mouse_click_rgba = [0; 4];
+            settings.mouse_trail_rgba = [0; 4];
+            let style = snow_webcam::WebcamStyle {
+                size: 50,
+                shape: snow_webcam::WebcamShape::Circle,
+                orientation: snow_webcam::WebcamOrientation::MirroredClockwise90,
+                offset_left: 17,
+                offset_bottom: 31,
+            };
+            settings.webcam = Some(snow_webcam::Config {
+                source: source.clone(),
+                style,
+            });
+            let _capture = crate::webcam::CaptureLease::new(&settings);
+            sender
+                .send(Ok(snow_webcam::RawFrame {
+                    width: 50,
+                    height: 50,
+                    stride: 200,
+                    rgba: [240, 10, 10, 255].repeat(50 * 50),
+                    at: Instant::now(),
+                }))
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while source.snapshot(Instant::now()).frame.is_none() {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            let original = [20, 40, 60, 255].repeat(240 * 180);
+            let frame: CapturedFrame =
+                snow_capture::frame::Frame::from_rgba8(240, 180, original.clone())
+                    .unwrap()
+                    .into();
+            let mut compositor = VisualCompositor::new((240, 180));
+            compositor.webcam.prepare(
+                source.snapshot(Instant::now()).frame.as_deref(),
+                style,
+                (240, 180),
+            );
+            let first = compositor
+                .compose_with_cursor(&settings, &frame, 0, None)
+                .unwrap();
+            assert_eq!(&first[(124 * 240 + 42) * 4..][..4], &[240, 10, 10, 255]);
+            let mut encoder = StreamingEncoder::builder(settings.streaming_config())
+                .create()
+                .unwrap();
+            encoder.push_rgba_frame_at_pts(0, &first).unwrap();
+            compositor.rgba = first;
+            sender.send(Err("device disconnected".into())).unwrap();
+            while source.snapshot(Instant::now()).error.is_none() {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert!(compositor.webcam.prepare(
+                source.snapshot(Instant::now()).frame.as_deref(),
+                style,
+                (240, 180)
+            ));
+            let clean = compositor
+                .compose_with_cursor(&settings, &frame, 100, None)
+                .unwrap();
+            assert_eq!(
+                clean, original,
+                "{format:?}: camera failure must restore the screen"
+            );
+            encoder.push_rgba_frame_at_pts(1, &clean).unwrap();
+            encoder.finish_at_duration_ms(200).unwrap();
+            assert!(std::fs::metadata(&settings.output_path).unwrap().len() > 50);
+        }
+    }
+
+    #[test]
     fn restoration_only_matches_full_pixels_and_skips_history_on_changed_backgrounds() {
         check_recycled_overlay_restoration(true);
     }
@@ -3739,6 +3894,23 @@ mod tests {
                 partial.background_sequence = None;
             }
             let cursor = (index < 7).then_some(&cursor);
+            let webcam = snow_webcam::Frame {
+                revision: index as u64 + 1,
+                at: Instant::now(),
+                size: 50,
+                rgba: Arc::new([25, 180, index as u8 * 20, 255].repeat(50 * 50)),
+            };
+            for compositor in [&mut full, &mut partial] {
+                compositor.webcam.prepare(
+                    (index < 7).then_some(&webcam),
+                    snow_webcam::WebcamStyle {
+                        size: 50,
+                        shape: snow_webcam::WebcamShape::Circle,
+                        ..Default::default()
+                    },
+                    output,
+                );
+            }
             let expected = full
                 .compose_with_cursor(&config, &frame, timestamp, cursor)
                 .unwrap();
@@ -3785,6 +3957,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn hevc_native_negotiation_keeps_cpu_input_hardware_candidates() {
+        let mut settings = config();
+        settings.prefer_hardware_encoder = true;
+        assert!(!settings.retry_hardware_with_cpu_input());
+        settings.codec = VideoCodec::H265;
+        assert!(settings.retry_hardware_with_cpu_input());
+        settings.prefer_hardware_encoder = false;
+        assert!(!settings.retry_hardware_with_cpu_input());
+        settings.prefer_hardware_encoder = true;
+        settings.format = ExportFormat::Gif;
+        assert!(!settings.retry_hardware_with_cpu_input());
     }
 
     #[test]
@@ -4986,7 +5172,7 @@ mod tests {
             sender
                 .send(MouseClickObservation {
                     down: true,
-                    modifiers: [false; 4],
+                    modifiers: [false; 8],
                     at: started_at + Duration::from_millis(index as u64),
                     x: index as i32,
                     y: 0,
@@ -5004,6 +5190,72 @@ mod tests {
     }
 
     #[test]
+    fn scroll_observations_respect_pause_clock_and_disabled_policy_without_click_rings() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        let start = Instant::now();
+        let clock = RecordingClock::new(start);
+        clock
+            .controller()
+            .mark_pause(start + Duration::from_millis(100));
+        clock
+            .controller()
+            .mark_resume(start + Duration::from_millis(300));
+        let style = KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0; 4],
+            text_rgba: [255; 4],
+            border_rgba: [0; 4],
+            labels: Default::default(),
+        };
+        let mut compositor = VisualCompositor::new((320, 240));
+        compositor.effects = Some(snow_recording_model::EffectsConfig {
+            record_mouse_scrolling: true,
+            keyboard: Some(style.clone()),
+            ..Default::default()
+        });
+        compositor.mouse_input_style = Some(style);
+        for ms in [50, 150, 299, 301, 401] {
+            sender
+                .send(MouseClickObservation {
+                    at: start + Duration::from_millis(ms),
+                    x: 0,
+                    y: 0,
+                    button: ObservedMouseButton::ScrollUp,
+                    down: true,
+                    modifiers: [false; 8],
+                })
+                .unwrap();
+        }
+        drain_click_observations(
+            &receiver,
+            &clock,
+            false,
+            start + Duration::from_millis(300),
+            Some(start + Duration::from_millis(301)),
+            &mut compositor,
+        );
+        assert!(compositor.input_effects.clicks.is_empty());
+        assert_eq!(compositor.input_effects.pending_keys.len(), 1);
+        assert_eq!(compositor.input_effects.pending_keys[0].at_ms, 101);
+        compositor.input_effects.reset_inputs(102);
+        compositor.effects.as_mut().unwrap().record_mouse_scrolling = false;
+        sender
+            .send(MouseClickObservation {
+                at: start + Duration::from_millis(400),
+                x: 0,
+                y: 0,
+                button: ObservedMouseButton::ScrollDown,
+                down: true,
+                modifiers: [false; 8],
+            })
+            .unwrap();
+        drain_click_observations(&receiver, &clock, false, start, None, &mut compositor);
+        assert!(compositor.input_effects.pending_keys.is_empty());
+        assert!(compositor.input_effects.clicks.is_empty());
+    }
+
+    #[test]
     fn resumed_clicks_reject_paused_and_pre_resume_observations() {
         let (sender, receiver) = crossbeam_channel::unbounded();
         let start = Instant::now();
@@ -5018,7 +5270,7 @@ mod tests {
             sender
                 .send(MouseClickObservation {
                     down: true,
-                    modifiers: [false; 4],
+                    modifiers: [false; 8],
                     at: start + Duration::from_millis(ms),
                     x: ms as i32,
                     y: 0,
@@ -5161,7 +5413,7 @@ mod tests {
                 .clicks
                 .try_send(MouseClickObservation {
                     down: true,
-                    modifiers: [false; 4],
+                    modifiers: [false; 8],
                     at: Instant::now(),
                     x: 12,
                     y: 34,
@@ -5206,10 +5458,10 @@ mod scheduling_tests {
         let mut inbox = CaptureInbox::default();
         inbox
             .frames
-            .push_back((frame(1).into(), start, start + Duration::from_millis(30)));
+            .push((frame(1).into(), start, start + Duration::from_millis(30)));
         inbox
             .frames
-            .push_back((frame(2).into(), start, start + Duration::from_millis(35)));
+            .push((frame(2).into(), start, start + Duration::from_millis(35)));
         assert_eq!(
             inbox
                 .select(&clock, Duration::from_millis(33))
@@ -5259,7 +5511,7 @@ mod scheduling_tests {
         let start = Instant::now();
         let clock = RecordingClock::new(start);
         let mut desktop = CaptureInbox::default();
-        desktop.frames.push_back((
+        desktop.frames.push((
             frame(42).into(),
             start + Duration::from_millis(35),
             start + Duration::from_millis(30),

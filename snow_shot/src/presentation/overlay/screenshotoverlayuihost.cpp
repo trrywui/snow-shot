@@ -588,7 +588,7 @@ void ScreenshotOverlayUiHost::sampleColorPicker(const QImage& image, const QRect
 
 void ScreenshotOverlayUiHost::updateColorPicker(
     ScreenshotOverlayWindow* overlay, const QImage& image, const QRect& physicalRect,
-    const QPoint& physicalPoint, const QPointF& localPosition, qreal opacity,
+    const QPoint& physicalPoint, const QPointF& localPosition,
     const ScreenshotCoordinateDisplayValues& displayValues, const QImage& cursorPatch,
     const QRect& cursorPixelRect) {
     if (overlay == nullptr) {
@@ -605,7 +605,7 @@ void ScreenshotOverlayUiHost::updateColorPicker(
     }
 
     picker->setCaptureImage(image, physicalRect, cursorPatch, cursorPixelRect);
-    picker->updatePicker(physicalPoint, localPosition, opacity, displayValues);
+    picker->updatePicker(physicalPoint, localPosition, true, displayValues);
 }
 
 void ScreenshotOverlayUiHost::hideColorPicker() {

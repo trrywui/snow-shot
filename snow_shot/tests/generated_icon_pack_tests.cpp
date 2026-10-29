@@ -2,6 +2,7 @@
 #include "snow_shot/presentation/components/icons/snowshoticons.h"
 
 #include "icon_renderer.h"
+#include "antd_icons.h"
 
 #include <QApplication>
 #include <QColor>
@@ -97,8 +98,8 @@ void everySnowShotEntryRenders() {
     const auto registered = icons::registerWith(renderer);
     require(registered.ok(), "Snow Shot pack registration should succeed");
     const adqt::icons::IconPack* staticPack = icons::pack().staticPack();
-    require(staticPack != nullptr && staticPack->entryCount == 191,
-            "Snow Shot pack should contain all 191 project-owned assets");
+    require(staticPack != nullptr && staticPack->entryCount == 201,
+            "Snow Shot pack should contain all 201 project-owned assets");
 
     adqt::icons::IconRenderRequest request;
     request.logicalSize = QSize(32, 32);
@@ -126,6 +127,60 @@ void everySnowShotEntryRenders() {
         std::cerr << warning.toStdString() << '\n';
     require(renderWarnings.isEmpty(),
             "every Snow Shot icon must render without missing images or undefined references");
+}
+
+void airDropIconFollowsAntDesign() {
+    namespace icons = snow_shot::presentation::icons::custom;
+    for (const QColor color : {QColor(35, 35, 35), QColor(240, 240, 240)}) {
+        const auto icon = icons::outlined::AirDrop(adqt::icons::IconColors::primary(color));
+        require(adqt::icons::describeIcon(icon).colorModel ==
+                    adqt::icons::IconColorModel::Monochrome,
+                "AirDrop uses the monochrome theme pipeline");
+        for (int size : {16, 20, 24, 32}) {
+            for (qreal dpr : {1.0, 1.25, 2.0}) {
+                const auto image = render(icon, QSize(size, size), dpr).toImage();
+                const auto bounds = alphaBounds(image);
+                require(!bounds.isEmpty() && bounds.left() > 0 &&
+                            bounds.right() < image.width() - 1 && bounds.top() > 0 &&
+                            bounds.bottom() < image.height(),
+                        "AirDrop stays legible and unclipped at toolbar sizes and fractional DPR");
+                require(std::abs(bounds.center().x() - image.rect().center().x()) <= 1,
+                        "AirDrop remains optically centered");
+                if (size >= 24)
+                    require(containsOpaqueColor(image, color),
+                            "AirDrop follows the requested theme color");
+            }
+        }
+    }
+    const QString previewPath = qEnvironmentVariable("SNOW_AIRDROP_ICON_PREVIEW");
+    if (!previewPath.isEmpty()) {
+        QImage preview(560, 180, QImage::Format_ARGB32_Premultiplied);
+        QPainter painter(&preview);
+        for (int row = 0; row < 2; ++row) {
+            painter.fillRect(0, row * 90, 560, 90, row ? QColor(30, 30, 30) : QColor(Qt::white));
+            const QColor color = row ? QColor(240, 240, 240) : QColor(35, 35, 35);
+            painter.setPen(color);
+            int x = 20;
+            for (int size : {16, 20, 24, 32}) {
+                painter.drawText(x, row * 90 + 20, QString::number(size) + QStringLiteral(" px"));
+                painter.drawPixmap(
+                    x, row * 90 + 36,
+                    render(icons::outlined::Save(adqt::icons::IconColors::primary(color)),
+                           QSize(size, size)));
+                painter.drawPixmap(x + 40, row * 90 + 36,
+                                   render(adqt::icons::antd::outlined::Printer(
+                                              adqt::icons::IconColors::primary(color)),
+                                          QSize(size, size)));
+                painter.drawPixmap(
+                    x + 80, row * 90 + 36,
+                    render(icons::outlined::AirDrop(adqt::icons::IconColors::primary(color)),
+                           QSize(size, size)));
+                x += 135;
+            }
+        }
+        painter.end();
+        require(preview.save(previewPath), "save AirDrop toolbar icon preview");
+    }
 }
 
 void recaptureIconUsesThemeColor() {
@@ -311,16 +366,52 @@ void ocrTranslateIconUsesTheSuppliedProjectAsset() {
             "OCR Translate should render the supplied project asset with its primary color");
 }
 
-void flipVerticalIconUsesTheRotatedProjectAsset() {
+void flipIconsShowMirroredShapesWithoutDividers() {
     namespace icons = snow_shot::presentation::icons::custom;
-    const auto ref = icons::outlined::FlipVertical();
-    const auto metadata = adqt::icons::describeIcon(ref);
-    const QRect bounds = alphaBounds(render(ref, QSize(64, 64)).toImage());
-
-    require(metadata.key.pack == QStringLiteral("snow-shot") &&
-                metadata.key.name == QStringLiteral("flip-vertical") &&
-                bounds.height() > bounds.width(),
-            "flip-vertical should use the rotated Snow Shot project asset");
+    for (const QColor tint : {QColor(31, 31, 31), QColor(240, 240, 240), QColor(22, 119, 255)}) {
+        const auto colors = adqt::icons::IconColors::primary(tint);
+        const auto horizontalRef = icons::outlined::FlipHorizontal(colors);
+        const auto verticalRef = icons::outlined::FlipVertical(colors);
+        const auto horizontalMetadata = adqt::icons::describeIcon(horizontalRef);
+        const auto verticalMetadata = adqt::icons::describeIcon(verticalRef);
+        require(horizontalMetadata.key.pack == QStringLiteral("snow-shot") &&
+                    horizontalMetadata.key.name == QStringLiteral("flip-horizontal") &&
+                    verticalMetadata.key.pack == QStringLiteral("snow-shot") &&
+                    verticalMetadata.key.name == QStringLiteral("flip-vertical"),
+                "both flip operations should resolve to their dedicated project assets");
+        for (const int size : {16, 20, 24, 32}) {
+            for (const qreal dpr : {1.0, 1.25, 2.0}) {
+                for (const auto& ref : {horizontalRef, verticalRef}) {
+                    const QImage image = render(ref, QSize(size, size), dpr).toImage();
+                    require(!alphaBounds(image).isEmpty() && containsOpaqueColor(image, tint),
+                            "flip icons should remain visible and theme-aware at toolbar sizes");
+                }
+            }
+        }
+        const QImage horizontal = render(horizontalRef, QSize(64, 64)).toImage();
+        const QImage vertical = render(verticalRef, QSize(64, 64)).toImage();
+        require(opaquePixelCount(horizontal, QRect(29, 0, 6, 64)) == 0 &&
+                    opaquePixelCount(vertical, QRect(0, 29, 64, 6)) == 0,
+                "flip icons should leave the space between mirrored shapes free of dividers");
+        require(horizontal.pixelColor(25, 32).alpha() > 0 &&
+                    horizontal.pixelColor(38, 32).alpha() > 0 &&
+                    horizontal.pixelColor(20, 40).alpha() == 0 &&
+                    horizontal.pixelColor(43, 40).alpha() == 0 &&
+                    vertical.pixelColor(31, 25).alpha() > 0 &&
+                    vertical.pixelColor(31, 38).alpha() > 0 &&
+                    vertical.pixelColor(23, 20).alpha() == 0 &&
+                    vertical.pixelColor(23, 43).alpha() == 0,
+                "both icons should retain two outlined mirrored panels in the correct orientation");
+        require(horizontal.pixelColor(10, 14).alpha() == 0 &&
+                    horizontal.pixelColor(53, 14).alpha() == 0 &&
+                    horizontal.pixelColor(22, 12).alpha() > 0 &&
+                    horizontal.pixelColor(41, 12).alpha() > 0 &&
+                    vertical.pixelColor(49, 10).alpha() == 0 &&
+                    vertical.pixelColor(49, 53).alpha() == 0 &&
+                    vertical.pixelColor(51, 22).alpha() > 0 &&
+                    vertical.pixelColor(51, 41).alpha() > 0,
+                "the clipped outer corners should visibly reverse across the reflection direction");
+    }
 }
 
 void conversionIconsUseTheSuppliedProjectAssets() {
@@ -490,6 +581,226 @@ void imageStitchingIconFollowsAntDesign() {
     painter.end();
     if (const auto path = qEnvironmentVariable("SNOW_STITCHING_ICON_PREVIEW"); !path.isEmpty())
         require(preview.save(path), "save stitching icon light/dark inspection sheet");
+}
+
+void spreadsheetIconFollowsAntDesign() {
+    namespace icons = snow_shot::presentation::icons::custom;
+    const auto ref = icons::outlined::OpenSpreadsheetFile();
+    const auto* descriptor = ref.descriptor();
+    require(descriptor && descriptor->colorModel == adqt::icons::IconColorModel::Monochrome,
+            "spreadsheet uses the monochrome theme pipeline");
+    const QByteArray svg(descriptor->svg.data(), static_cast<qsizetype>(descriptor->svg.size()));
+    require(svg.contains("viewBox=\"0 0 1024 1024\"") && svg.contains("stroke-width=\"72\"") &&
+                svg.contains("__ADQT_SLOT_PRIMARY__"),
+            "spreadsheet follows the Ant Design grid and outline weight");
+    const QRect bounds = alphaBounds(render(ref, QSize(1024, 1024)).toImage());
+    require(bounds.left() >= 64 && bounds.top() >= 64 && bounds.right() < 960 &&
+                bounds.bottom() < 960,
+            "spreadsheet keeps the Ant Design safe margin");
+    QImage preview(440, 256, QImage::Format_ARGB32_Premultiplied);
+    preview.fill(Qt::white);
+    QPainter painter(&preview);
+    const QList<QColor> colors{QColor("#262626"), QColor("#f0f0f0"), QColor("#1677ff"),
+                               QColor("#bfbfbf")};
+    for (int row = 0; row < colors.size(); ++row) {
+        const QColor color = colors[row];
+        painter.fillRect(QRect(0, row * 64, 440, 64), row == 1 ? QColor("#141414") : Qt::white);
+        int column = 0;
+        for (int size : {14, 16, 20, 32}) {
+            for (qreal dpr : {1.0, 1.25, 1.5, 2.0}) {
+                const QImage pixels = render(icons::outlined::OpenSpreadsheetFile(
+                                                 adqt::icons::IconColors::primary(color)),
+                                             QSize(size, size), dpr)
+                                          .toImage();
+                require(!alphaBounds(pixels).isEmpty(),
+                        "spreadsheet remains legible at menu sizes");
+                for (int y = 0; y < pixels.height(); ++y) {
+                    for (int x = 0; x < pixels.width(); ++x) {
+                        const QColor pixel = pixels.pixelColor(x, y);
+                        if (pixel.alpha() > 128)
+                            require(qAbs(pixel.red() - color.red()) <= 2 &&
+                                        qAbs(pixel.green() - color.green()) <= 2 &&
+                                        qAbs(pixel.blue() - color.blue()) <= 2,
+                                    "spreadsheet inherits menu foreground color at every DPI");
+                    }
+                }
+            }
+            painter.drawPixmap(24 + column++ * 90, row * 64 + (64 - size) / 2,
+                               render(icons::outlined::OpenSpreadsheetFile(
+                                          adqt::icons::IconColors::primary(color)),
+                                      QSize(size, size)));
+        }
+    }
+    painter.end();
+    adqt::icons::IconRenderRequest disabled;
+    disabled.logicalSize = QSize(20, 20);
+    disabled.mode = QIcon::Disabled;
+    adqt::icons::IconStatePalette palette;
+    palette.set(QIcon::Disabled, QIcon::Off, adqt::icons::IconColors::primary(colors.last()));
+    require(containsOpaqueColor(adqt::icons::renderIconPixmap(ref, disabled, palette).toImage(),
+                                colors.last()),
+            "spreadsheet supports the menu's disabled palette");
+    if (const auto path = qEnvironmentVariable("SNOW_SPREADSHEET_ICON_PREVIEW"); !path.isEmpty())
+        require(preview.save(path), "save spreadsheet icon visual inspection sheet");
+}
+
+void thoughtBubbleIconFollowsAntDesign() {
+    namespace icons = snow_shot::presentation::icons::custom;
+    const auto ref = icons::outlined::ShapeThoughtBubble();
+    const auto* descriptor = ref.descriptor();
+    require(descriptor && descriptor->colorModel == adqt::icons::IconColorModel::Monochrome,
+            "thought bubble uses the monochrome theme pipeline");
+    const QByteArray svg(descriptor->svg.data(), static_cast<qsizetype>(descriptor->svg.size()));
+    require(svg.contains("viewBox=\"0 0 1024 1024\"") && svg.contains("stroke-width=\"72\"") &&
+                svg.contains("__ADQT_SLOT_PRIMARY__"),
+            "thought bubble follows the Ant Design grid and outline weight");
+    const QRect bounds = alphaBounds(render(ref, QSize(1024, 1024)).toImage());
+    require(bounds.left() >= 64 && bounds.top() >= 64 && bounds.right() < 960 &&
+                bounds.bottom() < 960,
+            "thought bubble keeps the Ant Design safe margin");
+    QImage preview(440, 256, QImage::Format_ARGB32_Premultiplied);
+    preview.fill(Qt::white);
+    QPainter painter(&preview);
+    const QList<QColor> colors{QColor("#262626"), QColor("#f0f0f0"), QColor("#1677ff"),
+                               QColor("#bfbfbf")};
+    for (int row = 0; row < colors.size(); ++row) {
+        const QColor color = colors[row];
+        painter.fillRect(QRect(0, row * 64, 440, 64), row == 1 ? QColor("#141414") : Qt::white);
+        int column = 0;
+        for (int size : {14, 16, 20, 32}) {
+            for (qreal dpr : {1.0, 1.25, 1.5, 2.0}) {
+                const QImage pixels = render(icons::outlined::ShapeThoughtBubble(
+                                                 adqt::icons::IconColors::primary(color)),
+                                             QSize(size, size), dpr)
+                                          .toImage();
+                require(!alphaBounds(pixels).isEmpty(),
+                        "thought bubble remains legible at menu sizes");
+                for (int y = 0; y < pixels.height(); ++y) {
+                    for (int x = 0; x < pixels.width(); ++x) {
+                        const QColor pixel = pixels.pixelColor(x, y);
+                        if (pixel.alpha() > 128)
+                            require(qAbs(pixel.red() - color.red()) <= 2 &&
+                                        qAbs(pixel.green() - color.green()) <= 2 &&
+                                        qAbs(pixel.blue() - color.blue()) <= 2,
+                                    "thought bubble inherits menu foreground color at every DPI");
+                    }
+                }
+            }
+            painter.drawPixmap(
+                12 + column * 108, row * 64 + (64 - size) / 2,
+                render(icons::outlined::ShapeDiamond(adqt::icons::IconColors::primary(color)),
+                       QSize(size, size)));
+            painter.drawPixmap(
+                48 + column++ * 108, row * 64 + (64 - size) / 2,
+                render(icons::outlined::ShapeThoughtBubble(adqt::icons::IconColors::primary(color)),
+                       QSize(size, size)));
+        }
+    }
+    painter.end();
+    adqt::icons::IconRenderRequest disabled;
+    disabled.logicalSize = QSize(20, 20);
+    disabled.mode = QIcon::Disabled;
+    adqt::icons::IconStatePalette palette;
+    palette.set(QIcon::Disabled, QIcon::Off, adqt::icons::IconColors::primary(colors.last()));
+    require(containsOpaqueColor(adqt::icons::renderIconPixmap(ref, disabled, palette).toImage(),
+                                colors.last()),
+            "thought bubble supports the menu's disabled palette");
+    if (const auto path = qEnvironmentVariable("SNOW_THOUGHT_BUBBLE_ICON_PREVIEW"); !path.isEmpty())
+        require(preview.save(path), "save thought bubble icon visual inspection sheet");
+}
+
+void revealIconFollowsAntDesign() {
+    namespace icons = snow_shot::presentation::icons::custom;
+    const auto ref = icons::outlined::RevealInFolder();
+    const auto* descriptor = ref.descriptor();
+    require(descriptor && descriptor->colorModel == adqt::icons::IconColorModel::Monochrome,
+            "reveal uses the monochrome theme pipeline");
+    const QByteArray svg(descriptor->svg.data(), static_cast<qsizetype>(descriptor->svg.size()));
+    require(svg.contains("viewBox=\"0 0 1024 1024\"") && svg.contains("stroke-width=\"72\"") &&
+                svg.contains("__ADQT_SLOT_PRIMARY__"),
+            "reveal follows the Ant Design grid and outline weight");
+    const QRect bounds = alphaBounds(render(ref, QSize(1024, 1024)).toImage());
+    require(bounds.left() >= 64 && bounds.top() >= 64 && bounds.right() < 960 &&
+                bounds.bottom() < 960,
+            "reveal keeps the Ant Design safe margin");
+    QImage preview(440, 256, QImage::Format_ARGB32_Premultiplied);
+    preview.fill(Qt::white);
+    QPainter painter(&preview);
+    const QList<QColor> colors{QColor("#262626"), QColor("#f0f0f0"), QColor("#1677ff"),
+                               QColor("#bfbfbf")};
+    for (int row = 0; row < colors.size(); ++row) {
+        const QColor color = colors[row];
+        painter.fillRect(QRect(0, row * 64, 440, 64), row == 1 ? QColor("#141414") : Qt::white);
+        int column = 0;
+        for (int size : {14, 16, 20, 32}) {
+            for (qreal dpr : {1.0, 1.25, 1.5, 2.0}) {
+                const QImage pixels =
+                    render(icons::outlined::RevealInFolder(adqt::icons::IconColors::primary(color)),
+                           QSize(size, size), dpr)
+                        .toImage();
+                require(!alphaBounds(pixels).isEmpty(), "reveal remains legible at menu sizes");
+                for (int y = 0; y < pixels.height(); ++y) {
+                    for (int x = 0; x < pixels.width(); ++x) {
+                        const QColor pixel = pixels.pixelColor(x, y);
+                        if (pixel.alpha() > 128)
+                            require(qAbs(pixel.red() - color.red()) <= 2 &&
+                                        qAbs(pixel.green() - color.green()) <= 2 &&
+                                        qAbs(pixel.blue() - color.blue()) <= 2,
+                                    "reveal inherits menu foreground color at every DPI");
+                    }
+                }
+            }
+            painter.drawPixmap(
+                24 + column++ * 90, row * 64 + (64 - size) / 2,
+                render(icons::outlined::RevealInFolder(adqt::icons::IconColors::primary(color)),
+                       QSize(size, size)));
+        }
+    }
+    painter.end();
+    adqt::icons::IconRenderRequest disabled;
+    disabled.logicalSize = QSize(20, 20);
+    disabled.mode = QIcon::Disabled;
+    adqt::icons::IconStatePalette palette;
+    palette.set(QIcon::Disabled, QIcon::Off, adqt::icons::IconColors::primary(colors.last()));
+    require(containsOpaqueColor(adqt::icons::renderIconPixmap(ref, disabled, palette).toImage(),
+                                colors.last()),
+            "reveal supports the menu's disabled palette");
+    if (const auto path = qEnvironmentVariable("SNOW_REVEAL_ICON_PREVIEW"); !path.isEmpty())
+        require(preview.save(path), "save reveal icon visual inspection sheet");
+}
+
+void cropIconsFollowAntDesign() {
+    namespace icons = snow_shot::presentation::icons::custom::outlined;
+    const adqt::icons::IconRef refs[] = {icons::CropVertical(), icons::CropHorizontal()};
+    QImage preview(480, 160, QImage::Format_ARGB32_Premultiplied);
+    QPainter painter(&preview);
+    for (int row = 0; row < 2; ++row) {
+        const QColor foreground(row == 0 ? "#262626" : "#f0f0f0");
+        painter.fillRect(QRect(0, row * 80, 480, 80), row == 0 ? Qt::white : QColor("#141414"));
+        for (int index = 0; index < 2; ++index) {
+            const auto ref = refs[index].withColors(adqt::icons::IconColors::primary(foreground));
+            const auto bounds = alphaBounds(render(ref, QSize(1024, 1024)).toImage());
+            require(QRect(64, 64, 896, 896).contains(bounds),
+                    "crop icons respect Ant Design bleed");
+            int column = 0;
+            for (int size : {16, 24, 48}) {
+                for (qreal dpr : {1.0, 1.5, 2.0}) {
+                    const QImage pixels = render(ref, QSize(size, size), dpr).toImage();
+                    require(!alphaBounds(pixels).isEmpty() &&
+                                containsOpaqueColor(pixels, foreground),
+                            "crop icons render with theme colors at toolbar sizes and scales");
+                }
+                painter.drawPixmap(index * 240 + column * 72 + (72 - size) / 2,
+                                   row * 80 + (80 - size) / 2, render(ref, QSize(size, size)));
+                ++column;
+            }
+        }
+    }
+    painter.end();
+    require(render(refs[0], QSize(24, 24)).toImage() != render(refs[1], QSize(24, 24)).toImage(),
+            "crop directions are visually distinct at toolbar size");
+    if (const auto path = qEnvironmentVariable("SNOW_CROP_ICON_PREVIEW"); !path.isEmpty())
+        require(preview.save(path), "save crop icon visual inspection sheet");
 }
 
 void imageSplittingIconFollowsAntDesign() {
@@ -746,6 +1057,31 @@ void borderFillIconMatchesToolbarGeometry() {
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
     try {
+        if (application.arguments().contains(QStringLiteral("--airdrop-only"))) {
+            airDropIconFollowsAntDesign();
+            return 0;
+        }
+        if (application.arguments().contains(QStringLiteral("--thought-bubble-only"))) {
+            thoughtBubbleIconFollowsAntDesign();
+            return 0;
+        }
+        thoughtBubbleIconFollowsAntDesign();
+        spreadsheetIconFollowsAntDesign();
+        if (application.arguments().contains(QStringLiteral("--spreadsheet-only")))
+            return 0;
+        if (application.arguments().contains(QStringLiteral("--flip-icons-only"))) {
+            flipIconsShowMirroredShapesWithoutDividers();
+            return 0;
+        }
+        cropIconsFollowAntDesign();
+        if (application.arguments().contains(QStringLiteral("--crop-icons-only"))) {
+            return 0;
+        }
+        revealIconFollowsAntDesign();
+        if (application.arguments().contains(QStringLiteral("--reveal-only"))) {
+            everySnowShotEntryRenders();
+            return 0;
+        }
         borderFillIconMatchesToolbarGeometry();
         if (application.arguments().contains(QStringLiteral("--border-fill-only"))) {
             return 0;
@@ -788,7 +1124,7 @@ int main(int argc, char** argv) {
         miniLogoPreservesTheWordmarkAndAddsRoundedVectorLettering();
         ocrTranslateIconUsesTheSuppliedProjectAsset();
         scrollingIconsUseTheRequestedOrientations();
-        flipVerticalIconUsesTheRotatedProjectAsset();
+        flipIconsShowMirroredShapesWithoutDividers();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

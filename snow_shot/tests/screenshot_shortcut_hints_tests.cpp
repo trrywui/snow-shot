@@ -20,7 +20,7 @@ shortcutBindings(std::initializer_list<QString> portableText) {
 }
 
 QString shortcutDisplay(std::initializer_list<QString> portableText) {
-    return snow_shot::shortcuts::formatShortcutListDisplayText(shortcutBindings(portableText));
+    return snow_shot::presentation::formatShortcutListDisplayText(shortcutBindings(portableText));
 }
 
 QString shortcutLine(const QString& label, std::initializer_list<QString> portableText) {
@@ -59,6 +59,17 @@ QStringList withDefaultCursorHints(std::initializer_list<QString> remaining) {
         lines.push_back(line);
     }
     return lines;
+}
+
+void enterHintsUseApplicationLabels() {
+    for (const auto* alias : {"Return", "Enter", "Num+Return", "Num+Enter"}) {
+        const snow_shot::shortcuts::ShortcutBindingMap configured{
+            {QStringLiteral("next_selection_type"), {QString::fromLatin1(alias)}}};
+        const auto row = screenshotConfiguredShortcutHintRow(
+            configured, QStringLiteral("next_selection_type"), "Switch region type");
+        require(row.shortcut == QStringLiteral("Enter"),
+                "configured application hints must show both Enter keys uniformly");
+    }
 }
 
 void toolMatrixMatchesRequestedVisibility() {
@@ -624,6 +635,7 @@ void hintAreaHidesForSelectionOverlapOrCursorHover() {
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    enterHintsUseApplicationLabels();
     toolMatrixMatchesRequestedVisibility();
     configuredShortcutRowsUseActualValues();
     coordinateHintFollowsCopyColor();

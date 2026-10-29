@@ -393,11 +393,14 @@ endif()
 set(VCPKG_TARGET_IS_WINDOWS TRUE)
 set(FEATURES {';'.join(features)})
 {fragment}
-message(STATUS "ENCODERS=${{SNOW_SHOT_ENCODERS}}")
+message(STATUS "ENCODERS=${{SNOW_SHOT_ENCODERS}} OPTIONS=${{OPTIONS}}")
 ''')
             self.assertIn('h264_mf', output)
+            self.assertIn('hevc_mf', output)
+            self.assertIn('--enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc', output)
             self.assertIn('libx264,libx265', output)
-            for encoder in ('h264_nvenc', 'h264_amf', 'h264_qsv'):
+            for encoder in ('h264_nvenc', 'h264_amf', 'h264_qsv',
+                            'hevc_nvenc', 'hevc_amf', 'hevc_qsv'):
                 self.assertEqual(encoder in output, arch == 'x64')
 
     def test_minimal_recording_profiles_enable_only_required_tempo_filters(self):

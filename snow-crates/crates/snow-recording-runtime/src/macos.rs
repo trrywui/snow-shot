@@ -27,6 +27,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod schedule;
+use schedule::{ScheduledFrame, VideoSchedule};
+
 #[derive(Clone)]
 pub struct NativeRecordingConfig {
     pub capture: DesktopConfig,
@@ -41,6 +44,7 @@ pub struct NativeRecordingConfig {
     pub audio: Option<AudioStreamConfig>,
     pub audio_mode: crate::RecordingAudioMode,
     pub effects: NativeEffectsConfig,
+    pub webcam: Option<snow_webcam::Config>,
 }
 #[derive(Clone, Debug)]
 pub enum NativeRecordingEvent {
@@ -70,6 +74,8 @@ pub struct NativeRecordingReport {
 pub struct NativeRecordingSession {
     config: NativeRecordingConfig,
     effects: Option<Effects>,
+    webcam: snow_recording_effects::webcam::WebcamOverlay,
+    _webcam_capture: crate::webcam::CaptureLease,
     capture: DesktopSession,
     compositor: Option<Compositor>,
     encoder: StreamingEncoder,
@@ -80,7 +86,9 @@ pub struct NativeRecordingSession {
     native: bool,
     interrupted: bool,
     media: snow_recording_model::media::RecordedMedia,
-    last_pts: Option<u64>,
+    video_schedule: VideoSchedule<DesktopFrame>,
+    last_composition: Option<CompositionRevision>,
+    cpu_pixels: snow_memory::RasterBuffer,
     accepted_transform: Option<DesktopTransform>,
     geometry_changes: Vec<(u64, DesktopTransform)>,
     interruptions: Vec<(u64, String)>,
@@ -89,6 +97,14 @@ pub struct NativeRecordingSession {
     logical_output: Option<PixelSize>,
     stop_boundary: Option<std::sync::Arc<std::sync::Mutex<Option<Instant>>>>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompositionRevision {
+    source: u64,
+    effects: u64,
+    webcam: Option<u64>,
+}
+
 pub(crate) fn native_error(error: MacError) -> ScreenRecorderError {
     match error {
         MacError::PermissionDenied => {
@@ -144,12 +160,17 @@ impl NativeRecordingSession {
         logical_output: Option<PixelSize>,
         audio_control: AudioControlHandle,
     ) -> Result<Self> {
-        // Composite the tint against clean content and draw the pointer above it.
-        if config.effects.highlight_rgba[3] != 0
-            && config.capture.cursor == snow_media::CursorMode::Embedded
-        {
-            config.capture.cursor = snow_media::CursorMode::Separate;
+        if let Some(webcam) = &config.webcam {
+            webcam
+                .style
+                .validate()
+                .map_err(ScreenRecorderError::InvalidConfig)?;
         }
+        // Draw the pointer above both the camera and the highlight tint.
+        config.capture.cursor = overlay_cursor_mode(
+            config.capture.cursor,
+            config.effects.highlight_rgba[3] != 0 || config.webcam.is_some(),
+        );
         if config.capture.cancellation.is_canceled() {
             return Err(native_error(MacError::Canceled));
         }
@@ -258,7 +279,11 @@ impl NativeRecordingSession {
         let effects = Effects::new(config.effects.clone(), config.output, config.capture.cursor)?;
         // Startup (including audio-device initialization) is outside the recording timeline.
         let clock = RecordingClock::new(Instant::now());
+        let webcam_capture =
+            crate::webcam::CaptureLease::with_options(config.webcam.as_ref(), config.fps);
         Ok(Self {
+            webcam: Default::default(),
+            _webcam_capture: webcam_capture,
             media: snow_recording_model::media::RecordedMedia::new(
                 if hdr {
                     snow_media::ColorDescription::HDR10
@@ -269,6 +294,9 @@ impl NativeRecordingSession {
                 Vec::new(),
             ),
             effects,
+            video_schedule: VideoSchedule::new(config.fps),
+            last_composition: None,
+            cpu_pixels: snow_memory::RasterBuffer::new(),
             config,
             capture,
             compositor: None,
@@ -279,7 +307,6 @@ impl NativeRecordingSession {
             paused: false,
             native,
             interrupted: false,
-            last_pts: None,
             accepted_transform: None,
             geometry_changes: Vec::new(),
             interruptions: Vec::new(),
@@ -291,12 +318,9 @@ impl NativeRecordingSession {
     }
     pub(crate) fn preserve_failure(&mut self, error: ScreenRecorderError) -> ScreenRecorderError {
         if self.config.capture.cancellation.is_canceled() {
-            return error;
+            return ScreenRecorderError::ExportCanceled;
         }
-        self.encoder
-            .preserve_staging_failure(&error.to_string())
-            .map(ScreenRecorderError::from)
-            .unwrap_or(error)
+        crate::capture_failure::preserve(&mut self.encoder, &self.clock, Instant::now(), error)
     }
     pub fn pause(&mut self) {
         self.pause_at(Instant::now());
@@ -308,6 +332,9 @@ impl NativeRecordingSession {
     pub(super) fn pause_capture_at(&mut self, at: Instant) {
         if !self.paused {
             self.paused = true;
+            if let Some(webcam) = &self.config.webcam {
+                webcam.source.set_recording_active(false);
+            }
             if let Some(audio) = &self.audio {
                 audio.pause();
             }
@@ -318,6 +345,7 @@ impl NativeRecordingSession {
                 effects.reset(self.clock.active_elapsed_ms(at));
             }
             self.capture.release_capture_access();
+            self.video_schedule.clear();
         }
     }
     pub fn resume(&mut self) {
@@ -330,6 +358,9 @@ impl NativeRecordingSession {
     pub(super) fn resume_capture(&mut self) {
         if self.paused {
             self.paused = false;
+            if let Some(webcam) = &self.config.webcam {
+                webcam.source.set_recording_active(true);
+            }
             if let Some(audio) = &self.audio {
                 audio.resume();
             }
@@ -369,14 +400,19 @@ impl NativeRecordingSession {
             self.capture.poll_exclusions().map_err(native_error)?;
             return Ok(NativeRecordingEvent::Idle);
         }
-        match self
-            .capture
-            .next_event(timeout.min(Duration::from_millis(100)))
-        {
+        let wait = self.video_schedule.wait(
+            self.clock.active_elapsed_duration(Instant::now()),
+            timeout.min(Duration::from_millis(100)),
+        );
+        let observation = match self.capture.next_event(wait) {
             Ok(DesktopEvent::Configuration {
                 transform,
                 generation,
             }) => {
+                self.video_schedule.clear();
+                if let Some(effects) = &mut self.effects {
+                    effects.reset(self.clock.active_elapsed_ms(Instant::now()));
+                }
                 self.geometry_changes.push((generation, transform));
                 self.media
                     .geometry
@@ -390,14 +426,21 @@ impl NativeRecordingSession {
                         )
                         .map_err(|e| ScreenRecorderError::InvalidConfig(e.to_string()))?,
                     });
-                Ok(NativeRecordingEvent::Configuration {
+                return Ok(NativeRecordingEvent::Configuration {
                     transform,
                     generation,
-                })
+                });
             }
-            Ok(DesktopEvent::Frame(frame)) => self.submit(frame),
-            Err(MacError::Timeout) => Ok(NativeRecordingEvent::Idle),
+            Ok(DesktopEvent::Frame(frame)) => {
+                if !frame.duplicate && self.clock.is_active_at(frame.acquired_at) {
+                    Some((self.clock.active_elapsed_duration(frame.acquired_at), frame))
+                } else {
+                    None
+                }
+            }
+            Err(MacError::Timeout) => None,
             Err(MacError::Inactive) => {
+                self.video_schedule.clear();
                 if std::mem::replace(&mut self.interrupted, true) {
                     return Ok(NativeRecordingEvent::Idle);
                 }
@@ -418,55 +461,85 @@ impl NativeRecordingSession {
                         reason: snow_recording_model::media::DiscontinuityReason::SourceInterrupted,
                     },
                 );
-                Ok(NativeRecordingEvent::Interruption { at_ms, reason })
+                return Ok(NativeRecordingEvent::Interruption { at_ms, reason });
             }
-            Err(error) => Err(native_error(error)),
-        }
-    }
-    fn submit(&mut self, frame: DesktopFrame) -> Result<NativeRecordingEvent> {
-        self.interrupted = false;
-        if !self.clock.is_active_at(frame.acquired_at)
-            || (frame.duplicate && self.last_pts.is_some() && self.effects.is_none())
+            Err(error) => return Err(native_error(error)),
+        };
+        let now = Instant::now();
+        if !self.clock.is_active_at(now)
+            || self.stop_boundary.as_ref().is_some_and(|boundary| {
+                boundary
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some_and(|stop| now >= stop)
+            })
         {
             return Ok(NativeRecordingEvent::Idle);
         }
-        let frame_time = if self.effects.is_some() && frame.duplicate {
-            Instant::now()
-        } else {
-            frame.acquired_at
-        };
-        let pts = u64::try_from(
-            self.clock.active_elapsed_duration(frame_time).as_nanos() * u128::from(self.config.fps)
-                / 1_000_000_000,
-        )
-        .map_err(|_| ScreenRecorderError::InvalidConfig("recording timestamp overflow".into()))?;
-        if self.last_pts.is_some_and(|last| pts <= last) {
-            return Ok(NativeRecordingEvent::Idle);
+        match self
+            .video_schedule
+            .poll(self.clock.active_elapsed_duration(now), observation)
+        {
+            Some(frame) => self.submit(frame),
+            None => Ok(NativeRecordingEvent::Idle),
         }
+    }
+    fn submit(&mut self, scheduled: ScheduledFrame<DesktopFrame>) -> Result<NativeRecordingEvent> {
+        let ScheduledFrame {
+            frame,
+            revision,
+            slot,
+        } = scheduled;
+        self.interrupted = false;
+        let pts = slot.pts;
+        let timestamp_ms = slot.at.as_millis().min(u128::from(u64::MAX)) as u64;
         let size = frame.image.size();
-        if self.stop_boundary.as_ref().is_some_and(|boundary| {
-            boundary
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some_and(|stop| frame_time >= stop)
-        }) {
-            return Ok(NativeRecordingEvent::Idle);
-        }
         let destination = aspect_fit(size, self.logical_output.unwrap_or(self.config.output))
             .map_err(|e| ScreenRecorderError::InvalidConfig(e.to_string()))?;
         let (tiles, interruption) = if let Some(effects) = &mut self.effects {
-            effects.draw(
-                &self.clock,
-                frame.transform,
-                destination,
-                self.clock.active_elapsed_ms(frame_time),
-            )?
+            effects.draw(&self.clock, frame.transform, destination, timestamp_ms)?
         } else {
             (Vec::new(), None)
         };
         if let Some(reason) = interruption {
             self.interruptions
                 .push((self.clock.active_elapsed_ms(frame.acquired_at), reason));
+        }
+        if let Some(webcam) = &self.config.webcam {
+            let sample = webcam.source.recording_snapshot(&self.clock, slot.at);
+            self.webcam.prepare(
+                sample.frame.as_deref(),
+                webcam.style,
+                (self.config.output.width, self.config.output.height),
+            );
+        }
+        let webcam =
+            self.webcam
+                .image()
+                .map(|image| snow_macos::compositor::RevisionedRgbaOverlay {
+                    revision: image.generation,
+                    overlay: snow_macos::compositor::RgbaOverlay {
+                        x: image.rect.0,
+                        y: image.rect.1,
+                        width: image.rect.2,
+                        height: image.rect.2,
+                        stride: image.rect.2 as usize * 4,
+                        bytes: image.pixels,
+                    },
+                });
+        let composition = CompositionRevision {
+            source: revision,
+            effects: self.effects.as_ref().map_or(0, Effects::revision),
+            webcam: self.webcam.image().map(|image| image.generation),
+        };
+        if self.last_composition == Some(composition) {
+            self.encoder.observe_unchanged_video_frame_at_pts(pts)?;
+            return Ok(NativeRecordingEvent::Idle);
+        }
+        if webcam.is_none()
+            && let Some(compositor) = &mut self.compositor
+        {
+            compositor.clear_cached_background_overlay();
         }
         let overlays: Vec<_> = tiles
             .iter()
@@ -506,7 +579,7 @@ impl NativeRecordingSession {
             self.config.output,
             output_format,
             destination,
-            overlays.is_empty() && highlight.is_empty(),
+            overlays.is_empty() && highlight.is_empty() && webcam.is_none(),
         ) {
             frame.image.clone()
         } else {
@@ -590,8 +663,13 @@ impl NativeRecordingSession {
                 .compositor
                 .as_mut()
                 .unwrap()
-                .compose_with_highlight(&layers, &overlays, &highlight, true)
-            {
+                .compose_with_cached_background_overlay(
+                    &layers,
+                    webcam.as_ref(),
+                    &overlays,
+                    &highlight,
+                    true,
+                ) {
                 Ok(image) => image,
                 Err(MacError::Timeout) => return Ok(NativeRecordingEvent::Idle),
                 Err(error) => return Err(native_error(error)),
@@ -603,20 +681,26 @@ impl NativeRecordingSession {
         if self.native {
             self.encoder.push_native_frame_at_pts(pts, image)?;
         } else {
-            let cpu = image
-                .to_cpu()
-                .map_err(|e| ScreenRecorderError::Encode(e.to_string()))?;
             if self.config.capture.dynamic_range == DynamicRange::Hdr {
+                let cpu = image
+                    .to_cpu()
+                    .map_err(|e| ScreenRecorderError::Encode(e.to_string()))?;
                 self.encoder.push_cpu_hdr_frame_at_pts(pts, &cpu)?;
             } else {
-                let rgba = cpu
-                    .into_format(PixelFormat::Rgba8)
+                self.cpu_pixels.resize(
+                    self.config.output.width as usize * self.config.output.height as usize * 4,
+                    0,
+                );
+                image
+                    .copy_packed(&mut self.cpu_pixels, image.format() == PixelFormat::Bgra8)
                     .map_err(|error| ScreenRecorderError::Encode(error.to_string()))?;
-                self.encoder.push_rgba_frame_at_pts(pts, &rgba.bytes)?;
+                self.cpu_pixels = self
+                    .encoder
+                    .push_raster_rgba_frame_at_pts(pts, std::mem::take(&mut self.cpu_pixels))?;
             }
             self.cpu_readbacks += 1;
         }
-        self.last_pts = Some(pts);
+        self.last_composition = Some(composition);
         self.accepted_transform = Some(frame.transform);
         Ok(NativeRecordingEvent::Frame { pts })
     }
@@ -627,6 +711,7 @@ impl NativeRecordingSession {
         let stop = Instant::now();
         self.clock.controller().mark_pause(stop);
         self.capture.release_capture_access();
+        self.video_schedule.clear();
         if let Some(audio) = self.audio.take() {
             for event in audio.stop_and_drain() {
                 if let AudioEvent::Error(error) = event {
@@ -650,6 +735,7 @@ impl NativeRecordingSession {
         Ok(duration_ms)
     }
     pub fn finish(mut self) -> Result<NativeRecordingReport> {
+        self._webcam_capture.stop();
         let end = self
             .prepare_finish()
             .map_err(|error| self.preserve_failure(error))?;
@@ -683,9 +769,12 @@ impl NativeRecordingSession {
     pub(super) fn freeze_source(&mut self, at: Instant) {
         self.clock.controller().mark_pause(at);
         self.capture.release_capture_access();
+        self.video_schedule.clear();
     }
     pub(super) fn finish_source(mut self, duration_ms: u64) -> Result<NativeRecordingReport> {
+        self._webcam_capture.stop();
         self.capture.release_capture_access();
+        self.video_schedule.clear();
         let encoder = self
             .encoder
             .finish_at_duration_ms_cancelable(duration_ms, &self.config.capture.cancellation)?;
@@ -793,6 +882,14 @@ fn audio_discontinuity(
 mod direct;
 pub use direct::{DirectSession, recording_dimensions};
 
+fn overlay_cursor_mode(cursor: snow_media::CursorMode, overlay: bool) -> snow_media::CursorMode {
+    if overlay && cursor == snow_media::CursorMode::Embedded {
+        snow_media::CursorMode::Separate
+    } else {
+        cursor
+    }
+}
+
 mod cursor_rasterizer;
 pub(crate) mod deferred;
 #[cfg(feature = "legacy-capture")]
@@ -805,6 +902,17 @@ pub use editable::{NativeEditableReport, NativeEditableSession};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_and_highlight_preserve_hidden_cursors_and_draw_visible_cursors_above_them() {
+        use snow_media::CursorMode::{Embedded, Hidden, Separate};
+        assert_eq!(overlay_cursor_mode(Embedded, true), Separate);
+        assert_eq!(overlay_cursor_mode(Embedded, false), Embedded);
+        for cursor in [Hidden, Separate] {
+            assert_eq!(overlay_cursor_mode(cursor, true), cursor);
+            assert_eq!(overlay_cursor_mode(cursor, false), cursor);
+        }
+    }
+
     #[test]
     fn direct_outputs_do_not_create_or_touch_sidecars() {
         for format in [

@@ -14,6 +14,8 @@ class ScreenRecordingShortcutController final : public QObject {
     ScreenRecordingShortcutController(ScreenRecordingAreaWindow& area,
                                       ScreenRecordingToolbarWindow& toolbar,
                                       QObject* parent = nullptr);
+    void setAreaHistoryActions(std::function<bool()> canNavigate,
+                               std::function<void(bool previous)> navigate);
 
   private:
     using ShortcutManager = snow_shot::presentation::WindowShortcutManager;
@@ -24,7 +26,10 @@ class ScreenRecordingShortcutController final : public QObject {
     QPointer<ScreenRecordingToolbarWindow> m_toolbar;
     ShortcutManager m_shortcutManager;
     QMap<QString, ShortcutManager::BindingHandle> m_recordingBindings;
+    QMap<QString, ShortcutManager::BindingHandle> m_recordingTapBindings;
     QMap<QString, ShortcutManager::BindingHandle> m_drawingBindings;
+    std::function<bool()> m_canNavigateAreaHistory;
+    std::function<void(bool)> m_navigateAreaHistory;
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENRECORDINGSHORTCUTCONTROLLER_H

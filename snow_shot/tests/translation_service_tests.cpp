@@ -4,6 +4,7 @@
 #include "snow_shot/storage/configurationstore.h"
 #include "snow_shot/translation/translationlanguages.h"
 #include <QTemporaryDir>
+#include <QDateTime>
 #include <memory>
 
 using namespace translation_tests;
@@ -11,6 +12,348 @@ using namespace snow_shot::translation;
 using snow_shot::storage::ConfigurationStore;
 
 namespace {
+QByteArray rateLimitResponse(const QByteArray& code = "rate_limited",
+                             const QByteArray& retryAfter = "1") {
+    const QByteArray body = "{\"code\":\"" + code +
+                            "\",\"detail\":\"Request limit reached\",\"retry_after_seconds\":1}";
+    return "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/problem+json\r\n"
+           "Retry-After: " +
+           retryAfter + "\r\nContent-Length: " + QByteArray::number(body.size()) +
+           "\r\nConnection: close\r\n\r\n" + body;
+}
+
+void temporaryRateLimitsRetryWithoutLosingResults() {
+    Server server;
+    QElapsedTimer rejectedAt;
+    server.streamRejection = [&](int index) {
+        if (index != 0)
+            return QByteArray{};
+        rejectedAt.start();
+        return rateLimitResponse();
+    };
+    SnowShotApiClient client(server.url());
+    QObject receiver;
+    int completions = 0;
+    QString output;
+    SnowShotTranslationResult result;
+    require(client.streamTranslation(
+                {QStringLiteral("general"), QStringLiteral("en"), QStringLiteral("zh-Hans"),
+                 QStringLiteral("hello")},
+                &receiver, [&](const QString& text) { output += text; },
+                [&](auto value) {
+                    result = value;
+                    ++completions;
+                }) != 0,
+            "start a translation that is initially rate limited");
+    waitUntil([&] { return server.streams.size() == 2 || completions != 0; },
+              "a temporary rate limit eventually retries");
+    require(completions == 0 && server.streams.size() == 2,
+            "temporary admission rejection is retried before completing the consumer");
+    require(rejectedAt.elapsed() >= 1000, "automatic retry respects Retry-After");
+    require(server.streams[0].body == server.streams[1].body &&
+                server.streams[0].headers != server.streams[1].headers,
+            "retry preserves input and uses a new request identity");
+    server.delta(1, QStringLiteral("translated"));
+    server.finish(1);
+    waitUntil([&] { return completions == 1; }, "retried translation completes once");
+    require(result.succeeded() && output == QStringLiteral("translated"),
+            "retry publishes exactly one complete translation");
+}
+
+void builtInQueueIsSharedAndCancellationRemovesWaitingRequests() {
+    Server server;
+    SnowShotApiClient client(server.url());
+    QObject firstReceiver;
+    QObject secondReceiver;
+    QVector<SnowShotApiClient::RequestToken> tokens;
+    int completed = 0;
+    for (int index = 0; index < 12; ++index) {
+        tokens.append(client.streamTranslation(
+            {QStringLiteral("general"), QStringLiteral("en"), QStringLiteral("zh-Hans"),
+             QString::number(index)},
+            index < 6 ? &firstReceiver : &secondReceiver, [](const QString&) {},
+            [&](auto result) {
+                require(result.succeeded(), "scheduled requests succeed");
+                ++completed;
+            }));
+    }
+    waitUntil([&] { return server.streams.size() >= 8; }, "fill shared built-in slots");
+    QElapsedTimer settled;
+    settled.start();
+    waitUntil([&] { return settled.elapsed() >= 150; }, "allow pending dispatch events to settle");
+    require(server.streams.size() == 8,
+            "separate consumers share eight built-in requests instead of multiplying capacity");
+    client.cancel(tokens[8]);
+    server.delta(0, QStringLiteral("done"));
+    server.finish(0);
+    waitUntil([&] { return server.streams.size() == 9; }, "completion replenishes shared capacity");
+    require(server.streams[8]
+                    .body.value(QStringLiteral("messages"))
+                    .toArray()
+                    .last()
+                    .toObject()
+                    .value(QStringLiteral("content")) == QStringLiteral("9"),
+            "cancelled queued input is never sent");
+    for (int index = 1; index < 9; ++index) {
+        server.delta(index, QStringLiteral("done"));
+        server.finish(index);
+    }
+    waitUntil([&] { return server.streams.size() == 11; }, "remaining consumers drain the queue");
+    for (int index = 9; index < 11; ++index) {
+        server.delta(index, QStringLiteral("done"));
+        server.finish(index);
+    }
+    waitUntil([&] { return completed == 11; }, "cancelled request does not complete its consumer");
+}
+
+void rateLimitCooldownIsSharedAndCancelable() {
+    Server server;
+    QElapsedTimer rejectedAt;
+    server.streamRejection = [&](int index) {
+        if (index != 0)
+            return QByteArray{};
+        rejectedAt.start();
+        return rateLimitResponse();
+    };
+    SnowShotApiClient client(server.url());
+    auto receiver = std::make_unique<QObject>();
+    QObject otherReceiver;
+    int cancelledCompletions = 0;
+    int otherCompletions = 0;
+    const auto submit = [&](QObject* target, SnowShotApiClient::TranslationCompletion completion) {
+        return client.streamTranslation(
+            {QStringLiteral("general"), QStringLiteral("en"), QStringLiteral("zh-Hans"),
+             QStringLiteral("hello")},
+            target, [](const QString&) {}, std::move(completion));
+    };
+    require(submit(receiver.get(), [&](auto) { ++cancelledCompletions; }) != 0,
+            "submit request to cancel during cooldown");
+    waitUntil([&] { return rejectedAt.isValid(); }, "server returns a temporary limit");
+    QElapsedTimer handled;
+    handled.start();
+    waitUntil([&] { return handled.elapsed() >= 150; }, "client processes admission response");
+    receiver.reset();
+    require(submit(&otherReceiver,
+                   [&](auto result) {
+                       require(result.succeeded(), "other consumer succeeds after cooldown");
+                       ++otherCompletions;
+                   }) != 0,
+            "a second consumer can queue during cooldown");
+    waitUntil([&] { return server.streams.size() >= 2; }, "shared cooldown eventually expires");
+    require(rejectedAt.elapsed() >= 1000 && server.streams.size() == 2 && cancelledCompletions == 0,
+            "receiver destruction cancels replay while other work respects the same cooldown");
+    server.delta(1, QStringLiteral("done"));
+    server.finish(1);
+    waitUntil([&] { return otherCompletions == 1; }, "unrelated queued consumer completes");
+}
+
+void automaticRetriesAreBoundedAndExcludeDailyAllowance() {
+    for (const bool exhausted : {false, true}) {
+        Server server;
+        server.streamRejection = [exhausted](int) {
+            return rateLimitResponse(exhausted ? "allowance_exhausted" : "rate_limited");
+        };
+        SnowShotApiClient client(server.url());
+        QObject receiver;
+        int completed = 0;
+        SnowShotTranslationResult result;
+        require(client.streamTranslation(
+                    {QStringLiteral("general"), QStringLiteral("en"), QStringLiteral("zh-Hans"),
+                     QStringLiteral("hello")},
+                    &receiver, [](const QString&) {},
+                    [&](auto value) {
+                        result = value;
+                        ++completed;
+                    }) != 0,
+                "submit a persistently rejected request");
+        waitUntil([&] { return completed == 1; }, "persistent rejection settles in a bounded time");
+        require(server.streams.size() == (exhausted ? 1 : 3) && result.httpStatus == 429 &&
+                    result.code == (exhausted ? QStringLiteral("allowance_exhausted")
+                                              : QStringLiteral("rate_limited")),
+                "only temporary admission limits retry and at most three attempts execute");
+    }
+}
+
+void retryHintsRespectDatesBodyMetadataAndTheDeadline() {
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        Server server;
+        server.streamRejection = [scenario](int index) {
+            if (index != 0)
+                return QByteArray{};
+            if (scenario == 0)
+                return rateLimitResponse("queue_full", {});
+            if (scenario == 1)
+                return rateLimitResponse(
+                    "rate_limited", QLocale::c()
+                                        .toString(QDateTime::currentDateTimeUtc().addSecs(2),
+                                                  QStringLiteral("ddd, dd MMM yyyy HH:mm:ss 'GMT'"))
+                                        .toLatin1());
+            if (scenario == 2)
+                return rateLimitResponse("rate_limited", "120");
+            return rateLimitResponse("rate_limited", "invalid")
+                .replace("\"retry_after_seconds\":1", "\"retry_after_seconds\":\"invalid\"");
+        };
+        SnowShotApiClient client(server.url());
+        QObject receiver;
+        int completed = 0;
+        SnowShotTranslationResult result;
+        require(client.streamTranslation(
+                    {QStringLiteral("general"), QStringLiteral("en"), QStringLiteral("zh-Hans"),
+                     QStringLiteral("hello")},
+                    &receiver, [](const QString&) {},
+                    [&](auto value) {
+                        result = value;
+                        ++completed;
+                    }) != 0,
+                "submit a request with structured retry metadata");
+        waitUntil([&] { return completed != 0 || server.streams.size() == 2; },
+                  "retry metadata either permits a bounded retry or settles the request");
+        if (scenario < 2) {
+            require(completed == 0 && server.streams.size() == 2,
+                    "body-only metadata and HTTP dates both permit admission retries");
+            server.delta(1, QStringLiteral("done"));
+            server.finish(1);
+            waitUntil([&] { return completed == 1; }, "metadata-based retry completes");
+            require(result.succeeded(), "metadata-based retry succeeds");
+        } else {
+            require(completed == 1 && server.streams.size() == 1 && !result.succeeded(),
+                    "missing usable retry timing and waits beyond the deadline remain terminal");
+        }
+    }
+}
+
+void partialTranslationsDoNotReplayAndRetainTheFailureReason() {
+    Server server;
+    SnowShotApiClient client(server.url());
+    QObject receiver;
+    QString output;
+    int completed = 0;
+    SnowShotTranslationResult result;
+    require(client.streamTranslation(
+                {QStringLiteral("general"), QStringLiteral("en"), QStringLiteral("zh-Hans"),
+                 QStringLiteral("hello")},
+                &receiver, [&](const QString& text) { output += text; },
+                [&](auto value) {
+                    result = value;
+                    ++completed;
+                }) != 0,
+            "submit a translation interrupted after content");
+    waitUntil([&] { return server.streams.size() == 1; }, "partial translation starts");
+    server.delta(0, QStringLiteral("partial"));
+    server.send(0, QByteArrayLiteral("event: error\ndata: {\"status\":429,"
+                                     "\"code\":\"queue_full\",\"detail\":\"Wait before retrying\","
+                                     "\"retry_after_seconds\":1}\n\n"));
+    waitUntil([&] { return completed == 1; }, "partial translation reports its error once");
+    require(output == QStringLiteral("partial") && server.streams.size() == 1 &&
+                result.httpStatus == 429 && result.code == QStringLiteral("queue_full") &&
+                result.error.contains(QStringLiteral("Wait before retrying")),
+            "partial content is retained without replaying the request or hiding its error");
+}
+
+void builtInConcurrencyUsesEightRequests(const QString& directory) {
+    Server server;
+    SnowShotApiClient client(server.url());
+    ConfigurationStore settings(directory + QStringLiteral("/concurrency.json"), true, true, 60000);
+    auto& service = TranslationService::forClient(client, settings, QLocale::English);
+    service.refreshModels();
+    waitUntil([&] { return !service.loadingModels(); }, "load built-in models for concurrency");
+    auto preferences = service.preferences();
+    preferences.modelId = QStringLiteral("general");
+    preferences.sourceLanguage = QStringLiteral("en");
+    preferences.targetLanguage = QStringLiteral("zh-Hans");
+    preferences.secondaryTargetLanguage.clear();
+    QObject owner;
+    QStringList texts;
+    for (int index = 0; index < 9; ++index)
+        texts.append(QString::number(index));
+    auto* job = service.createJob(texts, preferences, &owner);
+    job->start();
+    waitUntil([&] { return server.streams.size() == 8; },
+              "eight built-in requests reach the server concurrently");
+    int streaming = 0;
+    int idle = 0;
+    for (const auto& unit : job->units()) {
+        streaming += unit.state == TranslationJob::State::Streaming;
+        idle += unit.state == TranslationJob::State::Idle;
+    }
+    require(streaming == 8 && idle == 1, "ninth unit waits for built-in capacity");
+    for (int index = 0; index < 8; ++index)
+        server.delta(index, QStringLiteral("translated"));
+    server.finish(0);
+    waitUntil([&] { return server.streams.size() == 9; },
+              "completion starts the next built-in request");
+    server.delta(8, QStringLiteral("translated"));
+    for (int index = 1; index < 9; ++index)
+        server.finish(index);
+    waitUntil([&] { return !job->busy(); }, "all built-in requests complete");
+    require(job->state() == TranslationJob::State::Completed,
+            "built-in translation completes after replenishing capacity");
+}
+
+void aiModelSelectionMigratesOnlyAfterDiscovery(const QString& directory) {
+    for (const QString& legacy :
+         {QStringLiteral("qwen3.8-flash"), QStringLiteral("qwen-mt-flash")}) {
+        Server server;
+        server.models =
+            QJsonArray{QJsonObject{{QStringLiteral("model"), legacy},
+                                   {QStringLiteral("name"), QStringLiteral("Legacy")},
+                                   {QStringLiteral("translation_mode"), QStringLiteral("default")},
+                                   {QStringLiteral("supports_vision"), true}}};
+        SnowShotApiClient client(server.url());
+        ConfigurationStore settings(directory + QLatin1Char('/') + legacy + QStringLiteral(".json"),
+                                    true, true, 60000);
+        require(settings.setValue(QStringLiteral("screenshot_translation/model"), legacy),
+                "save legacy translation selection");
+        auto& service = TranslationService::forClient(client, settings, QLocale::English);
+        auto preferences = service.preferences();
+        preferences.modelId = legacy;
+        preferences.sourceLanguage = QStringLiteral("en");
+        preferences.targetLanguage = QStringLiteral("zh-Hans");
+        require(service.savePreferences(preferences), "save legacy translation preferences");
+        service.refreshModels();
+        waitUntil([&] { return !service.loadingModels(); }, "load older server catalog");
+        require(service.preferences().modelId == legacy,
+                "older backend preserves legacy selection");
+        server.rejectModels = true;
+        service.refreshModels(true);
+        waitUntil([&] { return !service.loadingModels(); }, "finish offline refresh");
+        require(service.preferences().modelId == legacy,
+                "offline refresh preserves legacy selection");
+        server.rejectModels = false;
+        server.models[0] =
+            QJsonObject{{QStringLiteral("model"), QStringLiteral("ai-model")},
+                        {QStringLiteral("name"), QStringLiteral("AI Model")},
+                        {QStringLiteral("translation_mode"), QStringLiteral("default")},
+                        {QStringLiteral("supports_vision"), true}};
+        service.refreshModels(true);
+        waitUntil([&] { return !service.loadingModels(); }, "discover AI Model");
+        require(service.preferences().modelId == QStringLiteral("ai-model") &&
+                    translationModelIndex(service.models(), legacy) == 0 &&
+                    service.models().first().supportsVision,
+                "successful catalog migrates saved selections and exposes vision");
+        QObject owner;
+        auto* job = service.createJob({QStringLiteral("Hello")}, preferences, &owner);
+        job->start();
+        waitUntil([&] { return server.streams.size() == 1; },
+                  "restored preferences start translation");
+        const auto body = server.streams.first().body;
+        require(body.value(QStringLiteral("model")) == QStringLiteral("ai-model") &&
+                    !body.contains(QStringLiteral("translation_options")) &&
+                    body.value(QStringLiteral("messages"))
+                        .toArray()
+                        .last()
+                        .toObject()
+                        .value(QStringLiteral("content"))
+                        .isString(),
+                "restored legacy preferences use ordinary text messages through AI Model");
+        job->cancel();
+        require(snowShotResolvedBuiltInModelId(service.models(),
+                                               QStringLiteral("custom:qwen-mt-flash")) ==
+                    QStringLiteral("custom:qwen-mt-flash"),
+                "custom identities are never migrated");
+    }
+}
+
 void discoverySharesRequestsAndCancellation(const QString& directory) {
     Server server;
     server.holdModels = true;
@@ -705,12 +1048,35 @@ void customModelsStayAvailableAndInvalidateTogether(const QString& directory) {
               "explicit retry starts updated connection");
     require(custom.streams.last().headers.contains("Authorization: Bearer updated-key"),
             "retry uses new credentials");
+    custom.delta(2, QStringLiteral("completed"));
+    custom.finish(2);
+    waitUntil([&] { return !second->busy(); }, "cache a result before changing the provider");
+    auto* active = service.createJob({QStringLiteral("provider change input")}, &owner);
+    active->start();
+    waitUntil([&] { return custom.streams.size() == 4; }, "another job remains active");
+    model.provider = QStringLiteral("deepseek");
+    require(settings.setValue(key, snow_shot::customAiModelsToJson({model})),
+            "change only the provider type");
+    waitUntil([&] { return custom.disconnected(3); }, "provider edit aborts the active stream");
+    require(active->state() == TranslationJob::State::Invalidated &&
+                second->state() == TranslationJob::State::Invalidated &&
+                active->units().first().text.isEmpty() && second->units().first().text.isEmpty() &&
+                custom.streams.size() == 4,
+            "provider-only edits invalidate completed and running results without restarting");
+    second->retry();
+    waitUntil([&] { return custom.streams.size() == 5; }, "retry uses the updated provider");
+    require(custom.streams.last().headers.contains("Authorization: Bearer updated-key") &&
+                custom.streams.last()
+                        .body.value(QStringLiteral("thinking"))
+                        .toObject()
+                        .value(QStringLiteral("type")) == QStringLiteral("disabled"),
+            "retry uses the new provider controls with the existing credentials");
     builtIn.respondModels();
     waitUntil([&] { return !service.loadingModels(); }, "finish builtin discovery");
     require(settings.setValue(key, QJsonArray{}), "delete selected custom model");
     require(second->state() == TranslationJob::State::Invalidated &&
                 service.preferences().modelId == QStringLiteral("general") &&
-                custom.streams.size() == 3 && builtIn.streams.isEmpty(),
+                custom.streams.size() == 5 && builtIn.streams.isEmpty(),
             "deletion selects shared fallback without sending another translation");
 }
 
@@ -1035,6 +1401,14 @@ int main(int argc, char** argv) {
     invalidationNotificationsRespectReentrantRetry(directory.path());
     if (application.arguments().contains(QStringLiteral("--notification-lifetime-only")))
         return 0;
+    builtInConcurrencyUsesEightRequests(directory.path());
+    temporaryRateLimitsRetryWithoutLosingResults();
+    builtInQueueIsSharedAndCancellationRemovesWaitingRequests();
+    rateLimitCooldownIsSharedAndCancelable();
+    automaticRetriesAreBoundedAndExcludeDailyAllowance();
+    retryHintsRespectDatesBodyMetadataAndTheDeadline();
+    partialTranslationsDoNotReplayAndRetainTheFailureReason();
+    aiModelSelectionMigratesOnlyAfterDiscovery(directory.path());
     discoverySharesRequestsAndCancellation(directory.path());
     secondaryTargetsPersistAndReachEveryUnit(directory.path());
     detectionIsDeferredUntilRoutingNeedsIt(directory.path());

@@ -132,16 +132,24 @@ class ScreenshotClipboardContentReader final {
     // Optional admission for automation. The callback reserves total retained
     // and transient bytes before image copies, decoding, and rasterization.
     using AllocationCheck = std::function<bool(qint64)>;
+    // Editors admit files against their raster budget; clipboard pins retain their own limits.
+    enum class FilePurpose { Clipboard, ImageImport };
 
     [[nodiscard]] static QStringList supportedImageFileExtensions();
     [[nodiscard]] static QStringList supportedFileExtensions();
     [[nodiscard]] static QStringList localFilePaths(const QMimeData* mimeData);
+    // Match decode() precedence without fetching image bytes: inline images take priority
+    // over accompanying file URLs. File-only publications keep their batch import path.
+    [[nodiscard]] static QStringList filePathsForImport(const QMimeData* mimeData);
     // Preserves clipboard order and duplicates; file validation belongs to the import worker.
+    // Inline images take priority over file URLs, as in filePathsForImport().
     [[nodiscard]] static QStringList localImageFilePaths(const QMimeData* mimeData);
     // File metadata is independent of GUI state and may be captured on a worker.
     [[nodiscard]] static QList<ScreenshotClipboardLocalImage>
-    snapshotLocalFiles(const QStringList& paths, CancellationCheck cancelled = {});
+    snapshotLocalFiles(const QStringList& paths, CancellationCheck cancelled = {},
+                       FilePurpose purpose = FilePurpose::Clipboard);
     // Validates the captured file revision at read time, then decodes only its initial image.
+    // Uses ImageImport limits; allocate reserves encoded bytes and decoded working storage.
     // Animated containers retain composition/orientation/profile semantics without playback state.
     [[nodiscard]] static QImage decodeImageFile(const ScreenshotClipboardLocalImage& file,
                                                 CancellationCheck cancelled = {},

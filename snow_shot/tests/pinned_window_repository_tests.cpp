@@ -447,47 +447,60 @@ void legacyAnimatedFileSourcesAndPlaybackDefaultsRecover() {
     auto fixtures = pinned_animation_fixtures::images();
     fixtures.append(pinned_animation_fixtures::hiddenPosterAnimation());
     for (const auto& fixture : fixtures) {
-        QTemporaryDir directory;
-        const auto source = snow_shot::image_codec::decodeAnimationSource(fixture.bytes);
-        const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        auto record = recordWithId(id, source->firstFrame);
-        record.animationSource = source;
-        record.sourceKind = storage::PinnedWindowSourceKind::ClipboardImageFile;
-        record.originalFilePath = directory.filePath(QStringLiteral("missing.") + fixture.suffix);
-        record.originalFileName = QFileInfo(record.originalFilePath).fileName();
-        {
+        for (const bool mislabeled : {false, true}) {
+            QTemporaryDir directory;
+            const auto source = snow_shot::image_codec::decodeAnimationSource(fixture.bytes);
+            const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            auto record = recordWithId(id, source->firstFrame);
+            record.animationSource = source;
+            record.sourceKind = storage::PinnedWindowSourceKind::ClipboardImageFile;
+            record.originalFilePath =
+                directory.filePath(QStringLiteral("missing.") + fixture.suffix);
+            record.originalFileName = QFileInfo(record.originalFilePath).fileName();
+            {
+                storage::PinnedWindowRepository repository(directory.path());
+                require(repository.create(record).success && repository.flush().success,
+                        "legacy animation fixture must commit");
+            }
+            const auto manifest =
+                QDir(directory.path()).filePath(QStringLiteral("pinned_windows_v2/index.json"));
+            auto document = QJsonDocument::fromJson(readBytes(manifest)).object();
+            auto records = document.value(QStringLiteral("records")).toArray();
+            auto item = records.at(0).toObject();
+            auto payloads = item.value(QStringLiteral("payloads")).toObject();
+            auto imageName = payloads.take(QStringLiteral("animation")).toString();
+            if (mislabeled) {
+                const QDir payloadDirectory(
+                    directory.filePath(QStringLiteral("pinned_windows_v2/pins/%1").arg(id)));
+                const auto renamed = QStringLiteral("misleading.jpg");
+                require(QFile::rename(payloadDirectory.filePath(imageName),
+                                      payloadDirectory.filePath(renamed)),
+                        "rename legacy animation to a still-image suffix");
+                imageName = renamed;
+            }
+            payloads.insert(QStringLiteral("image"), imageName);
+            item.insert(QStringLiteral("payloads"), payloads);
+            item.remove(QStringLiteral("animation_speed_percent"));
+            item.remove(QStringLiteral("animation_playing"));
+            records.replace(0, item);
+            document.insert(QStringLiteral("records"), records);
+            QFile file(manifest);
+            const auto bytes = QJsonDocument(document).toJson();
+            require(file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                        file.write(bytes) == bytes.size(),
+                    "legacy source descriptor must be written");
+            file.close();
             storage::PinnedWindowRepository repository(directory.path());
-            require(repository.create(record).success && repository.flush().success,
-                    "legacy animation fixture must commit");
+            const auto preview = repository.loadPreviewSource(id);
+            require(preview && samePixels(preview->image, source->firstFrame),
+                    "old animated file records must still expose a static first-frame preview");
+            const auto restored = repository.loadRecord(id);
+            require(restored && restored->animationSource &&
+                        restored->animationSource->encoded == fixture.bytes &&
+                        restored->animationSpeedPercent == 100 && restored->animationPlaying &&
+                        samePixels(restored->image, source->firstFrame),
+                    "old private animated files must acquire playback with compatible defaults");
         }
-        const auto manifest =
-            QDir(directory.path()).filePath(QStringLiteral("pinned_windows_v2/index.json"));
-        auto document = QJsonDocument::fromJson(readBytes(manifest)).object();
-        auto records = document.value(QStringLiteral("records")).toArray();
-        auto item = records.at(0).toObject();
-        auto payloads = item.value(QStringLiteral("payloads")).toObject();
-        payloads.insert(QStringLiteral("image"), payloads.take(QStringLiteral("animation")));
-        item.insert(QStringLiteral("payloads"), payloads);
-        item.remove(QStringLiteral("animation_speed_percent"));
-        item.remove(QStringLiteral("animation_playing"));
-        records.replace(0, item);
-        document.insert(QStringLiteral("records"), records);
-        QFile file(manifest);
-        const auto bytes = QJsonDocument(document).toJson();
-        require(file.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
-                    file.write(bytes) == bytes.size(),
-                "legacy source descriptor must be written");
-        file.close();
-        storage::PinnedWindowRepository repository(directory.path());
-        const auto preview = repository.loadPreviewSource(id);
-        require(preview && samePixels(preview->image, source->firstFrame),
-                "old animated file records must still expose a static first-frame preview");
-        const auto restored = repository.loadRecord(id);
-        require(restored && restored->animationSource &&
-                    restored->animationSource->encoded == fixture.bytes &&
-                    restored->animationSpeedPercent == 100 && restored->animationPlaying &&
-                    samePixels(restored->image, source->firstFrame),
-                "old private animated files must acquire playback with compatible defaults");
     }
 }
 
@@ -1580,6 +1593,50 @@ void alwaysOnTopStateRoundTripsAndDefaultsToEnabledForLegacyRecords() {
     require(loaded.has_value() && loaded->alwaysOnTop,
             "legacy records must restore with always-on-top enabled");
 }
+void mislabeledImageFilesSurviveRestart() {
+    for (const auto format : {snow::image::Format::jpeg, snow::image::Format::png}) {
+        QTemporaryDir directory;
+        require(directory.isValid(), "mislabeled repository fixture directory");
+        const auto suffix =
+            format == snow::image::Format::jpeg ? QStringLiteral("png") : QStringLiteral("jpg");
+        const auto path = directory.filePath(QStringLiteral("original.") + suffix);
+        QByteArray encoded;
+        QBuffer buffer(&encoded);
+        require(buffer.open(QIODevice::WriteOnly) &&
+                    snow_shot::image_codec::encodeToDevice(patternedImage({32, 24}, 7), &buffer,
+                                                           format, {}),
+                "encode repository content detection fixture");
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly) && file.write(encoded) == encoded.size(),
+                "write mislabeled repository source");
+        file.close();
+        const auto reference = snow_shot::image_codec::decode(encoded, format, nullptr);
+        auto record = recordWithId(QUuid::createUuid().toString(QUuid::WithoutBraces), reference);
+        record.sourceKind = storage::PinnedWindowSourceKind::ClipboardImageFile;
+        record.originalFilePath = path;
+        record.originalFileName = QFileInfo(path).fileName();
+        record.sourceIdentity = {QStringLiteral("file:") + path};
+        {
+            storage::PinnedWindowRepository repository(directory.path());
+            require(repository.create(record).success && repository.flush().success,
+                    "persist mislabeled image file");
+        }
+        storage::PinnedWindowRepository repository(directory.path());
+        const auto restored = repository.loadRecord(record.id);
+        const auto admitted = repository.loadRecord(record.id, [](qint64) { return true; });
+        const auto preview = repository.loadPreviewSource(record.id);
+        require(restored && admitted && preview && samePixels(restored->image, reference) &&
+                    samePixels(admitted->image, reference) &&
+                    samePixels(preview->image, reference) &&
+                    restored->sourceIdentity == record.sourceIdentity &&
+                    readBytes(restored->originalFilePath) == encoded,
+                "restored pins and previews decode original bytes regardless of file extension");
+        require(!repository.loadRecord(record.id, [](qint64) { return false; }) &&
+                    !repository.loadPreviewSource(record.id, {}, [] { return true; }),
+                "mislabeled stored sources must retain admission and cancellation checks");
+    }
+}
+
 void pinSourceIdentitySurvivesRestart() {
     QTemporaryDir directory;
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -1636,8 +1693,8 @@ void borderAndShadowStatesRoundTripWithLegacyDefaults() {
     auto record = recordWithId(id, patternedImage(QSize(200, 100), 5));
     record.showBorder = false;
     record.showShadow = true;
-    record.borderAppearance =
-        storage::PinnedBorderAppearance{QSize(200, 100), QRectF(8, 8, 184, 84), 16.0, true, {}};
+    record.borderAppearance = storage::PinnedBorderAppearance{
+        QSize(200, 100), QRectF(8, 8, 184, 84), 16.0, false, {}, true};
     const QString manifest =
         QDir(directory.path()).filePath(QStringLiteral("pinned_windows_v2/index.json"));
     {
@@ -2943,6 +3000,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--source-only"))) {
+        mislabeledImageFilesSurviveRestart();
         sourceOnlyAdmissionAndCancellationExcludeDocumentPayloads();
         persistedSourceLoadsShareTheDecodedRasterLimit();
         previewsReadOnlySourcePayloadAndKeepStableRevision();
@@ -2985,6 +3043,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     pinnedTextStyleMetadataRoundTrips();
+    mislabeledImageFilesSurviveRestart();
     markdownFormatMetadataRoundTrips();
     payloadReadsKeepTheirRevisionWithoutBlockingMetadata();
     recordDeletionDoesNotInvalidateAdmittedPayloadRead();

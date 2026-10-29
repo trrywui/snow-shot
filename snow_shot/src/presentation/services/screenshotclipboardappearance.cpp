@@ -136,7 +136,8 @@ QByteArray encodeScreenshotClipboardAppearance(const ScreenshotClipboardAppearan
                             QJsonArray{a.contentRect.x(), a.contentRect.y(), a.contentRect.width(),
                                        a.contentRect.height()}},
                            {QStringLiteral("corner_radius"), a.cornerRadius},
-                           {QStringLiteral("has_shadow"), a.hasShadow}};
+                           {QStringLiteral("has_shadow"), a.hasShadow},
+                           {QStringLiteral("has_border"), a.hasBorder}};
         if (a.region)
             border.insert(QStringLiteral("geometry"), a.region->toJson());
         object.insert(QStringLiteral("border"), border);
@@ -194,6 +195,9 @@ decodeScreenshotClipboardAppearance(const QByteArray& bytes) {
                                                      b[QStringLiteral("corner_radius")].toDouble(),
                                                      b[QStringLiteral("has_shadow")].toBool(),
                                                      {}};
+        if (b.contains(QStringLiteral("has_border")) && !b[QStringLiteral("has_border")].isBool())
+            return {};
+        a.hasBorder = b[QStringLiteral("has_border")].toBool(false);
         if (b.contains(QStringLiteral("geometry"))) {
             a.region = ScreenshotRegionGeometry::fromJson(b[QStringLiteral("geometry")]);
             if (!a.region || a.region->isEmpty())

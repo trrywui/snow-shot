@@ -3,14 +3,14 @@ import json
 import argparse
 from pathlib import Path
 import re
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from generate_mcp_capabilities import check_generated, load_manifest
+
 MINI = False
-REMOVED_MINI_TOOLS = {
-    "snow_shot_screenshot_translate", "snow_shot_translation_catalog",
-    "snow_shot_translation_start", "snow_shot_models_list",
-    "snow_shot_models_update", "snow_shot_credentials_set",
-}
+REMOVED_MINI_TOOLS = set(load_manifest()['mini']['disabled_tools'])
 
 
 def read(path):
@@ -68,16 +68,14 @@ def check_surface_contracts(matrix):
     rust_tools = enum_members(read("rust/snow-shot-mcp/src/schemas.rs"), "CanvasTool")
     for canvas, public in coverage["canvas_tools"]["members"].items():
         assert public in rust_tools, f"{canvas} has no public tool choice: {public}"
+    # Qt consumes the generated contract. Compiled Rust tests independently
+    # compare schemas and actual serde acceptance against its primitive facts.
     runtime = read("src/presentation/recording/screenrecordingcontroller.cpp")
-    booleans = block(runtime, r"const QStringList booleans\s*\{(.*?)\};")
-    colors = block(runtime, r"const QStringList colors\s*\{(.*?)\};")
-    enums = block(runtime, r"const QHash<QString, QStringList> enums\s*\{(.*?)\};")
-    integers = block(runtime, r"const QHash<QString, QPair<int, int>> integers\s*\{(.*?)\};")
-    qt_options = set(re.findall(r'QStringLiteral\("([a-z_]+)"\)', booleans + colors))
-    qt_options.update(re.findall(r'\{QStringLiteral\("([a-z_]+)"\),\s*\{', enums + integers))
-    qt_options.add("path")
-    rust = block(read("rust/snow-shot-mcp/src/domain_schemas.rs"), r"input!\(RecordingOptions\s*\{(.*?)\}\);")
-    rust_options = set(re.findall(r"([a-z_]+):\s*Option<", rust))
+    assert 'app::mcp::recordingAutomationOptionContracts()' in runtime
+    rust = block(read("rust/snow-shot-mcp/src/domain_schemas.rs"),
+                 r"recording_options!\s*\{(.*?)\n\}")
+    rust_options = set(re.findall(r"([a-z_]+):\s*[A-Za-z]", rust))
+    qt_options = set(coverage["recording_options"]["validation"])
     reviewed = set(coverage["recording_options"]["members"])
     assert qt_options == rust_options == reviewed, f"Recording options: Qt={qt_options}, Rust={rust_options}, reviewed={reviewed}"
     recognition = block(read("src/presentation/ocr/screenshotrecognitionsessioncontroller.cpp"),
@@ -227,6 +225,9 @@ def main():
     parser.add_argument("--execution-reports", nargs="+", type=Path,
                         help="Require every tool and resource to appear in passing real-IPC driver reports")
     args = parser.parse_args()
+    # These remain reviewed adapter snapshots; generation only shares the Full
+    # baseline and explicit Mini exclusions, never the Qt/Rust assertions below.
+    check_generated(ROOT)
     if args.magnifier_only:
         if args.mini or args.angle_only or args.execution_reports:
             parser.error("--magnifier-only checks both variants and cannot be combined with other modes")

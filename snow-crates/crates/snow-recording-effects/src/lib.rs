@@ -10,6 +10,7 @@ pub mod preview;
 pub mod recorded;
 pub mod state;
 pub mod surface;
+pub mod webcam;
 pub use keyboard_overlay::{KeyboardOverlayConfig, KeyboardOverlayFont};
 pub use recorded::RecordedEffects;
 pub use snow_recording_model::{

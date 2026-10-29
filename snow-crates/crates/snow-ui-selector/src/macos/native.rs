@@ -263,6 +263,12 @@ fn snapshot_windows(
 pub(super) struct Element(CFType);
 impl Element {
     fn application(pid: i32) -> Result<Self, StopReason> {
+        // This backend is for remote applications. In-process AX dispatch calls
+        // the application's UI code on the caller's thread instead of using IPC.
+        // Enforce the boundary here for hit testing, activation and restoration.
+        if pid == std::process::id() as i32 {
+            return Err(StopReason::ProviderFailure);
+        }
         Self::from_value(
             owned(unsafe { AXUIElementCreateApplication(pid) }.cast())
                 .ok_or(StopReason::ProviderFailure)?,
@@ -561,6 +567,14 @@ impl AxProvider for Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_rejects_in_process_accessibility_targets() {
+        assert!(matches!(
+            Element::application(std::process::id() as i32),
+            Err(StopReason::ProviderFailure)
+        ));
+    }
+
     #[test]
     fn process_identity_uses_executable_path() {
         let executable = process_executable(std::process::id() as i32).unwrap();

@@ -41,6 +41,21 @@ vcpkg_cmake_configure(
 vcpkg_cmake_install()
 vcpkg_fixup_pkgconfig()
 vcpkg_cmake_config_fixup(CONFIG_PATH lib/cmake/minizip-ng)
+if(VCPKG_TARGET_IS_OSX)
+    # Binary caches must not export the builder's SDK into consumers. An SDK
+    # framework path adds a non-system -F search path, exposing Apple's headers
+    # to project warnings when the consumer selects a different Xcode/CLT SDK.
+    set(_minizip_targets "${CURRENT_PACKAGES_DIR}/share/minizip-ng/minizip-ng.cmake")
+    file(READ "${_minizip_targets}" _minizip_export)
+    string(REGEX REPLACE
+        [[/[^;"]+[.]sdk/System/Library/Frameworks/([A-Za-z0-9_]+)[.]framework]]
+        [[-framework \1]] _minizip_export "${_minizip_export}")
+    # The config already calls find_dependency(BZip2); retain its consumer-side
+    # resolution instead of the absolute libbz2.tbd captured during packaging.
+    string(REGEX REPLACE [[/[^;"]+[.]sdk/usr/lib/libbz2[.]tbd]]
+        [[BZip2::BZip2]] _minizip_export "${_minizip_export}")
+    file(WRITE "${_minizip_targets}" "${_minizip_export}")
+endif()
 vcpkg_copy_pdbs()
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share" "${CURRENT_PACKAGES_DIR}/debug/include")
 vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")

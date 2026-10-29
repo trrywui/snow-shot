@@ -18,6 +18,7 @@ pub struct ArrowTextLayoutRequest {
     pub text_id: ElementId,
     pub text: TextData,
     pub max_width: f64,
+    pub distance_value_chars: u32,
     pub key: u64,
     text_key: u64,
     angle_geometry: Option<snow_draw_engine_document::AngleGeometry>,
@@ -31,6 +32,7 @@ pub(crate) struct ArrowTextMeasurement {
     pub size: TextLayoutSize,
     pub text_key: u64,
     pub natural_width: f64,
+    pub distance_value_width: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +101,11 @@ fn request(
         arrow_id,
         arrow_width: arrow.width,
         text_id,
+        distance_value_chars: if arrow.is_distance() {
+            text.text.find(' ').unwrap_or(0) as u32
+        } else {
+            0
+        },
         text,
         max_width,
         key: key.finish(),
@@ -237,6 +244,64 @@ impl Editor {
         self.state.arrow_text_measurement_generation =
             self.state.arrow_text_measurement_generation.wrapping_add(1);
         *self.arrow_text_cache.borrow_mut() = ArrowTextCache::default();
+    }
+
+    pub fn apply_distance_value_widths(&mut self, widths: &[(ElementId, u64, f64)]) {
+        for &(id, key, width) in widths {
+            if let Some(metrics) = self.state.arrow_text_measurements.get_mut(&id)
+                && metrics.key == key
+                && width.is_finite()
+                && width >= 0.0
+            {
+                metrics.distance_value_width = width.min(metrics.size.width());
+            }
+        }
+    }
+
+    pub(crate) fn distance_value_hit(
+        &self,
+        document: &DocumentModel,
+        owner: ElementId,
+        point: Point<f64>,
+    ) -> bool {
+        let Ok(arrow) = document.arrow(owner) else {
+            return false;
+        };
+        if !arrow.is_distance()
+            || document
+                .element(owner)
+                .is_ok_and(|e| e.meta.locked || !e.meta.visible)
+        {
+            return false;
+        }
+        let Some(id) = arrow.text_element_id else {
+            return false;
+        };
+        let Ok(text) = document.text(id) else {
+            return false;
+        };
+        let request = request(
+            owner,
+            id,
+            arrow,
+            text,
+            self.state.arrow_text_measurement_generation,
+        );
+        let Some(metrics) = self
+            .state
+            .arrow_text_measurements
+            .get(&id)
+            .filter(|m| m.matches(&request))
+        else {
+            return false;
+        };
+        let width = metrics.distance_value_width;
+        let text = self.measured_arrow_text(request);
+        let left = text.center.x - text.width() / 2.0;
+        width > 0.0
+            && point.x >= left
+            && point.x <= left + width
+            && (point.y - text.center.y).abs() <= text.height() / 2.0
     }
 
     pub(crate) fn arrow_label_hit(
@@ -473,6 +538,7 @@ impl Editor {
                 size,
                 text_key: request.text_key,
                 natural_width,
+                distance_value_width: 0.0,
             });
             // Duplicate/stale metrics in the same batch cannot overwrite a result.
             requests.remove(&text_id);

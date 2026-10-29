@@ -7,6 +7,7 @@
 #include <QEventLoop>
 #include <QMimeData>
 #include <QTimer>
+#include <QTemporaryDir>
 #include <QUrl>
 #include <cstring>
 #include <cstdlib>
@@ -223,9 +224,19 @@ QImage browserFixture() {
     return source;
 }
 
-void publishAndReadThroughQt() {
+void publishAndReadThroughQt(bool includeFile) {
     const QImage source = browserFixture();
-    auto payload = ScreenshotClipboardService::prepareImage(source);
+    ScreenshotClipboardAppearance appearance;
+    appearance.rasterSize = source.size();
+    appearance.checkerboardEnabled = true;
+    auto payload = ScreenshotClipboardService::prepareImage(source, {}, {}, appearance);
+    QTemporaryDir directory;
+    require(directory.isValid(), "clipboard file fixture unavailable");
+    const QString path = directory.filePath(QStringLiteral("Snow Shot \u56fe\u50cf.png"));
+    if (includeFile) {
+        require(source.save(path, "PNG"), "clipboard file fixture save failed");
+        payload = ScreenshotClipboardService::withFile(std::move(payload), path);
+    }
     const QByteArray expectedPng = payload.pngBytes();
     QEventLoop loop;
     QTimer timeout;
@@ -251,7 +262,15 @@ void publishAndReadThroughQt() {
     const UINT first = EnumClipboardFormats(0);
     CloseClipboard();
     require(first == pngFormat, "PNG must be published first");
+    require((IsClipboardFormatAvailable(CF_HDROP) != FALSE) == includeFile,
+            "file references must be published alongside images only when requested");
     QApplication::processEvents();
+    if (includeFile) {
+        require(!nativeBytes(CF_HDROP).isEmpty(), "native file drop representation missing");
+        const auto* mime = QApplication::clipboard()->mimeData();
+        require(mime && mime->urls() == QList<QUrl>{QUrl::fromLocalFile(path)},
+                "Qt must read the same Unicode file reference as Explorer");
+    }
     comparePixels(source,
                   QApplication::clipboard()->image().convertToFormat(QImage::Format_ARGB32));
     auto snapshot = ScreenshotClipboardContentReader::snapshot(QApplication::clipboard(), 1.0);
@@ -259,6 +278,8 @@ void publishAndReadThroughQt() {
             "Snow Shot must capture encoded PNG before considering a bitmap");
     const auto decoded = ScreenshotClipboardContentReader::decode(std::move(*snapshot));
     require(decoded.has_value(), "Snow Shot PNG readback failed");
+    require(decoded->appearance && decoded->appearance->checkerboardEnabled,
+            "image appearance metadata must survive both publication modes");
     comparePixels(source, decoded->image.convertToFormat(QImage::Format_ARGB32));
 }
 
@@ -295,7 +316,8 @@ int main(int argc, char** argv) {
         }
         const ClipboardRestorer preserveClipboard;
         payloadsPreservePixels();
-        publishAndReadThroughQt();
+        publishAndReadThroughQt(true);
+        publishAndReadThroughQt(false);
         corruptEncodedImageRetainsNativeBitmap();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

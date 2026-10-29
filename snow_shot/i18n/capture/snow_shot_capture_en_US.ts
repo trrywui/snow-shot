@@ -281,6 +281,22 @@
             <translation>Add preset</translation>
         </message>
         <message>
+            <source>Border</source>
+            <translation>Border</translation>
+        </message>
+        <message>
+            <source>Border color</source>
+            <translation>Border color</translation>
+        </message>
+        <message>
+            <source>Border type</source>
+            <translation>Border type</translation>
+        </message>
+        <message>
+            <source>Border width</source>
+            <translation>Border width</translation>
+        </message>
+        <message>
             <source>Cancel</source>
             <translation>Cancel</translation>
         </message>
@@ -349,6 +365,10 @@
             <translation>Selection</translation>
         </message>
         <message>
+            <source>Shadow</source>
+            <translation>Shadow</translation>
+        </message>
+        <message>
             <source>Shadow color</source>
             <translation>Shadow color</translation>
         </message>
@@ -413,6 +433,10 @@
         <message>
             <source>Aspect ratio presets</source>
             <translation>Aspect ratio presets</translation>
+        </message>
+        <message>
+            <source>Border width</source>
+            <translation>Border width</translation>
         </message>
         <message>
             <source>Corner radius</source>

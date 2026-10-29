@@ -10,8 +10,10 @@
 #include "snow_shot/shortcuts/shortcutbinding.h"
 #include "snow_shot/selectiontransitionanimation.h"
 #include "snow_shot/storage/persistedwindowgeometry.h"
+#include "snow_shot/storage/recordingareahistory.h"
 
 #include <QColor>
+#include <QPoint>
 #include <QByteArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -113,8 +115,8 @@ class InterfaceSettings final {
     bool setThemePrimaryColor(const QColor& color) const;
     [[nodiscard]] QString appFontFamily() const;
     bool setAppFontFamily(const QString& family) const;
-    [[nodiscard]] int appFontSizePercentage() const;
-    bool setAppFontSizePercentage(int percentage) const;
+    [[nodiscard]] int appFontSize() const;
+    bool setAppFontSize(int pixelSize) const;
     [[nodiscard]] QString themeMode() const;
     bool setThemeMode(const QString& mode) const;
     [[nodiscard]] QString language() const;
@@ -141,6 +143,10 @@ class InterfaceSettings final {
     bool setSkinMaskOpacity(int opacity) const;
     [[nodiscard]] bool sidebarCollapsed() const;
     bool setSidebarCollapsed(bool collapsed) const;
+    [[nodiscard]] int screenshotHistoryPageSize() const;
+    bool setScreenshotHistoryPageSize(int pageSize) const;
+    [[nodiscard]] int pinnedWindowManagementPageSize() const;
+    bool setPinnedWindowManagementPageSize(int pageSize) const;
 };
 
 class WindowMemorySettings final {
@@ -148,6 +154,8 @@ class WindowMemorySettings final {
     [[nodiscard]] std::optional<PersistedWindowGeometry> mainWindowGeometry() const;
     bool setMainWindowGeometry(const QRect& normalGeometry, bool maximized) const;
 #if SNOW_SHOT_ENABLE_TEXT_TRANSLATION
+    [[nodiscard]] std::optional<PersistedWindowGeometry> translationWindowGeometry() const;
+    bool setTranslationWindowGeometry(const QRect& normalGeometry) const;
     [[nodiscard]] std::optional<QSize> translationWindowSize() const;
     bool setTranslationWindowSize(const QSize& size) const;
 #endif
@@ -275,6 +283,8 @@ class ScreenshotSettings final {
     bool setLastManualSaveFormat(const QString& format) const;
     [[nodiscard]] QString saveAsFileDialog() const;
     bool setSaveAsFileDialog(const QString& dialog) const;
+    [[nodiscard]] bool showSaveResult() const;
+    bool setShowSaveResult(bool enabled) const;
     [[nodiscard]] QVector<ScreenshotSavePathShortcut> savePathShortcuts() const;
     bool setSavePathShortcuts(const QVector<ScreenshotSavePathShortcut>& shortcuts) const;
     [[nodiscard]] QString pdfPageSize() const;
@@ -296,8 +306,14 @@ class ScreenshotSettings final {
 
 class DrawingSettings final {
   public:
+    [[nodiscard]] bool automaticallySelectNewlyCreatedElements() const;
+    bool setAutomaticallySelectNewlyCreatedElements(bool enabled) const;
+    [[nodiscard]] QStringList automaticSelectionExcludedTools() const;
+    [[nodiscard]] bool setAutomaticSelectionExcludedTools(const QStringList& tools) const;
     [[nodiscard]] QStringList quickSelectionDisabledTools() const;
     bool setQuickSelectionDisabledTools(const QStringList& tools) const;
+    [[nodiscard]] bool deleteTextAfterCursor() const;
+    bool setDeleteTextAfterCursor(bool enabled) const;
     [[nodiscard]] bool rememberLastUsedTool() const;
     bool setRememberLastUsedTool(bool enabled) const;
     [[nodiscard]] bool alwaysShowFirstToolbarGroupButton() const;
@@ -375,6 +391,14 @@ class PinToScreenShortcutSettings final {
     bool setAllShortcutsAtomic(const shortcuts::ShortcutBindingMap& shortcutsByAction) const;
 };
 
+class RecordingAreaHistorySettings final {
+  public:
+    // Oldest first; duplicate rectangles represent separate recording starts.
+    [[nodiscard]] QVector<RecordingAreaHistoryEntry> entries() const;
+    bool append(const QRect& rectangle) const;
+    static bool append(class ConfigurationStore& configuration, const QRect& rectangle);
+};
+
 class ScreenRecordingShortcutSettings final {
   public:
     [[nodiscard]] shortcuts::ShortcutBindingList shortcuts(const QString& actionId) const;
@@ -423,6 +447,8 @@ class ScreenshotTranslationSettings final {
   public:
     [[nodiscard]] bool originalImageTranslationEnabled() const;
     bool setOriginalImageTranslationEnabled(bool enabled) const;
+    [[nodiscard]] bool copyTranslationResultsAsImage() const;
+    bool setCopyTranslationResultsAsImage(bool enabled) const;
     [[nodiscard]] QString layoutProcessing() const;
     bool setLayoutProcessing(const QString& mode) const;
     [[nodiscard]] ScreenshotTranslationConfiguration configuration() const;
@@ -512,12 +538,25 @@ class RecordingSettings final {
     bool setMouseTrailColor(const QColor& color) const;
     [[nodiscard]] QColor mouseClickColor() const;
     bool setMouseClickColor(const QColor& color) const;
+    [[nodiscard]] bool webcamEnabled() const;
+    bool setWebcamEnabled(bool enabled) const;
+    [[nodiscard]] int webcamSize() const;
+    bool setWebcamSize(int size) const;
+    [[nodiscard]] int webcamOffsetLeft() const;
+    [[nodiscard]] int webcamOffsetBottom() const;
+    bool setWebcamLayout(int size, const QPoint& offset) const;
+    [[nodiscard]] QString webcamShape() const;
+    bool setWebcamShape(const QString& shape) const;
+    [[nodiscard]] int webcamOrientation() const;
+    bool setWebcamOrientation(int orientation) const;
     [[nodiscard]] bool showKeyboard() const;
     bool setShowKeyboard(bool show) const;
     [[nodiscard]] bool mouseHighlightEnabled() const;
     bool setMouseHighlightEnabled(bool enabled) const;
     [[nodiscard]] bool recordMouseClicks() const;
+    [[nodiscard]] bool recordMouseScrolling() const;
     bool setRecordMouseClicks(bool enabled) const;
+    bool setRecordMouseScrolling(bool enabled) const;
     [[nodiscard]] QColor mouseHighlightColor() const;
     bool setMouseHighlightColor(const QColor& color) const;
     [[nodiscard]] int mouseHighlightRadius() const;
@@ -534,6 +573,8 @@ class RecordingSettings final {
     bool setCaptureToolbarInRecording(bool capture) const;
     [[nodiscard]] bool autoHideToolbar() const;
     bool setAutoHideToolbar(bool enabled) const;
+    [[nodiscard]] bool showStatusPrompts() const;
+    bool setShowStatusPrompts(bool enabled) const;
     [[nodiscard]] bool autoExitAfterRecordingEnds() const;
     bool setAutoExitAfterRecordingEnds(bool enabled) const;
     [[nodiscard]] bool notifyAfterExportCompletes() const;
@@ -666,6 +707,8 @@ class TraySettings final {
   public:
     [[nodiscard]] bool enabled() const;
     bool setEnabled(bool enabled) const;
+    [[nodiscard]] bool useSystemIconColor() const;
+    bool setUseSystemIconColor(bool enabled) const;
     [[nodiscard]] QString icon() const;
     bool setIcon(const QString& icon) const;
     [[nodiscard]] QString customIcon() const;

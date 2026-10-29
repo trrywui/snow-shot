@@ -25,6 +25,9 @@ struct RenderDiagnostics {
 RenderDiagnostics diagnosticsForCurrentThread();
 void resetDiagnosticsForCurrentThread();
 
+QImage renderImageSourcesToImage(const QRectF& canvasRect, const QSize& outputSize,
+                                 const QList<CanvasExportSource>& sources);
+
 QImage renderToImage(SnowRuntime runtime, const QRectF& virtualSelectionRect,
                      const QSize& outputSize, const QList<CanvasExportSource>& sources,
                      const SnowCanvasSmartEraseSnapshot& smartErase = {},

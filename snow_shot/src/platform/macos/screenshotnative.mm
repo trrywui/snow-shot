@@ -3,6 +3,8 @@
 #include "capturewindowlayers_p.h"
 #include "capturewindowanimation_p.h"
 #include "windowcursorcoordinator.h"
+#include "widgets/detail/native_window_policy_mac_p.h"
+#include "widgets/detail/window_surface_observer.h"
 #include <QCursor>
 #include <QTimer>
 #include "snow_shot/platform/macos/recapturefocus.h"
@@ -189,6 +191,12 @@ void applyNativeWindowPolicy(
     state->defaultAnimation = defaultAnimation;
     state->captureRole = captureRole;
     state->immediatePresentation = immediatePresentation;
+    // Only the canvas surface owns the entire display, including the menu bar
+    // and camera housing. Initialize this with the rest of the per-window policy;
+    // a Qt view ID can exist while its NSWindow is temporarily detached.
+    state->unconstrainedFrame = enforceQtSettings &&
+                                captureRole.family == CaptureFamily::GlobalCanvas &&
+                                captureRole.layer == kOverlayLayer;
     state->required = {level,
                        NSWindowCollectionBehaviorCanJoinAllSpaces |
                            NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -255,9 +263,15 @@ void applyScreenshotLayer(QWidget* widget, const ModalFloors& floors) {
         handle->setProperty("snowScreenshotStackingObserved", true);
         QObject::connect(handle, &QWindow::transientParentChanged, handle,
                          &synchronizeScreenshotLayers);
+        new adqt::widgets::detail::WindowSurfaceObserver(widget, synchronizeScreenshotLayers,
+                                                         handle);
     }
     const CaptureLayer role = widgetCaptureLayer(widget, floors);
     NSWindow* window = reinterpret_cast<NSView*>(widget->internalWinId()).window;
+    // AppKit can detach the view while Qt creates or replaces its native window.
+    // WinIdChange and the next show/expose apply the role once it is attached.
+    if (!window)
+        return;
     if (!role.valid()) {
         releaseNativeWindowPolicy(window);
         return;
@@ -273,11 +287,6 @@ void applyScreenshotLayer(QWidget* widget, const ModalFloors& floors) {
             : NSWindowAnimationBehaviorDefault;
     applyNativeWindowPolicy(window, level, true, defaultAnimation, role,
                             widget->property(kImmediateCapturePresentation).toBool());
-    // AppKit otherwise constrains a screen-sized panel to the visible/safe frame,
-    // shifting its top edge below the menu bar or camera housing. Only the canvas
-    // surface owns the entire display; its tools keep normal frame constraints.
-    nativePolicyState(window)->unconstrainedFrame =
-        role.family == CaptureFamily::GlobalCanvas && role.layer == kOverlayLayer;
 }
 
 void synchronizeScreenshotLayers() {
@@ -328,15 +337,15 @@ void synchronizeScreenshotLayers() {
             }
         }
     }
-    // File panels and AppKit print sheets have no Qt transient parent. Include
-    // native sheets in the same capture family above its tools and Qt modals.
+    // File panels, print sheets, and sharing child windows have no Qt transient parent.
+    // Keep native descendants in the same capture family above its tools and Qt modals.
     // Leave AppKit classes intact; lifecycle notifications reapply the policy.
     for (NSWindow* window in NSApp.windows) {
         auto* state = nativePolicyState(window);
         if (state && !state->nativePanel)
             continue;
         const bool filePanel = [window isKindOfClass:[NSSavePanel class]];
-        if (!filePanel && !window.sheetParent && !state)
+        if (!filePanel && !window.sheetParent && !window.parentWindow && !state)
             continue;
         int sheetDepth = 1;
         CaptureLayer owner = nativePanelOwner(window, windows, sheetDepth);
@@ -387,7 +396,8 @@ class ScreenshotStackingPolicy final : public QObject {
                                  queue:nil
                             usingBlock:^(NSNotification* notification) {
                               NSWindow* window = static_cast<NSWindow*>(notification.object);
-                              if ([window isKindOfClass:[NSSavePanel class]] || window.sheetParent)
+                              if ([window isKindOfClass:[NSSavePanel class]] ||
+                                  window.sheetParent || window.parentWindow)
                                   synchronizeScreenshotLayers();
                             }];
         m_panelClosed = [center
@@ -428,7 +438,8 @@ class ScreenshotStackingPolicy final : public QObject {
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         // ShowToParent runs after QWidget's native show, which can reset the level.
-        // Expose also covers QWindow-driven reveals and native surface recreation.
+        // WinIdChange covers hidden replacement surfaces; Expose also covers
+        // QWindow-driven reveals and views reattached to an existing NSWindow.
         if (event->type() == QEvent::HideToParent) {
             auto* widget = qobject_cast<QWidget*>(watched);
             if (widget && widget->isWindow() && widget->windowModality() != Qt::NonModal) {
@@ -440,7 +451,8 @@ class ScreenshotStackingPolicy final : public QObject {
         }
         if (event->type() == QEvent::ShowToParent || event->type() == QEvent::ZOrderChange ||
             event->type() == QEvent::HideToParent || event->type() == QEvent::ParentChange ||
-            event->type() == QEvent::Expose || event->type() == QEvent::ApplicationActivate) {
+            event->type() == QEvent::Expose || event->type() == QEvent::WinIdChange ||
+            event->type() == QEvent::ApplicationActivate) {
             synchronizeScreenshotLayers();
         }
         return false;
@@ -478,20 +490,13 @@ void registerScreenshotLayer(QWidget* widget, int layer,
 // after QWidget::move(), causing a second translation at display boundaries.
 class ControlledWindowDragging final : public QObject {
   public:
-    explicit ControlledWindowDragging(QWidget* widget) : QObject(widget), m_widget(widget) {
-        widget->installEventFilter(this);
-    }
+    explicit ControlledWindowDragging(QWidget* widget)
+        : QObject(widget), m_widget(widget),
+          m_observer(widget, [this] { apply(); }, this, [this] { m_policy.reset(); }) {}
 
     void configure(bool controlResizing) {
         m_controlResizing |= controlResizing;
         apply();
-    }
-
-  protected:
-    bool eventFilter(QObject*, QEvent* event) override {
-        if (event->type() == QEvent::WinIdChange || event->type() == QEvent::Show)
-            apply();
-        return false;
     }
 
   private:
@@ -502,20 +507,26 @@ class ControlledWindowDragging final : public QObject {
         // Frameless Qt windows are still resizable NSPanels. AppKit's resize
         // hit zones consume corner presses before Qt can deliver them to the
         // canvas. Capture owns its geometry and all selection resize gestures.
+        adqt::widgets::detail::NativeWindowConstraints constraints;
         if (m_controlResizing)
-            window.styleMask &= ~NSWindowStyleMaskResizable;
-        window.movable = NO;
-        window.movableByWindowBackground = NO;
+            constraints.excludedStyleMask = NSWindowStyleMaskResizable;
+        constraints.movable = false;
+        constraints.movableByWindowBackground = false;
+        m_policy.apply(window, constraints);
     }
     QWidget* m_widget;
     bool m_controlResizing = false;
+    adqt::widgets::detail::MacNativeWindowPolicy m_policy;
+    adqt::widgets::detail::WindowSurfaceObserver m_observer;
 };
 
 // Qt and AppKit must agree on input ownership. Qt can reapply native window
 // flags during tracking and presentation, including after native surface reuse.
 class ScreenshotInputTransparency final : public QObject {
   public:
-    explicit ScreenshotInputTransparency(QWidget* widget) : QObject(widget), m_widget(widget) {
+    explicit ScreenshotInputTransparency(QWidget* widget)
+        : QObject(widget), m_widget(widget),
+          m_observer(widget, [this] { synchronize(); }, this, [this] { restore(); }) {
         widget->installEventFilter(this);
     }
     ~ScreenshotInputTransparency() override {
@@ -532,10 +543,6 @@ class ScreenshotInputTransparency final : public QObject {
         switch (event->type()) {
         case QEvent::Hide:
             restore();
-            break;
-        case QEvent::Show:
-        case QEvent::WinIdChange:
-            synchronize();
             break;
         default:
             break;
@@ -594,6 +601,7 @@ class ScreenshotInputTransparency final : public QObject {
     QPointer<QWindow> m_qtWindow;
     BOOL m_originalIgnoresMouse = NO;
     bool m_originalTransparentForInput = false;
+    adqt::widgets::detail::WindowSurfaceObserver m_observer;
 };
 
 detail::WindowTarget windowTarget(pid_t owner, const QPoint* point) {
@@ -645,6 +653,10 @@ void detail::setPinnedWindowLayer(QWidget* widget, bool enabled) {
             }
         }
     }
+}
+
+void detail::releaseNativeWindowLayer(NSWindow* window) {
+    releaseNativeWindowPolicy(window);
 }
 
 void configureControlledWindowDragging(QWidget* widget, bool controlResizing) {

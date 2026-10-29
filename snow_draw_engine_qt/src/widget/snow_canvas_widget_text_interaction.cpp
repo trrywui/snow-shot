@@ -39,8 +39,9 @@ int caretBlinkPhaseDuration(int flashTimeMs) {
 
 void updateInputMethod() {
     if (QInputMethod* inputMethod = QGuiApplication::inputMethod()) {
-        inputMethod->update(Qt::ImEnabled | Qt::ImCursorRectangle | Qt::ImCursorPosition |
-                            Qt::ImAnchorPosition | Qt::ImSurroundingText | Qt::ImCurrentSelection);
+        inputMethod->update(Qt::ImEnabled | Qt::ImHints | Qt::ImCursorRectangle |
+                            Qt::ImCursorPosition | Qt::ImAnchorPosition | Qt::ImSurroundingText |
+                            Qt::ImCurrentSelection);
     }
 }
 
@@ -121,7 +122,14 @@ void SnowCanvasWidgetTextInteraction::invalidateArrowTextMetrics() {
 }
 
 void SnowCanvasWidgetTextInteraction::resetDocumentRetainedState() {
+    const bool hadDistanceValue = m_session.isDistanceValue();
     m_session.releaseRetainedState();
+    if (hadDistanceValue) {
+        setInputMethodEnabled(false);
+        stopCaretBlink();
+        m_selectionDragging = false;
+        resetInputMethod();
+    }
     invalidateArrowTextMetrics();
 }
 
@@ -200,6 +208,12 @@ SnowCanvasWidgetTextInteraction::measureArrowText(SnowRuntime runtime, SnowViewp
             request.key,
             {width, wrapped.layout.height(), wrapped.content.width(), wrapped.content.height()},
             natural.layout.width(),
+            request.distance_value_chars == 0
+                ? 0.0
+                : m_arrowNaturalLayouts
+                      .measure(text.left(static_cast<qsizetype>(request.distance_value_chars)),
+                               m_widget.font(), item)
+                      .layout.width(),
         });
     }
     result.success =
@@ -318,7 +332,7 @@ bool SnowCanvasWidgetTextInteraction::isActive() const {
 
 bool SnowCanvasWidgetTextInteraction::editorContains(const SnowCanvasDisplayCache& displayCache,
                                                      const QPointF& position) const {
-    return m_session.containsViewPosition(displayCache.sceneInfo(), position);
+    return m_session.containsViewPosition(displayCache.sceneInfo(), position, m_widget.font());
 }
 
 bool SnowCanvasWidgetTextInteraction::hasSelectionInteraction() const {
@@ -344,6 +358,16 @@ SnowCanvasWidgetTextInteraction::publishActiveDraftPresentation(SnowRuntime runt
         return result;
     }
 
+    if (m_session.isDistanceValue()) {
+        const QByteArray value = m_session.distanceValuePresentationText().toUtf8();
+        result.success = snow_viewport_set_distance_value_draft_ex(
+                             runtime, viewport, m_session.arrowId(), value.constData(),
+                             static_cast<std::uint32_t>(value.size()),
+                             SnowTextLayoutSize{preview->width, preview->height,
+                                                preview->content_width, preview->content_height},
+                             result.changedViewports.outParam()) == SNOW_OK;
+        return result;
+    }
     const QByteArray utf8 = m_session.presentationText().toUtf8();
     return snow_canvas_commands::setActiveTextDraftPresentation(
         runtime, viewport,
@@ -384,7 +408,7 @@ SnowCanvasWidgetTextInteraction::StyleChangeResult SnowCanvasWidgetTextInteracti
     SnowRuntime runtime, SnowViewport viewport, SnowCanvasDisplayCache& displayCache,
     const SnowTextStyle& style, std::uint32_t properties) {
     StyleChangeResult result;
-    if ((properties & ~SNOW_TEXT_STYLE_ALL_PROPERTIES) != 0) {
+    if (m_session.isDistanceValue() || (properties & ~SNOW_TEXT_STYLE_ALL_PROPERTIES) != 0) {
         return result;
     }
     if (properties == 0) {
@@ -440,6 +464,40 @@ QRegion SnowCanvasWidgetTextInteraction::applyEditorTextStyle(
 }
 
 SnowCanvasWidgetTextInteraction::BeginResult
+SnowCanvasWidgetTextInteraction::beginRequestedDistanceValue(SnowRuntime runtime,
+                                                             SnowViewport viewport,
+                                                             SnowCanvasDisplayCache& displayCache,
+                                                             QMouseEvent* event) {
+    BeginResult result;
+    if (event == nullptr || event->button() != Qt::LeftButton) {
+        return result;
+    }
+    SnowTextElementInfo info{};
+    SnowTextStyle style{};
+    std::uint8_t found = 0;
+    if (snow_viewport_take_distance_value_edit_target(runtime, viewport, &info, &style, &found) !=
+            SNOW_OK ||
+        found == 0)
+        return result;
+    if (!beginForElement(info, displayCache, event->position(), &style, false, runtime))
+        return result;
+    m_session.beginDistanceValue(m_widget.font());
+    if (!m_session.isDistanceValue() ||
+        !handleEditorMousePress(event, displayCache, m_widget.font())) {
+        static_cast<void>(cancel(runtime, viewport, displayCache));
+        return result;
+    }
+    auto published = publishActiveDraftPresentation(runtime, viewport);
+    if (!published.success) {
+        static_cast<void>(cancel(runtime, viewport, displayCache));
+        return result;
+    }
+    result.started = true;
+    result.firstChangedViewports = std::move(published.changedViewports);
+    return result;
+}
+
+SnowCanvasWidgetTextInteraction::BeginResult
 SnowCanvasWidgetTextInteraction::beginArrow(SnowRuntime runtime, SnowViewport viewport,
                                             SnowCanvasDisplayCache& displayCache,
                                             const QPointF& viewPosition, bool selected) {
@@ -480,14 +538,26 @@ SnowCanvasWidgetTextInteraction::beginSpeechBubble(SnowRuntime runtime, SnowView
         found == 0) {
         return result;
     }
+    return beginSpeechBubbleTarget(runtime, viewport, displayCache, info, style, true);
+}
+
+SnowCanvasWidgetTextInteraction::BeginResult
+SnowCanvasWidgetTextInteraction::beginSpeechBubbleTarget(SnowRuntime runtime, SnowViewport viewport,
+                                                         SnowCanvasDisplayCache& displayCache,
+                                                         const SnowTextElementInfo& info,
+                                                         const SnowTextStyle& style,
+                                                         bool selectOwner) {
+    BeginResult result;
     result.started = beginForElement(
         info, displayCache, canvasToViewPoint(displayCache, QPointF(info.center_x, info.center_y)),
         &style, false, runtime);
     if (!result.started) {
         return result;
     }
-    auto selection = snow_canvas_commands::selectElement(runtime, viewport, info.bubble_id);
-    result.firstChangedViewports = std::move(selection.changedViewports);
+    if (selectOwner) {
+        auto selection = snow_canvas_commands::selectElement(runtime, viewport, info.bubble_id);
+        result.firstChangedViewports = std::move(selection.changedViewports);
+    }
     auto draft = publishActiveDraftPresentation(runtime, viewport);
     result.secondChangedViewports = std::move(draft.changedViewports);
     return result;
@@ -662,12 +732,15 @@ SnowCanvasWidgetTextInteraction::createSerialNumberText(SnowRuntime runtime, Sno
 SnowCanvasWidgetTextInteraction::BeginResult
 SnowCanvasWidgetTextInteraction::beginRequestedTextEdit(SnowRuntime runtime, SnowViewport viewport,
                                                         SnowCanvasDisplayCache& displayCache) {
-    SnowElementId bubbleId{};
-    std::uint8_t bubbleRequested = 0;
-    if (snow_viewport_take_speech_bubble_text_edit_request(runtime, viewport, &bubbleId,
-                                                           &bubbleRequested) == SNOW_OK &&
-        bubbleRequested != 0) {
-        return beginSpeechBubble(runtime, viewport, displayCache, QPointF(), true);
+    SnowTextElementInfo info{};
+    SnowTextStyle style{};
+    std::uint8_t found = 0;
+    if (snow_viewport_take_speech_bubble_text_edit_target(runtime, viewport, &info, &style,
+                                                          &found) != SNOW_OK) {
+        return {};
+    }
+    if (found != 0) {
+        return beginSpeechBubbleTarget(runtime, viewport, displayCache, info, style, false);
     }
     snow_canvas_commands::CreateSerialNumberTextResult request;
     std::uint8_t hasTextId = 0;
@@ -791,11 +864,26 @@ SnowCanvasWidgetTextInteraction::commit(SnowRuntime runtime, SnowViewport viewpo
         snow_canvas_element_id::hasElementId(edit.bubbleId)  ? edit.bubbleId
         : snow_canvas_element_id::hasElementId(edit.arrowId) ? edit.arrowId
                                                              : edit.elementId;
+    std::uint8_t selected = 0;
+    // An element ID also exists for labels inserted during a creation gesture.
+    // Restore only a live selection, preserving the creation policy for every label type.
     commitResult.finishedExistingEdit.hasElement =
-        edit.hasExistingElement || snow_canvas_element_id::hasElementId(edit.arrowId) ||
-        snow_canvas_element_id::hasElementId(edit.bubbleId);
+        snow_canvas_element_id::hasElementId(commitResult.finishedExistingEdit.elementId) &&
+        snow_viewport_is_element_selected(
+            runtime, viewport, commitResult.finishedExistingEdit.elementId, &selected) == SNOW_OK &&
+        selected != 0;
 
-    if (edit.shouldCommit(hasViewport)) {
+    if (edit.distanceValue) {
+        if (hasViewport && edit.distanceValueChanged && edit.parsedDistanceValue.has_value()) {
+            static_cast<void>(snow_viewport_commit_distance_value_ex(
+                runtime, viewport, edit.arrowId, *edit.parsedDistanceValue,
+                commitResult.changedViewports.outParam()));
+        }
+        auto cleared = clearActiveDraftPresentation(runtime, viewport);
+        if (commitResult.changedViewports.get() == nullptr)
+            commitResult.changedViewports = std::move(cleared.changedViewports);
+        updateRegion = committedTextRegion(updateRegion, displayCache, m_widget.rect());
+    } else if (edit.shouldCommit(hasViewport)) {
         const QByteArray utf8 = edit.text.toUtf8();
         snow_canvas_commands::MutationResult result =
             snow_canvas_commands::commitText(runtime, viewport,
@@ -918,6 +1006,8 @@ bool SnowCanvasWidgetTextInteraction::handleEditorMouseMove(
             event->accept();
             return true;
         }
+        if (m_session.isDistanceValue())
+            m_cursorController.clearCursor(SnowCanvasCursorLayer::CanvasTool);
         return false;
     }
 
@@ -936,18 +1026,17 @@ bool SnowCanvasWidgetTextInteraction::handleEditorMouseRelease(QMouseEvent* even
     return true;
 }
 
-SnowCanvasWidgetTextInteraction::EditorEventResult
-SnowCanvasWidgetTextInteraction::handleKeyPress(QKeyEvent* event, SnowRuntime runtime,
-                                                SnowViewport viewport, bool hasViewport,
-                                                SnowCanvasDisplayCache& displayCache) {
+SnowCanvasWidgetTextInteraction::EditorEventResult SnowCanvasWidgetTextInteraction::handleKeyPress(
+    QKeyEvent* event, SnowRuntime runtime, SnowViewport viewport, bool hasViewport,
+    SnowCanvasDisplayCache& displayCache, bool deleteTextAfterCursor) {
     EditorEventResult result;
     if (!m_session.isActive()) {
         return result;
     }
 
     const QRegion beforeRegion = editingRegion(displayCache, m_widget.font());
-    const SnowCanvasTextEditorSession::KeyResult keyResult =
-        m_session.handleKeyPress(event, m_widget.font(), displayCache.sceneInfo());
+    const SnowCanvasTextEditorSession::KeyResult keyResult = m_session.handleKeyPress(
+        event, m_widget.font(), displayCache.sceneInfo(), deleteTextAfterCursor);
     if (!keyResult.handled) {
         return result;
     }
@@ -958,8 +1047,19 @@ SnowCanvasWidgetTextInteraction::handleKeyPress(QKeyEvent* event, SnowRuntime ru
         event->accept();
     }
     switch (keyResult.command) {
+    case SnowCanvasTextEditorSession::EventCommand::Cancel: {
+        auto canceled = cancel(runtime, viewport, displayCache);
+        result.changedViewports = std::move(canceled.changedViewports);
+        result.sessionEnded = canceled.sessionEnded;
+        return result;
+    }
     case SnowCanvasTextEditorSession::EventCommand::DeleteElement:
     case SnowCanvasTextEditorSession::EventCommand::Commit: {
+        if (m_session.isDistanceValue()) {
+            commitInputMethod();
+            if (!m_session.parsedDistanceValue().has_value())
+                return result;
+        }
         CommitResult commitResult =
             commit(runtime, viewport, hasViewport, displayCache, true,
                    keyResult.command == SnowCanvasTextEditorSession::EventCommand::DeleteElement);

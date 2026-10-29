@@ -1,0 +1,87 @@
+{
+  "animation_sample_interval_ms": 17,
+  "benchmark": "screenshot_selection_presentation",
+  "device_pixel_ratio": 1,
+  "implementation": "optimized",
+  "logical_height": 1050,
+  "logical_width": 1680,
+  "measurement": "Request submission and explicit frame commit are measured separately; preparation includes both phases. Scheduled animation frame_commit_ms is zero, with timer commits included in Qt event processing. Controlled cases commit once per supplied frame; animation uses each implementation's event-driven timer with event pumping and requested idle waits of at most 1ms. Event-processing work and counters cover the entire input interval. Compare animation costs with observed paint and geometry counts. Magnifier cases include pointer presentation and the real picker controller/window. The optional archived legacy baseline target updates hover magnifiers immediately and reports internal sampling/preview counters as null; the current target batches hover magnifiers with the presentation frame. Picker paint/move/owner-change event counts are comparable. Combined cases include animated selection, guides, and magnifier bursts. Manual cases deliver coordinates through the real input handler and include constrained drag geometry; manual magnifier cases also include the real drag anchor sampler. Boolean cases use a concave freehand contour with two holes; pixel reuse keeps sixteen subpixel requests inside one integer marquee per frame, and animation allows displayed marquees to evolve between target requests. Idle waits, selector workers, native mouse delivery, and input-to-photon latency are excluded from work timings.",
+  "physical_height": 1050,
+  "physical_width": 1680,
+  "platform": "offscreen",
+  "results": [
+    {
+      "boolean_region_operation_included": false,
+      "canvas_paints": 60,
+      "clock": "controlled_monotonic",
+      "displayed_geometry_changes": 60,
+      "elapsed_ms": 64.129773,
+      "event_processing_ms": {
+        "max": 1.213885,
+        "mean": 0.8689886166666667,
+        "median": 0.8530035,
+        "min": 0.540339,
+        "p95": 1.1048776
+      },
+      "frame_commit": "explicit_frame",
+      "frame_commit_ms": {
+        "max": 0.291023,
+        "mean": 0.19606194999999993,
+        "median": 0.1604335,
+        "min": 0.058146,
+        "p95": 0.28528044999999996
+      },
+      "hint_translation_requests": 0,
+      "input_interval_ms": 8,
+      "iterations": 60,
+      "magnifier_display_mode": "always_show",
+      "magnifier_included": true,
+      "magnifier_move_events": 60,
+      "magnifier_owner_change_events": 0,
+      "magnifier_owner_changes": 0,
+      "magnifier_paints": 60,
+      "magnifier_position_moves": 60,
+      "magnifier_preview_rebuilds": 60,
+      "magnifier_request_count": 60,
+      "magnifier_samples": 60,
+      "manual_input_handler_included": true,
+      "maximum_requested_animation_idle_wait_ms": 0,
+      "mean_canvas_damage_ratio": 0.017937641723356008,
+      "pointer_request_count": 60,
+      "preparation_ms": {
+        "max": 0.293752,
+        "mean": 0.19880664999999997,
+        "median": 0.1640815,
+        "min": 0.060546,
+        "p95": 0.28818555
+      },
+      "request_count": 60,
+      "requests_per_frame": 1,
+      "scenario": "manual_marquee_magnifier_1",
+      "scheduler_wake_events": 0,
+      "selection_request_count": 60,
+      "selection_toolbar_hidden": false,
+      "semantic_notifications": 60,
+      "submission_ms": {
+        "max": 0.00434,
+        "mean": 0.0027447,
+        "median": 0.0026899999999999997,
+        "min": 0.002291,
+        "p95": 0.0033800999999999983
+      },
+      "total_ms": {
+        "max": 1.500988,
+        "mean": 1.0677952666666668,
+        "median": 1.094359,
+        "min": 0.6036980000000001,
+        "p95": 1.3602149000000001
+      },
+      "ui_paints": 1281,
+      "work_ms_per_canvas_paint": 1.067795266666667,
+      "work_ms_per_geometry_change": 1.067795266666667
+    }
+  ],
+  "scheduler_backend": "automatic",
+  "screen_refresh_hz": 60,
+  "warmup": 1
+}

@@ -9,6 +9,7 @@
 #include <memory>
 
 class QPainter;
+class QPainterPath;
 class QRegion;
 class QTransform;
 class QWidget;
@@ -30,6 +31,8 @@ struct ScreenshotSelectionShadowDiagnostics {
 
 class ScreenshotSelectionShadowRenderer final {
   public:
+    static void renderBorder(QPainter& painter, const QPainterPath& selectionPath, qreal width,
+                             const QColor& color);
     static void renderPreview(QPainter& painter, const QRectF& selectionBounds, qreal cornerRadius,
                               qreal shadowWidth, const QColor& shadowColor, qreal devicePixelRatio,
                               const QWidget* widget = nullptr);

@@ -346,6 +346,9 @@ class AdModal final : public QObject {
   void windowIconChanged(const QIcon& value);
   void windowAlwaysOnTopButtonVisibleChanged(bool value);
   void windowAlwaysOnTopChanged(bool value);
+  // User move/resize interactions on a Window surface, including cancellation and hiding.
+  void windowInteractionStarted();
+  void windowInteractionFinished();
   void openChanged(bool value);
   void windowTitleChanged(const QString& value);
   void finished(DialogCode code);

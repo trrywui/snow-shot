@@ -41,8 +41,12 @@ function Assert-SnowShotMiniPayload([string]$Stage,
             throw 'Mini OCR descriptor must match the selected trusted target manifest exactly.'
         }
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'share/snow-shot-mini/licenses/LICENSE'))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage 'share/snow-shot-mini/licenses/LICENSES.txt') -PathType Leaf)) {
         throw 'Mini is missing its license bundle.'
+    }
+    $licenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $Stage 'share/snow-shot-mini/licenses') -Recurse -File -Force)
+    if ($licenseFiles.Count -ne 1 -or $licenseFiles[0].Length -eq 0) {
+        throw 'Mini must contain one nonempty consolidated LICENSES.txt.'
     }
 }
 

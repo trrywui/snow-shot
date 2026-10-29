@@ -12,6 +12,7 @@
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/configurationschema.h"
 #include "snow_shot/update/updateservice.h"
+#include "snow_shot/app/distribution.h"
 
 #include "widgets/button.h"
 #include "widgets/button_style.h"
@@ -57,6 +58,15 @@ void require(bool condition, const char* message) {
         std::cerr << message << '\n';
         std::exit(EXIT_FAILURE);
     }
+}
+
+QString expectedTranslation(const QTranslator& catalog, const QString& locale, const char* context,
+                            const char* source) {
+    // English identity entries are intentionally omitted from the compact source catalog.
+    // Keep requiring real localized entries while exercising Qt's normal source fallback.
+    require(locale == QStringLiteral("en_US") || !catalog.translate(context, source).isEmpty(),
+            "localized About UI text must exist in the compiled catalog");
+    return QCoreApplication::translate(context, source);
 }
 
 void flushEvents() {
@@ -271,6 +281,39 @@ void projectLinkSurfacesMatchStandardButtons() {
     manager.setThemeAppearance(styles::ThemeAppearance::Light);
 }
 
+void storeUpdatesOpenMicrosoftStore() {
+#ifdef Q_OS_WIN
+    snow_shot::update::UpdateService::Options options;
+    options.storeManaged = true;
+    snow_shot::update::UpdateService updates(std::move(options));
+    QList<QUrl> opened;
+    bool nativeOperation = false;
+    QObject::connect(&updates, &snow_shot::update::UpdateService::operationFinished, &updates,
+                     [&](const QString&, const QString&) { nativeOperation = true; });
+    AboutPageWidget page(
+        nullptr,
+        [&](const QUrl& url) {
+            opened.append(url);
+            return true;
+        },
+        &updates);
+    page.resize(700, 540);
+    page.show();
+    flushEvents();
+    auto* action = child<adqt::widgets::AdButton>(page, "aboutUpdateAction");
+    require(action->isEnabled() && action->text() == QStringLiteral("Open Microsoft Store") &&
+                child<QLabel>(page, "aboutUpdateStatus")->text() ==
+                    QStringLiteral("Updates are managed by Microsoft Store.") &&
+                !child<QProgressBar>(page, "aboutUpdateProgress")->isVisible() &&
+                !child<adqt::widgets::AdButton>(page, "aboutUpdateCancel")->isVisible(),
+            "Store About exposes only the external update manager");
+    action->click();
+    require(opened == QList<QUrl>{QUrl(QStringLiteral("ms-windows-store://downloadsandupdates"))} &&
+                !nativeOperation && !updates.busy(),
+            "Store update action opens its documented URI without native updater work");
+#endif
+}
+
 void projectLinksAreExplicitAccessibleAndRecoverable() {
     QList<QUrl> opened;
     bool canOpen = true;
@@ -292,7 +335,7 @@ void projectLinksAreExplicitAccessibleAndRecoverable() {
             "the remaining QQ group spans the full project link row width");
     snapshot(page, QStringLiteral("about-actions"));
     const QString project = QStringLiteral(SNOW_SHOT_TEST_PROJECT_URL);
-    const std::array<std::pair<const char*, QUrl>, 5> links{{
+    const std::array<std::pair<const char*, QUrl>, 6> links{{
         {"aboutWebsite", QUrl(QStringLiteral(SNOW_SHOT_TEST_WEBSITE_URL))},
         {"aboutSourceCode", QUrl(project)},
         {"aboutFeedback", QUrl(project + QStringLiteral("/issues"))},
@@ -300,6 +343,7 @@ void projectLinksAreExplicitAccessibleAndRecoverable() {
         {"aboutQqGroup3", QUrl(snow_shot::app::edition::isMacOS14Personal
                                    ? QStringLiteral("https://github.com/mg-chao/snow-apps")
                                    : QStringLiteral(SNOW_SHOT_TEST_QQ_GROUP_3_URL))},
+        {"aboutPrivacyPolicy", QUrl(snow_shot::app::distribution::privacyPolicyUrl())},
     }};
     for (const auto& [name, url] : links) {
         auto* button = child<QAbstractButton>(page, name);
@@ -339,10 +383,10 @@ void projectLinksAreExplicitAccessibleAndRecoverable() {
                 "load link failure translation");
         QCoreApplication::installTranslator(&translator);
         flushEvents();
-        require(error->text() == translator
-                                     .translate("AboutPageWidget",
-                                                "Could not open the link. Open %1 in your browser.")
-                                     .arg(links.front().second.toDisplayString()),
+        require(error->text() ==
+                    expectedTranslation(translator, locale, "AboutPageWidget",
+                                        "Could not open the link. Open %1 in your browser.")
+                        .arg(links.front().second.toDisplayString()),
                 "an existing link error retranslates and preserves its destination");
         QCoreApplication::removeTranslator(&translator);
         flushEvents();
@@ -376,8 +420,9 @@ void largerTypeKeepsEveryActionReachable() {
     auto* artwork = child<QWidget>(page, "aboutArtwork");
     require(artwork->width() <= scroll->viewport()->width() && artwork->height() > 0,
             "artwork scales down to the available width with larger fonts");
-    for (const char* name : {"aboutCopyVersion", "aboutReleaseNotes", "aboutUpdateAction",
-                             "aboutWebsite", "aboutSourceCode", "aboutFeedback", "aboutQqGroup3"}) {
+    for (const char* name :
+         {"aboutCopyVersion", "aboutReleaseNotes", "aboutUpdateAction", "aboutWebsite",
+          "aboutSourceCode", "aboutFeedback", "aboutQqGroup3", "aboutPrivacyPolicy"}) {
         auto* button = child<QAbstractButton>(page, name);
         scroll->ensureWidgetVisible(button);
         flushEvents();
@@ -690,6 +735,23 @@ void dividersFollowTheComponentLibraryAndUpdatesBreathe() {
     page.hide();
 }
 
+void traySystemIconColorSettings() {
+#ifdef Q_OS_MACOS
+    snow_shot::presentation::GlobalShortcutManager shortcuts;
+    settings::BuiltInSettingsBackend backend(shortcuts);
+    const auto& registry = settings::builtInSettingsRegistry();
+    settings::SettingsRuntimeSession session(registry, backend);
+    constexpr auto binding = settings::SettingsSwitchBinding::TrayUseSystemIconColor;
+    require(!backend.switchValue(binding), "macOS system icon coloring must default off");
+    require(session.applySwitchValue(binding, true) && backend.switchValue(binding) &&
+                snow_shot::storage::TraySettings().useSystemIconColor(),
+            "the macOS switch must persist enabled system icon coloring through the backend");
+    require(session.reset(settings::SettingsSectionReset::Tray) && !backend.switchValue(binding) &&
+                !snow_shot::storage::TraySettings().useSystemIconColor(),
+            "resetting tray settings must disable macOS system icon coloring");
+#endif
+}
+
 void traySettingsAndFunctionNavigation() {
     const auto& registry = settings::builtInSettingsRegistry();
     snow_shot::presentation::GlobalShortcutManager shortcuts;
@@ -702,7 +764,7 @@ void traySettingsAndFunctionNavigation() {
                 backend.selectValue(middle).toString() == QStringLiteral("screenshot_fixed"),
             "tray reset must restore distinct defaults");
     for (const auto& action :
-         {QStringLiteral("screenshot"), QStringLiteral("show_main_window"),
+         {QStringLiteral("none"), QStringLiteral("screenshot"), QStringLiteral("show_main_window"),
           QStringLiteral("screenshot_copy"), QStringLiteral("screenshot_fixed"),
           QStringLiteral("open_function_settings")}) {
         const auto previousMiddle = backend.selectValue(middle);
@@ -908,17 +970,18 @@ void mainNavigationSearchThemesAndLanguages() {
         QCoreApplication::installTranslator(&translator);
         flushEvents();
         require(searchSelect->placeholder() ==
-                    translator.translate("SidebarWidget", "Search Function"),
+                    expectedTranslation(translator, locale, "SidebarWidget", "Search Function"),
                 "sidebar search retranslates with each application catalog");
-        const QString translatedTitle = translator.translate("AboutPageWidget", "About Snow Shot");
+        const QString translatedTitle =
+            expectedTranslation(translator, locale, "AboutPageWidget", "About Snow Shot");
         require(!translatedTitle.isEmpty() && page->accessibleName() == translatedTitle,
                 "an open About page retranslates immediately");
         require(child<QLabel>(*page, "aboutVersionValue")->text() ==
                     QStringLiteral(SNOW_SHOT_TEST_VERSION),
                 "language changes preserve the release version");
         if constexpr (snow_shot::app::edition::isMacOS14Personal) {
-            const QString attribution =
-                translator.translate("AboutPageWidget", "Based on Snow Apps %1. Maintained by %2.");
+            const QString attribution = expectedTranslation(
+                translator, locale, "AboutPageWidget", "Based on Snow Apps %1. Maintained by %2.");
             require(!attribution.isEmpty() &&
                         child<QLabel>(*page, "aboutCopyright")
                             ->text()
@@ -927,29 +990,33 @@ void mainNavigationSearchThemesAndLanguages() {
                                                       QStringLiteral("trrywui"))),
                     "maintained attribution follows the active language and upstream version");
         }
-        require(child<adqt::widgets::AdButton>(*page, "aboutCopyVersion")->text() ==
-                    translator.translate("AboutPageWidget", "Copy version number"),
-                "copy action retranslates");
+        require(
+            child<adqt::widgets::AdButton>(*page, "aboutCopyVersion")->text() ==
+                expectedTranslation(translator, locale, "AboutPageWidget", "Copy version number"),
+            "copy action retranslates");
         require(child<QLabel>(*page, "aboutLicense")
                     ->text()
-                    .contains(translator.translate("AboutPageWidget",
-                                                   "GNU General Public License v3.0 or later")),
+                    .contains(expectedTranslation(translator, locale, "AboutPageWidget",
+                                                  "GNU General Public License v3.0 or later")),
                 "license details retranslate");
         require(
             child<QLabel>(*page, "aboutOpenSource")->text() ==
-                    translator.translate("AboutPageWidget", "Free · Open source") &&
+                    expectedTranslation(translator, locale, "AboutPageWidget",
+                                        "Free · Open source") &&
                 child<QLabel>(*page, "aboutDescription")->text() ==
-                    translator.translate(
-                        "AboutPageWidget",
+                    expectedTranslation(
+                        translator, locale, "AboutPageWidget",
                         "Capture, annotate, recognize text, and record your screen,\n"
                         "so every moment on screen can be expressed clearly and shared easily."),
             "the new hero copy retranslates immediately");
         require(child<QLabel>(*page, "aboutTagline")
                     ->text()
-                    .contains(translator.translate("AboutPageWidget", "Elegant screenshots")),
+                    .contains(expectedTranslation(translator, locale, "AboutPageWidget",
+                                                  "Elegant screenshots")),
                 "the two-tone headline retranslates");
         require(child<QLabel>(*page, "aboutSlogan")->text() ==
-                    translator.translate("AboutPageWidget", "Snow Shot · Make expression clearer"),
+                    expectedTranslation(translator, locale, "AboutPageWidget",
+                                        "Snow Shot · Make expression clearer"),
                 "the footer slogan retranslates");
         const std::array<const char*, 6> features{"Screenshot capture", "Easy annotation",
                                                   "Text recognition",   "Screen recording",
@@ -957,19 +1024,20 @@ void mainNavigationSearchThemesAndLanguages() {
         for (size_t i = 0; i < features.size(); ++i) {
             auto* label = page->findChild<QLabel*>(QStringLiteral("aboutFeatureLabel%1").arg(i));
             require(label != nullptr &&
-                        label->text() == translator.translate("AboutPageWidget", features[i]),
+                        label->text() ==
+                            expectedTranslation(translator, locale, "AboutPageWidget", features[i]),
                     "every feature label retranslates");
             auto* icon = page->findChild<QLabel*>(QStringLiteral("aboutFeatureIcon%1").arg(i));
             require(icon != nullptr && !icon->pixmap().isNull(), "every feature icon renders");
         }
         require(child<QAbstractButton>(*page, "aboutWebsite")->accessibleName() ==
-                        translator.translate("AboutPageWidget",
-                                             snow_shot::app::edition::isMacOS14Personal
-                                                 ? "Project website"
-                                                 : "Official website") &&
+                        expectedTranslation(translator, locale, "AboutPageWidget",
+                                            snow_shot::app::edition::isMacOS14Personal
+                                                ? "Project website"
+                                                : "Official website") &&
                     child<QWidget>(*page, "aboutArtwork")->accessibleName() ==
-                        translator.translate(
-                            "AboutPageWidget",
+                        expectedTranslation(
+                            translator, locale, "AboutPageWidget",
                             "Screenshot selection, annotation tools, and recognized text"),
                 "resource and illustration accessibility copy follows the active language");
         struct QqGroupCopy {
@@ -982,14 +1050,15 @@ void mainNavigationSearchThemesAndLanguages() {
         }};
         for (const auto& group : qqGroups) {
             const bool maintained = snow_shot::app::edition::isMacOS14Personal;
-            const QString title = translator.translate(
-                "AboutPageWidget", maintained ? "Upstream project" : group.title);
+            const QString title =
+                expectedTranslation(translator, locale, "AboutPageWidget",
+                                    maintained ? "Upstream project" : group.title);
             const QString description =
-                maintained
-                    ? translator.translate("AboutPageWidget", "Original Snow Apps by mg-chao")
-                    : translator
-                          .translate("AboutPageWidget", "Discussion and support · Group No. %1")
-                          .arg(QString::fromLatin1(group.number));
+                maintained ? expectedTranslation(translator, locale, "AboutPageWidget",
+                                                 "Original Snow Apps by mg-chao")
+                           : expectedTranslation(translator, locale, "AboutPageWidget",
+                                                 "Discussion and support · Group No. %1")
+                                 .arg(QString::fromLatin1(group.number));
             auto* button = child<QAbstractButton>(*page, group.objectName);
             require(button->accessibleName() == title &&
                         button->accessibleDescription() == description,
@@ -1049,16 +1118,23 @@ int main(int argc, char** argv) {
     require(storage.initialize({directory.path(), directory.path(), 8000}).success,
             "initialize isolated storage");
     styles::ThemeManager::instance().initialize(application);
+    if (application.arguments().contains(QStringLiteral("--tray-icon-color-only"))) {
+        traySystemIconColorSettings();
+        storage.shutdown();
+        return 0;
+    }
     themeAndSkinChangesUpdateOnlyAffectedBackgrounds();
     versionIsExactSelectableAndCopyable();
     absentVersionDoesNotInventARelease();
     stableVersionsDoNotClaimToBePreviews();
     projectLinkSurfacesMatchStandardButtons();
     projectLinksAreExplicitAccessibleAndRecoverable();
+    storeUpdatesOpenMicrosoftStore();
     updatePolicyAndUnavailableCopy();
     updateStatesFitTheVersionPanel();
     updateModuleKeepsItsHeightAcrossStates();
     dividersFollowTheComponentLibraryAndUpdatesBreathe();
+    traySystemIconColorSettings();
     traySettingsAndFunctionNavigation();
     mainNavigationSearchThemesAndLanguages();
     largerTypeKeepsEveryActionReachable();

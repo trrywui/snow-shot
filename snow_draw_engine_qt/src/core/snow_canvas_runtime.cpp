@@ -22,6 +22,8 @@ struct SnowCanvasRuntime::Impl {
     bool reset();
     bool cloneDocumentSessionFrom(const Impl& source);
     QByteArray serializeDocumentSession() const;
+    QByteArray serializeDocumentSnapshot() const;
+    QByteArray documentCheckpoint() const;
     QByteArray serializeSelectedDrawTemplate() const;
     bool restoreDocumentSession(const QByteArray& payload);
     QByteArray serializeDocumentHistory() const;
@@ -29,6 +31,8 @@ struct SnowCanvasRuntime::Impl {
     bool restoreDocumentHistoryPreservingEditorStyles(const QByteArray& payload);
     bool clearDocumentPreservingViewports();
     void clearRenderState();
+    bool setAutomaticallySelectNewlyCreatedElements(bool enabled);
+    bool setAutomaticSelectionExcludedTools(const QSet<SnowCanvasTool>& tools);
     bool setQuickSelectionDisabledTools(const QSet<SnowCanvasTool>& tools);
     void destroyAsync();
     QImage renderToImage(const QRectF& virtualSelectionRect, const QSize& outputSize,
@@ -116,6 +120,15 @@ QByteArray SnowCanvasRuntime::Impl::serializeDocumentSession() const {
     return session.serializeDocumentSession();
 }
 
+QByteArray SnowCanvasRuntime::Impl::serializeDocumentSnapshot() const {
+    return hasThreadAccess("serializeDocumentSnapshot") ? session.serializeDocumentSnapshot()
+                                                        : QByteArray{};
+}
+
+QByteArray SnowCanvasRuntime::Impl::documentCheckpoint() const {
+    return hasThreadAccess("documentCheckpoint") ? session.documentCheckpoint() : QByteArray{};
+}
+
 QByteArray SnowCanvasRuntime::Impl::serializeSelectedDrawTemplate() const {
     if (!hasThreadAccess("serializeSelectedDrawTemplate")) {
         return {};
@@ -149,6 +162,17 @@ bool SnowCanvasRuntime::Impl::clearDocumentPreservingViewports() {
         return false;
     }
     return session.clearDocumentPreservingViewports();
+}
+
+bool SnowCanvasRuntime::Impl::setAutomaticallySelectNewlyCreatedElements(bool enabled) {
+    return hasThreadAccess("setAutomaticallySelectNewlyCreatedElements") &&
+           session.setAutomaticallySelectNewlyCreatedElements(enabled);
+}
+
+bool SnowCanvasRuntime::Impl::setAutomaticSelectionExcludedTools(
+    const QSet<SnowCanvasTool>& tools) {
+    return hasThreadAccess("setAutomaticSelectionExcludedTools") &&
+           session.setAutomaticSelectionExcludedTools(tools);
 }
 
 bool SnowCanvasRuntime::Impl::setQuickSelectionDisabledTools(const QSet<SnowCanvasTool>& tools) {
@@ -274,6 +298,14 @@ QByteArray SnowCanvasRuntime::serializeDocumentSession() const {
     return m_impl->serializeDocumentSession();
 }
 
+QByteArray SnowCanvasRuntime::serializeDocumentSnapshot() const {
+    return m_impl->serializeDocumentSnapshot();
+}
+
+QByteArray SnowCanvasRuntime::documentCheckpoint() const {
+    return m_impl->documentCheckpoint();
+}
+
 QByteArray SnowCanvasRuntime::serializeSelectedDrawTemplate() const {
     return m_impl->serializeSelectedDrawTemplate();
 }
@@ -314,6 +346,14 @@ bool SnowCanvasRuntime::restoreDocumentHistoryPreservingEditorStyles(const QByte
 
 bool SnowCanvasRuntime::clearDocumentPreservingViewports() {
     return m_impl->clearDocumentPreservingViewports();
+}
+
+bool SnowCanvasRuntime::setAutomaticallySelectNewlyCreatedElements(bool enabled) {
+    return m_impl->setAutomaticallySelectNewlyCreatedElements(enabled);
+}
+
+bool SnowCanvasRuntime::setAutomaticSelectionExcludedTools(const QSet<SnowCanvasTool>& tools) {
+    return m_impl->setAutomaticSelectionExcludedTools(tools);
 }
 
 bool SnowCanvasRuntime::setQuickSelectionDisabledTools(const QSet<SnowCanvasTool>& tools) {
@@ -363,6 +403,24 @@ bool SnowCanvasRuntime::canUndo() const {
     return isOwnerThread() && snow_runtime_get_history_state(m_impl->handle(), &state) == SNOW_OK &&
            state.can_undo != 0;
 }
+quint64 SnowCanvasRuntime::hostHistoryState(int direction) const {
+    uint64_t state = 0;
+    if (isOwnerThread())
+        snow_runtime_host_history_state(m_impl->handle(), direction, &state);
+    return state;
+}
+
+bool SnowCanvasRuntime::commitHostHistoryState(quint64 state) {
+    if (!isOwnerThread())
+        return false;
+    SnowChangedViewportList changed = nullptr;
+    const bool ok =
+        snow_runtime_commit_host_history_state(m_impl->handle(), state, &changed) == SNOW_OK;
+    if (ok)
+        m_impl->syncChangedViewports(changed);
+    snow_changed_viewports_destroy(changed);
+    return ok;
+}
 bool SnowCanvasRuntime::canRedo() const {
     SnowHistoryState state{};
     return isOwnerThread() && snow_runtime_get_history_state(m_impl->handle(), &state) == SNOW_OK &&
@@ -394,6 +452,12 @@ void SnowCanvasRuntime::Impl::clearRenderState() {
 
 void SnowCanvasRuntime::clearRenderState() {
     m_impl->clearRenderState();
+}
+
+QImage SnowCanvasRuntime::renderImageSourcesToImage(const QRectF& canvasRect,
+                                                    const QSize& outputSize,
+                                                    const QList<CanvasExportSource>& sources) {
+    return snow_canvas_export::renderImageSourcesToImage(canvasRect, outputSize, sources);
 }
 
 QImage SnowCanvasRuntime::renderToImage(const QRectF& virtualSelectionRect, const QSize& outputSize,
@@ -454,9 +518,28 @@ void SnowCanvasRuntime::setBaseImageSources(const QList<SnowCanvasBaseImageSourc
 SnowCanvasSmartEraseSnapshot SnowCanvasRuntime::smartEraseSnapshot() const {
     return isOwnerThread() ? m_impl->smartErase().snapshot() : SnowCanvasSmartEraseSnapshot{};
 }
+void SnowCanvasRuntime::seedSmartEraseSnapshot(const SnowCanvasSmartEraseSnapshot& snapshot) {
+    if (!isOwnerThread())
+        return;
+    m_impl->smartErase().seedSnapshot(snapshot);
+    m_impl->smartErase().sync(m_impl->handle());
+}
 void SnowCanvasRuntime::restoreSmartEraseSnapshot(const SnowCanvasSmartEraseSnapshot& snapshot) {
     if (isOwnerThread())
         m_impl->smartErase().restoreSnapshot(snapshot);
+}
+bool SnowCanvasRuntime::prepareSmartEraseForExport(const SnowCanvasSmartEraseSnapshot& seed,
+                                                   const QList<SnowCanvasBaseImageSource>& sources,
+                                                   const QRectF& outputCanvasRect,
+                                                   const std::function<bool()>& cancelled) {
+    if (!isOwnerThread())
+        return false;
+    const auto prepared = snow_canvas_smart_erase::prepareExport(m_impl->handle(), seed, sources,
+                                                                 outputCanvasRect, cancelled);
+    if (!prepared)
+        return false;
+    m_impl->smartErase().restoreSnapshot(*prepared);
+    return true;
 }
 
 struct SnowCanvasRuntimeEditor::Impl {

@@ -50,6 +50,7 @@
 #include <QScrollArea>
 #include <QScopeGuard>
 #include <QScreen>
+#include <QSemaphore>
 #include <QTranslator>
 #include <QTemporaryDir>
 #include <QThread>
@@ -175,12 +176,18 @@ void reusablePathInputsAndSettings() {
     SettingsPageWidget desktopPage(registry, QStringLiteral("desktop-tools"), session);
     desktopPage.reveal({desktopPage.pageId(), QStringLiteral("tray"), {}});
     const auto fileControls = desktopPage.findChildren<FilePathInput*>();
-    require(fileControls.size() == 2,
-            "light and dark tray icon settings must both use FilePathInput");
-    for (FilePathInput* control : fileControls) {
+    const auto expectedFileControls =
+        std::count_if(registry.fields().cbegin(), registry.fields().cend(), [](const auto& field) {
+            return field.pageId == QStringLiteral("desktop-tools") &&
+                   field.sectionId == QStringLiteral("tray") &&
+                   field.kind == settings::SettingsFieldKind::FilePath;
+        });
+    require(expectedFileControls > 0 && fileControls.size() == expectedFileControls,
+            "every registered tray file setting must use FilePathInput");
+    for (auto* control : fileControls) {
         require(adqt::icons::describeIcon(control->browseButton()->iconRef()).key.name ==
                     QStringLiteral("file-add"),
-                "file settings must use FilePathInput with FileAddOutlined");
+                "file settings must use FileAddOutlined");
     }
 }
 void snapshot(AdModal* modal, const QString& name) {
@@ -1038,7 +1045,33 @@ void canvasNativeDetailPreservesTransparency() {
                             .arg(pdf)
                             .arg(split)
                             .arg(detailed.devicePixelRatioF());
-                    require(samePixels(expected, actual), qPrintable(message));
+                    const bool matchingPixels = samePixels(expected, actual);
+                    if (!matchingPixels) {
+                        QRect differences;
+                        QPoint first;
+                        int count = 0;
+                        for (int y = 0; y < std::min(expected.height(), actual.height()); ++y) {
+                            for (int x = 0; x < std::min(expected.width(), actual.width()); ++x) {
+                                if (expected.pixel(x, y) == actual.pixel(x, y))
+                                    continue;
+                                if (count++ == 0)
+                                    first = QPoint(x, y);
+                                differences |= QRect(x, y, 1, 1);
+                            }
+                        }
+                        std::cerr << "detail pixels: count=" << count
+                                  << " bounds=" << differences.x() << ',' << differences.y() << ' '
+                                  << differences.width() << 'x' << differences.height()
+                                  << " first=" << first.x() << ',' << first.y() << " colors="
+                                  << expected.pixelColor(first).name(QColor::HexArgb).toStdString()
+                                  << '/'
+                                  << actual.pixelColor(first).name(QColor::HexArgb).toStdString()
+                                  << " zoom=" << reference.zoom() << '/' << detailed.zoom()
+                                  << " window origins=" << reference.pos().x() << ','
+                                  << reference.pos().y() << '/' << detailed.pos().x() << ','
+                                  << detailed.pos().y() << '\n';
+                    }
+                    require(matchingPixels, qPrintable(message));
                 }
             };
             verify();
@@ -2739,12 +2772,27 @@ void unbackedExactPreviewRetainsPixels(QWidget& owner) {
 }
 
 void boundedPreviewAndNativeRegions() {
+    const QImage resizeFixture = fixture(QSize(512, 128));
+    const QSize largeSize(16385, 1024);
+    QImage resizeReference(largeSize, QImage::Format_RGBA8888);
+    QString referenceError;
+    // This independent full-image oracle is CPU work, not an asynchronous dialog
+    // transition. Prepare it before starting the queued-completion watchdog.
+    require(snow_shot::image_codec::resizeToRgba8(
+                snow_shot::image_codec::srgbRowSource(resizeFixture), largeSize,
+                resizeReference.bits(), resizeReference.bytesPerLine(),
+                resizeReference.sizeInBytes(), &referenceError),
+            "large resize reference could not be prepared");
+    resizeReference.setColorSpace(QColorSpace::SRgb);
     QObject receiver;
+    QSemaphore workRetired;
     bool finished = false;
     QString failure;
     const auto job = ScreenshotExportCoordinator::shared().submit(
         &receiver, ScreenshotExportCoordinator::Priority::Foreground,
-        [](const ScreenshotExportCancellation& cancellation) {
+        [resizeFixture, largeSize, reference = std::move(resizeReference),
+         &workRetired](const ScreenshotExportCancellation& cancellation) {
+            const auto retireWork = qScopeGuard([&] { workRetired.release(); });
             QImage image = fixture(QSize(64, 6000));
             auto rows = snow_shot::image_codec::srgbRowSource(image);
             rows.backingImage = {};
@@ -2916,30 +2964,37 @@ void boundedPreviewAndNativeRegions() {
             require(classified.alphaContent == snow::image::AlphaContent::non_opaque,
                     "an unverified preview hint must not suppress source alpha classification");
             auto admitted = std::make_shared<QList<std::weak_ptr<int>>>();
-            auto resizeRows = snow_shot::image_codec::srgbRowSource(fixture(QSize(512, 128)));
+            auto resizeRows = snow_shot::image_codec::srgbRowSource(resizeFixture);
             resizeRows.reserveResources = [admitted](qint64, qint64, QString*) {
                 auto owner = std::make_shared<int>(1);
                 admitted->append(owner);
                 return std::static_pointer_cast<void>(owner);
             };
             const auto resizeSource = pipeline::prepare(resizeRows, cancellation, &error);
-            const QSize largeSize(16385, 1024);
+            QElapsedTimer resizeElapsed;
+            resizeElapsed.start();
             auto resized = pipeline::preparePixels(resizeSource, largeSize, cancellation, &error);
             require(resized && resized->exactImage.isNull() &&
                         resized->rows.backingImage.isNull() && admitted->size() == 1 &&
                         !admitted->front().expired(),
                     "large resize must admit and retain only a reusable lazy row plan");
-            QImage reference(largeSize, QImage::Format_RGBA8888);
-            require(snow_shot::image_codec::resizeToRgba8(
-                        resizeSource.rows, largeSize, reference.bits(), reference.bytesPerLine(),
-                        reference.sizeInBytes(), &error),
-                    "large resize reference could not be prepared");
-            reference.setColorSpace(QColorSpace::SRgb);
             const QRect resizedRegion(2100, 500, 77, 43);
             QImage native =
                 pipeline::readRegion(resized->rows, resizedRegion, cancellation, &error);
-            require(samePixels(native, reference.copy(resizedRegion)) && admitted->size() == 3 &&
-                        !admitted->at(1).expired() && admitted->at(2).expired(),
+            const bool matchingRegion = samePixels(native, reference.copy(resizedRegion));
+            if (!matchingRegion || admitted->size() != 3 || admitted->at(1).expired() ||
+                !admitted->at(2).expired()) {
+                std::cerr << "lazy resize region: pixels=" << matchingRegion
+                          << " admissions=" << admitted->size()
+                          << " elapsed=" << resizeElapsed.elapsed()
+                          << " cancelled=" << cancellation.isCancellationRequested()
+                          << " error=" << error.toStdString() << " owners=";
+                for (const auto& admission : *admitted)
+                    std::cerr << !admission.expired();
+                std::cerr << '\n';
+            }
+            require(matchingRegion && admitted->size() == 3 && !admitted->at(1).expired() &&
+                        admitted->at(2).expired(),
                     "lazy resize native detail must match the full scaler and retire scratch");
             auto encoded = pipeline::render(
                 resized, fixtureExportOptions(largeSize, Format::Png, 100), cancellation, &error);
@@ -2963,6 +3018,10 @@ void boundedPreviewAndNativeRegions() {
             finished = true;
         });
     require(job.isValid(), "bounded preview test could not enter the export queue");
+    // Pixel and memory contracts do not impose a codec throughput deadline.
+    // The CTest process timeout bounds worker hangs; this shorter watchdog
+    // checks only delivery of the GUI completion after the CPU work retires.
+    workRetired.acquire();
     processUntil([&] { return finished; });
     require(failure.isEmpty(), qPrintable(failure));
 }
@@ -3483,6 +3542,8 @@ void rejectedCalculationRetries(QWidget& owner, const QTemporaryDir& temp) {
 }
 } // namespace
 
+void runScreenshotSaveResultTests();
+
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     QApplication::setQuitOnLastWindowClosed(false);
@@ -3494,6 +3555,24 @@ int main(int argc, char* argv[]) {
                     .initialize({temp.filePath("app"), temp.filePath("data"), 60000})
                     .success,
                 "test storage initialization failed");
+        if (app.arguments().contains(QStringLiteral("--save-result-only"))) {
+            runScreenshotSaveResultTests();
+            ScreenshotExportCoordinator::shared().shutdown();
+            storage::ApplicationStorage::instance().shutdown();
+            return 0;
+        }
+        if (app.arguments().contains(QStringLiteral("--native-detail-transparency-only"))) {
+            canvasNativeDetailPreservesTransparency();
+            ScreenshotExportCoordinator::shared().shutdown();
+            storage::ApplicationStorage::instance().shutdown();
+            return 0;
+        }
+        if (app.arguments().contains(QStringLiteral("--bounded-native-regions-only"))) {
+            boundedPreviewAndNativeRegions();
+            ScreenshotExportCoordinator::shared().shutdown();
+            storage::ApplicationStorage::instance().shutdown();
+            return 0;
+        }
         if (app.arguments().contains(QStringLiteral("--canvas"))) {
             canvasInteraction();
             canvasNativeDetailPreservesTransparency();

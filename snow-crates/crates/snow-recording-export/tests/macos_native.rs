@@ -52,6 +52,13 @@ fn round_trip(format: PixelFormat, codec: VideoCodec) {
         .streams()
         .best(ffmpeg_next::media::Type::Video)
         .unwrap();
+    if codec == VideoCodec::H265 {
+        assert_eq!(stream.parameters().id(), ffmpeg_next::codec::Id::HEVC);
+        assert_eq!(
+            unsafe { (*stream.parameters().as_ptr()).codec_tag },
+            u32::from_le_bytes(*b"hvc1")
+        );
+    }
     let index = stream.index();
     let context =
         ffmpeg_next::codec::context::Context::from_parameters(stream.parameters()).unwrap();
@@ -90,6 +97,11 @@ fn round_trip(format: PixelFormat, codec: VideoCodec) {
 #[ignore = "requires a native Metal device and VideoToolbox H.264 hardware encoder"]
 fn native_sdr_h264_round_trip() {
     round_trip(PixelFormat::Bgra8, VideoCodec::H264);
+}
+#[test]
+#[ignore = "requires a native Metal device and VideoToolbox HEVC hardware encoder"]
+fn native_sdr_hevc_round_trip() {
+    round_trip(PixelFormat::Bgra8, VideoCodec::H265);
 }
 #[test]
 #[ignore = "requires Metal P010 output and VideoToolbox HEVC Main10 hardware encoder"]
@@ -456,10 +468,17 @@ fn hdr_composition_converts_sdr_white_instead_of_relabeling_it() {
 /// Deterministic software-only test: no display, permissions, Metal or VT device.
 #[test]
 fn software_hdr_padded_p010_round_trip_preserves_depth_color_and_timeline() {
+    for (source, offline) in [(false, false), (false, true), (true, false)] {
+        software_hdr_padded_p010_round_trip(source, offline);
+    }
+}
+
+fn software_hdr_padded_p010_round_trip(source: bool, offline: bool) {
+    use ffmpeg_next::Rescale;
     use snow_media::{ColorDescription, CpuFrame, PlaneLayout};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("software-hdr.mp4");
-    let mut encoder = StreamingEncoder::builder(StreamingEncoderConfig {
+    let builder = StreamingEncoder::builder(StreamingEncoderConfig {
         loop_animated_images: false,
         output_path: path.clone(),
         format: ExportFormat::Mp4,
@@ -473,11 +492,19 @@ fn software_hdr_padded_p010_round_trip_preserves_depth_color_and_timeline() {
         video: Default::default(),
         encode_threads: 1,
         audio: Vec::new(),
-    })
-    .native_input(PixelFormat::P010)
-    .software_only()
-    .create()
-    .unwrap();
+    });
+    let builder = if source {
+        builder.recording_source()
+    } else if offline {
+        builder.offline_output()
+    } else {
+        builder
+    };
+    let mut encoder = builder
+        .native_input(PixelFormat::P010)
+        .software_only()
+        .create()
+        .unwrap();
     let stride = 144;
     let chroma_offset = stride * 64 + 16;
     let mut bytes = vec![0xcd; chroma_offset + stride * 32];
@@ -533,6 +560,11 @@ fn software_hdr_padded_p010_round_trip_preserves_depth_color_and_timeline() {
         .unwrap();
     let index = stream.index();
     let time_base = stream.time_base();
+    assert_eq!(stream.duration().rescale(time_base, (1, 30)), 8);
+    assert_eq!(
+        unsafe { (*stream.parameters().as_ptr()).codec_tag },
+        u32::from_le_bytes(*b"hvc1")
+    );
     let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())
         .unwrap()
         .decoder()
@@ -540,9 +572,9 @@ fn software_hdr_padded_p010_round_trip_preserves_depth_color_and_timeline() {
         .unwrap();
     unsafe {
         assert_eq!(
-            (*decoder.as_ptr()).has_b_frames,
-            0,
-            "live HDR must not reorder frames"
+            (*decoder.as_ptr()).has_b_frames > 0,
+            !source,
+            "software output honors buffered presets; clean capture sources do not reorder"
         );
         assert_eq!((*decoder.as_ptr()).profile, 2);
         assert_eq!(

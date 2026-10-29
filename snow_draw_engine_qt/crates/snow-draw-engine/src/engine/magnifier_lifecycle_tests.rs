@@ -123,6 +123,7 @@ fn magnifier_lifecycle_target_removal_cancels_drag_preview_and_completion() {
                             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                                 transaction,
                                 history_undo_snapshot: None,
+                                created_selection_target: None,
                             }),
                         )
                         .unwrap();
@@ -189,6 +190,7 @@ fn magnifier_lifecycle_source_removal_cancels_pending_and_active_group_drag() {
                         EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                             transaction,
                             history_undo_snapshot: None,
+                            created_selection_target: None,
                         }),
                     )
                     .unwrap();
@@ -240,6 +242,7 @@ fn magnifier_lifecycle_source_removal_cancels_pending_and_active_group_drag() {
                     EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                         transaction,
                         history_undo_snapshot: None,
+                        created_selection_target: None,
                     }),
                 )
                 .unwrap();
@@ -519,6 +522,7 @@ fn magnifier_lifecycle_shared_target_validation_cancels_removed_arrow_drags() {
                 EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                     transaction,
                     history_undo_snapshot: None,
+                    created_selection_target: None,
                 }),
             )
             .unwrap();

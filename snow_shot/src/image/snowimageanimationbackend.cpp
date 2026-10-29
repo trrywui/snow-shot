@@ -1,4 +1,5 @@
 #include "snowimageanimationbridge.h"
+#include "snowimageimportoptions.h"
 
 #include <snow/image/animation.h>
 #include <snow/image/service.h>
@@ -49,7 +50,9 @@ class BorrowedSource final : public snow::image::ByteSource {
     std::span<const std::byte> bytes_;
 };
 
-snow::image::DecodeOptions options() {
+snow::image::DecodeOptions options(bool firstFrameOnly) {
+    if (firstFrameOnly)
+        return snow_shot::image_codec::imageImportOptions();
     snow::image::DecodeOptions result;
     result.limits.maximum_input_bytes = 256U * kMiB;
     result.limits.maximum_pixels = 64'000'000;
@@ -83,10 +86,10 @@ uint32_t SNOW_SHOT_IMAGE_CODEC_CALL snow_shot_animation_abi_version(void) {
     return SNOW_SHOT_ANIMATION_CODEC_ABI_VERSION;
 }
 
-SnowShotAnimationDecoder* SNOW_SHOT_IMAGE_CODEC_CALL
-snow_shot_animation_open(const uint8_t* encoded, uint64_t size, SnowShotAnimationCancel cancelled,
-                         void* cancel_context, SnowShotAnimationAdmit admit, void* admit_context,
-                         SnowShotAnimationInfo* info, char* error, uint64_t error_capacity) {
+SnowShotAnimationDecoder* SNOW_SHOT_IMAGE_CODEC_CALL snow_shot_animation_open(
+    const uint8_t* encoded, uint64_t size, int first_frame_only, SnowShotAnimationCancel cancelled,
+    void* cancel_context, SnowShotAnimationAdmit admit, void* admit_context,
+    SnowShotAnimationInfo* info, char* error, uint64_t error_capacity) {
     setError(error, error_capacity);
     if (info)
         *info = {};
@@ -100,7 +103,7 @@ snow_shot_animation_open(const uint8_t* encoded, uint64_t size, SnowShotAnimatio
             {}};
         bool staticGif = false;
         auto opened = service.open_animation_decoder(
-            input, options(), {}, cancellation(cancelled, cancel_context),
+            input, options(first_frame_only != 0), {}, cancellation(cancelled, cancel_context),
             [&](const snow::image::AnimationInfo& animation) {
                 const auto& document = animation.document;
                 staticGif =

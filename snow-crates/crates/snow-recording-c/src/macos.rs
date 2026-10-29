@@ -122,6 +122,8 @@ pub struct SnowMacRecordingConfig {
     pub highlight_rgba: u32,
     pub record_mouse_clicks: u32,
     pub highlight_radius: u32,
+    pub reserved_padding: u32,
+    pub record_mouse_scrolling: u32,
 }
 pub struct SnowMacRecording {
     session: Option<RecordingSession>,
@@ -199,6 +201,7 @@ pub unsafe extern "C" fn snow_recording_macos_create(
         let previous_size = std::mem::offset_of!(SnowMacRecordingConfig, highlight_radius);
         if size != legacy_size
             && size != previous_size
+            && size != std::mem::offset_of!(SnowMacRecordingConfig, record_mouse_scrolling)
             && size != size_of::<SnowMacRecordingConfig>()
         {
             return Err(invalid());
@@ -213,6 +216,7 @@ pub unsafe extern "C" fn snow_recording_macos_create(
         }
         let config = &extended;
         if config.record_mouse_clicks > 1
+            || config.record_mouse_scrolling > 1
             || config.output_path.is_null()
             || config.hdr > 1
             || config.editable > 1
@@ -270,6 +274,7 @@ pub unsafe extern "C" fn snow_recording_macos_create(
             None
         };
         let native_config = NativeRecordingConfig {
+            webcam: None,
             audio_mode: Default::default(),
             format: snow_recording_export::ExportFormat::Mp4,
             loop_animated_images: false,
@@ -282,7 +287,8 @@ pub unsafe extern "C" fn snow_recording_macos_create(
                 trail: config.trail == 1,
                 show_keyboard: config.keyboard == 1,
                 record_mouse_clicks: config.record_mouse_clicks == 1,
-                highlight_radius: if size == size_of::<SnowMacRecordingConfig>() {
+                record_mouse_scrolling: config.record_mouse_scrolling == 1,
+                highlight_radius: if size > previous_size {
                     config.highlight_radius
                 } else {
                     snow_screen_recorder::EffectsConfig::default().mouse_highlight_radius
@@ -292,16 +298,17 @@ pub unsafe extern "C" fn snow_recording_macos_create(
                 } else {
                     [0; 4]
                 },
-                keyboard: (config.keyboard == 1 || config.record_mouse_clicks == 1).then(|| {
-                    snow_screen_recorder::KeyboardOverlayConfig {
+                keyboard: (config.keyboard == 1
+                    || config.record_mouse_clicks == 1
+                    || config.record_mouse_scrolling == 1)
+                    .then(|| snow_screen_recorder::KeyboardOverlayConfig {
                         font: None,
                         keycap_size: 64,
                         background_rgba: [24, 24, 24, 220],
                         text_rgba: [255; 4],
                         border_rgba: [128, 128, 128, 255],
                         labels: Default::default(),
-                    }
-                }),
+                    }),
             },
             capture,
             output: PixelSize::new(config.output_width, config.output_height)

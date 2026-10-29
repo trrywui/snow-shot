@@ -1,6 +1,6 @@
 #include "snow_shot/presentation/components/contentcardwidget.h"
 
-#include "snow_shot/presentation/editionfeatures.h"
+#include "snow_shot/app/editionfeatures.h"
 
 #include "snow_shot/presentation/components/aboutpagewidget.h"
 #if SNOW_SHOT_ENABLE_TEXT_TRANSLATION
@@ -175,6 +175,8 @@ QWidget* ContentCardWidget::createPage(
                 &ContentCardWidget::screenshotHistoryCollageRequested);
         connect(historyPage, &ScreenshotHistoryPageWidget::splitRequested, this,
                 &ContentCardWidget::screenshotHistorySplitRequested);
+        connect(historyPage, &ScreenshotHistoryPageWidget::imageEditingRequested, this,
+                &ContentCardWidget::screenshotHistoryImageEditingRequested);
         page = historyPage;
     } else if (definition.kind ==
                snow_shot::presentation::settings::SettingsPageKind::PinnedWindowManagement) {
@@ -183,6 +185,8 @@ QWidget* ContentCardWidget::createPage(
                 &ContentCardWidget::pinnedWindowCollageRequested);
         connect(pinnedPage, &PinnedWindowManagementPageWidget::splitRequested, this,
                 &ContentCardWidget::pinnedWindowSplitRequested);
+        connect(pinnedPage, &PinnedWindowManagementPageWidget::imageEditingRequested, this,
+                &ContentCardWidget::pinnedWindowImageEditingRequested);
         page = pinnedPage;
     } else if (definition.kind ==
                snow_shot::presentation::settings::SettingsPageKind::Translation) {

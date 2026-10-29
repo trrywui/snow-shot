@@ -179,6 +179,7 @@ impl Document {
             .collect();
         if self.paint_order != order {
             self.paint_order = order;
+            self.invalidate_paint_ranks();
             changes.z_order_changed = true;
         }
     }

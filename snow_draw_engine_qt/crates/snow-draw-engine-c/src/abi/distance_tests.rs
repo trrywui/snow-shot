@@ -275,3 +275,115 @@ fn distance_ffi_validates_and_supplies_complete_provisional_label() {
     .unwrap();
     assert_eq!(text, "600 cm");
 }
+
+#[test]
+fn distance_inline_value_ffi_validates_and_commits_owner_values() {
+    let mut state = SnowRuntimeImpl {
+        runtime: Runtime::default(),
+    };
+    let id = state
+        .runtime
+        .create_viewport(ViewportConfig::default())
+        .unwrap();
+    let mut viewport = SnowViewportImpl { id };
+    state
+        .runtime
+        .apply_annotation_json(
+            br#"{"version":1,"operations":[{"type":"distance","points":[[0,0],[100,0]]}]}"#,
+        )
+        .unwrap();
+    let request = state
+        .runtime
+        .arrow_text_layout_requests(id)
+        .unwrap()
+        .remove(0);
+    let owner: SnowElementId = snow_element_id_from_rust(request.arrow_id);
+    let mut changed = std::ptr::null_mut();
+    let mut info = SnowTextElementInfo::default();
+    let mut style = SnowTextStyle::default();
+    let mut found = 9;
+    unsafe {
+        assert_eq!(
+            snow_viewport_take_distance_value_edit_target(
+                &mut state,
+                &mut viewport,
+                &mut info,
+                &mut style,
+                &mut found
+            ),
+            SnowError::Ok
+        );
+        assert_eq!(found, 0);
+        assert_eq!(
+            snow_viewport_take_distance_value_edit_target(
+                &mut state,
+                &mut viewport,
+                std::ptr::null_mut(),
+                &mut style,
+                &mut found
+            ),
+            SnowError::InvalidArgument
+        );
+        let layout = SnowTextLayoutSize {
+            width: 80.0,
+            height: 24.0,
+            content_width: 80.0,
+            content_height: 24.0,
+        };
+        assert_eq!(
+            snow_viewport_set_distance_value_draft_ex(
+                &mut state,
+                &mut viewport,
+                owner,
+                c"25".as_ptr(),
+                2,
+                layout,
+                &mut changed
+            ),
+            SnowError::Ok
+        );
+        snow_changed_viewports_destroy(changed);
+        changed = std::ptr::null_mut();
+        assert_eq!(
+            snow_viewport_commit_distance_value_ex(
+                &mut state,
+                &mut viewport,
+                owner,
+                f64::NAN,
+                &mut changed
+            ),
+            SnowError::InvalidArgument
+        );
+        assert!(changed.is_null());
+        assert_eq!(
+            snow_viewport_commit_distance_value_ex(
+                &mut state,
+                &mut viewport,
+                owner,
+                25.0,
+                &mut changed
+            ),
+            SnowError::Ok
+        );
+        snow_changed_viewports_destroy(changed);
+        changed = std::ptr::null_mut();
+        assert_eq!(
+            snow_viewport_commit_distance_value_ex(
+                &mut state,
+                &mut viewport,
+                SnowElementId::default(),
+                25.0,
+                &mut changed
+            ),
+            SnowError::NotFound
+        );
+    }
+    assert_eq!(
+        state
+            .runtime
+            .text_element_info(request.text_id)
+            .unwrap()
+            .text,
+        "25 cm"
+    );
+}

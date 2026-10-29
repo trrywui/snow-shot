@@ -1,6 +1,7 @@
 #include "snow_shot/presentation/screenshottabledocument.h"
 
 #include <QRegularExpression>
+#include <QCryptographicHash>
 #include <QBitArray>
 #include <QMimeData>
 #include <QSet>
@@ -358,6 +359,7 @@ ScreenshotTableDocument::expandedRange(const ScreenshotTableRange& source) const
 }
 
 bool ScreenshotTableDocument::setCellText(int row, int column, const QString& text) {
+    m_contentCheckpoint.clear();
     const QPoint anchor = anchorAt(row, column);
     if (anchor.x() < 0) {
         return false;
@@ -376,6 +378,7 @@ bool ScreenshotTableDocument::canMerge(const ScreenshotTableRange& source) const
 }
 
 bool ScreenshotTableDocument::merge(const ScreenshotTableRange& source) {
+    m_contentCheckpoint.clear();
     const ScreenshotTableRange range = expandedRange(source);
     if (!canMerge(range)) {
         return false;
@@ -439,6 +442,7 @@ bool ScreenshotTableDocument::canSplit(const ScreenshotTableRange& source) const
 }
 
 bool ScreenshotTableDocument::split(const ScreenshotTableRange& source) {
+    m_contentCheckpoint.clear();
     const ScreenshotTableRange range = boundedRange(source);
     if (!canSplit(range)) {
         return false;
@@ -468,6 +472,7 @@ bool ScreenshotTableDocument::split(const ScreenshotTableRange& source) {
 }
 
 bool ScreenshotTableDocument::clear(const ScreenshotTableRange& source) {
+    m_contentCheckpoint.clear();
     const ScreenshotTableRange range = boundedRange(source);
     if (!range.isValid()) {
         return false;
@@ -530,9 +535,22 @@ ScreenshotTableDocument::toClipboardMimeData(const ScreenshotTableRange& source)
             }
         }
     }
-    mimeData->setHtml(spreadsheet.toHtml(range));
+    // Spreadsheet HTML importers need document context around the table. A bare
+    // fragment can make the Windows CF_HTML transport header appear as cell text.
+    // Qt supplies that native header and calculates its UTF-8 byte offsets.
+    mimeData->setHtml(QStringLiteral("<html><head><meta charset=\"utf-8\"></head><body>"
+                                     "<!--StartFragment-->") +
+                      spreadsheet.toHtml(range) +
+                      QStringLiteral("<!--EndFragment--></body></html>"));
     mimeData->setText(spreadsheet.toPlainText(range));
     return mimeData;
+}
+
+QByteArray ScreenshotTableDocument::contentCheckpoint() const {
+    if (m_contentCheckpoint.isEmpty())
+        m_contentCheckpoint =
+            QCryptographicHash::hash(toHtml().toUtf8(), QCryptographicHash::Sha256);
+    return m_contentCheckpoint;
 }
 
 QString ScreenshotTableDocument::toHtml() const {

@@ -22,6 +22,30 @@ pub fn progress_bar_width(width: u32, progress: f64) -> u32 {
     (f64::from(width) * progress.clamp(0.0, 1.0)).floor() as u32
 }
 
+/// Visible playback content for a fixed overlay, canvas and finalized timeline.
+/// The final slot displays the exact endpoint, even before the next whole second.
+pub fn playback_content_key(
+    overlay: PlaybackOverlay,
+    width: u32,
+    frame: RenderFrame,
+    timeline: Option<FinalizedTimeline>,
+) -> Result<u64, String> {
+    match overlay {
+        PlaybackOverlay::None => Ok(0),
+        PlaybackOverlay::ProgressBar { .. } => {
+            Ok(u64::from(progress_bar_width(width, frame.progress)))
+        }
+        PlaybackOverlay::PlaybackTime { .. } => {
+            let timeline = timeline.ok_or("playback time requires a finalized timeline")?;
+            Ok(if frame.index + 1 >= timeline.frame_count() {
+                timeline.duration_ms()
+            } else {
+                frame.timestamp_ms.min(timeline.duration_ms())
+            } / 1000)
+        }
+    }
+}
+
 pub fn draw_progress_bar(surface: &mut impl Surface, progress: f64, rgba: [u8; 4]) {
     let (width, height) = surface.size();
     let top = height - progress_bar_height(height);
@@ -209,23 +233,43 @@ impl PlaybackRenderer {
             }
             PlaybackOverlay::PlaybackTime { .. } => {
                 let timeline = timeline.ok_or("playback time requires a finalized timeline")?;
-                let elapsed = if frame.index + 1 >= timeline.frame_count() {
-                    timeline.duration_ms()
-                } else {
-                    frame.timestamp_ms.min(timeline.duration_ms())
-                };
-                let key = (elapsed / 1000, timeline.duration_ms() / 1000);
-                if self.caption_key != Some(key) {
-                    self.caption = format_playback_time(elapsed, timeline.duration_ms());
-                    self.update_badge()?;
-                    self.caption_key = Some(key);
-                }
-                let badge = self.badge.as_ref().expect("prepared playback badge");
-                // Keep pixel geometry even on narrow recordings; the surface clips the badge.
-                let x = self.output.0 as f32 - self.margin as f32 - badge.width as f32;
-                blend_keycap_to(surface, badge, x, self.margin as f32, 1.0, 1.0);
+                let elapsed =
+                    playback_content_key(self.overlay, self.output.0, frame, Some(timeline))?
+                        * 1000;
+                self.draw_time(surface, elapsed, timeline.duration_ms())?;
             }
         }
+        Ok(())
+    }
+
+    /// Before recording, both elapsed time and the as-yet unknown duration are zero.
+    pub fn draw_zero_preview(&mut self, surface: &mut impl Surface) -> Result<(), String> {
+        match self.overlay {
+            PlaybackOverlay::None => Ok(()),
+            PlaybackOverlay::ProgressBar { rgba } => {
+                draw_progress_bar(surface, 0.0, rgba);
+                Ok(())
+            }
+            PlaybackOverlay::PlaybackTime { .. } => self.draw_time(surface, 0, 0),
+        }
+    }
+
+    fn draw_time(
+        &mut self,
+        surface: &mut impl Surface,
+        elapsed_ms: u64,
+        total_ms: u64,
+    ) -> Result<(), String> {
+        let key = (elapsed_ms / 1000, total_ms / 1000);
+        if self.caption_key != Some(key) {
+            self.caption = format_playback_time(elapsed_ms, total_ms);
+            self.update_badge()?;
+            self.caption_key = Some(key);
+        }
+        let badge = self.badge.as_ref().expect("prepared playback badge");
+        // Keep pixel geometry even on narrow recordings; the surface clips the badge.
+        let x = self.output.0 as f32 - self.margin as f32 - badge.width as f32;
+        blend_keycap_to(surface, badge, x, self.margin as f32, 1.0, 1.0);
         Ok(())
     }
 
@@ -363,6 +407,33 @@ mod tests {
     use super::*;
     use crate::surface::{RgbaSurface, TILE_SIZE, TileSurface};
 
+    #[test]
+    fn content_key_includes_second_boundaries_and_early_final_endpoint() {
+        let timeline = FinalizedTimeline::new(3000, 60).unwrap();
+        let overlay = PlaybackOverlay::PlaybackTime { rgba: [255; 4] };
+        for (index, expected) in [
+            (0, 0),
+            (59, 0),
+            (60, 1),
+            (119, 1),
+            (120, 2),
+            (178, 2),
+            (179, 3),
+        ] {
+            assert_eq!(
+                playback_content_key(
+                    overlay,
+                    1920,
+                    timeline.frame(index).unwrap(),
+                    Some(timeline)
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert!(playback_content_key(overlay, 1920, timeline.frame(0).unwrap(), None).is_err());
+    }
+
     struct Glyph;
     impl KeycapRasterizer for Glyph {
         fn rasterize(&mut self, label: &str, _: f32) -> Result<Keycap, String> {
@@ -382,6 +453,39 @@ mod tests {
             Some(Box::new(Glyph)),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn zero_preview_shows_empty_progress_track_and_zero_time() {
+        for size in [(640, 480), (320, 240)] {
+            let mut surface = crate::surface::TileSurface::new(size);
+            let mut progress = PlaybackRenderer::new(
+                PlaybackOverlay::ProgressBar {
+                    rgba: [22, 119, 255, 255],
+                },
+                size,
+                None,
+            )
+            .unwrap();
+            progress.draw_zero_preview(&mut surface).unwrap();
+            let pixels: Vec<_> = surface
+                .snapshot()
+                .iter()
+                .flat_map(|tile| tile.pixels.chunks_exact(4))
+                .filter(|pixel| pixel[3] != 0)
+                .map(|pixel| pixel.to_vec())
+                .collect();
+            assert_eq!(
+                pixels.len(),
+                (size.0 * progress_bar_height(size.1)) as usize
+            );
+            assert!(pixels.iter().all(|pixel| pixel == &[0, 0, 0, 64]));
+            surface.clear();
+            let mut time = time_renderer(size);
+            time.draw_zero_preview(&mut surface).unwrap();
+            assert_eq!(time.caption(), "00:00 / 00:00");
+            assert!(!surface.snapshot().is_empty());
+        }
     }
 
     fn opaque_numeral_rows(badge: &Keycap) -> (u32, u32) {

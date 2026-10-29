@@ -1,4 +1,5 @@
 #include "snow_shot/storage/applicationstorage.h"
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/storage/capturehistoryrepository.h"
 #include "snow_shot/storage/pinnedwindowrepository.h"
 #include "snow_shot/storage/storagedirectorychange.h"
@@ -137,8 +138,10 @@ void transactions() {
             "bootstrap retained");
     require(storage::savedStorageDirectory(o.source, o.executableDirectory) == o.destination,
             "selection committed");
-    require(storage::savedStorageDirectory(o.source, QStringLiteral("C:/other-install")).isEmpty(),
-            "installations isolated");
+    require(
+        storage::savedStorageDirectory(o.source, QStringLiteral("C:/other-install")) ==
+            (snow_shot::app::distribution::isStoreManaged() ? o.destination : QString()),
+        "direct installations are path-isolated while Store selections survive package relocation");
     const auto selected =
         storage::ApplicationStorage::resolveDirectory({o.executableDirectory, o.source});
     require(selected.effectiveDirectory == o.destination &&

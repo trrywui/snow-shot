@@ -2,6 +2,7 @@
 #include "snow_shot/platform/applicationqos.h"
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
 #include "snow_shot/app/supportedpinfiles.h"
+#include "snow_shot/image/imageimportlimits.h"
 #include "snow_shot/presentation/screenshotdocumentformatting.h"
 #include "screenshotclipboardcontentsnapshot.h"
 #include "screenshotclipboarddibdecoder_p.h"
@@ -96,9 +97,10 @@ qint64 snapshotBytes(const ScreenshotClipboardContentSnapshot& snapshot) {
     return bytes;
 }
 
-bool admitImage(QSize size, qint64 retained, const AllocationCheck& allocate) {
+bool admitImage(QSize size, qint64 retained, const AllocationCheck& allocate,
+                qint64 maximumPixels = kMaximumClipboardImagePixels) {
     const auto pixels = static_cast<qint64>(size.width()) * size.height();
-    return size.isValid() && !size.isEmpty() && pixels <= kMaximumClipboardImagePixels &&
+    return size.isValid() && !size.isEmpty() && pixels <= maximumPixels &&
            (!allocate || allocate(retained + pixels * 8));
 }
 
@@ -210,34 +212,17 @@ constexpr EncodedImageFormat kEncodedImageFormats[] = {
 using snow_shot::image::ImageFileFormat;
 using snow_shot::image::kImageFileFormats;
 
-snow::image::Format imageFileCodecFormat(snow_shot::image::ImageFileCodec codec) {
-    using Codec = snow_shot::image::ImageFileCodec;
-    switch (codec) {
-    case Codec::Gif:
-        return snow::image::Format::gif;
-    case Codec::Png:
-        return snow::image::Format::png;
-    case Codec::Jpeg:
-        return snow::image::Format::jpeg;
-    case Codec::WebP:
-        return snow::image::Format::webp;
-    case Codec::Jxl:
-        return snow::image::Format::jxl;
-    case Codec::Avif:
-        return snow::image::Format::avif;
-    case Codec::Bmp:
-        return snow::image::Format::bmp;
-    }
-    return snow::image::Format::unknown;
-}
-
-QImage normalizedImage(QImage image) {
+QImage normalizedImage(QImage image, bool imageImport = false) {
     if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
         return {};
     }
     const qint64 pixels = static_cast<qint64>(image.width()) * image.height();
-    if (pixels <= 0 || pixels > kMaximumClipboardImagePixels || image.sizeInBytes() <= 0 ||
-        image.sizeInBytes() > kMaximumClipboardImageBytes) {
+    const auto maximumPixels =
+        imageImport ? snow_shot::image::maximumImageImportPixels : kMaximumClipboardImagePixels;
+    const auto maximumBytes =
+        imageImport ? snow_shot::image::maximumImageImportBytes : kMaximumClipboardImageBytes;
+    if (pixels <= 0 || pixels > maximumPixels || image.sizeInBytes() <= 0 ||
+        image.sizeInBytes() > maximumBytes) {
         return {};
     }
     // The immutable clipboard snapshot already retains its QImage owner. Share
@@ -303,8 +288,8 @@ void preserveHtmlCanvasBackground(QTextDocument* document) {
     document->rootFrame()->setFrameFormat(rootFormat);
 }
 
-std::optional<ScreenshotClipboardContent> imageContent(QImage image) {
-    image = normalizedImage(std::move(image));
+std::optional<ScreenshotClipboardContent> imageContent(QImage image, bool imageImport = false) {
+    image = normalizedImage(std::move(image), imageImport);
     if (image.isNull()) {
         return std::nullopt;
     }
@@ -340,16 +325,18 @@ renderTextDocument(std::shared_ptr<QTextDocument> document, QString plainText,
     if (!std::isfinite(idealWidth) || idealWidth <= 0.0) {
         idealWidth = 1.0;
     }
-    const int width =
-        std::clamp(qCeil(idealWidth), 1, style ? style->maximumWidth : kMaximumRichTextWidth);
-    document->setTextWidth(width);
+    const qreal maximumWidth = style ? style->maximumWidth : kMaximumRichTextWidth;
+    document->setTextWidth(std::ceil(std::clamp(idealWidth, 1.0, maximumWidth)));
 
     const QSizeF documentSize = document->documentLayout()->documentSize();
-    if (!documentSize.isValid() || documentSize.isEmpty() ||
+    if (!documentSize.isValid() || documentSize.isEmpty() || !std::isfinite(documentSize.width()) ||
         !std::isfinite(documentSize.height())) {
         return std::nullopt;
     }
-    const int height = qCeil(documentSize.height());
+    // The setting is a wrapping preference. Fixed-width tables, images and nonbreaking
+    // lines can exceed it, so rasterize the full layout rather than clipping to it.
+    const qreal width = std::ceil(documentSize.width());
+    const qreal height = std::ceil(documentSize.height());
     const qreal physicalWidthValue = std::ceil(width * devicePixelRatio);
     const qreal physicalHeightValue = std::ceil(height * devicePixelRatio);
     if (height <= 0 || height > kMaximumRichTextHeight ||
@@ -580,10 +567,12 @@ readFileContent(const ScreenshotClipboardLocalImage& localImage, qreal devicePix
     }
 
     const QFileInfo before(localImage.absolutePath);
+    const auto maximumEncodedBytes =
+        firstFrameOnly ? snow_shot::image::maximumImageImportBytes : kMaximumEncodedImageBytes;
     if (!before.exists() || !before.isFile() || !before.isReadable() ||
         before.size() != localImage.size ||
         before.lastModified().toUTC() != localImage.lastModifiedUtc || before.size() <= 0 ||
-        before.size() > (textFile ? 1024 * 1024 : kMaximumEncodedImageBytes)) {
+        before.size() > (textFile ? 1024 * 1024 : maximumEncodedBytes)) {
         return std::nullopt;
     }
     if (allocate && !allocate(retained + before.size() + 1))
@@ -626,10 +615,14 @@ readFileContent(const ScreenshotClipboardLocalImage& localImage, qreal devicePix
         return ScreenshotClipboardContentReader::decode(std::move(textSnapshot), cancelled,
                                                         textAllocate);
     }
-    const auto codecFormat = imageFileCodecFormat(format->codec);
+    // The suffix routes image/document imports, but only the bytes determine the image codec.
+    // Reuse the decoder's existing probe rather than trying the suffix codec and decoding again.
+    constexpr auto codecFormat = snow::image::Format::unknown;
     if ((allocate || firstFrameOnly) &&
         !admitImage(snow_shot::image_codec::inspectCanvasSize(encoded, codecFormat),
-                    retained + encoded.size(), allocate))
+                    retained + encoded.size(), allocate,
+                    firstFrameOnly ? snow_shot::image::maximumImageImportPixels
+                                   : kMaximumClipboardImagePixels))
         return std::nullopt;
     QString animationError;
     const AllocationCheck animationAdmission =
@@ -639,10 +632,11 @@ readFileContent(const ScreenshotClipboardLocalImage& localImage, qreal devicePix
         auto image = snow_shot::image_codec::decodeAnimationFirstFrame(
             encoded, &animationError, cancelled, animationAdmission);
         if (!image.isNull())
-            return imageContent(std::move(image));
+            return imageContent(std::move(image), true);
         if (!animationError.isEmpty() || cancellationRequested(cancelled))
             return std::nullopt;
-        auto result = imageContent(snow_shot::image_codec::decodeFirstFrame(encoded, codecFormat));
+        auto result =
+            imageContent(snow_shot::image_codec::decodeFirstFrame(encoded, codecFormat), true);
         return cancellationRequested(cancelled) ? std::nullopt : std::move(result);
     }
     auto animation = snow_shot::image_codec::decodeAnimationSource(encoded, &animationError,
@@ -657,8 +651,7 @@ readFileContent(const ScreenshotClipboardLocalImage& localImage, qreal devicePix
     }
     if (!animationError.isEmpty() || cancellationRequested(cancelled))
         return std::nullopt;
-    return imageContent(snow_shot::image_codec::decode(encoded, codecFormat,
-                                                       QByteArray("image/") + format->suffix));
+    return imageContent(snow_shot::image_codec::decode(encoded, codecFormat, nullptr));
 }
 
 } // namespace
@@ -1089,9 +1082,21 @@ QStringList ScreenshotClipboardContentReader::localFilePaths(const QMimeData* mi
     return paths;
 }
 
-QList<ScreenshotClipboardLocalImage>
-ScreenshotClipboardContentReader::snapshotLocalFiles(const QStringList& paths,
-                                                     CancellationCheck cancelled) {
+QStringList ScreenshotClipboardContentReader::filePathsForImport(const QMimeData* mimeData) {
+    if (mimeData && (mimeData->hasImage() ||
+                     std::any_of(std::begin(kEncodedImageFormats), std::end(kEncodedImageFormats),
+                                 [mimeData](const EncodedImageFormat& format) {
+                                     return mimeData->hasFormat(QLatin1String(format.mimeType));
+                                 })))
+        return {};
+    return localFilePaths(mimeData);
+}
+
+QList<ScreenshotClipboardLocalImage> ScreenshotClipboardContentReader::snapshotLocalFiles(
+    const QStringList& paths, CancellationCheck cancelled, FilePurpose purpose) {
+    const auto maximumEncodedBytes = purpose == FilePurpose::ImageImport
+                                         ? snow_shot::image::maximumImageImportBytes
+                                         : kMaximumEncodedImageBytes;
     QList<ScreenshotClipboardLocalImage> files;
     QSet<QString> seen;
     for (const QString& path : paths) {
@@ -1107,7 +1112,7 @@ ScreenshotClipboardContentReader::snapshotLocalFiles(const QStringList& paths,
                             return suffix == QLatin1String(format.suffix);
                         });
         if (!supported || !info.isFile() || !info.isReadable() || info.size() <= 0 ||
-            info.size() > (isTextFile(suffix) ? 1024 * 1024 : kMaximumEncodedImageBytes)) {
+            info.size() > (isTextFile(suffix) ? 1024 * 1024 : maximumEncodedBytes)) {
             continue;
         }
         const QString absolute = info.absoluteFilePath();
@@ -1134,7 +1139,7 @@ ScreenshotClipboardContentReader::snapshotLocalFiles(const QStringList& paths,
 QStringList ScreenshotClipboardContentReader::localImageFilePaths(const QMimeData* mimeData) {
     QStringList paths;
     const auto extensions = supportedImageFileExtensions();
-    for (const auto& path : localFilePaths(mimeData)) {
+    for (const auto& path : filePathsForImport(mimeData)) {
         if (extensions.contains(QFileInfo(path).suffix().toLower()))
             paths.append(path);
     }

@@ -16,6 +16,7 @@ impl Editor {
     ) -> Result<EditorUpdate, ErrorCode> {
         self.pending_command = None;
         self.state.pending_text_edit = None;
+        self.state.pending_distance_value_edit = None;
         self.state.pending_new_text_draft = false;
         self.state.pending_speech_bubble_text_edit = None;
         let mut interaction = match event {

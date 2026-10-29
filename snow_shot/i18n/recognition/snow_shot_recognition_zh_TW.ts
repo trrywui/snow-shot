@@ -133,6 +133,10 @@
             <translation>內建文字辨識執行階段已損壞或不相容。請重新安裝適用於此 Mac 的 Snow Shot。</translation>
         </message>
         <message>
+            <source>The packaged text recognition runtime is missing or damaged. Repair or reinstall Snow Shot from Microsoft Store.</source>
+            <translation>套件中的文字辨識執行階段遺失或已損壞。請透過 Microsoft Store 修復或重新安裝 Snow Shot。</translation>
+        </message>
+        <message>
             <source>Unable to open the recognized link</source>
             <translation>無法開啟辨識出的連結</translation>
         </message>
@@ -228,6 +232,10 @@
             <translation>部分文字無法翻譯</translation>
         </message>
         <message>
+            <source>Some text could not be translated: %1</source>
+            <translation>部分文字未能翻譯：%1</translation>
+        </message>
+        <message>
             <source>Table recognition failed</source>
             <translation>表格辨識失敗</translation>
         </message>
@@ -266,6 +274,10 @@
         <message>
             <source>Translation service is unavailable</source>
             <translation>翻譯服務無法使用</translation>
+        </message>
+        <message>
+            <source>Unable to copy translation results</source>
+            <translation>無法複製翻譯結果</translation>
         </message>
         <message>
             <source>Unable to load Snow Shot vision models</source>

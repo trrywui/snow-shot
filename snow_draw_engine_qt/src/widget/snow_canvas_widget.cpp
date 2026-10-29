@@ -18,6 +18,7 @@
 #include "snow_canvas_text_measurement.h"
 #include "snow_canvas_filter_tile_cache.h"
 #include "snow_canvas_smart_erase.h"
+#include "snow_canvas_spotlight_renderer.h"
 #include "snow_canvas_type_conversions.h"
 #include "snow_canvas_widget_display_state.h"
 #include "snow_canvas_widget_input_handler.h"
@@ -31,6 +32,7 @@
 #include "snow_canvas_widget_text_interaction.h"
 #include "snow_draw_engine_qt/snow_canvas_custom_renderer.h"
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
+#include "snow_draw_engine_qt/snow_canvas_image.h"
 #include "snow_draw_engine_qt/snow_canvas_wheel_input.h"
 
 #include <QBitmap>
@@ -184,7 +186,8 @@ bool magnifierSamplesDamage(const SnowCanvasSceneItem& item,
 std::uint64_t sceneCacheContentKey(const SceneDisplayInfo& sceneInfo,
                                    const SnowCanvasCustomRenderer* customRenderer,
                                    bool clearBackgroundEnabled, double devicePixelRatio,
-                                   const QSize& widgetSize) {
+                                   const QSize& widgetSize,
+                                   SnowCanvasRenderContext::Purpose purpose) {
     std::size_t key = 1469598103934665603ull;
     const auto hashCombine = [&key](std::size_t value) {
         key ^= value;
@@ -207,6 +210,7 @@ std::uint64_t sceneCacheContentKey(const SceneDisplayInfo& sceneInfo,
     hashCombine(std::hash<double>{}(devicePixelRatio));
     hashCombine(static_cast<std::size_t>(widgetSize.width()));
     hashCombine(static_cast<std::size_t>(widgetSize.height()));
+    hashCombine(static_cast<std::size_t>(purpose));
     return static_cast<std::uint64_t>(key);
 }
 
@@ -386,6 +390,7 @@ struct SnowCanvasWidget::Impl : public snow_canvas_runtime::Client {
     void initializeWidget();
     void initializeViewport();
     std::uint64_t runtimeViewportId() const override;
+    bool observesRuntimeViewport(std::uint64_t id) const override;
     void detachRuntimeForReplacement() override;
     void detachRuntime();
     void attachRuntime(SnowRuntime runtime) override;
@@ -476,6 +481,7 @@ struct SnowCanvasWidget::Impl : public snow_canvas_runtime::Client {
     bool handleContextMenu(QContextMenuEvent* event);
     bool wheelZoomEnabled() const;
     void setWheelZoomEnabled(bool enabled);
+    std::optional<QRectF> contentClip;
     bool canvasContentVisible() const;
     void setCanvasContentVisible(bool visible);
     bool clearBackgroundEnabled() const;
@@ -499,6 +505,7 @@ struct SnowCanvasWidget::Impl : public snow_canvas_runtime::Client {
     QRegion spotlightViewRenderRegion() const;
     bool watermarkEffectivelyVisible() const;
     bool spotlightEffectivelyVisible() const;
+    QRegion spotlightRepaintRegion(const QRegion& damage);
     SnowCanvasCustomRenderer* customRenderer() const;
     void setCustomRenderer(SnowCanvasCustomRenderer* renderer);
     QTransform canvasToViewTransform() const;
@@ -534,11 +541,14 @@ struct SnowCanvasWidget::Impl : public snow_canvas_runtime::Client {
     bool beginSelectedText(const QPointF& viewPosition, bool requireSerialBoundText);
 
     void paintEvent(QPaintEvent* event);
-    bool paint(QPainter& painter, const QRegion& exposedRegion);
+    bool paint(QPainter& painter, const QRegion& exposedRegion,
+               SnowCanvasRenderContext::Purpose purpose = SnowCanvasRenderContext::Purpose::Widget);
     snow_canvas_compositor::Frame buildPaintFrame() const;
-    SnowCanvasRenderContext renderContext(QPainter& painter, const QRegion& exposedRegion) const;
+    SnowCanvasRenderContext renderContext(QPainter& painter, const QRegion& exposedRegion,
+                                          SnowCanvasRenderContext::Purpose purpose) const;
     void renderBeforeCanvas(QPainter& painter, const SnowCanvasRenderContext& context) const;
     void renderAfterCanvas(QPainter& painter, const SnowCanvasRenderContext& context) const;
+    bool canBeginPointerInteraction(const QMouseEvent& event) const;
     bool handleMousePress(QMouseEvent* event, const SnowInputEvent* pointerInput = nullptr);
     bool handleMouseDoubleClick(QMouseEvent* event);
     bool handleMouseMove(QMouseEvent* event, const SnowInputEvent* pointerInput = nullptr);
@@ -558,6 +568,7 @@ struct SnowCanvasWidget::Impl : public snow_canvas_runtime::Client {
     bool stepSerialNumberFontSize(bool increase);
     bool stepTextFontSize(bool increase);
     CommandKeyResolver commandKeyResolver;
+    bool deleteTextAfterCursor = false;
     bool handleKeyPress(QKeyEvent* event);
     bool handleKeyRelease(QKeyEvent* event);
     bool handleInputMethodEvent(QInputMethodEvent* event);
@@ -1082,8 +1093,9 @@ SnowCanvasStyleToolbarState SnowCanvasWidget::Impl::canvasStyleToolbarState() co
                                  0.0, &arrowText, &arrowTextStyle, &foundArrow) == SNOW_OK &&
                              foundArrow != 0;
     if (textInteraction.isActive()) {
-        if (textInteraction.session().arrowId().generation != 0 ||
-            textInteraction.session().bubbleId().generation != 0) {
+        if (!textInteraction.session().isDistanceValue() &&
+            (textInteraction.session().arrowId().generation != 0 ||
+             textInteraction.session().bubbleId().generation != 0)) {
             state.source = SnowCanvasStyleToolbarSource::SelectedText;
         }
         state.textStyle = snow_canvas_types::toCanvasTextStyle(textInteraction.currentTextStyle());
@@ -1249,6 +1261,12 @@ bool SnowCanvasWidget::Impl::setCanvasDistanceStyle(const SnowCanvasDistanceStyl
                                                     quint32 properties) {
     if (!snow_canvas_types::validDistanceStyle(style))
         return false;
+    const QPointer<SnowCanvasWidget> lifetime(&widget);
+    if (textInteraction.session().isDistanceValue()) {
+        commitText(false);
+        if (!lifetime)
+            return false;
+    }
     return applyMutation([&]() {
         return snow_canvas_commands::setDistanceStylePatch(
             runtimeBinding.engine(), runtimeBinding.viewportHandle(),
@@ -1392,7 +1410,7 @@ bool SnowCanvasWidget::Impl::setCanvasSpotlightConfig(const SnowCanvasSpotlightC
             snow_canvas_types::toEngineSpotlightConfig(config));
     });
     if (applied && !previousPreviewRegion.isEmpty()) {
-        widget.update(previousPreviewRegion);
+        widget.update(spotlightRepaintRegion(previousPreviewRegion));
     }
     return applied;
 }
@@ -1438,7 +1456,7 @@ void SnowCanvasWidget::Impl::applyPendingSpotlightPreview() {
     pendingSpotlightPreview.reset();
     const QRegion changedRegion = previousRegion.united(spotlightViewRenderRegion());
     if (!changedRegion.isEmpty()) {
-        widget.update(changedRegion);
+        widget.update(spotlightRepaintRegion(changedRegion));
     }
     if (!notifyStateChange(&SnowCanvasWidget::spotlightPreviewApplied)) {
         return;
@@ -1687,6 +1705,11 @@ bool SnowCanvasWidget::Impl::handleContextMenu(QContextMenuEvent* event) {
 void SnowCanvasWidget::Impl::setInteractionEnabled(bool enabled) {
     if (!enabled) {
         const QPointer<SnowCanvasWidget> lifetime(&widget);
+        if (textInteraction.session().isDistanceValue()) {
+            static_cast<void>(cancelActiveTextEditing());
+            if (!lifetime)
+                return;
+        }
         if (tabletGestureActive) {
             handleFocusOut();
             if (!lifetime) {
@@ -1783,6 +1806,10 @@ std::uint64_t SnowCanvasWidget::Impl::runtimeViewportId() const {
     return viewportId();
 }
 
+bool SnowCanvasWidget::Impl::observesRuntimeViewport(std::uint64_t id) const {
+    return id == viewportId() || (id != 0 && id == referenceScene.viewportId());
+}
+
 std::uint64_t SnowCanvasWidget::viewportId() const {
     return m_impl->viewportId();
 }
@@ -1850,8 +1877,22 @@ bool SnowCanvasWidget::Impl::spotlightEffectivelyVisible() const {
         spotlightPresentationInfo.color = snow_canvas_types::toEngineColor(spotlightPreview->color);
         spotlightPresentationInfo.opacity = spotlightPreview->opacity;
     }
-    const SpotlightDisplayInfo& info = spotlightPresentationInfo;
-    return info.active && info.color.a != 0 && std::isfinite(info.opacity) && info.opacity > 0.0;
+    return snow_canvas_spotlight_renderer::isVisible(spotlightPresentationInfo);
+}
+
+QRegion SnowCanvasWidget::Impl::spotlightRepaintRegion(const QRegion& damage) {
+    if (damage.isEmpty())
+        return {};
+    const auto& cache = displayState.displayCache();
+    const auto reference = installedCustomRenderer != nullptr
+                               ? installedCustomRenderer->filterRenderReference()
+                               : std::nullopt;
+    const auto affected =
+        reference.has_value() && referenceScene.sync(runtimeBinding.engine(), *reference)
+            ? referenceScene.backdropDamage(damage, ::canvasToViewTransform(cache.sceneInfo()))
+            : snow_canvas_renderer::sceneDamageThroughFilters(
+                  cache.executionPlan(widget.devicePixelRatioF()), damage);
+    return affected.intersected(widget.rect());
 }
 
 void SnowCanvasWidget::Impl::setDecorationRenderAreas(
@@ -1869,6 +1910,7 @@ void SnowCanvasWidget::Impl::setDecorationRenderAreas(
 
     const QRegion previousWatermark = watermarkViewRenderRegion();
     const QRegion previousSpotlight = spotlightViewRenderRegion();
+    const QRectF previousSpotlightArea = spotlightViewRenderArea();
     const bool watermarkWasVisible = watermarkEffectivelyVisible();
     const bool spotlightWasVisible = spotlightEffectivelyVisible();
 
@@ -1883,8 +1925,14 @@ void SnowCanvasWidget::Impl::setDecorationRenderAreas(
     if (watermarkWasVisible || watermarkIsVisible) {
         changed += previousWatermark.united(nextWatermark);
     }
-    if (spotlightWasVisible || spotlightIsVisible) {
-        changed += previousSpotlight.xored(nextSpotlight);
+    if ((spotlightWasVisible || spotlightIsVisible) &&
+        previousSpotlightArea != spotlightViewRenderArea()) {
+        // Keep boundary pixels even for subpixel changes with identical integer bounds.
+        const QRect unchangedInterior = previousSpotlight.boundingRect()
+                                            .intersected(nextSpotlight.boundingRect())
+                                            .adjusted(1, 1, -1, -1);
+        changed += spotlightRepaintRegion(
+            previousSpotlight.united(nextSpotlight).subtracted(QRegion(unchangedInterior)));
     }
     if (!changed.isEmpty()) {
         widget.update(changed);
@@ -1949,9 +1997,7 @@ QRectF SnowCanvasWidget::Impl::spotlightViewRenderArea() const {
 
 QRegion SnowCanvasWidget::Impl::spotlightViewRenderRegion() const {
     const QRectF area = spotlightViewRenderArea();
-    return area.isValid() && !area.isEmpty()
-               ? QRegion(area.toAlignedRect().intersected(widget.rect()))
-               : QRegion();
+    return area.isValid() && !area.isEmpty() ? QRegion(area.toAlignedRect()) : QRegion();
 }
 
 void SnowCanvasWidget::Impl::setSpotlightRenderArea(const QRectF& canvasRect) {
@@ -2362,7 +2408,8 @@ bool SnowCanvasWidget::Impl::resetEditingState(bool restoreSelectTool) {
         }
     }
 
-    const QRegion previewRegion = watermarkViewRenderRegion().united(spotlightViewRenderRegion());
+    const QRegion previewRegion =
+        watermarkViewRenderRegion().united(spotlightRepaintRegion(spotlightViewRenderRegion()));
     pendingWatermarkPreview.reset();
     watermarkPreview.reset();
     watermarkPreviewTimer.stop();
@@ -2668,6 +2715,21 @@ void SnowCanvasWidget::Impl::syncAfterEngineMutation(bool emitSignals) {
     const auto publicationEpoch = statePublicationEpoch;
     const auto engineLease = runtimeBinding.retainEngine();
     distanceCreationPixelScale.reset();
+    if (hasViewport() && textInteraction.session().isDistanceValue()) {
+        SnowTextElementInfo info{};
+        SnowTextStyle style{};
+        std::uint8_t active = 0;
+        if (snow_viewport_get_active_text_draft_presentation(runtimeBinding.engine(),
+                                                             runtimeBinding.viewportHandle(), &info,
+                                                             &style, &active) == SNOW_OK &&
+            active == 0) {
+            static_cast<void>(textInteraction.cancel(runtimeBinding.engine(),
+                                                     runtimeBinding.viewportHandle(),
+                                                     displayState.displayCache()));
+            if (!lifetime || statePublicationEpoch != publicationEpoch)
+                return;
+        }
+    }
     std::uint8_t captureActive = 0;
     if (hasViewport() &&
         snow_runtime_has_pointer_capture(runtimeBinding.engine(), &captureActive) == SNOW_OK) {
@@ -2717,10 +2779,23 @@ void SnowCanvasWidget::Impl::syncAfterEngineMutation(bool emitSignals) {
                                                     cache.sceneDirtyRectCount(), widget.rect()),
             widget.devicePixelRatioF());
     }
+    QRegion repaint = result.repaintRegion;
+    const auto reference = installedCustomRenderer != nullptr
+                               ? installedCustomRenderer->filterRenderReference()
+                               : std::nullopt;
+    if (reference.has_value() && referenceScene.sync(runtimeBinding.engine(), *reference)) {
+        // The fixed grid may contain changed cutouts culled from the live viewport.
+        repaint += referenceScene.spotlightDamage(::canvasToViewTransform(cache.sceneInfo()))
+                       .intersected(widget.rect());
+    } else if (!cache.spotlightDamage().isEmpty()) {
+        repaint += snow_canvas_renderer::sceneDamageThroughFilters(
+                       cache.executionPlan(widget.devicePixelRatioF()), cache.spotlightDamage())
+                       .intersected(widget.rect());
+    }
     if (result.shouldEmitStateSignals && !publishPendingStateChanges()) {
         return;
     }
-    snow_canvas_widget_repaint::updateCoalesced(widget, result.repaintRegion);
+    snow_canvas_widget_repaint::updateCoalesced(widget, repaint);
     refreshSerialNumberToolbar();
 }
 
@@ -3013,7 +3088,8 @@ void SnowCanvasWidget::Impl::paintEvent(QPaintEvent* event) {
     paint(painter, exposedRegion);
 }
 
-bool SnowCanvasWidget::Impl::paint(QPainter& painter, const QRegion& exposedRegion) {
+bool SnowCanvasWidget::Impl::paint(QPainter& painter, const QRegion& exposedRegion,
+                                   SnowCanvasRenderContext::Purpose purpose) {
     if (!hasExposedRect(exposedRegion, widget.rect())) {
         return false;
     }
@@ -3022,9 +3098,13 @@ bool SnowCanvasWidget::Impl::paint(QPainter& painter, const QRegion& exposedRegi
 
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setClipRegion(exposedRegion);
+    painter.save();
+    if (contentClip)
+        painter.setClipRect(::canvasToViewTransform(cache.sceneInfo()).mapRect(*contentClip),
+                            Qt::IntersectClip);
     snow_canvas_compositor::Frame frame = buildPaintFrame();
     if (canvasContentIsVisible) {
-        const SnowCanvasRenderContext tileContext = renderContext(painter, exposedRegion);
+        const SnowCanvasRenderContext tileContext = renderContext(painter, exposedRegion, purpose);
         const QList<SnowCanvasBaseImageSource> baseImageSources =
             installedCustomRenderer != nullptr ? installedCustomRenderer->baseImageSources()
                                                : QList<SnowCanvasBaseImageSource>{};
@@ -3057,6 +3137,11 @@ bool SnowCanvasWidget::Impl::paint(QPainter& painter, const QRegion& exposedRegi
         if (auto* owner = runtimeBinding.runtimeOwner())
             sceneRequest.smartErase = owner->smartEraseSnapshot();
         sceneRequest.baseImageSources = &baseImageSources;
+        sceneRequest.spotlightInfo = frame.spotlightInfo;
+        sceneRequest.spotlightCutouts = frame.spotlightCutouts;
+        sceneRequest.spotlightCutoutCount = frame.spotlightCutoutCount;
+        sceneRequest.spotlightRenderArea = configuredSpotlightRenderArea.value_or(QRectF());
+        sceneRequest.hasSpotlightRenderArea = configuredSpotlightRenderArea.has_value();
         if (!reference.has_value())
             referenceScene.reset();
         const bool referenceRendered =
@@ -3066,7 +3151,7 @@ bool SnowCanvasWidget::Impl::paint(QPainter& painter, const QRegion& exposedRegi
         if (!referenceRendered) {
             sceneRequest.filterTileContentKey = sceneCacheContentKey(
                 cache.sceneInfo(), installedCustomRenderer, canvasClearBackgroundEnabled,
-                painterDevicePixelRatio(painter, widget), widget.size());
+                painterDevicePixelRatio(painter, widget), widget.size(), purpose);
             if (!hasFilter(frame.sceneItems, frame.sceneItemCount)) {
                 snow_canvas_compositor::clearSurface(painter, frame);
                 renderBeforeCanvas(painter, tileContext);
@@ -3077,15 +3162,22 @@ bool SnowCanvasWidget::Impl::paint(QPainter& painter, const QRegion& exposedRegi
         }
         painter.save();
         snow_canvas_compositor::renderDocumentDecorations(painter, frame);
-        snow_canvas_compositor::renderEditorOverlays(painter, frame);
-        textInteraction.renderEditorOverlay(painter, widget.font(), cache);
         painter.restore();
     } else {
-        const SnowCanvasRenderContext context = renderContext(painter, exposedRegion);
+        const SnowCanvasRenderContext context = renderContext(painter, exposedRegion, purpose);
         snow_canvas_compositor::clearSurface(painter, frame);
         renderBeforeCanvas(painter, context);
     }
-    const SnowCanvasRenderContext context = renderContext(painter, exposedRegion);
+    painter.restore();
+    // The image bounds constrain document pixels, while selection controls and
+    // inline editing affordances must remain visible beyond those bounds.
+    if (canvasContentIsVisible && purpose == SnowCanvasRenderContext::Purpose::Widget) {
+        painter.save();
+        snow_canvas_compositor::renderEditorOverlays(painter, frame);
+        textInteraction.renderEditorOverlay(painter, widget.font(), cache);
+        painter.restore();
+    }
+    const SnowCanvasRenderContext context = renderContext(painter, exposedRegion, purpose);
     renderAfterCanvas(painter, context);
 
     return true;
@@ -3113,8 +3205,6 @@ snow_canvas_compositor::Frame SnowCanvasWidget::Impl::buildPaintFrame() const {
         spotlightPresentationInfo.opacity = spotlightPreview->opacity;
     }
     frame.spotlightInfo = &spotlightPresentationInfo;
-    frame.spotlightRenderArea = spotlightViewRenderArea();
-    frame.hasSpotlightRenderArea = configuredSpotlightRenderArea.has_value();
     return frame;
 }
 
@@ -3125,14 +3215,16 @@ void SnowCanvasWidget::Impl::updateWatermarkPresentationInfo() const {
     }
 }
 
-SnowCanvasRenderContext SnowCanvasWidget::Impl::renderContext(QPainter& painter,
-                                                              const QRegion& exposedRegion) const {
+SnowCanvasRenderContext
+SnowCanvasWidget::Impl::renderContext(QPainter& painter, const QRegion& exposedRegion,
+                                      SnowCanvasRenderContext::Purpose purpose) const {
     const SceneDisplayInfo& sceneInfo = displayState.displayCache().sceneInfo();
     return SnowCanvasRenderContext{
         widget.rect(),
         exposedRegion.intersected(widget.rect()),
         ::canvasToViewTransform(sceneInfo),
         painterDevicePixelRatio(painter, widget),
+        purpose,
     };
 }
 
@@ -3158,6 +3250,27 @@ void SnowCanvasWidget::Impl::renderAfterCanvas(QPainter& painter,
 
 void SnowCanvasWidget::paintEvent(QPaintEvent* event) {
     m_impl->paintEvent(event);
+}
+
+QImage SnowCanvasWidget::renderContentToImage(const QSize& physicalSize) {
+    if (physicalSize.isEmpty() || size().isEmpty() || !m_impl->hasViewport())
+        return {};
+    QImage image = snowCanvasAllocateZeroedImage(physicalSize, QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull())
+        return {};
+    const qreal scaleX = qreal(physicalSize.width()) / width();
+    const qreal scaleY = qreal(physicalSize.height()) / height();
+    const qreal dpr = qMax(scaleX, scaleY);
+    image.setDevicePixelRatio(dpr);
+    {
+        QPainter painter(&image);
+        painter.scale(scaleX / dpr, scaleY / dpr);
+        if (!m_impl->paint(painter, QRegion(rect()),
+                           SnowCanvasRenderContext::Purpose::ContentSnapshot))
+            return {};
+    }
+    image.setDevicePixelRatio(1.0);
+    return image;
 }
 
 bool SnowCanvasWidget::event(QEvent* event) {
@@ -3195,13 +3308,35 @@ bool SnowCanvasWidget::eventFilter(QObject* watched, QEvent* event) {
     return QWidget::eventFilter(watched, event);
 }
 
+bool SnowCanvasWidget::Impl::canBeginPointerInteraction(const QMouseEvent& event) const {
+    if (!contentClip ||
+        contentClip->contains(canvasToViewTransform().inverted().map(event.position()))) {
+        return true;
+    }
+    // Only existing editor affordances can own a press beyond the image.
+    return event.button() == Qt::LeftButton &&
+           (textInteraction.editorContains(displayState.displayCache(), event.position()) ||
+            ((!textInteraction.isActive() || textInteraction.hasSelectionInteraction()) &&
+             snow_canvas_widget_selection_hit_testing::pointerHitsSelectionInteraction(
+                 displayState.displayCache(), event.position())));
+}
+
 bool SnowCanvasWidget::Impl::handleMousePress(QMouseEvent* event,
                                               const SnowInputEvent* pointerInput) {
     const QPointer<SnowCanvasWidget> lifetime(&widget);
     if (event == nullptr || !interactionEnabled()) {
         return false;
     }
-
+    if (!canBeginPointerInteraction(*event)) {
+        event->accept();
+        return true;
+    }
+    if (canvasTool() == SnowCanvasTool::AutoFilter && event->button() == Qt::LeftButton) {
+        emit widget.autoFilterInteractionStarting();
+        if (!lifetime) {
+            return true;
+        }
+    }
     clearTextStylePopupInteraction();
     const bool rightQuickSelectionEligible =
         event->button() == Qt::RightButton &&
@@ -3253,9 +3388,21 @@ bool SnowCanvasWidget::Impl::handleMousePress(QMouseEvent* event,
     restoredSelectionForNextTextToolPress = false;
     bool canDispatchAfterTextCommit = true;
     if (plan.shouldCommitTextEditor) {
+        const bool dismissSelection =
+            event->button() == Qt::LeftButton && !plan.shouldRestoreSelectionOnCommit &&
+            displayState.snapshot().styleToolbarState.selected_element_count != 0;
         const SnowCanvasWidgetTextInteraction::CommitResult commitResult =
             commitText(true, plan.shouldRestoreSelectionOnCommit);
         if (!lifetime) {
+            return false;
+        }
+        // Bound-label commits retain selection for keyboard and focus workflows.
+        // An outside click also dismisses the selection that existed before the
+        // commit, without overriding automatic selection of newly created text.
+        if (dismissSelection && !applyMutation([&]() {
+                return snow_canvas_commands::clearSelection(runtimeBinding.engine(),
+                                                            runtimeBinding.viewportHandle());
+            })) {
             return false;
         }
         if (plan.dispatchAfterCommitRequiresRestoredSelection) {
@@ -3313,6 +3460,17 @@ bool SnowCanvasWidget::Impl::handleMousePress(QMouseEvent* event,
         event, pointerInput != nullptr
                    ? *pointerInput
                    : snow_canvas_input::makePointerInput(*event, SNOW_POINTER_EVENT_DOWN));
+    if (handled && event->button() == Qt::LeftButton) {
+        auto draft = textInteraction.beginRequestedDistanceValue(
+            runtimeBinding.engine(), runtimeBinding.viewportHandle(), displayState.displayCache(),
+            event);
+        if (!syncChangedViewports(draft.firstChangedViewports.get()))
+            return false;
+        if (draft.started) {
+            static_cast<void>(publishStateChange(StateNotification::StyleToolbar));
+            return true;
+        }
+    }
     if (handled && plan.shouldBeginText && plan.allowCreateText) {
         const SnowTextStyle textStyle = displayState.snapshot().styleToolbarState.text_style;
         SnowCanvasWidgetTextInteraction::BeginResult draft =
@@ -3333,12 +3491,6 @@ void SnowCanvasWidget::mousePressEvent(QMouseEvent* event) {
     const QPointer<SnowCanvasWidget> lifetime(this);
     if (m_impl->suppressTabletMouseEvent(event)) {
         return;
-    }
-    if (canvasTool() == SnowCanvasTool::AutoFilter && event->button() == Qt::LeftButton) {
-        emit autoFilterInteractionStarting();
-        if (!lifetime) {
-            return;
-        }
     }
     if (event != nullptr && event->button() == Qt::MiddleButton) {
         m_impl->beginMiddleClickTracking(event->position());
@@ -3420,6 +3572,12 @@ bool SnowCanvasWidget::Impl::handleMouseDoubleClick(QMouseEvent* event) {
     const QPointer<SnowCanvasWidget> lifetime(&widget);
     if (event == nullptr || !interactionEnabled()) {
         return false;
+    }
+    if (contentClip &&
+        !contentClip->contains(canvasToViewTransform().inverted().map(event->position()))) {
+        // Outside the document, a double click may operate existing controls,
+        // but must never enter the engine's blank-area creation path.
+        return handleMousePress(event);
     }
     if (event->button() == Qt::RightButton &&
         hasQuickSelectionTargetAt(event->position(), Qt::RightButton)) {
@@ -3819,7 +3977,9 @@ bool SnowCanvasWidget::Impl::handleWheel(QWheelEvent* event) {
         snow_canvas_text_editor_input::planFontSizeWheel(
             snow_canvas_text_editor_input::FontSizeWheelRequest{
                 true,
-                textInteraction.isActive() ? SnowCanvasTool::Text : canvasTool(),
+                textInteraction.session().isDistanceValue() ? SnowCanvasTool::Distance
+                : textInteraction.isActive()                ? SnowCanvasTool::Text
+                                                            : canvasTool(),
                 event->modifiers(),
                 event->pixelDelta().y(),
                 event->angleDelta().y(),
@@ -4002,7 +4162,7 @@ bool SnowCanvasWidget::Impl::handleKeyPress(QKeyEvent* event) {
     if (textInteraction.isActive()) {
         SnowCanvasWidgetTextInteraction::EditorEventResult result = textInteraction.handleKeyPress(
             event, runtimeBinding.engine(), runtimeBinding.viewportHandle(), hasViewport(),
-            displayState.displayCache());
+            displayState.displayCache(), deleteTextAfterCursor);
         if (result.handled) {
             applyTextEditorEventResult(result);
             return true;
@@ -4053,6 +4213,14 @@ bool SnowCanvasWidget::Impl::handleKeyPress(QKeyEvent* event) {
 
 void SnowCanvasWidget::setCommandKeyResolver(CommandKeyResolver resolver) {
     m_impl->commandKeyResolver = std::move(resolver);
+}
+
+bool SnowCanvasWidget::deleteTextAfterCursor() const {
+    return m_impl->deleteTextAfterCursor;
+}
+
+void SnowCanvasWidget::setDeleteTextAfterCursor(bool enabled) {
+    m_impl->deleteTextAfterCursor = enabled;
 }
 
 void SnowCanvasWidget::keyPressEvent(QKeyEvent* event) {
@@ -4371,7 +4539,7 @@ void SnowCanvasWidget::Impl::updateBaseImageContent(const QRegion& damage) {
         widget.update();
         return;
     }
-    QRegion repaint = damage;
+    std::vector<snow_canvas_renderer::SceneItemDamage> itemDamage;
     const auto& cache = displayState.displayCache();
     const auto& info = cache.sceneInfo();
     const auto projection = snow_canvas_render_geometry::sceneProjection(info);
@@ -4379,8 +4547,6 @@ void SnowCanvasWidget::Impl::updateBaseImageContent(const QRegion& damage) {
         installedCustomRenderer != nullptr ? installedCustomRenderer->baseImageSources()
                                            : QList<SnowCanvasBaseImageSource>{});
     const auto& plan = cache.executionPlan(widget.devicePixelRatioF());
-    int activePass = -1;
-    QRegion entering;
     for (std::uint32_t index = 0; index < cache.sceneItemCount(); ++index) {
         const auto& item = cache.sceneItems()[index];
         if (item.kind == SNOW_SCENE_DISPLAY_ITEM_MAGNIFIER) {
@@ -4389,24 +4555,19 @@ void SnowCanvasWidget::Impl::updateBaseImageContent(const QRegion& damage) {
             if (magnifierSamplesDamage(item, projection, currentFootprints, damage) ||
                 magnifierSamplesDamage(item, projection, paintedBaseImageSamplingFootprints,
                                        damage))
-                repaint += snow_canvas_render_geometry::alignedRectForBounds(item.viewBounds);
-        } else if (item.kind == SNOW_SCENE_DISPLAY_ITEM_FILTER && plan.passForItem[index] >= 0) {
-            const int pass = plan.passForItem[index];
-            if (pass != activePass) {
-                activePass = pass;
-                entering = repaint;
-            }
-            const auto& filter = plan.filter(index);
-            if (!filter.effective)
-                continue;
-            const QRect output =
-                snow_canvas_render_geometry::alignedRectForBounds(filter.logicalBounds);
-            const int radius = filter.logicalSamplingRadius + 1;
-            // Sibling filters share the same entering source. A subsequent source pass
-            // receives their expanded output, closing damage through chained effects.
-            for (const QRect& rect : entering)
-                repaint += rect.adjusted(-radius, -radius, radius, radius).intersected(output);
+                itemDamage.push_back(
+                    {index,
+                     QRegion(snow_canvas_render_geometry::alignedRectForBounds(item.viewBounds))});
         }
     }
+    const auto repaint = snow_canvas_renderer::sceneDamageThroughFilters(plan, damage, itemDamage);
     widget.update(repaint.intersected(widget.rect()));
+}
+
+void SnowCanvasWidget::setContentClip(std::optional<QRectF> canvasRect) {
+    if (m_impl->contentClip == canvasRect)
+        return;
+    m_impl->contentClip = canvasRect;
+    setTextEditingBounds(canvasRect);
+    update();
 }

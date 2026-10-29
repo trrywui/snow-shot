@@ -734,8 +734,9 @@ struct CollageWindow::Impl {
                         if (extensions.contains(QFileInfo(path).suffix().toLower()))
                             images.append(path);
                     }
-                    *files =
-                        ScreenshotClipboardContentReader::snapshotLocalFiles(images, cancelled);
+                    *files = ScreenshotClipboardContentReader::snapshotLocalFiles(
+                        images, cancelled,
+                        ScreenshotClipboardContentReader::FilePurpose::ImageImport);
                     selection->paths.clear();
                 }
                 if (cancelled())
@@ -903,16 +904,15 @@ struct CollageWindow::Impl {
             if (!artifact->requestClipboardFile(
                     &q, ScreenshotImageFileService::formatForKey(settings.imageFormat()),
                     settings.manualSaveFilenameFormat(), encoding,
-                    [this, token, committed](std::unique_ptr<QMimeData> mime,
-                                             const QString& error) {
+                    [this, token, committed](ScreenshotExportClipboardResult prepared) {
                         if (closing || token != generation)
                             return;
-                        if (!mime) {
-                            finishExport(false, error);
+                        if (!prepared.succeeded()) {
+                            finishExport(false, prepared.error);
                             return;
                         }
-                        static_cast<void>(clipboard.commitMimeData(QApplication::clipboard(), &q,
-                                                                   mime.release(), committed));
+                        static_cast<void>(clipboard.commit(QApplication::clipboard(), &q,
+                                                           std::move(prepared.payload), committed));
                     },
                     ScreenshotPdfOptions{screenshot_pdf::pageSizeForKey(settings.pdfPageSize())}))
                 finishExport(false, collageText("Copying could not be started. Try again."));

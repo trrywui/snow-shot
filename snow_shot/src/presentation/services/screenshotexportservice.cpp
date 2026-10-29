@@ -36,11 +36,8 @@ using LayoutPlan = std::shared_ptr<const ScreenshotLayoutCompactionPlan>;
 LayoutPlan exportLayoutPlan(const ScreenshotResultStyle& style,
                             const ScreenshotSelectionRenderSpec& spec,
                             ScreenshotLayoutCompaction compaction) {
-    return compaction.enabled && style.region
-               ? screenshotLayoutCompactionPlan(
-                     *style.region, spec.pixelSize, style.regionScale * spec.scale, compaction,
-                     screenshotSelectionRenderedShadowPixels(style.shadowWidth, spec.scale))
-               : nullptr;
+    return ScreenshotResultCompositor::layoutCompactionForContent(spec.pixelSize, style, compaction,
+                                                                  spec.scale);
 }
 
 bool validExportSize(const ScreenshotResultStyle& style, const ScreenshotSelectionRenderSpec& spec,
@@ -48,10 +45,10 @@ bool validExportSize(const ScreenshotResultStyle& style, const ScreenshotSelecti
     if (!spec.isValid() || (plan && !plan->isValid()))
         return false;
     const auto size = plan ? plan->outputSize : spec.pixelSize;
-    const qint64 padding = screenshotSelectionRenderedShadowPixels(style.shadowWidth, spec.scale);
-    const qint64 width = size.width() + 2 * padding;
-    const qint64 height = size.height() + 2 * padding;
-    return width > 0 && height > 0 && width <= 100000000 / height;
+    const auto layout = ScreenshotResultCompositor::layoutForContent(
+        size, ScreenshotResultCompositor::scaledStyle(style, spec.scale));
+    return layout.isValid() &&
+           qint64(layout.outputRect.width()) * layout.outputRect.height() <= 100000000;
 }
 
 QList<CanvasExportSource> exportSourcesForSelection(const ScreenshotDisplaySession& displaySession,
@@ -87,11 +84,7 @@ QImage composeSelectionResultFromRuntime(SnowCanvasRuntime& runtime, const QRect
     }
 
     const auto pixelSize = spec.isValid() ? spec.pixelSize : selection.size();
-    ScreenshotResultStyle outputStyle = style;
-    outputStyle.regionScale = style.regionScale * spec.scale;
-    outputStyle.cornerRadius = qRound(style.cornerRadius * spec.scale);
-    outputStyle.shadowWidth =
-        screenshotSelectionRenderedShadowPixels(style.shadowWidth, spec.scale);
+    auto outputStyle = ScreenshotResultCompositor::scaledStyle(style, spec.scale);
     if (plan && plan->changed)
         outputStyle = compactedScreenshotResultStyle(outputStyle, *plan);
 

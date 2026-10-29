@@ -28,6 +28,26 @@ void clearDrawingCachesForCurrentThread() {
     snow_canvas_pressure_mask::clearCacheForCurrentThread();
 }
 
+QByteArray serializedRuntimeBytes(SnowRuntime runtime,
+                                  SnowError (*serialize)(SnowRuntime, SnowSerializedBytes*)) {
+    if (runtime == nullptr) {
+        return {};
+    }
+    SnowSerializedBytes bytes = nullptr;
+    if (serialize(runtime, &bytes) != SNOW_OK) {
+        return {};
+    }
+    const std::unique_ptr<SnowSerializedBytesImpl, decltype(&snow_serialized_bytes_destroy)>
+        snapshot(bytes, &snow_serialized_bytes_destroy);
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+    if (snow_serialized_bytes_data(snapshot.get(), &data, &size) != SNOW_OK || size == 0 ||
+        size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return {};
+    }
+    return QByteArray(reinterpret_cast<const char*>(data), static_cast<int>(size));
+}
+
 bool toEngineRuntimeConfig(const SnowCanvasRuntimeConfig& config, SnowStyleDefaults& styleDefaults,
                            SnowRuntimeConfig& engineConfig) {
     engineConfig = SnowRuntimeConfig{};
@@ -41,19 +61,26 @@ bool toEngineRuntimeConfig(const SnowCanvasRuntimeConfig& config, SnowStyleDefau
     return true;
 }
 
-std::uint64_t quickSelectionDisabledToolMask(const SnowCanvasRuntimeConfig& config) {
+std::uint64_t drawingToolMask(const QSet<SnowCanvasTool>& tools) {
     std::uint64_t mask = 0;
-    for (const SnowCanvasTool tool : config.quickSelectionDisabledTools) {
+    for (const SnowCanvasTool tool : tools) {
         mask |= std::uint64_t{1} << static_cast<unsigned>(snow_canvas_types::toEngineTool(tool));
     }
     return mask;
 }
 
-void applyQuickSelectionPolicy(SnowRuntime runtime, std::uint64_t toolMask) {
+void applyDrawingPolicy(SnowRuntime runtime, const SnowCanvasRuntimeConfig& config) {
     // Runtime policy is shared by every viewport attached to this document session.
     ScopedChangedViewportList changedViewports;
     static_cast<void>(snow_runtime_set_quick_selection_disabled_tools_ex(
-        runtime, toolMask, changedViewports.outParam()));
+        runtime, drawingToolMask(config.quickSelectionDisabledTools), changedViewports.outParam()));
+    ScopedChangedViewportList exclusionChanges;
+    static_cast<void>(snow_runtime_set_automatic_selection_excluded_tools_ex(
+        runtime, drawingToolMask(config.automaticSelectionExcludedTools),
+        exclusionChanges.outParam()));
+    ScopedChangedViewportList selectionChanges;
+    static_cast<void>(snow_runtime_set_automatically_select_newly_created_elements_ex(
+        runtime, config.automaticallySelectNewlyCreatedElements, selectionChanges.outParam()));
 }
 
 ScopedRuntimeHandle createRuntime(const SnowCanvasRuntimeConfig& config) {
@@ -65,7 +92,7 @@ ScopedRuntimeHandle createRuntime(const SnowCanvasRuntimeConfig& config) {
         runtime.reset();
     }
     if (runtime.get() != nullptr) {
-        applyQuickSelectionPolicy(runtime.get(), quickSelectionDisabledToolMask(config));
+        applyDrawingPolicy(runtime.get(), config);
     }
     return runtime;
 }
@@ -83,7 +110,7 @@ ScopedRuntimeHandle cloneRuntimeFrom(SnowRuntime source, const SnowCanvasRuntime
         runtime.reset();
     }
     if (runtime.get() != nullptr) {
-        applyQuickSelectionPolicy(runtime.get(), quickSelectionDisabledToolMask(config));
+        applyDrawingPolicy(runtime.get(), config);
     }
     return runtime;
 }
@@ -107,7 +134,7 @@ ScopedRuntimeHandle runtimeFromSerializedSession(const QByteArray& payload,
         runtime.reset();
     }
     if (runtime.get() != nullptr) {
-        applyQuickSelectionPolicy(runtime.get(), quickSelectionDisabledToolMask(config));
+        applyDrawingPolicy(runtime.get(), config);
     }
     return runtime;
 }
@@ -125,7 +152,7 @@ ScopedRuntimeHandle runtimeFromSerializedHistory(const QByteArray& payload,
         runtime.reset();
     }
     if (runtime.get() != nullptr) {
-        applyQuickSelectionPolicy(runtime.get(), quickSelectionDisabledToolMask(config));
+        applyDrawingPolicy(runtime.get(), config);
     }
     return runtime;
 }
@@ -263,22 +290,29 @@ bool RuntimeSession::cloneDocumentSessionFrom(const RuntimeSession& source) {
 }
 
 QByteArray RuntimeSession::serializeDocumentSession() const {
-    if (m_runtime.get() == nullptr) {
+    return serializedRuntimeBytes(m_runtime.get(), &snow_runtime_serialize_document_session_bytes);
+}
+
+QByteArray RuntimeSession::serializeDocumentSnapshot() const {
+    return serializedRuntimeBytes(m_runtime.get(), &snow_runtime_serialize_document_snapshot_bytes);
+}
+
+QByteArray RuntimeSession::documentCheckpoint() const {
+    if (m_runtime.get() == nullptr)
         return {};
+    const auto revision = snow_runtime_document_revision(m_runtime.get());
+    if (m_checkpointRevision == revision)
+        return m_checkpoint;
+    auto bytes = serializedRuntimeBytes(m_runtime.get(), &snow_runtime_document_checkpoint_bytes);
+    // Bound retained canonical bytes without limiting checkpoints for large documents.
+    constexpr qsizetype maximumRetainedBytes = 16 * 1024 * 1024;
+    m_checkpointRevision.reset();
+    m_checkpoint = {};
+    if (!bytes.isEmpty() && bytes.size() <= maximumRetainedBytes) {
+        m_checkpoint = bytes;
+        m_checkpointRevision = revision;
     }
-    SnowSerializedBytes bytes = nullptr;
-    if (snow_runtime_serialize_document_session_bytes(m_runtime.get(), &bytes) != SNOW_OK) {
-        return {};
-    }
-    const std::unique_ptr<SnowSerializedBytesImpl, decltype(&snow_serialized_bytes_destroy)>
-        snapshot(bytes, &snow_serialized_bytes_destroy);
-    const std::uint8_t* data = nullptr;
-    std::size_t size = 0;
-    if (snow_serialized_bytes_data(snapshot.get(), &data, &size) != SNOW_OK || size == 0 ||
-        size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        return {};
-    }
-    return QByteArray(reinterpret_cast<const char*>(data), static_cast<int>(size));
+    return bytes;
 }
 
 QByteArray RuntimeSession::serializeSelectedDrawTemplate() const {
@@ -340,6 +374,8 @@ bool RuntimeSession::restoreDocumentHistoryPreservingEditorStyles(const QByteArr
             static_cast<std::size_t>(payload.size()), changedViewports.outParam()) != SNOW_OK) {
         return false;
     }
+    m_checkpointRevision.reset();
+    m_checkpoint = {};
     m_smartErase.reset();
     syncChangedViewports(changedViewports.get());
     return true;
@@ -360,6 +396,8 @@ bool RuntimeSession::clearDocumentPreservingViewports() {
         return false;
     }
 
+    m_checkpointRevision.reset();
+    m_checkpoint = {};
     m_smartErase.reset();
     if (lifetime.expired()) {
         return false;
@@ -379,6 +417,38 @@ void RuntimeSession::clearRenderState() {
     clearDrawingCachesForCurrentThread();
 }
 
+bool RuntimeSession::setAutomaticallySelectNewlyCreatedElements(bool enabled) {
+    if (m_runtime.get() == nullptr) {
+        return false;
+    }
+    ScopedChangedViewportList changedViewports;
+    if (snow_runtime_set_automatically_select_newly_created_elements_ex(
+            m_runtime.get(), enabled, changedViewports.outParam()) != SNOW_OK) {
+        return false;
+    }
+    m_config.automaticallySelectNewlyCreatedElements = enabled;
+    syncChangedViewports(changedViewports.get());
+    return true;
+}
+
+bool RuntimeSession::setAutomaticSelectionExcludedTools(const QSet<SnowCanvasTool>& tools) {
+    if (m_runtime.get() == nullptr) {
+        return false;
+    }
+
+    SnowCanvasRuntimeConfig nextConfig = m_config;
+    nextConfig.automaticSelectionExcludedTools = tools;
+    ScopedChangedViewportList changedViewports;
+    if (snow_runtime_set_automatic_selection_excluded_tools_ex(
+            m_runtime.get(), drawingToolMask(nextConfig.automaticSelectionExcludedTools),
+            changedViewports.outParam()) != SNOW_OK) {
+        return false;
+    }
+    m_config = std::move(nextConfig);
+    syncChangedViewports(changedViewports.get());
+    return true;
+}
+
 bool RuntimeSession::setQuickSelectionDisabledTools(const QSet<SnowCanvasTool>& tools) {
     if (m_runtime.get() == nullptr) {
         return false;
@@ -388,7 +458,7 @@ bool RuntimeSession::setQuickSelectionDisabledTools(const QSet<SnowCanvasTool>& 
     nextConfig.quickSelectionDisabledTools = tools;
     ScopedChangedViewportList changedViewports;
     if (snow_runtime_set_quick_selection_disabled_tools_ex(
-            m_runtime.get(), quickSelectionDisabledToolMask(nextConfig),
+            m_runtime.get(), drawingToolMask(nextConfig.quickSelectionDisabledTools),
             changedViewports.outParam()) != SNOW_OK) {
         return false;
     }
@@ -477,6 +547,9 @@ bool RuntimeSession::replaceRuntime(ScopedRuntimeHandle replacement) {
         return false;
     }
     m_runtime = leaseRuntime(std::move(replacement));
+    // Imported runtimes can reuse a revision number with entirely different content.
+    m_checkpointRevision.reset();
+    m_checkpoint = {};
     const auto replacementLease = m_runtime;
     m_clients.attachAfterRuntimeReplacement(detachedClients, runtime, isCurrent);
     if (!isCurrent()) {
@@ -492,6 +565,8 @@ bool RuntimeSession::replaceRuntime(ScopedRuntimeHandle replacement) {
 void RuntimeSession::destroyRuntimeAsync() {
     // Active presentation scopes keep the retired engine alive until they unwind.
     m_runtime.reset();
+    m_checkpointRevision.reset();
+    m_checkpoint = {};
     clearDrawingCachesForCurrentThread();
 }
 

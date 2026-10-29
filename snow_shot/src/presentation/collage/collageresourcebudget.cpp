@@ -176,7 +176,9 @@ qint64 budgetLimit() {
 
 namespace snow_shot::presentation {
 struct CollageImportReservation::Impl final {
-    collage_detail::ResourceReservation reservation{true};
+    // Imports own encoded input and retained rasters as well as decode scratch. Charging all
+    // of that storage to the 512 MiB painting pool rejects otherwise admissible long images.
+    collage_detail::ResourceReservation reservation;
 };
 
 CollageImportReservation::CollageImportReservation() : m_impl(std::make_unique<Impl>()) {}

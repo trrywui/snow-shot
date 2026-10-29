@@ -104,6 +104,28 @@ struct Coordinator::Impl {
                 record.cancelled->store(true);
         }
     }
+    QByteArray recordKey(quint64 id, const QByteArray& geometry) const {
+        return QByteArray::number(sourceRevision) + ':' + QByteArray::number(id) + ':' + geometry;
+    }
+    void rememberResult(const QByteArray& key, const std::shared_ptr<const Result>& result) {
+        const auto previous = cache.take(key);
+        if (previous) {
+            retainedBytes -= previous->original.sizeInBytes() + previous->filled.sizeInBytes();
+            cacheOrder.erase(std::remove(cacheOrder.begin(), cacheOrder.end(), key),
+                             cacheOrder.end());
+        }
+        cache.insert(key, result);
+        cacheOrder.push_back(key);
+        retainedBytes += result->original.sizeInBytes() + result->filled.sizeInBytes();
+        // Current records retain their results; only historical reuse is evicted.
+        while (retainedBytes > 128 * 1024 * 1024 && !cacheOrder.empty()) {
+            const auto oldest = cacheOrder.front();
+            cacheOrder.erase(cacheOrder.begin());
+            const auto value = cache.take(oldest);
+            if (value)
+                retainedBytes -= value->original.sizeInBytes() + value->filled.sizeInBytes();
+        }
+    }
     void collect() {
         std::vector<Completed> completed;
         {
@@ -121,19 +143,7 @@ struct Coordinator::Impl {
             auto& record = found->second;
             if (completion.result->success) {
                 record.entry.result = completion.result;
-                cache.insert(completion.key, completion.result);
-                cacheOrder.push_back(completion.key);
-                retainedBytes += completion.result->original.sizeInBytes() +
-                                 completion.result->filled.sizeInBytes();
-                // Current records retain their results; only historical reuse is evicted.
-                while (retainedBytes > 128 * 1024 * 1024 && !cacheOrder.empty()) {
-                    const auto oldest = cacheOrder.front();
-                    cacheOrder.erase(cacheOrder.begin());
-                    const auto value = cache.take(oldest);
-                    if (value)
-                        retainedBytes -=
-                            value->original.sizeInBytes() + value->filled.sizeInBytes();
-                }
+                rememberResult(completion.key, completion.result);
             }
             changed = true;
         }
@@ -181,7 +191,7 @@ void Coordinator::setSources(const void* owner, const QList<SnowCanvasBaseImageS
                 return std::isfinite(rect.x()) && std::isfinite(rect.y()) &&
                        std::isfinite(rect.width()) && std::isfinite(rect.height());
             };
-            if (layer.image.isNull() || layer.canvasRect.isEmpty() ||
+            if (!layer.smartEraseSource || layer.image.isNull() || layer.canvasRect.isEmpty() ||
                 !finiteRect(layer.canvasRect) || !finiteRect(layer.coverage))
                 continue;
             const auto duplicate =
@@ -258,8 +268,7 @@ void Coordinator::syncItems(std::vector<SnowCanvasSceneItem> items) {
     for (auto& item : items) {
         const quint64 id = elementKey(item);
         const QByteArray geometry = geometryKey(item);
-        const QByteArray key = QByteArray::number(state.sourceRevision) + ':' +
-                               QByteArray::number(id) + ':' + geometry;
+        const QByteArray key = state.recordKey(id, geometry);
         const auto existing = state.records.find(id);
         const bool same = existing != state.records.end() && existing->second.key == key;
         const bool becameStable = existing != state.records.end() &&
@@ -327,6 +336,74 @@ SnowCanvasSmartEraseSnapshot Coordinator::snapshot() const {
 void Coordinator::restoreSnapshot(const SnowCanvasSmartEraseSnapshot& snapshot) {
     reset();
     m_impl->frozen = snapshot;
+}
+
+void Coordinator::seedSnapshot(const SnowCanvasSmartEraseSnapshot& snapshot) {
+    reset();
+    if (!snapshot.data)
+        return;
+    auto& state = *m_impl;
+    for (const auto& entry : snapshot.data->entries) {
+        if (entry.item.filter.render_phase != 0 || !entry.result || !entry.result->success)
+            continue;
+        const QByteArray geometry = geometryKey(entry.item);
+        if (entry.geometry != geometry)
+            continue;
+        const quint64 id = elementKey(entry.item);
+        Impl::Record record;
+        record.entry = entry;
+        record.key = state.recordKey(id, geometry);
+        record.attempted = true;
+        state.rememberResult(record.key, record.entry.result);
+        state.records.insert_or_assign(id, std::move(record));
+    }
+}
+
+std::optional<SnowCanvasSmartEraseSnapshot>
+prepareExport(SnowRuntime runtime, const SnowCanvasSmartEraseSnapshot& seed,
+              const QList<SnowCanvasBaseImageSource>& sources, const QRectF& outputCanvasRect,
+              const std::function<bool()>& cancelled) {
+    const auto stopped = [&] { return cancelled && cancelled(); };
+    if (!runtime || !outputCanvasRect.isValid() || outputCanvasRect.isEmpty() || stopped())
+        return std::nullopt;
+    std::vector<SnowCanvasSceneItem> items;
+    const auto visitor = [](void* context, const SnowSceneDisplayItem* item) {
+        static_cast<std::vector<SnowCanvasSceneItem>*>(context)->emplace_back(*item);
+    };
+    if (snow_runtime_visit_smart_erase(runtime, visitor, &items) != SNOW_OK)
+        return std::nullopt;
+    auto prepared = std::make_shared<SnowCanvasSmartEraseSnapshot::Data>();
+    for (const auto& item : items) {
+        if (stopped())
+            return std::nullopt;
+        // Interactive snapshots retain zero-opacity placeholders for editing. Export snapshots
+        // contain only visible effects, so omitted entries need neither donors nor fallback paint.
+        if (item.opacity <= 0 || !path(item).boundingRect().intersects(outputCanvasRect))
+            continue;
+        if (item.filter.render_phase != 0)
+            return std::nullopt;
+        const auto geometry = geometryKey(item);
+        std::shared_ptr<const Result> result;
+        if (seed.data) {
+            for (const auto& entry : seed.data->entries) {
+                if (elementKey(entry.item) == elementKey(item) && entry.geometry == geometry &&
+                    entry.item.filter.render_phase == 0 && entry.result && entry.result->success) {
+                    result = entry.result;
+                    break;
+                }
+            }
+        }
+        if (!result) {
+            auto computed = reconstructForExport(item, sources, cancelled);
+            if (!computed.success || stopped())
+                return std::nullopt;
+            result = std::make_shared<Result>(std::move(computed));
+        }
+        prepared->entries.push_back({item, geometry, std::move(result)});
+    }
+    if (stopped())
+        return std::nullopt;
+    return SnowCanvasSmartEraseSnapshot{std::move(prepared)};
 }
 
 void paint(QPainter& painter, const SceneDisplayInfo& info, const SnowCanvasSceneItem& item,

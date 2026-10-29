@@ -445,6 +445,10 @@ bool encodeDraft(const CaptureHistoryDraft& draft, qint64 quota, EncodedDraft* r
         draft.selection.rectangle.isEmpty() || !draft.selection.shadowColor.isValid() ||
         draft.selection.cornerRadius < 0 || draft.selection.cornerRadius > 256 ||
         draft.selection.shadowWidth < 0 || draft.selection.shadowWidth > 64 ||
+        draft.selection.borderWidth < 0 || draft.selection.borderWidth > 64 ||
+        !draft.selection.borderColor.isValid() ||
+        (draft.selection.borderType != ScreenshotSelectionBorderType::Shadow &&
+         draft.selection.borderType != ScreenshotSelectionBorderType::Border) ||
         !validCanvas(draft.canvasHistory) || draft.displays.isEmpty() ||
         draft.displays.size() > kMaximumDisplays || sourceText(draft.source).isEmpty()) {
         return false;
@@ -662,6 +666,32 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
         return future;
     }
 
+    std::optional<QString> revealPath(const QString& id) const override {
+        std::shared_lock access(m_relocationMutex);
+        std::lock_guard queue(m_queueMutex);
+        if (m_suspended || m_stopping)
+            return std::nullopt;
+        std::lock_guard state(m_stateMutex);
+        const auto index = m_recordIndex.constFind(id);
+        if (!m_indexHealthy || index == m_recordIndex.cend())
+            return std::nullopt;
+        const auto& stored = m_snapshot.records[*index];
+        const QDir directory(recordPath(id));
+        if (!containedPath(m_root, directory.absolutePath()) || !directory.exists())
+            return std::nullopt;
+        QString name;
+        if (stored.resultFileName)
+            name = *stored.resultFileName;
+        else if (stored.displayFileNames.size() == 1)
+            name = stored.displayFileNames.constFirst();
+        if (!name.isEmpty()) {
+            const QString path = directory.filePath(name);
+            if (containedPath(m_root, path) && QFileInfo(path).isFile())
+                return path;
+        }
+        return directory.absolutePath();
+    }
+
     std::optional<CaptureHistoryAssetSet>
     displayAssets(const CaptureHistoryRecord& record) const override {
         std::shared_lock access(m_relocationMutex);
@@ -686,6 +716,16 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
     }
 
     std::optional<CaptureHistoryPayload> load(const CaptureHistoryRecord& record) const override {
+        return loadPayload(record, false);
+    }
+
+    std::optional<CaptureHistoryPayload>
+    loadPreservingRecord(const CaptureHistoryRecord& record) const override {
+        return loadPayload(record, true);
+    }
+
+    std::optional<CaptureHistoryPayload> loadPayload(const CaptureHistoryRecord& record,
+                                                     bool preserve) const {
         std::shared_lock access(m_relocationMutex);
         const auto stored = find(record);
         if (!stored)
@@ -696,7 +736,8 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
         QFile canvas(canvasPath);
         CaptureHistoryPayload payload;
         if (!containedPath(m_root, canvasPath) || !canvas.open(QIODevice::ReadOnly)) {
-            readFailed(record);
+            if (!preserve)
+                readFailed(record);
             return std::nullopt;
         }
         payload.canvasHistory = canvas.read(kMaximumCanvasBytes + 1);
@@ -704,12 +745,13 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
         canvas.close();
         if (readError || payload.canvasHistory.size() != record.canvasBytes ||
             !validCanvas(payload.canvasHistory)) {
-            readFailed(record);
+            if (!preserve)
+                readFailed(record);
             return std::nullopt;
         }
         for (qsizetype i = 0; i < stored->displayFileNames.size(); ++i) {
             const auto image = readImage(record, directory.filePath(stored->displayFileNames[i]),
-                                         record.displays[i].imageSize);
+                                         record.displays[i].imageSize, -1, preserve);
             if (!image)
                 return std::nullopt;
             payload.displayImages.append(*image);
@@ -718,7 +760,7 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
                 const auto loaded =
                     readImage(record, directory.filePath(QStringLiteral("cursor_%1.png").arg(i)),
                               record.displays[i].cursor->pixelRect.size(),
-                              record.displays[i].cursor->encodedBytes);
+                              record.displays[i].cursor->encodedBytes, preserve);
                 if (!loaded)
                     return std::nullopt;
                 patch = *loaded;
@@ -883,16 +925,19 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
     }
 
     std::optional<QImage> readImage(const CaptureHistoryRecord& record, const QString& path,
-                                    const QSize& size, qint64 encodedBytes = -1) const {
+                                    const QSize& size, qint64 encodedBytes = -1,
+                                    bool preserve = false) const {
         observe(CaptureHistoryOperation::PayloadRead);
         if (!containedPath(m_root, path) ||
             (encodedBytes >= 0 && QFileInfo(path).size() != encodedBytes)) {
-            readFailed(record);
+            if (!preserve)
+                readFailed(record);
             return std::nullopt;
         }
         const QImage image = decodeImage(path);
         if (image.isNull() || image.size() != size) {
-            readFailed(record);
+            if (!preserve)
+                readFailed(record);
             return std::nullopt;
         }
         return image;
@@ -1368,7 +1413,7 @@ class CaptureHistoryRepositoryImpl final : public CaptureHistoryRepository {
     CaptureHistoryUsage m_usage;
     QString m_error;
     bool m_indexHealthy = true;
-    std::mutex m_queueMutex;
+    mutable std::mutex m_queueMutex;
     std::condition_variable m_condition;
     std::condition_variable m_drained;
     std::deque<Command> m_queue;

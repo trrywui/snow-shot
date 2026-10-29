@@ -54,12 +54,13 @@ class CustomAiModelsSettingsWidget final : public SettingsCustomWidget {
     QPointer<adqt::widgets::AdModal> m_deleteModal;
     adqt::widgets::AdAlert* m_modalError = nullptr;
     std::array<adqt::widgets::AdLineEdit*, 3> m_inputs{};
-    std::array<adqt::widgets::AdFormItem*, 7> m_fields{};
-    std::array<snow_shot::presentation::components::form_fields::FormField*, 7> m_formFields{};
+    std::array<adqt::widgets::AdFormItem*, 8> m_fields{};
+    std::array<snow_shot::presentation::components::form_fields::FormField*, 8> m_formFields{};
     adqt::widgets::AdSwitch* m_vision = nullptr;
     adqt::widgets::AdSwitch* m_reasoning = nullptr;
     adqt::widgets::AdInputNumber* m_concurrency = nullptr;
     adqt::widgets::AdComboBox* m_modelSelect = nullptr;
+    adqt::widgets::AdComboBox* m_provider = nullptr;
     QLabel* m_modelFetchStatus = nullptr;
     QString m_editId;
     QString m_deleteId;

@@ -62,6 +62,150 @@ void imageFileExtensionsMatchShellRegistration() {
             "existing file pinning retains its additional formatted-text formats");
 }
 
+void clipboardImagesTakePriorityOverAccompanyingFiles() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "mixed clipboard fixtures need temporary storage");
+    QImage pixels(3, 2, QImage::Format_RGBA8888);
+    pixels.fill(QColor(23, 117, 209, 127));
+    pixels.setColorSpace(QColorSpace::SRgb);
+    QImage filePixels(pixels.size(), pixels.format());
+    filePixels.fill(Qt::red);
+    const QString imagePath = directory.filePath(QStringLiteral("export.png"));
+    const QString textPath = directory.filePath(QStringLiteral("document.txt"));
+    require(filePixels.save(imagePath, "PNG"), "mixed clipboard file must be saved");
+    const QStringList paths{imagePath, textPath, imagePath};
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(imagePath), QUrl::fromLocalFile(textPath),
+                  QUrl::fromLocalFile(imagePath)});
+    mime.setText(imagePath);
+    require(ScreenshotClipboardContentReader::filePathsForImport(&mime) == paths &&
+                ScreenshotClipboardContentReader::localImageFilePaths(&mime) ==
+                    QStringList{imagePath, imagePath},
+            "file-only imports preserve order and duplicates independently of accompanying text");
+
+    ScreenshotClipboardAppearance appearance;
+    appearance.rasterSize = pixels.size();
+    appearance.checkerboardEnabled = true;
+    appearance.showBorder = false;
+    setScreenshotClipboardAppearance(mime, appearance);
+    for (bool encoded : {false, true}) {
+        if (encoded) {
+            mime.removeFormat(QStringLiteral("application/x-qt-image"));
+            mime.setData(QStringLiteral("image/png"), snow_shot::image_codec::encodePng(pixels));
+        } else {
+            mime.setImageData(pixels);
+        }
+        require(ScreenshotClipboardContentReader::filePathsForImport(&mime).isEmpty() &&
+                    ScreenshotClipboardContentReader::localImageFilePaths(&mime).isEmpty() &&
+                    ScreenshotClipboardContentReader::localFilePaths(&mime) == paths,
+                "clipboard imports must prefer inline images while retaining the exported URLs");
+        const auto decoded = ScreenshotClipboardContentReader::readMimeData(&mime, 1.0);
+        require(decoded &&
+                    decoded->image.convertToFormat(QImage::Format_ARGB32_Premultiplied) ==
+                        pixels.convertToFormat(QImage::Format_ARGB32_Premultiplied) &&
+                    decoded->appearance && decoded->appearance->checkerboardEnabled &&
+                    decoded->appearance->showBorder == false &&
+                    decoded->originalContent.localFilePath.isEmpty(),
+                "mixed clipboard imports retain canonical image pixels and image-bound appearance");
+    }
+    require(ScreenshotClipboardContentReader::filePathsForImport(nullptr).isEmpty(),
+            "missing clipboard MIME data must not offer file imports");
+}
+
+void imageFilesDecodeByContent() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "content detection fixture directory must exist");
+    QImage source(32, 24, QImage::Format_RGB888);
+    source.fill(Qt::green);
+    source.setPixelColor(0, 0, Qt::red);
+    source.setColorSpace(QColorSpace(QColorSpace::DisplayP3));
+    for (const auto* encoding : {"JPEG", "PNG"}) {
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        require(buffer.open(QIODevice::WriteOnly) && source.save(&buffer, encoding),
+                "encode content detection fixture");
+        const auto format =
+            QByteArray(encoding) == "JPEG" ? snow::image::Format::jpeg : snow::image::Format::png;
+        const auto reference = snow_shot::image_codec::decode(bytes, format, nullptr);
+        require(!reference.isNull(), "correctly identified reference must decode");
+        const auto wrongFormat = format == snow::image::Format::jpeg ? snow::image::Format::png
+                                                                     : snow::image::Format::jpeg;
+        require(snow_shot::image_codec::decode(bytes, wrongFormat, nullptr).isNull() &&
+                    snow_shot::image_codec::inspectSize(bytes, wrongFormat).isEmpty(),
+                "explicit format constraints must continue to reject mismatched payloads");
+        require(snow_shot::image_codec::inspectSize(bytes, snow::image::Format::unknown) ==
+                    reference.size(),
+                "automatic inspection must report the encoded image size");
+        const auto automatic =
+            snow_shot::image_codec::decode(bytes, snow::image::Format::unknown, nullptr);
+        require(automatic == reference, "automatic packed decoding must preserve pixels");
+        for (const auto& suffix :
+             ScreenshotClipboardContentReader::supportedImageFileExtensions()) {
+            const auto path = directory.filePath(QStringLiteral("image.") + suffix);
+            QFile file(path);
+            require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(),
+                    "write image with a potentially misleading extension");
+            file.close();
+            const auto bgra =
+                snow_shot::image_codec::decodeFileBgra(path, snow::image::Format::unknown);
+            require(bgra.convertToFormat(reference.format()) == reference &&
+                        bgra.colorSpace() == reference.colorSpace(),
+                    "automatic BGRA file decoding must preserve pixels and profiles");
+            const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path});
+            require(files.size() == 1, "supported image suffix must reach content detection");
+            ScreenshotClipboardContentSnapshot snapshot;
+            snapshot.localImage = files.first();
+            for (const bool budgeted : {false, true}) {
+                const auto content = ScreenshotClipboardContentReader::decode(
+                    snapshot, {},
+                    budgeted ? ScreenshotClipboardContentReader::AllocationCheck(
+                                   [](qint64) { return true; })
+                             : ScreenshotClipboardContentReader::AllocationCheck{});
+                require(content && content->image == reference &&
+                            content->image.colorSpace() == reference.colorSpace() &&
+                            content->sourceIdentity == files.first().sourceIdentity &&
+                            content->originalContent.localFilePath == path,
+                        "file content determines decoding and admission regardless of suffix");
+            }
+            const auto preview = ScreenshotClipboardContentReader::decodeImageFile(files.first());
+            require(preview == reference && preview.colorSpace() == reference.colorSpace(),
+                    "first-frame import must also detect the encoded format");
+            require(!ScreenshotClipboardContentReader::decode(snapshot, {},
+                                                              [](qint64) { return false; }) &&
+                        ScreenshotClipboardContentReader::decodeImageFile(files.first(),
+                                                                          [] { return true; })
+                            .isNull(),
+                    "content detection must preserve admission and cancellation checks");
+            require(
+                !ScreenshotClipboardContentReader::decode(
+                    snapshot, {}, [&](qint64 requested) { return requested <= bytes.size() + 1; }),
+                "mislabeled files must pass decoded-size admission before raster allocation");
+        }
+    }
+    for (const auto& fixture : pinned_animation_fixtures::images()) {
+        const auto reference = snow_shot::image_codec::decodeAnimationSource(fixture.bytes);
+        require(reference && reference->isAnimated(), "animation fixture must decode");
+        const auto path = directory.filePath(QStringLiteral("animation.jpg"));
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly) &&
+                    file.write(fixture.bytes) == fixture.bytes.size(),
+                "write animation with a still-image suffix");
+        file.close();
+        const auto files = ScreenshotClipboardContentReader::snapshotLocalFiles({path});
+        require(files.size() == 1, "snapshot mislabeled animation");
+        ScreenshotClipboardContentSnapshot snapshot;
+        snapshot.localImage = files.first();
+        const auto content =
+            ScreenshotClipboardContentReader::decode(snapshot, {}, [](qint64) { return true; });
+        require(content && content->animationSource &&
+                    content->animationSource->encoded == fixture.bytes &&
+                    content->image == reference->firstFrame &&
+                    ScreenshotClipboardContentReader::decodeImageFile(files.first()) ==
+                        reference->firstFrame,
+                "mislabeled animations must retain playback and composited preview semantics");
+    }
+}
+
 void bmpFilesPreservePixelsAndIdentity() {
     QTemporaryDir directory;
     require(directory.isValid(), "BMP import fixture directory must exist");
@@ -1478,6 +1622,111 @@ void formattedTextUsesOwningDisplayDevicePixelRatio() {
             "display DPR should not change the formatted document's logical layout size");
 }
 
+void intrinsicHtmlWidthPreservesTheEntireRaster() {
+    QImage source(QSize(1400, 20), QImage::Format_ARGB32);
+    source.fill(Qt::red);
+    const QStringList fixtures{
+        QStringLiteral("<table width=\"1400\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+                       "<td>Left</td><td align=\"right\" bgcolor=\"#00ff00\">Right edge</td>"
+                       "</tr></table>"),
+        QStringLiteral("<pre>%1<span style=\"background-color: #00ff00\">Right edge</span></pre>")
+            .arg(QStringLiteral("wide line ").repeated(20)),
+        QStringLiteral("<img src=\"data:image/png;base64,%1\">")
+            .arg(QString::fromLatin1(pngBytes(source).toBase64())),
+    };
+    for (const QString& html : fixtures) {
+        for (const qreal dpr : {1.0, 1.25, 2.0}) {
+            ScreenshotClipboardContentSnapshot snapshot;
+            snapshot.html = html;
+            snapshot.textStyle = snow_shot::storage::PinnedTextStyle{};
+            snapshot.textStyle->fontFamily = QApplication::font().family();
+            snapshot.textStyle->maximumWidth = 2000;
+            snapshot.devicePixelRatio = dpr;
+            const auto reference = ScreenshotClipboardContentReader::decode(snapshot);
+            require(reference && reference->formattedDocument->size().width() > 1024,
+                    "intrinsic HTML fixture must exceed the default text width");
+            require(reference->image.deviceIndependentSize().width() >=
+                        reference->formattedDocument->size().width(),
+                    "the HTML raster must include the full laid-out width");
+            for (const int maximumWidth : {100, 500}) {
+                snapshot.textStyle->maximumWidth = maximumWidth;
+                const auto content = ScreenshotClipboardContentReader::decode(snapshot);
+                require(content && content->image == reference->image,
+                        "fixed tables, preformatted lines, and images must ignore a narrower "
+                        "text width without clipping their right edge");
+                const QSizeF documentSize = content->formattedDocument->size();
+                require(content->image.deviceIndependentSize().width() >= documentSize.width() &&
+                            content->image.deviceIndependentSize().height() >=
+                                documentSize.height(),
+                        "the raster must contain the entire selectable document at every DPI");
+                const auto restored = ScreenshotClipboardContentReader::renderOriginalText(
+                    content->originalContent, dpr);
+                require(restored && restored->image == content->image,
+                        "restoring and exporting intrinsic HTML must preserve its full width");
+            }
+            snapshot.textStyle.reset();
+            const auto legacy = ScreenshotClipboardContentReader::decode(snapshot);
+            require(legacy && legacy->image.size() == reference->image.size(),
+                    "HTML without captured settings must also retain its intrinsic width");
+        }
+    }
+}
+
+void flowingHtmlStillUsesTheConfiguredWidth() {
+    for (const QString& html :
+         {QStringLiteral("<p>%1</p>"),
+          QStringLiteral("<table width=\"100%\"><tr><td>%1</td></tr></table>")}) {
+        ScreenshotClipboardContentSnapshot snapshot;
+        snapshot.html = html.arg(QStringLiteral("Flow text ").repeated(200));
+        snapshot.textStyle = snow_shot::storage::PinnedTextStyle{};
+        snapshot.textStyle->fontFamily = QApplication::font().family();
+        snapshot.devicePixelRatio = 1.25;
+        int previousHeight = std::numeric_limits<int>::max();
+        for (const int maximumWidth : {100, 500, 2000}) {
+            snapshot.textStyle->maximumWidth = maximumWidth;
+            const auto content = ScreenshotClipboardContentReader::decode(snapshot);
+            require(content && content->image.width() == maximumWidth * 1.25 &&
+                        content->image.height() < previousHeight,
+                    "flowing HTML and percentage-width tables must wrap at the configured width");
+            previousHeight = content->image.height();
+        }
+    }
+}
+
+void intrinsicHtmlWidthRespectsRasterLimits() {
+    QImage source(QSize(1, 1), QImage::Format_ARGB32);
+    source.fill(Qt::red);
+    const QString sourceUrl = QStringLiteral("data:image/png;base64,%1")
+                                  .arg(QString::fromLatin1(pngBytes(source).toBase64()));
+    ScreenshotClipboardContentSnapshot snapshot;
+    snapshot.html =
+        QStringLiteral("<img width=\"100000\" height=\"1000\" src=\"%1\">").arg(sourceUrl);
+    require(!ScreenshotClipboardContentReader::decode(snapshot),
+            "the full intrinsic width must count toward the raster pixel limit");
+
+    snapshot.html = QStringLiteral("<img width=\"1400\" height=\"20\" src=\"%1\">").arg(sourceUrl);
+    const auto content = ScreenshotClipboardContentReader::decode(snapshot);
+    require(content && content->image.width() >= 1400,
+            "the allocation fixture must include the full image width");
+    const qint64 rasterBytes =
+        static_cast<qint64>(content->image.width()) * content->image.height() * 8;
+    bool rejectedRaster = false;
+    const auto admit = [&](qint64 bytes) {
+        if (bytes >= rasterBytes) {
+            rejectedRaster = true;
+            return false;
+        }
+        return true;
+    };
+    require(!ScreenshotClipboardContentReader::decode(snapshot, {}, admit) && rejectedRaster,
+            "allocation admission must account for the full intrinsic raster width");
+    rejectedRaster = false;
+    require(!ScreenshotClipboardContentReader::renderOriginalText(content->originalContent, 1.0, {},
+                                                                  admit) &&
+                rejectedRaster,
+            "restoring intrinsic HTML must enforce the same raster admission");
+}
+
 #if defined(Q_OS_WIN) || defined(_WIN32)
 ScreenshotClipboardContentSnapshot nativeDibSnapshot(QByteArray bytes, QSize size) {
     ScreenshotClipboardContentSnapshot snapshot;
@@ -1695,7 +1944,23 @@ int main(int argc, char** argv) {
         bmpFilesPreservePixelsAndIdentity();
         return EXIT_SUCCESS;
     }
+    if (application.arguments().contains(QStringLiteral("--import-routing-only"))) {
+        imageFilesDecodeByContent();
+        clipboardImagesTakePriorityOverAccompanyingFiles();
+        return EXIT_SUCCESS;
+    }
+    if (application.arguments().contains(QStringLiteral("--text-layout-only"))) {
+        intrinsicHtmlWidthPreservesTheEntireRaster();
+        flowingHtmlStillUsesTheConfiguredWidth();
+        intrinsicHtmlWidthRespectsRasterLimits();
+        formattedTextHasPaddingOnEverySide();
+        pinnedTextStylesPreserveFormattingAndSnapshots();
+        formattedTextUsesOwningDisplayDevicePixelRatio();
+        return EXIT_SUCCESS;
+    }
     imageFileExtensionsMatchShellRegistration();
+    imageFilesDecodeByContent();
+    clipboardImagesTakePriorityOverAccompanyingFiles();
     embeddedImagesUseManagedCachedPixels();
     if (application.arguments().contains(QStringLiteral("--embedded-images-only"))) {
         return EXIT_SUCCESS;
@@ -1731,6 +1996,9 @@ int main(int argc, char** argv) {
     formattedTextHasPaddingOnEverySide();
     formattedTextBackgroundFollowsApplicationTheme();
     htmlSourceBackgroundOverridesApplicationTheme();
+    intrinsicHtmlWidthPreservesTheEntireRaster();
+    flowingHtmlStillUsesTheConfiguredWidth();
+    intrinsicHtmlWidthRespectsRasterLimits();
     pinnedTextStylesPreserveFormattingAndSnapshots();
     formattedTextUsesOwningDisplayDevicePixelRatio();
 #if defined(Q_OS_WIN) || defined(_WIN32)

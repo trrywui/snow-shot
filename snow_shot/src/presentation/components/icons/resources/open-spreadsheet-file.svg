@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none" stroke="currentColor" stroke-width="72" stroke-linecap="round" stroke-linejoin="round" data-adqt-slot="primary">
+  <path d="M500 104H176a72 72 0 0 0-72 72v672a72 72 0 0 0 72 72h672a72 72 0 0 0 72-72V524"/>
+  <path d="M104 364h396M104 644h816M364 364v556M644 644v276"/>
+  <path d="M652 104h268v268M920 104 612 412"/>
+</svg>

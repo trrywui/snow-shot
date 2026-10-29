@@ -4776,6 +4776,9 @@ const fn bundle_asset_label(kind: BundleAssetKind) -> &'static str {
         BundleAssetKind::InputEvents => "input-events",
         BundleAssetKind::RenderMetadata => "render-metadata",
         BundleAssetKind::OutputSettings => "output-settings",
+        BundleAssetKind::WebcamVideo => "webcam-video",
+        BundleAssetKind::WebcamIndex => "webcam-index",
+        BundleAssetKind::WebcamMetadata => "webcam-metadata",
     }
 }
 

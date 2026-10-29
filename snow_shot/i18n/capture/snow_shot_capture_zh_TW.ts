@@ -281,6 +281,22 @@
             <translation>新增預設</translation>
         </message>
         <message>
+            <source>Border</source>
+            <translation>邊框</translation>
+        </message>
+        <message>
+            <source>Border color</source>
+            <translation>邊框顏色</translation>
+        </message>
+        <message>
+            <source>Border type</source>
+            <translation>邊框類型</translation>
+        </message>
+        <message>
+            <source>Border width</source>
+            <translation>邊框寬度</translation>
+        </message>
+        <message>
             <source>Cancel</source>
             <translation>取消</translation>
         </message>
@@ -349,6 +365,10 @@
             <translation>選取範圍</translation>
         </message>
         <message>
+            <source>Shadow</source>
+            <translation>陰影</translation>
+        </message>
+        <message>
             <source>Shadow color</source>
             <translation>陰影色彩</translation>
         </message>
@@ -413,6 +433,10 @@
         <message>
             <source>Aspect ratio presets</source>
             <translation>長寬比預設</translation>
+        </message>
+        <message>
+            <source>Border width</source>
+            <translation>邊框寬度</translation>
         </message>
         <message>
             <source>Corner radius</source>

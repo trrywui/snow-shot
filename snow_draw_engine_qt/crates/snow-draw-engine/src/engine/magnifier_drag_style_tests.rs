@@ -33,6 +33,7 @@ fn fixture() -> (Engine, ViewportId, ElementId, MagnifierData) {
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -550,6 +551,7 @@ fn magnifier_group_wheel_during_drag_preserves_both_committed_styles() {
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();

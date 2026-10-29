@@ -3,7 +3,7 @@
 
 #include <QObject>
 #include <QPointer>
-#include <QSize>
+#include <QRect>
 
 #include <optional>
 
@@ -16,12 +16,6 @@ class AdModal;
 }
 
 namespace snow_shot::presentation {
-// Remembers only the size of the standalone translation window: it must keep
-// opening centered on the screen the translation was triggered from.
-[[nodiscard]] std::optional<QSize> restoredTranslationWindowSize(const QSize& minimumSize,
-                                                                 const QSize& maximumSize);
-void rememberTranslationWindowSize(const QWidget& widget);
-
 class StandaloneTranslationWindow final : public QObject {
     Q_OBJECT
   public:
@@ -30,10 +24,14 @@ class StandaloneTranslationWindow final : public QObject {
     void showTranslation(const QString& text, QScreen* screen);
     void close();
 
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
   private:
     SnowShotApiClient* m_client;
     adqt::widgets::AdModal* m_modal;
     QPointer<TranslationPageWidget> m_page;
+    std::optional<QRect> m_lastWindowGeometry;
 };
 } // namespace snow_shot::presentation
 #endif

@@ -21,6 +21,8 @@ mod annotations;
 #[cfg(test)]
 mod auto_filter_tests;
 #[cfg(test)]
+mod automatic_selection_tests;
+#[cfg(test)]
 mod distance_tests;
 mod document_commands;
 #[cfg(test)]
@@ -45,6 +47,8 @@ mod magnifier_tests;
 mod mutations;
 #[cfg(test)]
 mod pen_highlight_angle_tests;
+#[cfg(test)]
+mod retained_tests;
 #[cfg(test)]
 mod rounded_diamond_tests;
 #[cfg(test)]
@@ -93,6 +97,7 @@ pub struct InputUpdate {
 struct ViewportSlot {
     view: EditorViewportState,
     composer: ViewportComposer,
+    retained: Option<std::cell::RefCell<snow_draw_engine_scene::RetainedSceneComposer>>,
 }
 
 #[derive(Debug)]
@@ -127,6 +132,10 @@ impl Default for Engine {
 impl Engine {
     pub fn has_pointer_capture(&self) -> bool {
         self.editor.has_pointer_capture()
+    }
+
+    pub fn has_active_interaction(&self) -> bool {
+        self.editor.has_active_interaction()
     }
 
     pub fn new(config: EngineConfig) -> Self {
@@ -196,6 +205,9 @@ impl Engine {
         self.scene_cache.sync(&self.model, None);
         for slot in self.viewports.values_mut() {
             slot.composer.reset_document_retained_state();
+            if let Some(retained) = &mut slot.retained {
+                retained.get_mut().invalidate_document();
+            }
         }
         self.refresh_all_viewports()
     }
@@ -217,6 +229,11 @@ impl Engine {
                         ViewportSlot {
                             view: slot.view,
                             composer: ViewportComposer::new(),
+                            retained: slot.retained.as_ref().map(|_| {
+                                std::cell::RefCell::new(
+                                    snow_draw_engine_scene::RetainedSceneComposer::new(),
+                                )
+                            }),
                         },
                     )
                 })
@@ -258,6 +275,23 @@ impl Engine {
         self.editor.set_active_tool(tool)?;
         self.history.break_angle_wheel_coalescing();
         self.refresh_after_session_mutation(before)
+    }
+
+    pub fn set_automatically_select_newly_created_elements(
+        &mut self,
+        enabled: bool,
+    ) -> Result<MutationResult, ErrorCode> {
+        self.editor
+            .set_automatically_select_newly_created_elements(enabled);
+        Ok(MutationResult::default())
+    }
+
+    pub fn set_automatic_selection_excluded_tools(
+        &mut self,
+        tools: u64,
+    ) -> Result<MutationResult, ErrorCode> {
+        self.editor.set_automatic_selection_excluded_tools(tools);
+        Ok(MutationResult::default())
     }
 
     pub fn quick_selection_disabled_tools(&self) -> u64 {

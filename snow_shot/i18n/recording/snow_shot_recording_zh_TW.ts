@@ -23,24 +23,32 @@
     <context>
         <name>RecordingKeyboardLabels</name>
         <message>
-            <source>Left click</source>
-            <translation>滑鼠左鍵</translation>
+            <source>Button 4</source>
+            <translation>按鍵 4</translation>
         </message>
         <message>
-            <source>Middle click</source>
-            <translation>滑鼠中鍵</translation>
+            <source>Button 5</source>
+            <translation>按鍵 5</translation>
         </message>
         <message>
-            <source>Mouse button 4</source>
-            <translation>滑鼠按鍵 4</translation>
+            <source>Left</source>
+            <translation>左鍵</translation>
         </message>
         <message>
-            <source>Mouse button 5</source>
-            <translation>滑鼠按鍵 5</translation>
+            <source>Middle</source>
+            <translation>中鍵</translation>
         </message>
         <message>
-            <source>Right click</source>
-            <translation>滑鼠右鍵</translation>
+            <source>Right</source>
+            <translation>右鍵</translation>
+        </message>
+        <message>
+            <source>Scroll down</source>
+            <translation>向下捲動</translation>
+        </message>
+        <message>
+            <source>Scroll up</source>
+            <translation>向上捲動</translation>
         </message>
     </context>
     <context>
@@ -116,6 +124,41 @@
         </message>
     </context>
     <context>
+        <name>RecordingStatusPrompt</name>
+        <message>
+            <source>Format: %1; %2; %3</source>
+            <translation>格式：%1；%2；%3</translation>
+        </message>
+        <message>
+            <source>GIF</source>
+            <translation>GIF</translation>
+        </message>
+        <message>
+            <source>MP4</source>
+            <translation>MP4</translation>
+        </message>
+        <message>
+            <source>Microphone disabled</source>
+            <translation>麥克風已關閉</translation>
+        </message>
+        <message>
+            <source>Microphone enabled</source>
+            <translation>麥克風已開啟</translation>
+        </message>
+        <message>
+            <source>Speaker disabled</source>
+            <translation>喇叭已關閉</translation>
+        </message>
+        <message>
+            <source>Speaker enabled</source>
+            <translation>喇叭已開啟</translation>
+        </message>
+        <message>
+            <source>WebP</source>
+            <translation>WebP</translation>
+        </message>
+    </context>
+    <context>
         <name>RecordingTrimSession</name>
         <message>
             <source>Choose a different file to preserve the original recording.</source>
@@ -141,6 +184,14 @@
             <translation>%1x</translation>
         </message>
         <message>
+            <source>Pause</source>
+            <translation>暫停</translation>
+        </message>
+        <message>
+            <source>Play</source>
+            <translation>播放</translation>
+        </message>
+        <message>
             <source>Playback and export speed</source>
             <translation>播放與匯出速度</translation>
         </message>
@@ -162,7 +213,38 @@
         </message>
     </context>
     <context>
+        <name>RecordingWebcamControl</name>
+        <message>
+            <source>Flip horizontally</source>
+            <translation>水平翻轉</translation>
+        </message>
+        <message>
+            <source>Flip vertically</source>
+            <translation>垂直翻轉</translation>
+        </message>
+        <message>
+            <source>Move webcam</source>
+            <translation>移動攝影機畫面</translation>
+        </message>
+        <message>
+            <source>Resize webcam</source>
+            <translation>調整攝影機畫面大小</translation>
+        </message>
+        <message>
+            <source>Rotate clockwise</source>
+            <translation>順時針旋轉</translation>
+        </message>
+        <message>
+            <source>Rotate counterclockwise</source>
+            <translation>逆時針旋轉</translation>
+        </message>
+    </context>
+    <context>
         <name>ScreenRecordingController</name>
+        <message>
+            <source>A recording was interrupted when Windows ended the session. Recover the saved recording or open its folder.</source>
+            <translation>Windows 結束工作階段時中斷了螢幕錄製。您可以復原已儲存的錄製內容或開啟其資料夾。</translation>
+        </message>
         <message>
             <source>Keyboard recording failed: %1</source>
             <translation>鍵盤錄製失敗：%1</translation>
@@ -170,6 +252,18 @@
         <message>
             <source>Motion preview unavailable: %1</source>
             <translation>無法預覽動效：%1</translation>
+        </message>
+        <message>
+            <source>Open folder</source>
+            <translation>開啟資料夾</translation>
+        </message>
+        <message>
+            <source>Recording recovery</source>
+            <translation>錄製復原</translation>
+        </message>
+        <message>
+            <source>Recover</source>
+            <translation>復原</translation>
         </message>
         <message>
             <source>Screen recording</source>
@@ -190,6 +284,10 @@ Keep this folder to recover the recording.</source>
             <translation>錄製作業失敗</translation>
         </message>
         <message>
+            <source>The webcam could not be initialized.</source>
+            <translation>無法初始化攝影機。</translation>
+        </message>
+        <message>
             <source>Unable to create the recording directory</source>
             <translation>無法建立錄製目錄</translation>
         </message>
@@ -200,6 +298,10 @@ Keep this folder to recover the recording.</source>
         <message>
             <source>Unknown recording error</source>
             <translation>未知錄製錯誤</translation>
+        </message>
+        <message>
+            <source>Webcam unavailable: %1</source>
+            <translation>攝影機無法使用：%1</translation>
         </message>
     </context>
     <context>

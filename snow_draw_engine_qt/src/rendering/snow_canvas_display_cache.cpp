@@ -210,6 +210,7 @@ void SnowCanvasDisplayCache::reset(const SnowColorRgba8& clearColor) {
     m_sceneDisplayInfo.clear_color = clearColor;
     m_watermarkDisplayInfo = WatermarkDisplayInfo{};
     m_spotlightDisplayInfo = SpotlightDisplayInfo{};
+    m_spotlightDamage = {};
     m_overlayDisplayInfo = OverlayDisplayInfo{};
 }
 
@@ -266,6 +267,14 @@ bool SnowCanvasDisplayCache::sync(SnowRuntime runtime, SnowViewport viewport) {
     if (!readPatchPayload(patch.get(), &payload)) {
         return false;
     }
+    const auto& previousSpotlight = m_spotlightDisplayInfo;
+    const auto& nextColor = patchInfo.spotlight_color;
+    const bool spotlightChanged =
+        payload.spotlightOpCount != 0 || patchInfo.decoration_reset != 0 ||
+        previousSpotlight.active != (patchInfo.spotlight_active != 0) ||
+        previousSpotlight.opacity != patchInfo.spotlight_opacity ||
+        previousSpotlight.color.r != nextColor.r || previousSpotlight.color.g != nextColor.g ||
+        previousSpotlight.color.b != nextColor.b || previousSpotlight.color.a != nextColor.a;
     m_lastPenFilterGeometryPointCount = payload.penFilterGeometryPointCount;
     if (patchInfo.scene_reset != 0) {
         std::vector<AppliedPenFilterGeometryDelta>().swap(m_appliedPenFilterGeometryDeltas);
@@ -406,6 +415,13 @@ bool SnowCanvasDisplayCache::sync(SnowRuntime runtime, SnowViewport viewport) {
     assignStorage(m_overlayDirtyStorage, payload.overlayDirtyRects, payload.overlayDirtyRectCount);
     refreshViews();
     applyPatchInfo(patchInfo);
+    m_spotlightDamage =
+        spotlightChanged
+            ? snow_canvas_display::dirtyRectsToRegion(
+                  m_decorationDirtyRects, m_decorationDirtyRectCount,
+                  QRectF(0, 0, m_sceneDisplayInfo.surface_width, m_sceneDisplayInfo.surface_height)
+                      .toAlignedRect())
+            : QRegion();
     if (patchInfo.scene_reset != 0 || sceneApply.structural) {
         rebuildFilterIndices();
     } else {
@@ -450,6 +466,10 @@ const WatermarkDisplayInfo& SnowCanvasDisplayCache::watermarkInfo() const {
 
 const SpotlightDisplayInfo& SnowCanvasDisplayCache::spotlightInfo() const {
     return m_spotlightDisplayInfo;
+}
+
+const QRegion& SnowCanvasDisplayCache::spotlightDamage() const {
+    return m_spotlightDamage;
 }
 
 const OverlayDisplayInfo& SnowCanvasDisplayCache::overlayInfo() const {

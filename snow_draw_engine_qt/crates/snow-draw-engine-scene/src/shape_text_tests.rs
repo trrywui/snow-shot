@@ -370,39 +370,62 @@ fn shape_text_connectors_respect_hidden_labels_and_offscreen_geometry() {
 }
 
 #[test]
-fn shape_text_handle_reuses_speech_bubble_control_geometry() {
+fn shape_and_speech_bubble_bottom_handles_match_angle_controls_at_each_zoom() {
     let presentation = EditorPresentationState {
         shape_text_handle: Some(Point::new(20.0, 80.0)),
         speech_bubble_handles: vec![(0, Point::new(20.0, 80.0))],
+        arrow_handles: [ArrowHandleKind::Endpoint, ArrowHandleKind::AngleArc]
+            .into_iter()
+            .map(|kind| ArrowHandleState {
+                kind,
+                center: Point::new(-20.0, -40.0),
+                anchor: None,
+                fixed_segment: false,
+            })
+            .collect(),
         ..Default::default()
     };
-    let mut view = frame();
-    view.camera.zoom = 2.0;
-    let items = compose_overlay_items(SnapConfig::default(), &presentation, view);
-    let handle = items
-        .iter()
-        .find_map(|item| match item {
-            OverlayDisplayItem::Rectangle(rect) if rect.kind == UiShapeKind::ShapeTextHandle => {
-                Some(rect)
+    for zoom in [0.5, 1.0, 2.0] {
+        let mut view = frame();
+        view.camera.zoom = zoom;
+        let items = compose_overlay_items(SnapConfig::default(), &presentation, view);
+        let control = |kind| {
+            items
+                .iter()
+                .find_map(|item| match item {
+                    OverlayDisplayItem::Rectangle(rect) if rect.kind == kind => Some(rect),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let handle = control(UiShapeKind::ShapeTextHandle);
+        let bubble = control(UiShapeKind::SpeechBubbleAddTailHandle);
+        assert_eq!((handle.center_x, handle.center_y), (20.0, 80.0));
+        assert_eq!((bubble.center_x, bubble.center_y), (20.0, 80.0));
+        assert_eq!(handle.stroke, bubble.stroke);
+        assert_eq!(handle.fill, bubble.fill);
+
+        let angles: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                OverlayDisplayItem::Rectangle(rect)
+                    if rect.kind == UiShapeKind::ArrowEndpointHandle =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(angles.len(), 2);
+        for angle in angles {
+            assert_eq!((angle.width * zoom, angle.height * zoom), (10.0, 10.0));
+            for bottom in [handle, bubble] {
+                assert_eq!((bottom.width, bottom.height), (angle.width, angle.height));
+                assert_eq!(bottom.corner_radii, CornerRadii::splat(angle.width / 2.0));
+                assert_eq!(bottom.stroke_width, angle.stroke_width);
             }
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!((handle.center_x, handle.center_y), (20.0, 80.0));
-    assert_eq!((handle.width, handle.height), (4.0, 4.0));
-    let bubble = items
-        .iter()
-        .find_map(|item| match item {
-            OverlayDisplayItem::Rectangle(rect)
-                if rect.kind == UiShapeKind::SpeechBubbleAddTailHandle =>
-            {
-                Some(rect)
-            }
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(handle.stroke, bubble.stroke);
-    assert_eq!(handle.fill, bubble.fill);
+        }
+    }
 }
 
 #[test]

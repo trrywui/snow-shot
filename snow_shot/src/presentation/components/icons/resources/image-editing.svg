@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none" stroke="currentColor" stroke-width="72" stroke-linecap="round" stroke-linejoin="round" data-adqt-slot="primary">
+  <path d="M360 812H172a72 72 0 0 1-72-72V248a72 72 0 0 1 72-72h568a72 72 0 0 1 72 72v36M100 660l176-176 124 124"/>
+  <circle cx="300" cy="340" r="48" fill="currentColor" stroke="none" data-adqt-slot="primary"/>
+  <path d="M536 696l268-268 112 112-268 268-152 40zM744 488l112 112"/>
+</svg>

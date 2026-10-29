@@ -30,6 +30,10 @@ on:
         default: v1.1.4-beta
         required: true
         type: string
+      skip_upgrade:
+        description: Verify a first native release without an older upgrade fixture
+        default: false
+        type: boolean
       running_app_behavior:
         description: Expected silent upgrade behavior of the published installer
         default: Refuse
@@ -76,10 +80,13 @@ jobs:
           PREVIOUS_TAG: ${{ inputs.previous_tag || 'v1.1.4-beta' }}
           RUNNING_APP_BEHAVIOR: ${{ inputs.running_app_behavior || 'Refuse' }}
           SNOW_ARCHITECTURE: ${{ inputs.architecture || 'x64' }}
+          SKIP_UPGRADE: ${{ inputs.skip_upgrade || false }}
         run: |
+          $upgrade = if ($env:SKIP_UPGRADE -eq 'true') { @{ SkipUpgrade = $true } } else {
+            @{ PreviousTag = $env:PREVIOUS_TAG; RunningAppBehavior = $env:RUNNING_APP_BEHAVIOR }
+          }
           ./scripts/test-snow-shot-winget-install.ps1 -Tag $env:RELEASE_TAG `
-            -PreviousTag $env:PREVIOUS_TAG -Winget $env:WINGET_EXE -AllowUnrecognizedRelease `
-            -Architecture $env:SNOW_ARCHITECTURE -RunningAppBehavior $env:RUNNING_APP_BEHAVIOR
+            -Winget $env:WINGET_EXE -AllowUnrecognizedRelease -Architecture $env:SNOW_ARCHITECTURE @upgrade
       - name: Verify generated installer quiet registration through WinGet
         if: github.event_name != 'push'
         shell: pwsh

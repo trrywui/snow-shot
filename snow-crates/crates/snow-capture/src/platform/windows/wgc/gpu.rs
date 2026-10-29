@@ -1,6 +1,6 @@
 use super::*;
-use crate::gpu::{GpuMonitorFrame, acquire_conversion_output, copy_texture};
-use snow_d3d11::{SharedDevice, TexturePool};
+use crate::gpu::{GpuMonitorFrame, acquire_conversion_output, copy_texture_region, native_crop};
+use snow_d3d11::{Rect, SharedDevice, TexturePool};
 
 pub(crate) struct GpuWgcCapturer {
     target: WorkerTarget,
@@ -40,7 +40,7 @@ impl GpuWgcCapturer {
         })
     }
 
-    pub(crate) fn capture(&mut self) -> CaptureResult<GpuMonitorFrame> {
+    pub(crate) fn capture(&mut self, crop: Rect) -> CaptureResult<GpuMonitorFrame> {
         self.device.check().map_err(CaptureError::platform)?;
         let pumped = self.worker.pump_frames();
         if self.worker.closed || matches!(pumped, Err(CaptureError::AccessLost)) {
@@ -69,15 +69,18 @@ impl GpuWgcCapturer {
         // Only GPU operations may hold the shared immediate-context lock.
         let _lock = self.device.lock();
         let desc = self.worker.canonical.desc().ok_or(CaptureError::Timeout)?;
-        let texture = if desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+        let crop = native_crop(crop, (desc.Width, desc.Height), 0)?;
+        let (texture, source) = if desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
             && self.worker.gpu_hdr_conversion_enabled
         {
             let output = acquire_conversion_output(&mut self.pool, desc.Width, desc.Height)?;
             self.worker.effective_canonical_source_into(Some(&output))?;
-            output
+            (output, crop)
         } else {
             let (source, _, _) = self.worker.effective_canonical_source()?;
-            copy_texture(&self.device, &mut self.pool, &source)?
+            let texture = copy_texture_region(&self.device, &mut self.pool, &source, crop)?;
+            let region = Rect::full(texture.dimensions());
+            (texture, region)
         };
         self.generation = self.generation.wrapping_add(1);
         let mut frame_metadata = crate::FrameMetadata {
@@ -92,6 +95,7 @@ impl GpuWgcCapturer {
         );
         let frame = GpuMonitorFrame {
             texture,
+            source,
             rotation: 0,
             metadata: frame_metadata,
         };

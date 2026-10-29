@@ -158,6 +158,112 @@ WindowShortcutManager::Binding binding(const QString& id, Qt::Key key, int prior
     return result;
 }
 
+void applicationEnterIdentityAndDispatchAreUnified() {
+    namespace domain = snow_shot::shortcuts;
+    constexpr auto policy = domain::ShortcutPolicy::Application;
+    for (const QString& prefix :
+         {QString(), QStringLiteral("Ctrl+"), QStringLiteral("Alt+"), QStringLiteral("Shift+"),
+          QStringLiteral("Meta+"), QStringLiteral("Ctrl+Alt+Shift+")}) {
+        const domain::ShortcutBinding canonical{prefix + QStringLiteral("Enter")};
+        const auto modifiers = domain::effectiveIdentity(canonical, policy).modifiers;
+        for (const QString& alias : {QStringLiteral("Return"), QStringLiteral("Enter"),
+                                     QStringLiteral("Num+Return"), QStringLiteral("Num+Enter")}) {
+            const domain::ShortcutBinding legacy{prefix + alias};
+            require(domain::canonicalBinding(legacy, false, false, false, policy) == canonical &&
+                        domain::bindingsConflict(legacy, canonical, policy),
+                    "application Enter aliases must canonicalize and conflict identically");
+            for (const bool keypad : {false, true}) {
+                const auto key = keypad ? Qt::Key_Enter : Qt::Key_Return;
+                const auto eventModifiers =
+                    modifiers | (keypad ? Qt::KeypadModifier : Qt::NoModifier);
+                PhysicalKeyEvent press(QEvent::KeyPress, key, eventModifiers);
+                PhysicalKeyEvent release(QEvent::KeyRelease, key, eventModifiers);
+                const auto recorded = domain::bindingFromKeyEvent(press, false, false, policy);
+                require(recorded.portableText == canonical.portableText &&
+                            domain::bindingsConflict(recorded, canonical, policy) &&
+                            domain::shortcutMatchesEvent(legacy, press, Qt::NoModifier, policy) &&
+                            domain::shortcutReleaseMatchesEvent(legacy, release, policy) &&
+                            domain::eventKeyToken(press, policy) ==
+                                domain::shortcutKeyToken(legacy, policy),
+                        "both physical Enter keys must record, match and release one identity");
+            }
+        }
+    }
+    const domain::ShortcutBinding enter{QStringLiteral("Enter")};
+    for (const auto* alias : {"Return", "Enter", "Num+Return", "Num+Enter"}) {
+        require(domain::formatShortcutDisplayText({QString::fromLatin1(alias)}, policy) ==
+                    QStringLiteral("Enter"),
+                "all application Enter spellings must use the Enter legend");
+        const QString modifiedLabel = domain::formatShortcutDisplayText(
+            {QStringLiteral("Ctrl+") + QString::fromLatin1(alias)}, policy);
+#ifdef Q_OS_MACOS
+        require(modifiedLabel == QStringLiteral("⌘Enter"),
+                "macOS application Enter legends must retain native modifier glyphs");
+#else
+        require(modifiedLabel == QStringLiteral("Ctrl+Enter"),
+                "application Enter legends must retain command modifiers");
+#endif
+    }
+    PhysicalKeyEvent modified(QEvent::KeyPress, Qt::Key_Enter,
+                              Qt::ControlModifier | Qt::KeypadModifier);
+    require(!domain::shortcutMatchesEvent(enter, modified, Qt::NoModifier, policy),
+            "unifying Enter must not discard command modifiers");
+    require(
+        !domain::bindingsConflict({QStringLiteral("1")}, {QStringLiteral("Num+1")}, policy) &&
+            !domain::bindingsConflict({QStringLiteral("Return")}, {QStringLiteral("Num+Enter")}),
+        "other keypad identities and native hotkey distinctions must remain intact");
+    require(domain::canonicalPortableText(QStringLiteral("Num+Return")) ==
+                QStringLiteral("Num+Return"),
+            "native canonicalization must preserve the original Enter spelling and keypad flag");
+#ifdef Q_OS_MACOS
+    domain::ShortcutBinding savedKeypad{QStringLiteral("Num+Enter")};
+    savedKeypad.physicalKeys.insert(domain::ShortcutPlatform::MacOS, 76);
+    require(domain::canonicalBinding(savedKeypad, false, false, false, policy)
+                    .physicalKeys.value(domain::ShortcutPlatform::MacOS) == 36,
+            "saved macOS keypad Enter metadata must normalize to the shared physical identity");
+    for (quint32 code : {36U, 76U}) {
+        QKeyEvent native(QEvent::KeyPress, Qt::Key_unknown, Qt::NoModifier, 1, code, 0);
+        require(domain::shortcutMatchesEvent(savedKeypad, native, Qt::NoModifier, policy),
+                "Enter must match both native codes even without a logical Qt key");
+    }
+    QKeyEvent synthetic(QEvent::KeyPress, Qt::Key_Enter, Qt::NoModifier);
+    require(!domain::shortcutMatchesEvent(enter, synthetic, Qt::NoModifier, policy),
+            "macOS Enter commands must still require physical identity");
+#endif
+
+    for (const bool keypadBinding : {false, true}) {
+        QWidget window;
+        WindowShortcutManager manager;
+        manager.addScopeWindow(&window);
+        int presses = 0;
+        int releases = 0;
+        auto command = binding(QStringLiteral("enter"), Qt::Key_Return, 100, [&] {
+            ++presses;
+            return true;
+        });
+        command.keyCombinations = {
+            QKeyCombination(keypadBinding ? Qt::KeypadModifier : Qt::NoModifier,
+                            keypadBinding ? Qt::Key_Enter : Qt::Key_Return)};
+        command.cancel = [] {};
+        command.release = [&](const auto&) {
+            ++releases;
+            return true;
+        };
+        require(manager.addBinding(&window, std::move(command)) != 0,
+                "Enter binding must register");
+        for (const bool keypad : {false, true}) {
+            const auto key = keypad ? Qt::Key_Enter : Qt::Key_Return;
+            const auto modifiers = keypad ? Qt::KeypadModifier : Qt::NoModifier;
+            require(sendKey(&window, QEvent::KeyPress, key, modifiers),
+                    "either Enter key must activate an application binding");
+            require(sendKey(&window, QEvent::KeyRelease, key, modifiers),
+                    "either Enter key must release its active binding");
+        }
+        require(presses == 2 && releases == 2,
+                "alternating Enter keys must activate and release exactly once per press");
+    }
+}
+
 class LifetimeObservedWidget : public QWidget {
   public:
     using QWidget::QWidget;
@@ -1603,6 +1709,7 @@ int main(int argc, char** argv) {
     managerDestructionRetiresObserversBeforeItsState();
     windowCloseShortcutStaysWithinItsOwnSurface();
     sharedShortcutDomainCanonicalizesIdentityAndDisplay();
+    applicationEnterIdentityAndDispatchAreUnified();
     standaloneModifierTapIgnoresChordsAndInterruptions();
     standaloneControlHoldIsOptInAndReleases();
     canceledCloseDoesNotStealAnotherManagersFreshPress();

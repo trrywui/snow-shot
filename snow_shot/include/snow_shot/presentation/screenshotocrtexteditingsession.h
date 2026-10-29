@@ -14,6 +14,7 @@ class ScreenshotOcrTextEditingSession final {
     // Refreshes the source while retaining an edited draft and its undo history.
     void refreshOriginalText(const QString& text);
     [[nodiscard]] QString text() const;
+    [[nodiscard]] QByteArray contentCheckpoint() const;
     [[nodiscard]] QTextDocument* document();
 
     // Replaces the complete draft as one text-history step.
@@ -37,6 +38,7 @@ class ScreenshotOcrTextEditingSession final {
 
   private:
     void applyText(const QString& text);
+    void appendHistory(const QString& text);
     void updatePreservedSourceMapping();
     void synchronizePreservedSource();
     void synchronizePreservedSource(int position, int charsRemoved, int charsAdded);
@@ -53,7 +55,14 @@ class ScreenshotOcrTextEditingSession final {
     QTextDocument m_document;
     QMetaObject::Connection m_sourceChangeConnection;
     QMetaObject::Connection m_documentChangeConnection;
-    QVector<QString> m_history;
+    struct TextEdit {
+        qsizetype position;
+        QString removed;
+        QString inserted;
+    };
+    QString m_historyText;
+    QVector<TextEdit> m_history;
+    mutable QByteArray m_contentCheckpoint;
     int m_historyIndex = 0;
     bool m_applying = false;
     bool m_preserveSource = false;

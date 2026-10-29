@@ -33,6 +33,10 @@ pub enum BundleAssetKind {
     RenderMetadata,
     /// Export-owned, typed encoder/audio/loop snapshot for the deferred output.
     OutputSettings,
+    /// Independently encoded, square webcam video on the pause-free recording clock.
+    WebcamVideo,
+    WebcamIndex,
+    WebcamMetadata,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -1063,7 +1063,8 @@ void overloadTest() {
             require(result.trace->rustCalls[SNOW_STITCH_PERF_PUSH_TOTAL] == 1,
                     "Rust snapshot did not correlate with this push");
 #else
-            require(result.trace->rustCalls[13] == 0, "disabled Rust profiling recorded a stage");
+            for (const auto calls : result.trace->rustCalls)
+                require(calls == 0, "disabled Rust profiling recorded a stage");
 #endif
             if (inputStopped)
                 loop.quit();

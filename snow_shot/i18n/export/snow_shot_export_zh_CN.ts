@@ -2,6 +2,29 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="zh_CN" sourcelanguage="en_US">
     <context>
+        <name>ScreenshotAirDropService</name>
+        <message>
+            <source>AirDrop is unavailable on this Mac</source>
+            <translation>此 Mac 上无法使用隔空投送</translation>
+        </message>
+        <message>
+            <source>The AirDrop sharing window could not be opened</source>
+            <translation>无法打开隔空投送共享窗口</translation>
+        </message>
+        <message>
+            <source>The image could not be prepared for AirDrop</source>
+            <translation>无法准备要隔空投送的图像</translation>
+        </message>
+        <message>
+            <source>The image could not be prepared for AirDrop: %1</source>
+            <translation>无法准备要隔空投送的图像：%1</translation>
+        </message>
+        <message>
+            <source>The image could not be shared with AirDrop: %1</source>
+            <translation>无法通过隔空投送共享图像：%1</translation>
+        </message>
+    </context>
+    <context>
         <name>ScreenshotClipboardService</name>
         <message>
             <source>The clipboard could not be cleared</source>
@@ -68,6 +91,10 @@
         <message>
             <source>The image save directory is not configured</source>
             <translation>尚未配置图片保存目录</translation>
+        </message>
+        <message>
+            <source>The screenshot clipboard payload is invalid</source>
+            <translation>截图剪贴板数据无效</translation>
         </message>
         <message>
             <source>The screenshot export queue is full</source>
@@ -239,6 +266,14 @@
             <source>The screenshot filename format is invalid</source>
             <translation>截图文件名格式无效</translation>
         </message>
+        <message>
+            <source>The spreadsheet file could not be opened</source>
+            <translation>无法打开电子表格文件</translation>
+        </message>
+        <message>
+            <source>The temporary directory could not be created</source>
+            <translation>无法创建临时目录</translation>
+        </message>
     </context>
     <context>
         <name>ScreenshotSaveAsFileDialog</name>
@@ -301,6 +336,18 @@
         <message>
             <source>Compression level</source>
             <translation>压缩级别</translation>
+        </message>
+        <message>
+            <source>Continue editing</source>
+            <translation>继续编辑</translation>
+        </message>
+        <message>
+            <source>Copy image file</source>
+            <translation>复制图像文件</translation>
+        </message>
+        <message>
+            <source>Copy image path</source>
+            <translation>复制图像路径</translation>
         </message>
         <message>
             <source>Delete</source>
@@ -371,6 +418,10 @@
             <translation>确定</translation>
         </message>
         <message>
+            <source>Open folder</source>
+            <translation>打开文件夹</translation>
+        </message>
+        <message>
             <source>PDF</source>
             <translation>PDF</translation>
         </message>
@@ -427,6 +478,10 @@
             <translation>保存路径</translation>
         </message>
         <message>
+            <source>Saved successfully</source>
+            <translation>保存成功</translation>
+        </message>
+        <message>
             <source>Select save directory</source>
             <translation>选择保存目录</translation>
         </message>
@@ -437,6 +492,10 @@
         <message>
             <source>Size unit</source>
             <translation>尺寸单位</translation>
+        </message>
+        <message>
+            <source>The clipboard could not be updated: %1</source>
+            <translation>无法更新剪贴板：%1</translation>
         </message>
         <message>
             <source>The dimensions are not supported by this image format</source>
@@ -451,12 +510,24 @@
             <translation>无法准备导出：%1</translation>
         </message>
         <message>
+            <source>The folder could not be opened</source>
+            <translation>无法打开文件夹</translation>
+        </message>
+        <message>
+            <source>The image could not be prepared for the clipboard</source>
+            <translation>无法准备要复制到剪贴板的图像</translation>
+        </message>
+        <message>
             <source>The image dimensions exceed the export limit</source>
             <translation>图像尺寸超出导出限制</translation>
         </message>
         <message>
             <source>The save paths could not be stored</source>
             <translation>无法存储保存路径配置</translation>
+        </message>
+        <message>
+            <source>The saved file no longer exists</source>
+            <translation>已保存的文件不存在</translation>
         </message>
         <message>
             <source>The screenshot could not be prepared</source>

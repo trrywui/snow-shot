@@ -91,7 +91,8 @@ impl Editor {
                         filter,
                     );
                     self.queue_command(EditorCommand::ApplyTransaction(
-                        ApplyTransactionCommand::new(transaction),
+                        ApplyTransactionCommand::new(transaction)
+                            .selecting_created(document.peek_next_element_id()),
                     ));
                 }
                 self.bump_scene_state_revision();

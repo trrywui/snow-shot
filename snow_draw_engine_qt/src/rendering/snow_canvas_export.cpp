@@ -8,6 +8,7 @@
 #include "snow_canvas_pen_mask_atlas.h"
 #include "snow_canvas_renderer.h"
 #include "snow_canvas_compositor.h"
+#include "snow_canvas_spotlight_renderer.h"
 #include "snow_canvas_state.h"
 #include "snow_canvas_viewport.h"
 
@@ -49,6 +50,16 @@ struct ExportProjection {
     }
 };
 
+qreal rasterScaleForProjection(const ExportProjection& projection) {
+    return qMax(1.0, qMin(projection.scaleX(), projection.scaleY()));
+}
+
+void configureExportPainter(QPainter& painter, qreal rasterScale = 1.0) {
+    painter.scale(1.0 / rasterScale, 1.0 / rasterScale);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+}
+
 std::uint32_t positiveCeil(double value) {
     return static_cast<std::uint32_t>(qMax(1, qCeil(value)));
 }
@@ -81,8 +92,13 @@ void renderSources(QPainter& painter, const ExportProjection& projection,
             continue;
         }
         const auto target = projection.mapCanvasRect(source.canvasRect);
-        if (!exposedPixels || target.intersects(QRectF(*exposedPixels)))
+        if (!exposedPixels || target.intersects(QRectF(*exposedPixels))) {
+            painter.save();
+            if (!source.coverage.isEmpty())
+                painter.setClipRect(projection.mapCanvasRect(source.coverage), Qt::IntersectClip);
             painter.drawImage(target, source.image);
+            painter.restore();
+        }
     }
 }
 
@@ -122,7 +138,8 @@ bool requiresBackgroundRaster(const SnowCanvasDisplayCache& displayCache) {
 
 bool hasDocumentDrawing(const SnowCanvasDisplayCache& displayCache) {
     const WatermarkDisplayInfo& watermark = displayCache.watermarkInfo();
-    return displayCache.sceneItemCount() != 0 || displayCache.spotlightInfo().active ||
+    return displayCache.sceneItemCount() != 0 ||
+           snow_canvas_spotlight_renderer::isVisible(displayCache.spotlightInfo()) ||
            (watermark.watermark_text_len != 0 && watermark.watermark_color.a != 0 &&
             std::isfinite(watermark.watermark_opacity) && watermark.watermark_opacity > 0.0);
 }
@@ -150,13 +167,9 @@ struct ExportScene {
     }
 };
 
-void renderExportDecorations(QPainter& painter, const ExportScene& scene,
-                             const SnowCanvasDisplayCache& displayCache) {
+void renderExportDecorations(QPainter& painter, const ExportScene& scene) {
     snow_canvas_compositor::Frame decorations;
     decorations.sceneInfo = &scene.sceneInfo;
-    decorations.spotlightInfo = &displayCache.spotlightInfo();
-    decorations.spotlightCutouts = displayCache.spotlightCutouts();
-    decorations.spotlightCutoutCount = displayCache.spotlightCutoutCount();
     decorations.watermarkInfo = &scene.watermarkInfo;
     snow_canvas_compositor::renderDocumentDecorations(
         painter, decorations, snow_canvas_renderer::WatermarkRenderPurpose::ImageExport);
@@ -211,10 +224,13 @@ void renderRuntimeScene(QPainter& painter, const ExportProjection& projection,
     request.backgroundContext = backgroundContext;
     request.smartErase = smartErase;
     request.executionPlan = &preparedScene->executionPlan;
+    request.spotlightInfo = &displayCache.spotlightInfo();
+    request.spotlightCutouts = displayCache.spotlightCutouts();
+    request.spotlightCutoutCount = displayCache.spotlightCutoutCount();
     request.baseImageSources = &baseImageSources;
     snow_canvas_renderer::renderSceneItems(request);
     if (!exposed)
-        renderExportDecorations(painter, *preparedScene, displayCache);
+        renderExportDecorations(painter, *preparedScene);
     painter.restore();
     g_renderDiagnostics.peakScratchPoolBytes =
         std::max(g_renderDiagnostics.peakScratchPoolBytes, workspace.diagnostics().peakPoolBytes);
@@ -229,6 +245,25 @@ RenderDiagnostics diagnosticsForCurrentThread() {
 
 void resetDiagnosticsForCurrentThread() {
     g_renderDiagnostics = {};
+}
+
+QImage renderImageSourcesToImage(const QRectF& canvasRect, const QSize& outputSize,
+                                 const QList<CanvasExportSource>& sources) {
+    const ExportProjection projection{canvasRect, outputSize};
+    if (!projection.isValid())
+        return {};
+    QImage output = snowCanvasAllocateImage(outputSize, QImage::Format_ARGB32_Premultiplied);
+    if (output.isNull())
+        return {};
+    output.fill(Qt::transparent);
+    const qreal rasterScale = rasterScaleForProjection(projection);
+    output.setDevicePixelRatio(rasterScale);
+    QPainter painter(&output);
+    configureExportPainter(painter, rasterScale);
+    renderSources(painter, projection, sources);
+    painter.end();
+    output.setDevicePixelRatio(1.0);
+    return output;
 }
 
 QImage renderToImage(SnowRuntime runtime, const QRectF& virtualSelectionRect,
@@ -249,19 +284,17 @@ QImage renderToImage(SnowRuntime runtime, const QRectF& virtualSelectionRect,
 
     // Keep compositor scratch surfaces at export resolution. The temporary DPR
     // describes rasterization only; exported images always carry DPR 1.
-    const qreal rasterScale = qMax(1.0, qMin(projection.scaleX(), projection.scaleY()));
+    const qreal rasterScale = rasterScaleForProjection(projection);
     output.setDevicePixelRatio(rasterScale);
     QPainter painter(&output);
-    painter.scale(1.0 / rasterScale, 1.0 / rasterScale);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    configureExportPainter(painter, rasterScale);
     SnowCanvasViewport viewport;
     SnowCanvasDisplayCache displayCache;
     snow_canvas_state::Store state;
     QList<SnowCanvasBaseImageSource> baseImageSources;
     baseImageSources.reserve(sources.size());
     for (const auto& source : sources)
-        baseImageSources.append({source.image, source.canvasRect, {}});
+        baseImageSources.append({source.image, source.canvasRect, source.coverage});
     const bool synchronized =
         synchronizeRuntimeScene(runtime, projection, viewport, displayCache, state);
     if (!synchronized || (!requiresBackgroundRaster(displayCache) &&
@@ -286,13 +319,7 @@ QImage renderToImage(SnowRuntime runtime, const QRectF& virtualSelectionRect,
     const QSize sceneSize = outputSize;
     QImage background = preparedBackground;
     if (background.isNull()) {
-        background = snowCanvasAllocateImage(sceneSize, QImage::Format_ARGB32_Premultiplied);
-        background.fill(Qt::transparent);
-        QPainter backgroundPainter(&background);
-        backgroundPainter.setRenderHint(QPainter::Antialiasing, true);
-        backgroundPainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        renderSources(backgroundPainter, ExportProjection{virtualSelectionRect, sceneSize},
-                      sources);
+        background = renderImageSourcesToImage(virtualSelectionRect, sceneSize, sources);
     }
     if (synchronized) {
         ++g_renderDiagnostics.fullCompositorPathCount;
@@ -362,8 +389,7 @@ class ExportSourceRenderer final : public SnowCanvasCustomRenderer {
                 std::max(g_renderDiagnostics.peakSourceTileBytes,
                          static_cast<std::size_t>(raster.sizeInBytes()));
             QPainter sourcePainter(&raster);
-            sourcePainter.setRenderHint(QPainter::Antialiasing, true);
-            sourcePainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            configureExportPainter(sourcePainter);
             sourcePainter.translate(-pixels.topLeft());
             renderSources(sourcePainter, m_projection, m_sources, &pixels);
             sourcePainter.end();
@@ -376,8 +402,16 @@ class ExportSourceRenderer final : public SnowCanvasCustomRenderer {
         }
         for (const auto& source : m_sources) {
             const auto target = source.canvasRect.translated(-m_projection.canvasRect.topLeft());
-            if (!source.image.isNull() && context.exposedRegion.intersects(target.toAlignedRect()))
+            if (!source.image.isNull() &&
+                context.exposedRegion.intersects(target.toAlignedRect())) {
+                painter.save();
+                if (!source.coverage.isEmpty())
+                    painter.setClipRect(
+                        source.coverage.translated(-m_projection.canvasRect.topLeft()),
+                        Qt::IntersectClip);
                 painter.drawImage(target, source.image);
+                painter.restore();
+            }
         }
     }
     bool failed = false;
@@ -426,7 +460,7 @@ QImage renderTilesToImage(SnowRuntime runtime, const QRectF& sourceFrame,
         QPainter backgroundPainter(&output);
         backgroundPainter.drawImage(output.rect(), preparedBackground);
     }
-    const qreal rasterScale = qMax(1.0, qMin(projection.scaleX(), projection.scaleY()));
+    const qreal rasterScale = rasterScaleForProjection(projection);
     output.setDevicePixelRatio(rasterScale);
     SnowCanvasViewport viewport;
     SnowCanvasDisplayCache displayCache;
@@ -439,7 +473,7 @@ QImage renderTilesToImage(SnowRuntime runtime, const QRectF& sourceFrame,
         return {};
     QList<SnowCanvasBaseImageSource> baseSources;
     for (const auto& source : sources)
-        baseSources.append({source.image, source.canvasRect, {}});
+        baseSources.append({source.image, source.canvasRect, source.coverage});
     const bool boundedScratch =
         requiresBackgroundRaster(displayCache) || snow_canvas_smart_erase::hasItems(smartErase);
     ExportSourceRenderer background(sources, projection, boundedScratch, preparedBackground, tiles);
@@ -448,9 +482,7 @@ QImage renderTilesToImage(SnowRuntime runtime, const QRectF& sourceFrame,
     context.canvasToViewTransform.translate(-sourceFrame.x(), -sourceFrame.y());
     context.devicePixelRatio = rasterScale;
     QPainter painter(&output);
-    painter.scale(1.0 / rasterScale, 1.0 / rasterScale);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    configureExportPainter(painter, rasterScale);
     const bool drawing =
         hasDocumentDrawing(displayCache) || snow_canvas_smart_erase::hasItems(smartErase);
     std::optional<ExportScene> scene;
@@ -500,7 +532,7 @@ QImage renderTilesToImage(SnowRuntime runtime, const QRectF& sourceFrame,
             painter.setClipRect(QRect(tile.destination, tile.sourcePixels.size()));
             painter.translate(tile.destination - tile.sourcePixels.topLeft());
             painter.scale(projection.scaleX(), projection.scaleY());
-            renderExportDecorations(painter, *scene, displayCache);
+            renderExportDecorations(painter, *scene);
             painter.restore();
         }
     }

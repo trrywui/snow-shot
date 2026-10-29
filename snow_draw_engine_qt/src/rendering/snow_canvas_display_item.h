@@ -88,6 +88,8 @@ class SnowCanvasSceneItem : public SnowSceneDisplayItem {
         QRectF canvasBounds;
         double cumulativeStartLength = 0.0;
         QPainterPath canvasPath;
+        bool startsSubpath = false;
+        std::uint32_t subpathCount = 0;
         std::vector<std::int64_t> spatialCells;
     };
     const std::vector<PathChunk>& pathChunks() const;

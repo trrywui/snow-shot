@@ -166,6 +166,10 @@ so every moment on screen can be expressed clearly and shared easily.</source>
             <translation>官方网站</translation>
         </message>
         <message>
+            <source>Open Microsoft Store</source>
+            <translation>打开 Microsoft Store</translation>
+        </message>
+        <message>
             <source>Original Snow Apps by mg-chao</source>
             <translation>mg-chao 的原始 Snow Apps 项目</translation>
         </message>
@@ -180,6 +184,10 @@ so every moment on screen can be expressed clearly and shared easily.</source>
         <message>
             <source>Preview</source>
             <translation>预览版</translation>
+        </message>
+        <message>
+            <source>Privacy policy</source>
+            <translation>隐私政策</translation>
         </message>
         <message>
             <source>Project website</source>
@@ -250,6 +258,10 @@ so every moment on screen can be expressed clearly and shared easily.</source>
             <translation>更新失败：%1</translation>
         </message>
         <message>
+            <source>Updates are managed by Microsoft Store.</source>
+            <translation>更新由 Microsoft Store 管理。</translation>
+        </message>
+        <message>
             <source>Upstream project</source>
             <translation>上游项目</translation>
         </message>
@@ -262,8 +274,8 @@ so every moment on screen can be expressed clearly and shared easily.</source>
             <translation>查看源码，一起改进</translation>
         </message>
         <message>
-            <source>You are up to date.</source>
-            <translation>当前已是最新版本。</translation>
+            <source>You are up to date</source>
+            <translation>当前已是最新版本</translation>
         </message>
     </context>
     <context>
@@ -633,6 +645,13 @@ so every moment on screen can be expressed clearly and shared easily.</source>
         <message>
             <source>Reset "%1" to default settings?</source>
             <translation>确定重置"%1"为默认设置吗？</translation>
+        </message>
+    </context>
+    <context>
+        <name>ShortcutDisplayService</name>
+        <message>
+            <source>Enter</source>
+            <translation>Enter</translation>
         </message>
     </context>
     <context>

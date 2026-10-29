@@ -142,13 +142,11 @@ fn main() {
             (perf::Stage::DescriptorMatching, "descriptor-matching"),
             (perf::Stage::CandidateScoring, "candidate-scoring"),
             (perf::Stage::Refinement, "refinement"),
-            (perf::Stage::RegionUpdate, "region-update"),
             (perf::Stage::CanvasComposition, "canvas-composition"),
             (perf::Stage::ReferenceSynthesis, "reference-synthesis"),
             (perf::Stage::PreviewScaling, "preview-scaling"),
             (perf::Stage::PushTotal, "push-total"),
             (perf::Stage::Initialization, "initialization"),
-            (perf::Stage::Reserved, "reserved"),
         ] {
             let elapsed_ns = recorded.elapsed_ns[stage as usize];
             let scope_calls = recorded.calls[stage as usize];

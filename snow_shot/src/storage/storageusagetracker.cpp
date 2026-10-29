@@ -1,4 +1,5 @@
 #include "snow_shot/runtime/runtimeactivitytracker.h"
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/platform/applicationqos.h"
 #include "snow_shot/storage/storageusagetracker.h"
 #include "snow_shot/app/edition.h"
@@ -26,6 +27,19 @@ constexpr auto kHistoryDirectoryName = "capture_history";
 constexpr auto kAssetDirectoryName = "assets";
 constexpr auto kThumbnailSuffix = "png";
 
+QString cleanDirectory(const QString& path) {
+    return path.isEmpty() ? QString() : QDir::cleanPath(path);
+}
+
+QString defaultCacheDirectory() {
+    if (app::distribution::isStoreManaged()) {
+        const QString localState = app::distribution::writableDataDirectory();
+        return localState.isEmpty() ? QString()
+                                    : QDir(localState).filePath(QStringLiteral("cache"));
+    }
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+}
+
 QString failureMessage(StorageCacheKind kind) {
     return kind == StorageCacheKind::ThumbnailCache
                ? QStringLiteral("Some thumbnail-cache files could not be removed")
@@ -34,9 +48,9 @@ QString failureMessage(StorageCacheKind kind) {
 } // namespace
 
 StorageUsageTracker::StorageUsageTracker(StorageUsageTrackerOptions options)
-    : m_appDataDirectory(QDir::cleanPath(options.appDataDirectory)),
-      m_thumbnailCacheDirectory(QDir::cleanPath(options.thumbnailCacheDirectory)),
-      m_recordingTempDirectory(QDir::cleanPath(options.recordingTempDirectory)),
+    : m_appDataDirectory(cleanDirectory(options.appDataDirectory)),
+      m_thumbnailCacheDirectory(cleanDirectory(options.thumbnailCacheDirectory)),
+      m_recordingTempDirectory(cleanDirectory(options.recordingTempDirectory)),
       m_diagnosticsDirectories(std::move(options.diagnosticsDirectories)),
       m_activeFileCutoff(options.activeFileCutoff),
       m_historyBytesProvider(std::move(options.historyBytesProvider)),
@@ -105,7 +119,7 @@ QString StorageUsageTracker::defaultThumbnailCacheDirectory() {
         if (QDir::isAbsolutePath(root))
             return QDir(root).filePath(QStringLiteral("cache/history-thumbnails"));
     }
-    const QString root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString root = defaultCacheDirectory();
     return root.isEmpty() ? QString()
                           : QDir(root).filePath(QStringLiteral("snow-shot/history-thumbnails"));
 }
@@ -116,8 +130,8 @@ QString StorageUsageTracker::defaultRecordingTempDirectory() {
         if (QDir::isAbsolutePath(root))
             return QDir(root).filePath(QStringLiteral("cache/recordings"));
     }
-    QString root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (root.isEmpty()) {
+    QString root = defaultCacheDirectory();
+    if (root.isEmpty() && !app::distribution::isStoreManaged()) {
         root = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     }
     return root.isEmpty() ? QString() : QDir(root).filePath(QStringLiteral("recordings"));
@@ -194,10 +208,14 @@ AppStorageUsage StorageUsageTracker::scanNow() {
     if (historyProvided) {
         providedHistoryBytes = std::max<qint64>(0, m_historyBytesProvider());
     }
+    scanned.thumbnailCacheBytes = directoryBytes(m_thumbnailCacheDirectory);
+    scanned.recordingTempBytes = directoryBytes(m_recordingTempDirectory);
     const QFileInfoList entries =
-        QDir(m_appDataDirectory)
-            .entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden |
-                           QDir::System);
+        m_appDataDirectory.isEmpty()
+            ? QFileInfoList()
+            : QDir(m_appDataDirectory)
+                  .entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden |
+                                 QDir::System);
     for (const QFileInfo& entry : entries) {
         if (storageLink(entry)) {
             continue;
@@ -210,8 +228,23 @@ AppStorageUsage StorageUsageTracker::scanNow() {
         if (entry.isDir() && m_directoryScanObserved) {
             m_directoryScanObserved(entry.absoluteFilePath());
         }
-        const qint64 bytes =
-            entry.isDir() ? directoryBytes(entry.absoluteFilePath()) : entry.size();
+        qint64 bytes = entry.isDir() ? directoryBytes(entry.absoluteFilePath()) : entry.size();
+        if (entry.isDir()) {
+            const QString root = QDir::cleanPath(entry.absoluteFilePath());
+            // Store caches live inside LocalState, while their usage is reported
+            // separately. Do not count those same files again as application data.
+            if (!m_thumbnailCacheDirectory.isEmpty() &&
+                (m_thumbnailCacheDirectory == root ||
+                 m_thumbnailCacheDirectory.startsWith(root + u'/'))) {
+                bytes -= scanned.thumbnailCacheBytes;
+            }
+            if (!m_recordingTempDirectory.isEmpty() &&
+                (m_recordingTempDirectory == root ||
+                 m_recordingTempDirectory.startsWith(root + u'/'))) {
+                bytes -= scanned.recordingTempBytes;
+            }
+            bytes = std::max<qint64>(0, bytes);
+        }
         if (history) {
             if (!historyProvided) {
                 scanned.historyBytes += bytes;
@@ -229,13 +262,18 @@ AppStorageUsage StorageUsageTracker::scanNow() {
     if (historyProvided) {
         scanned.historyBytes = providedHistoryBytes;
     }
-    scanned.thumbnailCacheBytes = directoryBytes(m_thumbnailCacheDirectory);
-    const QString insideRoot = QDir(m_appDataDirectory).filePath(QStringLiteral("logs"));
-    QStringList counted{QDir::cleanPath(insideRoot).toCaseFolded()};
+    const QString insideRoot = m_appDataDirectory.isEmpty()
+                                   ? QString()
+                                   : QDir(m_appDataDirectory).filePath(QStringLiteral("logs"));
+    QStringList counted;
+    if (!insideRoot.isEmpty())
+        counted.append(QDir::cleanPath(insideRoot).toCaseFolded());
     QStringList roots = m_diagnosticsDirectories;
     std::sort(roots.begin(), roots.end(),
               [](const QString& a, const QString& b) { return a.size() < b.size(); });
     for (const QString& root : roots) {
+        if (root.isEmpty())
+            continue;
         const QString normalized = QDir::cleanPath(root).toCaseFolded();
         const bool covered =
             std::any_of(counted.begin(), counted.end(), [&](const QString& parent) {
@@ -245,14 +283,15 @@ AppStorageUsage StorageUsageTracker::scanNow() {
             continue;
         qint64 bytes = directoryBytes(root);
         const QString appRoot = QDir::cleanPath(m_appDataDirectory).toCaseFolded();
-        if (appRoot == normalized || appRoot.startsWith(normalized + u'/'))
+        if (!m_appDataDirectory.isEmpty() &&
+            (appRoot == normalized || appRoot.startsWith(normalized + u'/')))
             bytes -= directoryBytes(m_appDataDirectory);
-        else if (counted.front().startsWith(normalized + u'/'))
+        else if (!insideRoot.isEmpty() &&
+                 QDir::cleanPath(insideRoot).toCaseFolded().startsWith(normalized + u'/'))
             bytes -= directoryBytes(insideRoot);
         scanned.diagnosticsBytes += std::max<qint64>(0, bytes);
         counted.append(normalized);
     }
-    scanned.recordingTempBytes = directoryBytes(m_recordingTempDirectory);
 
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
@@ -269,6 +308,10 @@ AppStorageUsage StorageUsageTracker::scanNow() {
 }
 
 StorageResult StorageUsageTracker::clearNow(StorageCacheKind kind) {
+    const QString& path = kind == StorageCacheKind::ThumbnailCache ? m_thumbnailCacheDirectory
+                                                                   : m_recordingTempDirectory;
+    if (path.isEmpty())
+        return StorageResult::ok();
     if (kind == StorageCacheKind::ThumbnailCache) {
         QDir directory(m_thumbnailCacheDirectory);
         if (!directory.exists()) {

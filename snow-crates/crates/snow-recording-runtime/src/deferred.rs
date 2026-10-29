@@ -1,5 +1,5 @@
 //! Clean recording followed by a retryable, deterministic rendering task.
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 use snow_memory::RasterBuffer;
 use std::collections::VecDeque;
 use std::io::{BufWriter, Write};
@@ -42,6 +42,10 @@ use snow_recording_model::{
 };
 
 pub use snow_recording_export::{DeferredRenderProgress, DeferredRenderState, DeferredRenderTask};
+
+#[cfg(windows)]
+#[path = "deferred_gpu.rs"]
+mod gpu;
 
 #[derive(Clone, Debug)]
 pub struct DeferredRecordingOptions {
@@ -327,7 +331,11 @@ impl DeferredRecordingSession {
                 _ => {}
             }
         }
-        self.send(command)
+        self.send(command)?;
+        if let Some(webcam) = &self.config.webcam {
+            webcam.source.set_recording_active(to == 1);
+        }
+        Ok(())
     }
     fn send(&self, command: Command) -> Result<()> {
         self.commands
@@ -406,6 +414,7 @@ fn run_recording(
     control_clock: Arc<Mutex<Option<RecordingClock>>>,
     capture_controls: DeferredCaptureControls,
 ) -> Result<DeferredRecordingSource> {
+    let mut webcam_capture = crate::webcam::CaptureLease::new(&config);
     let parent = options.working_directory.unwrap_or_else(|| {
         config
             .output_path
@@ -418,6 +427,8 @@ fn run_recording(
     let directory = tempfile::Builder::new()
         .prefix(".snow-deferred-")
         .tempdir_in(&parent)?;
+    let accepted_stop = Arc::clone(&stop_boundary);
+    let capture_state = Arc::clone(&state);
     #[cfg(not(target_os = "macos"))]
     let product = run_capture(
         &config,
@@ -428,7 +439,7 @@ fn run_recording(
         stop_boundary,
         control_clock,
         capture_controls,
-    )?;
+    );
     #[cfg(target_os = "macos")]
     let product = crate::macos::deferred::run_capture(
         &config,
@@ -439,8 +450,45 @@ fn run_recording(
         stop_boundary,
         control_clock,
         capture_controls,
+    );
+    let stopping = accepted_stop
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_some();
+    let (directory, product) = finish_capture(
+        directory,
+        product,
+        stopping || capture_state.load(Ordering::Acquire) != 0,
     )?;
+    webcam_capture.stop();
     finalize_source(directory, product, config, parent, options.playback_overlay)
+}
+
+fn finish_capture<T>(
+    directory: tempfile::TempDir,
+    result: Result<T>,
+    preserve: bool,
+) -> Result<(tempfile::TempDir, T)> {
+    match result {
+        Ok(product) => Ok((directory, product)),
+        Err(error) if preserve && !matches!(error, ScreenRecorderError::ExportCanceled) => {
+            // Active capture failures and failed teardown retain completed media.
+            // Explicit cancellation and startup failures still clean their staging.
+            Err(retain_source_failure(directory, error))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn retain_source_failure(
+    directory: tempfile::TempDir,
+    error: ScreenRecorderError,
+) -> ScreenRecorderError {
+    let path = directory.keep();
+    ScreenRecorderError::Export(format!(
+        "{error}; recorded source files are retained in {}",
+        path.display()
+    ))
 }
 
 fn finalize_source(
@@ -453,13 +501,7 @@ fn finalize_source(
     let result = pack_source(directory.path(), product, config, parent, overlay);
     match result {
         Ok(source) => Ok(source),
-        Err(error) => {
-            let path = directory.keep();
-            Err(ScreenRecorderError::Export(format!(
-                "{error}; recorded source files are retained in {}",
-                path.display()
-            )))
-        }
+        Err(error) => Err(retain_source_failure(directory, error)),
     }
 }
 
@@ -517,6 +559,28 @@ fn pack_source(
             path: &output_path,
         },
     ];
+    let webcam_video = directory.join("webcam.mp4");
+    let webcam_index = directory.join("webcam.index");
+    let webcam_metadata = directory.join("webcam.bin");
+    if webcam_metadata.is_file() {
+        assets.extend([
+            RecordingBundleAsset {
+                kind: BundleAssetKind::WebcamVideo,
+                asset_id: None,
+                path: &webcam_video,
+            },
+            RecordingBundleAsset {
+                kind: BundleAssetKind::WebcamIndex,
+                asset_id: None,
+                path: &webcam_index,
+            },
+            RecordingBundleAsset {
+                kind: BundleAssetKind::WebcamMetadata,
+                asset_id: None,
+                path: &webcam_metadata,
+            },
+        ]);
+    }
     for track in &product.tracks {
         assets.push(RecordingBundleAsset {
             kind: BundleAssetKind::AudioTrack,
@@ -631,10 +695,33 @@ fn run_capture(
     source.execution_mode = ExportExecutionMode::HardwarePreferred;
     source.software_h264_priority = SoftwareH264Priority::X264First;
     source.encode_threads = 0;
-    let mut encoder = StreamingEncoder::builder(source)
-        .recording_source()
-        .create()?;
-    let capture = DirectCapture::cpu(config, true)?;
+    #[cfg(windows)]
+    let mut negotiation = crate::gpu_startup::Negotiation::default();
+    #[cfg(windows)]
+    let native = {
+        let result = gpu::prepare(config, &source, logical, coded, &mut negotiation);
+        negotiation.fallback(result)?
+    };
+    #[cfg(windows)]
+    let (mut encoder, mut capture, mut gpu_canvas) =
+        if let Some((capture, canvas, encoder)) = native {
+            (encoder, DirectCapture::Gpu(capture), Some(canvas))
+        } else {
+            (
+                StreamingEncoder::builder(source)
+                    .recording_source()
+                    .create()?,
+                DirectCapture::cpu(config, true)?,
+                None,
+            )
+        };
+    #[cfg(not(windows))]
+    let (mut encoder, capture) = (
+        StreamingEncoder::builder(source)
+            .recording_source()
+            .create()?,
+        DirectCapture::cpu(config, true)?,
+    );
     let clock = RecordingClock::new(Instant::now());
     clock.controller().mark_pause(clock.started_at());
     let mut audio = start_audio(config, path, &clock, capture_controls.audio)?;
@@ -642,14 +729,18 @@ fn run_capture(
     let origin = Instant::now();
     clock.controller().mark_resume(origin);
     input.reset(&clock, origin)?;
+    let webcam = crate::webcam::DeferredWebcam::start(config, path, clock.clone());
     let mut paused = false;
     let mut fresh_since = origin;
     let mut stop = None;
-    let mut queue = VecDeque::new();
+    let mut queue = crate::capture_queue::CaptureQueue::default();
     let mut latest = None;
     let mut schedule = crate::output_schedule::OutputSchedule::new(config.output_fps);
     let mut canvas = CleanCanvas::new(logical, coded);
     let mut previous_generation = None;
+    let mut source_changed = false;
+    #[cfg(windows)]
+    let mut recovery_reason: Option<String> = None;
     let mut admitted = false;
     let mut frame_index = FrameIndexWriter::new(&index, config.output_fps)?;
     let mut geometry = Vec::new();
@@ -668,200 +759,287 @@ fn run_capture(
     *control_clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock.clone());
     state.store(1, Ordering::Release);
     let _ = ready.send(());
-    while stop.is_none() {
-        while let Ok(command) = commands.try_recv() {
-            match command {
-                Command::Pause(at) if !paused => {
-                    capture.pause();
-                    if let Some(audio) = &audio {
-                        audio.pause();
+    encoder.retain_failed_output();
+    let capture_result = (|| -> Result<()> {
+        while stop.is_none() {
+            while let Ok(command) = commands.try_recv() {
+                match command {
+                    Command::Pause(at) if !paused => {
+                        capture.pause();
+                        if let Some(audio) = &audio {
+                            audio.pause();
+                        }
+                        input.reset(&clock, at)?;
+                        queue.clear();
+                        latest = None;
+                        paused = true;
                     }
-                    input.reset(&clock, at)?;
-                    queue.clear();
-                    latest = None;
-                    paused = true;
-                }
-                Command::Resume(at) if paused => {
-                    fresh_since = at;
-                    capture.resume();
-                    if let Some(audio) = &audio {
-                        audio.resume();
+                    Command::Resume(at) if paused => {
+                        fresh_since = at;
+                        capture.resume();
+                        if let Some(audio) = &audio {
+                            audio.resume();
+                        }
+                        input.reset(&clock, at)?;
+                        paused = false;
+                        previous_generation = None;
                     }
-                    input.reset(&clock, at)?;
-                    paused = false;
-                    previous_generation = None;
+                    Command::Stop(at) => {
+                        stop = Some(at);
+                        break;
+                    }
+                    Command::Cancel => {
+                        capture.stop();
+                        return Err(ScreenRecorderError::ExportCanceled);
+                    }
+                    _ => {}
                 }
-                Command::Stop(at) => {
-                    stop = Some(at);
-                    break;
-                }
-                Command::Cancel => {
-                    capture.stop();
-                    return Err(ScreenRecorderError::ExportCanceled);
-                }
-                _ => {}
             }
-        }
-        if stop.is_some() {
-            break;
-        }
-        // Stop is independent of the bounded control queue and must also wake
-        // a source left paused by its last admitted command.
-        if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
-            stop = Some(at);
-            break;
-        }
-        if commands.is_empty() && state.load(Ordering::Acquire) == 3 {
-            return Err(ScreenRecorderError::ExportCanceled);
-        }
-        if paused {
-            input.drain(&clock, true, fresh_since, None)?;
-        }
-        let wait = if paused {
-            Duration::from_millis(10)
-        } else {
-            schedule.wait(clock.active_elapsed_duration(Instant::now()))
-        };
-        let first = match capture.recv_timeout(wait) {
-            Ok(event) => Some(event),
-            Err(snow_core::error::RecvTimeoutError::Timeout) => None,
-            Err(snow_core::error::RecvTimeoutError::Disconnected) => {
-                return Err(ScreenRecorderError::Encode(
-                    "clean capture worker disconnected".into(),
-                ));
+            if stop.is_some() {
+                break;
             }
-        };
-        for event in first
-            .into_iter()
-            .chain(std::iter::from_fn(|| capture.try_recv().ok()))
-        {
-            match event {
-                DirectCaptureEvent::Frame(DirectFrame::Cpu(frame))
-                    if !paused
-                        && frame
-                            .metadata()
-                            .observation_started_at()
-                            .unwrap_or_else(|| {
-                                frame
-                                    .metadata()
-                                    .stream_timestamp()
-                                    .map(|t| t.instant)
-                                    .unwrap_or_else(Instant::now)
-                            })
-                            >= fresh_since =>
-                {
-                    let observed = frame
-                        .metadata()
-                        .observation_started_at()
-                        .unwrap_or_else(|| {
-                            frame
-                                .metadata()
-                                .stream_timestamp()
-                                .map(|t| t.instant)
-                                .unwrap_or_else(Instant::now)
-                        });
-                    if !clock.is_active_at(observed) {
+            // Stop is independent of the bounded control queue and must also wake
+            // a source left paused by its last admitted command.
+            if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
+                stop = Some(at);
+                break;
+            }
+            if commands.is_empty() && state.load(Ordering::Acquire) == 3 {
+                return Err(ScreenRecorderError::ExportCanceled);
+            }
+            #[cfg(windows)]
+            if let Some(reason) = recovery_reason.take() {
+                fresh_since = Instant::now();
+                queue.clear();
+                latest = None;
+                previous_generation = None;
+                geometry_generation = None;
+                source_changed = false;
+                gpu::recover(
+                    &reason,
+                    config,
+                    &mut encoder,
+                    &mut capture,
+                    &mut gpu_canvas,
+                    paused,
+                )?;
+                input.reset(&clock, fresh_since)?;
+            }
+            if paused {
+                input.drain(&clock, true, fresh_since, None)?;
+            }
+            let wait = if paused {
+                Duration::from_millis(10)
+            } else {
+                schedule.wait(clock.active_elapsed_duration(Instant::now()))
+            };
+            let first = match capture.recv_timeout(wait) {
+                Ok(event) => Some(event),
+                Err(snow_core::error::RecvTimeoutError::Timeout) => None,
+                Err(snow_core::error::RecvTimeoutError::Disconnected) => {
+                    #[cfg(windows)]
+                    if gpu_canvas.is_some() {
+                        recovery_reason = Some("clean GPU capture worker disconnected".into());
                         continue;
                     }
-                    let at = frame.metadata().queued_at().unwrap_or_else(Instant::now);
-                    if queue.len() == 4 {
-                        queue.pop_front();
-                    }
-                    queue.push_back((at, frame));
-                }
-                DirectCaptureEvent::Error(error) => return Err(error.into()),
-                DirectCaptureEvent::StreamEnded => {
                     return Err(ScreenRecorderError::Encode(
-                        "clean capture stream ended unexpectedly".into(),
+                        "clean capture worker disconnected".into(),
                     ));
                 }
-                _ => {}
-            }
-        }
-        if paused {
-            continue;
-        }
-        if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
-            stop = Some(at);
-            break;
-        }
-        let Some(slot) = admit_source_slot(&mut schedule, &clock, &stop_boundary, &control_clock)
-        else {
-            continue;
-        };
-        let mut changed = false;
-        while queue
-            .front()
-            .is_some_and(|(at, _)| clock.active_elapsed_duration(*at) <= slot.at)
-        {
-            let (_, frame) = queue.pop_front().expect("queued source");
-            let generation = frame.metadata().content_generation();
-            changed |=
-                !admitted || !frame.metadata().is_duplicate() || previous_generation != generation;
-            previous_generation = generation;
-            latest = Some(frame);
-        }
-        if let Some(frame) = &latest {
-            let now = Instant::now();
-            let slot_ms = (u128::from(slot.pts) * 1000 / u128::from(config.output_fps)) as u64;
-            input.begin_slot(slot_ms);
-            input.update_geometry(
-                &clock,
-                now,
-                frame.dimensions(),
-                frame.metadata().capture_transform(),
-            )?;
-            if geometry_generation != Some(frame.metadata().configuration_generation()) {
-                geometry_generation = Some(frame.metadata().configuration_generation());
-                if let Some(transform) = frame.metadata().capture_transform() {
-                    geometry.push(snow_recording_model::media::GeometryChange {
-                        timestamp_ms: slot_ms,
-                        generation: frame.metadata().configuration_generation(),
-                        transform,
-                        destination: fitted_rect(frame.dimensions(), logical)?,
-                    });
+            };
+            for event in first
+                .into_iter()
+                .chain(std::iter::from_fn(|| capture.try_recv().ok()))
+            {
+                match event {
+                    DirectCaptureEvent::Frame(frame)
+                        if !paused
+                            && frame
+                                .metadata()
+                                .observation_started_at()
+                                .unwrap_or_else(|| {
+                                    frame
+                                        .metadata()
+                                        .stream_timestamp()
+                                        .map(|t| t.instant)
+                                        .unwrap_or_else(Instant::now)
+                                })
+                                >= fresh_since =>
+                    {
+                        let observed =
+                            frame
+                                .metadata()
+                                .observation_started_at()
+                                .unwrap_or_else(|| {
+                                    frame
+                                        .metadata()
+                                        .stream_timestamp()
+                                        .map(|t| t.instant)
+                                        .unwrap_or_else(Instant::now)
+                                });
+                        if !clock.is_active_at(observed) {
+                            continue;
+                        }
+                        let at = frame.metadata().queued_at().unwrap_or_else(Instant::now);
+                        queue.push((at, frame));
+                    }
+                    DirectCaptureEvent::Error(error) => {
+                        #[cfg(windows)]
+                        if gpu_canvas.is_some() && error.allows_backend_fallback() {
+                            recovery_reason = Some(error.to_string());
+                            break;
+                        }
+                        return Err(error.into());
+                    }
+                    DirectCaptureEvent::StreamEnded => {
+                        #[cfg(windows)]
+                        if gpu_canvas.is_some() {
+                            recovery_reason =
+                                Some("clean GPU capture stream ended unexpectedly".into());
+                            break;
+                        }
+                        return Err(ScreenRecorderError::Encode(
+                            "clean capture stream ended unexpectedly".into(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
-            input.drain(&clock, false, fresh_since, None)?;
-            if let Some(cursor) = frame.metadata().cursor() {
-                input.cursor(&clock, now, cursor, frame.dimensions())?;
-                let position = cursor
-                    .visible
-                    .then(|| input.point((cursor.x, cursor.y), frame.dimensions()));
-                input.pointer(&clock, now, Some(position), slot_ms)?;
-            } else {
-                input.pointer(&clock, now, Some(None), slot_ms)?;
+            #[cfg(windows)]
+            if recovery_reason.is_some() {
+                continue;
             }
-            input.end_slot();
-        }
-        if changed && let Some(frame) = &latest {
-            let pixels = canvas.compose(frame)?;
-            #[cfg(feature = "bench-pipeline-timing")]
-            if let Some(trace) = &mut source_trace {
-                let raw = source_pixel_probe(
-                    frame.as_bytes(),
+            if paused {
+                continue;
+            }
+            if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
+                stop = Some(at);
+                break;
+            }
+            let Some(slot) =
+                admit_source_slot(&mut schedule, &clock, &stop_boundary, &control_clock)
+            else {
+                continue;
+            };
+            #[cfg(windows)]
+            if gpu_canvas.is_some()
+                && let Err(cause) = encoder.poll_gpu_packets()
+            {
+                recovery_reason = Some(cause.to_string());
+                continue;
+            }
+            while let Some((_, frame)) =
+                queue.pop_if(|(at, _)| clock.active_elapsed_duration(*at) <= slot.at)
+            {
+                let generation = frame.metadata().content_generation();
+                source_changed |= !admitted
+                    || !frame.metadata().is_duplicate()
+                    || previous_generation != generation;
+                previous_generation = generation;
+                latest = Some(frame);
+            }
+            if let Some(frame) = &latest {
+                let now = Instant::now();
+                let slot_ms = (u128::from(slot.pts) * 1000 / u128::from(config.output_fps)) as u64;
+                input.begin_slot(slot_ms);
+                input.update_geometry(
+                    &clock,
+                    now,
                     frame.dimensions(),
-                    frame.pixel_format() == snow_capture::CapturePixelFormat::Bgra8,
-                );
-                let clean = source_pixel_probe(&pixels, coded, false);
-                writeln!(
-                    trace,
-                    "{},{:?},{},{},{},{:?},{:?},\"{:?}\",\"{:?}\"",
-                    slot.pts,
-                    frame.metadata().content_generation(),
-                    frame.metadata().is_duplicate(),
-                    frame.dimensions().0,
-                    frame.dimensions().1,
-                    raw.0,
-                    clean.0,
-                    raw.1,
-                    clean.1,
+                    frame.metadata().capture_transform(),
                 )?;
+                if geometry_generation != Some(frame.metadata().configuration_generation()) {
+                    geometry_generation = Some(frame.metadata().configuration_generation());
+                    if let Some(transform) = frame.metadata().capture_transform() {
+                        geometry.push(snow_recording_model::media::GeometryChange {
+                            timestamp_ms: slot_ms,
+                            generation: frame.metadata().configuration_generation(),
+                            transform,
+                            destination: fitted_rect(frame.dimensions(), logical)?,
+                        });
+                    }
+                }
+                input.drain(&clock, false, fresh_since, None)?;
+                if let Some(cursor) = frame.metadata().cursor() {
+                    input.cursor(&clock, now, cursor, frame.dimensions())?;
+                    let position = cursor
+                        .visible
+                        .then(|| input.point((cursor.x, cursor.y), frame.dimensions()));
+                    input.pointer(&clock, now, Some(position), slot_ms)?;
+                } else {
+                    input.pointer(&clock, now, Some(None), slot_ms)?;
+                }
+                input.end_slot();
             }
-            canvas.pixels = encoder.push_raster_rgba_frame_at_pts(slot.pts, pixels)?;
-            frame_index.push(slot.pts)?;
-            admitted = true;
+            if encoder.needs_video_frame(source_changed)
+                && let Some(frame) = &latest
+            {
+                match frame {
+                    DirectFrame::Cpu(frame) => {
+                        let pixels = canvas.compose(frame)?;
+                        #[cfg(feature = "bench-pipeline-timing")]
+                        if let Some(trace) = &mut source_trace {
+                            let raw = source_pixel_probe(
+                                frame.as_bytes(),
+                                frame.dimensions(),
+                                frame.pixel_format() == snow_capture::CapturePixelFormat::Bgra8,
+                            );
+                            let clean = source_pixel_probe(&pixels, coded, false);
+                            writeln!(
+                                trace,
+                                "{},{:?},{},{},{},{:?},{:?},\"{:?}\",\"{:?}\"",
+                                slot.pts,
+                                frame.metadata().content_generation(),
+                                frame.metadata().is_duplicate(),
+                                frame.dimensions().0,
+                                frame.dimensions().1,
+                                raw.0,
+                                clean.0,
+                                raw.1,
+                                clean.1,
+                            )?;
+                        }
+                        canvas.pixels = encoder.push_raster_rgba_frame_at_pts(slot.pts, pixels)?;
+                    }
+                    #[cfg(windows)]
+                    DirectFrame::Gpu(frame) => {
+                        let submitted = (|| -> Result<bool> {
+                            let Some(output) = encoder.allocate_gpu_frame()? else {
+                                return Ok(false);
+                            };
+                            gpu_canvas
+                                .as_mut()
+                                .ok_or_else(|| invalid("missing clean GPU compositor"))?
+                                .compose(frame, &output)?;
+                            encoder.push_gpu_frame_at_pts(slot.pts, output)?;
+                            Ok(true)
+                        })();
+                        match submitted {
+                            Ok(true) => {}
+                            Ok(false) => continue,
+                            Err(cause) => {
+                                recovery_reason = Some(cause.to_string());
+                                continue;
+                            }
+                        }
+                    }
+                }
+                source_changed = false;
+                frame_index.push(slot.pts)?;
+                admitted = true;
+            }
         }
+        Ok(())
+    })();
+    if let Err(cause) = capture_result {
+        let failed_at = Instant::now();
+        capture.stop();
+        return Err(crate::capture_failure::preserve(
+            &mut encoder,
+            &clock,
+            failed_at,
+            cause,
+        ));
     }
     let stop = stop.expect("stop boundary");
     let duration_ms = clock
@@ -872,8 +1050,19 @@ fn run_capture(
         .min(u128::from(u64::MAX)) as u64;
     let timeline = FinalizedTimeline::new(duration_ms, config.output_fps).map_err(invalid)?;
     clock.controller().mark_pause(stop);
+    if let Some(webcam) = webcam {
+        webcam.finish(duration_ms);
+    }
     capture.stop();
-    input.drain(&clock, true, fresh_since, Some(stop))?;
+    encoder.retain_failed_output();
+    if let Err(error) = input.drain(&clock, true, fresh_since, Some(stop)) {
+        return Err(crate::capture_failure::preserve(
+            &mut encoder,
+            &clock,
+            stop,
+            error,
+        ));
+    }
     if !admitted {
         return Err(ScreenRecorderError::Encode(
             "no screen frame was captured".into(),
@@ -881,6 +1070,12 @@ fn run_capture(
     }
     let _ = timeline;
     let encoder_report = encoder.finish_at_duration_ms(duration_ms)?;
+    #[cfg(windows)]
+    let encoder_report = {
+        let mut report = encoder_report;
+        negotiation.apply(&mut report);
+        report
+    };
     let tracks = audio
         .take()
         .map(AudioRecordingSession::finish)
@@ -888,7 +1083,14 @@ fn run_capture(
         .map(|a| a.tracks)
         .unwrap_or_default();
     input.finish()?;
-    frame_index.finish(duration_ms)?;
+    if encoder_report.recovery_count == 0 {
+        frame_index.finish(duration_ms)?;
+    } else {
+        // Recovery can abandon submitted frames and insert a hold at zero.
+        // Index decoded presentation order, including any offline reordering.
+        drop(frame_index);
+        rebuild_source_index(&video, &index, config.output_fps, duration_ms)?;
+    }
     clock.controller().finalize(stop);
     let mut media = snow_recording_model::media::RecordedMedia::new(
         snow_media::ColorDescription::SRGB,
@@ -1008,23 +1210,81 @@ impl FrameIndexWriter {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
+fn rebuild_source_index(video: &Path, index: &Path, fps: u32, duration_ms: u64) -> Result<()> {
+    use ffmpeg_next::{self as ffmpeg, Rescale};
+    let error =
+        |cause: String| ScreenRecorderError::Encode(format!("recovered source index: {cause}"));
+    let mut input = ffmpeg::format::input(video).map_err(|e| error(e.to_string()))?;
+    let stream = input
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .ok_or_else(|| error("missing video stream".into()))?;
+    let stream_index = stream.index();
+    let time_base = stream.time_base();
+    let mut decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        .and_then(|context| context.decoder().video())
+        .map_err(|e| error(e.to_string()))?;
+    let mut writer = FrameIndexWriter::new(index, fps)?;
+    let mut last_pts = None;
+    let mut receive = |decoder: &mut ffmpeg::decoder::Video| -> Result<()> {
+        let mut frame = ffmpeg::frame::Video::empty();
+        loop {
+            match decoder.receive_frame(&mut frame) {
+                Ok(()) => {}
+                Err(ffmpeg::Error::Eof) => break,
+                Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::error::EAGAIN => break,
+                Err(cause) => return Err(error(cause.to_string())),
+            }
+            let pts = frame
+                .timestamp()
+                .or(frame.pts())
+                .ok_or_else(|| error("missing frame timestamp".into()))?
+                .rescale(time_base, (1, fps as i32));
+            if pts < 0
+                || last_pts.is_some_and(|last| pts <= last)
+                || pts as u128 * 1000 >= u128::from(duration_ms) * u128::from(fps)
+            {
+                return Err(error(
+                    "frame timestamps are outside the source timeline".into(),
+                ));
+            }
+            writer.push(pts as u64)?;
+            last_pts = Some(pts);
+        }
+        Ok(())
+    };
+    for (stream, packet) in input.packets() {
+        if stream.index() == stream_index {
+            decoder
+                .send_packet(&packet)
+                .map_err(|e| error(e.to_string()))?;
+            receive(&mut decoder)?;
+        }
+    }
+    decoder.send_eof().map_err(|e| error(e.to_string()))?;
+    receive(&mut decoder)?;
+    if last_pts.is_none() {
+        return Err(error("no decoded video frames".into()));
+    }
+    writer.finish(duration_ms)
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
 struct CleanCanvas {
     logical: (u32, u32),
     coded: (u32, u32),
     pixels: RasterBuffer,
-    rgba: RasterBuffer,
     scaled: RasterBuffer,
     resize: Option<snow_recording_export::resize::RecordingResizePlan>,
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 impl CleanCanvas {
     fn new(logical: (u32, u32), coded: (u32, u32)) -> Self {
         Self {
             logical,
             coded,
             pixels: RasterBuffer::new(),
-            rgba: RasterBuffer::new(),
             scaled: RasterBuffer::new(),
             resize: None,
         }
@@ -1037,13 +1297,7 @@ impl CleanCanvas {
             PixelSize::new(self.logical.0, self.logical.1).map_err(|e| invalid(e.to_string()))?,
         )
         .map_err(|e| invalid(e.to_string()))?;
-        self.rgba.clear();
-        self.rgba.extend_from_slice(frame.as_bytes());
-        if frame.pixel_format() == snow_capture::CapturePixelFormat::Bgra8 {
-            for pixel in self.rgba.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
-        }
+        let bgra = frame.pixel_format() == snow_capture::CapturePixelFormat::Bgra8;
         if self
             .resize
             .as_ref()
@@ -1056,25 +1310,50 @@ impl CleanCanvas {
                 destination.height,
             ));
         }
-        self.scaled.resize(
-            destination.width as usize * destination.height as usize * 4,
-            0,
-        );
-        self.resize
-            .as_ref()
-            .expect("source resize")
-            .resize_into(&self.rgba, &mut self.scaled);
         self.pixels
             .resize(self.coded.0 as usize * self.coded.1 as usize * 4, 0);
-        self.pixels.fill(0);
-        for pixel in self.pixels.chunks_exact_mut(4) {
-            pixel[3] = 255;
+        let fitted = (destination.width, destination.height);
+        let plan = self.resize.as_ref().expect("source resize");
+        if fitted == self.coded {
+            // The common case writes directly into recycled encoder storage.
+            // The area filter treats all channels independently, so BGRA can
+            // be filtered before swizzling at the smaller output resolution.
+            if size == fitted {
+                Self::copy_rgba(frame.as_bytes(), &mut self.pixels, bgra);
+            } else {
+                plan.resize_into(frame.as_bytes(), &mut self.pixels);
+                if bgra {
+                    for pixel in self.pixels.chunks_exact_mut(4) {
+                        pixel.swap(0, 2);
+                    }
+                }
+            }
+            return Ok(std::mem::take(&mut self.pixels));
         }
+        let source = if size == fitted {
+            frame.as_bytes()
+        } else {
+            self.scaled
+                .resize(fitted.0 as usize * fitted.1 as usize * 4, 0);
+            plan.resize_into(frame.as_bytes(), &mut self.scaled);
+            &self.scaled
+        };
+        let stride = self.coded.0 as usize * 4;
+        let left = destination.x as usize * 4;
+        let len = destination.width as usize * 4;
+        let top = destination.y as usize;
+        let bottom = top + destination.height as usize;
+        Self::black(&mut self.pixels[..top * stride]);
+        Self::black(&mut self.pixels[bottom * stride..]);
         for y in 0..destination.height as usize {
-            let to =
-                ((y + destination.y as usize) * self.coded.0 as usize + destination.x as usize) * 4;
-            let len = destination.width as usize * 4;
-            self.pixels[to..to + len].copy_from_slice(&self.scaled[y * len..(y + 1) * len]);
+            let row = &mut self.pixels[(y + top) * stride..(y + top + 1) * stride];
+            Self::black(&mut row[..left]);
+            Self::copy_rgba(
+                &source[y * len..(y + 1) * len],
+                &mut row[left..left + len],
+                bgra,
+            );
+            Self::black(&mut row[left + len..]);
         }
         // 4:2:0 source padding replicates the last logical edge; final rendering crops it away.
         if self.coded.0 > self.logical.0 {
@@ -1090,6 +1369,22 @@ impl CleanCanvas {
             self.pixels.copy_within(from..from + row, from + row);
         }
         Ok(std::mem::take(&mut self.pixels))
+    }
+
+    fn black(pixels: &mut [u8]) {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[0, 0, 0, 255]);
+        }
+    }
+
+    fn copy_rgba(source: &[u8], output: &mut [u8], bgra: bool) {
+        if bgra {
+            for (source, output) in source.chunks_exact(4).zip(output.chunks_exact_mut(4)) {
+                output.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+            }
+        } else {
+            output.copy_from_slice(source);
+        }
     }
 }
 
@@ -1279,6 +1574,10 @@ impl InputRecorder {
                     modifiers: Vec::new(),
                 }
             };
+            if event.button.scroll_direction().is_some() {
+                self.push(clock, now, RecordedInput::Scroll(key))?;
+                continue;
+            }
             let (x, y) = self.hook_point((event.x, event.y));
             let button = match event.button {
                 ObservedMouseButton::Left => InputMouseButton::Left,
@@ -1286,6 +1585,9 @@ impl InputRecorder {
                 ObservedMouseButton::Middle => InputMouseButton::Middle,
                 ObservedMouseButton::Button4 => InputMouseButton::Button4,
                 ObservedMouseButton::Button5 => InputMouseButton::Button5,
+                ObservedMouseButton::ScrollUp | ObservedMouseButton::ScrollDown => {
+                    unreachable!("scroll handled above")
+                }
             };
             self.push(
                 clock,
@@ -1555,6 +1857,51 @@ fn key_record(event: snow_recording_effects::keyboard_overlay::KeyEvent) -> KeyE
 mod tests {
     use super::*;
 
+    #[test]
+    fn recovered_source_index_matches_surviving_frames_and_initial_hold() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("source.mp4");
+        let index = directory.path().join("video.index");
+        let mut config = test_config(video.clone()).streaming_config();
+        config.fps = 10;
+        let mut encoder = snow_recording_export::StreamingEncoder::builder(config)
+            .recording_source()
+            .recoverable()
+            .software_only()
+            .create()
+            .unwrap();
+        encoder
+            .push_owned_rgba_frame_at_pts(0, vec![50; 16 * 16 * 4])
+            .unwrap();
+        encoder
+            .recover_to_software("injected capture loss")
+            .unwrap();
+        for pts in [5, 8] {
+            encoder
+                .push_owned_rgba_frame_at_pts(pts, vec![pts as u8 * 20; 16 * 16 * 4])
+                .unwrap();
+        }
+        let report = encoder.finish_at_duration_ms(1000).unwrap();
+        assert_eq!(report.recovery_count, 1);
+        assert_eq!(report.abandoned_frames, 1);
+        // A stale submission index must be replaced, not appended.
+        std::fs::write(&index, [255; 128]).unwrap();
+        rebuild_source_index(&video, &index, 10, 1000).unwrap();
+        let bytes = std::fs::read(index).unwrap();
+        let records: Vec<_> = bytes[snow_recording_model::VIDEO_INDEX_MAGIC.len()..]
+            .chunks_exact(snow_recording_model::VIDEO_INDEX_RECORD_BYTES)
+            .map(|record| {
+                (
+                    u64::from_le_bytes(record[..8].try_into().unwrap()),
+                    u64::from_le_bytes(record[8..16].try_into().unwrap()),
+                    u32::from_le_bytes(record[16..].try_into().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(records, [(0, 0, 500), (1, 500, 300), (2, 800, 200)]);
+        assert_eq!(records.len() as u64, report.encoded_frames);
+    }
+
     #[cfg(all(not(target_os = "macos"), feature = "bench-pipeline-timing"))]
     #[test]
     fn source_trace_reads_marker_and_rgb_before_compression() {
@@ -1582,6 +1929,7 @@ mod tests {
     }
     fn test_config(output_path: PathBuf) -> DirectRecordingConfig {
         DirectRecordingConfig {
+            webcam: None,
             loop_animated_images: false,
             region: crate::RecordingRegion::new(0, 0, 16, 16),
             capture_backend: crate::CaptureBackendKind::Auto,
@@ -1608,6 +1956,7 @@ mod tests {
             mouse_highlight_radius: snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
             mouse_highlight_rgba: [0; 4],
             record_mouse_clicks: false,
+            record_mouse_scrolling: false,
             show_keyboard: false,
             excluded_windows: Default::default(),
             excluded_processes: Default::default(),
@@ -1743,6 +2092,95 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn stopped_capture_mux_failure_retains_video_inside_kept_staging() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(parent.path()).unwrap();
+        let retained = directory.path().to_path_buf();
+        let source = retained.join("source.mp4");
+        let mut encoder = StreamingEncoder::builder(test_config(source.clone()).streaming_config())
+            .recording_source()
+            .software_only()
+            .create()
+            .unwrap();
+        for pts in 0..96 {
+            encoder
+                .push_owned_rgba_frame_at_pts(pts, vec![80; 16 * 16 * 4])
+                .unwrap();
+        }
+        std::fs::create_dir(&source).unwrap();
+        encoder.retain_failed_output();
+        let result = encoder
+            .finish_at_duration_ms(3200)
+            .map_err(ScreenRecorderError::from);
+        let error = finish_capture(directory, result, true).unwrap_err();
+        assert!(error.to_string().contains("recoverable media is retained"));
+        let recovery = std::fs::read_dir(&retained)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|value| value == "recovery"))
+            .expect("native mux failure must retain encoded media");
+        assert!(recovery.join("source.mp4").is_file());
+        assert!(recovery.join("timeline.txt").is_file());
+    }
+
+    #[test]
+    fn stopped_capture_failure_preserves_staging_before_packing() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(parent.path()).unwrap();
+        let retained = directory.path().to_path_buf();
+        let video = retained.join("source.mp4");
+        std::fs::write(&video, b"captured media before teardown failed").unwrap();
+        let error = finish_capture::<()>(
+            directory,
+            Err(ScreenRecorderError::Encode(
+                "encoder teardown failed".into(),
+            )),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("encoder teardown failed"));
+        assert!(error.to_string().contains(&retained.display().to_string()));
+        assert_eq!(
+            std::fs::read(video).unwrap(),
+            b"captured media before teardown failed"
+        );
+    }
+
+    #[test]
+    fn capture_cancellation_and_startup_failure_keep_normal_staging_cleanup() {
+        let parent = tempfile::tempdir().unwrap();
+        for (stopping, error) in [
+            (true, ScreenRecorderError::ExportCanceled),
+            (false, ScreenRecorderError::ExportCanceled),
+            (
+                false,
+                ScreenRecorderError::Encode("capture startup failed".into()),
+            ),
+        ] {
+            let directory = tempfile::tempdir_in(parent.path()).unwrap();
+            let path = directory.path().to_path_buf();
+            std::fs::write(path.join("source.mp4"), b"discarded fixture").unwrap();
+            let message = error.to_string();
+            let error = finish_capture::<()>(directory, Err(error), stopping).unwrap_err();
+            assert_eq!(error.to_string(), message);
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn successful_capture_keeps_staging_scoped_until_packing() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(parent.path()).unwrap();
+        let path = directory.path().to_path_buf();
+        let (directory, product) = finish_capture(directory, Ok(7), true).unwrap();
+        assert_eq!(product, 7);
+        assert!(path.is_dir());
+        drop(directory);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn packing_failure_preserves_completed_source_files_for_recovery() {
         let parent = tempfile::tempdir().unwrap();
         let directory = tempfile::tempdir_in(parent.path()).unwrap();
@@ -1822,7 +2260,6 @@ mod tests {
         assert!(!path.exists());
         clone.discard().unwrap();
     }
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn deferred_source_downscale_keeps_thin_strokes_before_encoding_and_padding() {
         for phase in [0, 1] {
@@ -1841,7 +2278,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn deferred_source_fractional_downscale_keeps_edge_detail_inside_the_fitted_canvas() {
         let pixels = (0..35)
@@ -1870,7 +2306,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn odd_source_canvas_pads_edges_without_stretching_logical_pixels() {
         let frame = snow_capture::frame::Frame::from_rgba8(
@@ -1885,6 +2320,73 @@ mod tests {
         assert_eq!(&pixels[..12], &[1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]);
         assert_eq!(&pixels[12..16], &[7, 8, 9, 255]);
         assert_eq!(&pixels[..16], &pixels[16..]);
+    }
+
+    #[test]
+    fn clean_canvas_preserves_channels_filtering_bars_and_recycled_padding() {
+        use snow_capture::frame::Frame;
+        use snow_recording_export::resize::RecordingResizePlan;
+
+        // Compare against a canonical RGBA image, resized before mapping each
+        // logical pixel. Include alpha and asymmetric colors to expose channel
+        // swaps, incorrect strides and stale recycled letterbox pixels.
+        for logical in [(8u32, 6u32), (7, 5), (1, 1)] {
+            let coded = (logical.0.div_ceil(2) * 2, logical.1.div_ceil(2) * 2);
+            let mut canvas = CleanCanvas::new(logical, coded);
+            for source in [(8, 6), (17, 13), (3, 2), (2, 9), (9, 2), (1, 1), (7, 5)] {
+                let rgba: Vec<_> = (0..source.0 * source.1)
+                    .flat_map(|i| {
+                        [
+                            i as u8,
+                            (i * 7 + 19) as u8,
+                            (i * 31) as u8,
+                            (i * 3 + 1) as u8,
+                        ]
+                    })
+                    .collect();
+                let fitted = fitted_rect(source, logical).unwrap();
+                let mut scaled = vec![0; fitted.width as usize * fitted.height as usize * 4];
+                RecordingResizePlan::new(source.0, source.1, fitted.width, fitted.height)
+                    .resize_into(&rgba, &mut scaled);
+                let mut expected = Vec::new();
+                for y in 0..coded.1 {
+                    for x in 0..coded.0 {
+                        let x = x.min(logical.0 - 1);
+                        let y = y.min(logical.1 - 1);
+                        if x >= fitted.x
+                            && x < fitted.x + fitted.width
+                            && y >= fitted.y
+                            && y < fitted.y + fitted.height
+                        {
+                            let offset =
+                                ((y - fitted.y) * fitted.width + x - fitted.x) as usize * 4;
+                            expected.extend_from_slice(&scaled[offset..offset + 4]);
+                        } else {
+                            expected.extend_from_slice(&[0, 0, 0, 255]);
+                        }
+                    }
+                }
+                for bgra in [false, true] {
+                    let mut bytes = rgba.clone();
+                    let frame = if bgra {
+                        for pixel in bytes.chunks_exact_mut(4) {
+                            pixel.swap(0, 2);
+                        }
+                        Frame::from_bgra8(source.0, source.1, bytes)
+                    } else {
+                        Frame::from_rgba8(source.0, source.1, bytes)
+                    }
+                    .unwrap()
+                    .into();
+                    canvas.pixels = canvas.compose(&frame).unwrap();
+                    assert_eq!(
+                        &*canvas.pixels, expected,
+                        "{source:?} -> {logical:?}, BGRA={bgra}"
+                    );
+                    canvas.pixels.fill(0xAD);
+                }
+            }
+        }
     }
     #[test]
     fn geometry_changes_project_input_into_the_same_fitted_canvas_as_video() {

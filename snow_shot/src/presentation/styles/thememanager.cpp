@@ -92,8 +92,7 @@ ThemeManager::ThemeManager(QObject* parent)
                            adqt::theme::ThemeManager::instance().config()))),
       m_scheme(generateThemeColorScheme(m_config)),
       m_mode(decodeThemeMode(snow_shot::storage::InterfaceSettings().themeMode())),
-      m_baseAppFont(QApplication::font()), m_baseFontSize(m_config.fontSize),
-      m_appFontSizePercentage(storage::InterfaceSettings().appFontSizePercentage()) {
+      m_appFontSize(storage::InterfaceSettings().appFontSize()) {
     m_config.colorPrimary = storage::InterfaceSettings().themePrimaryColor();
     const QString family = storage::InterfaceSettings().appFontFamily();
     if (!family.isEmpty()) {
@@ -202,38 +201,27 @@ bool ThemeManager::setAppFontFamily(const QString& family) {
     return true;
 }
 
-int ThemeManager::appFontSizePercentage() const {
-    return m_appFontSizePercentage;
+int ThemeManager::appFontSize() const {
+    return m_appFontSize;
 }
 
-bool ThemeManager::setAppFontSizePercentage(int percentage) {
-    if (!storage::InterfaceSettings().setAppFontSizePercentage(percentage)) {
+bool ThemeManager::setAppFontSize(int pixelSize) {
+    if (!storage::InterfaceSettings().setAppFontSize(pixelSize)) {
         return false;
     }
-    if (m_appFontSizePercentage != percentage) {
-        m_appFontSizePercentage = percentage;
+    if (m_appFontSize != pixelSize) {
+        m_appFontSize = pixelSize;
         auto config = m_config;
         applyFontSize(config);
         setThemeStyleConfig(config);
-        emit appFontSizePercentageChanged(percentage);
+        emit appFontSizeChanged(pixelSize);
     }
     return true;
 }
 
 void ThemeManager::applyFontSize(ThemeStyleConfig& config) const {
-    const qreal scale = m_appFontSizePercentage / 100.0;
-    config.fontSize = qRound(m_baseFontSize * scale);
-    // Always scale the original font, so repeated edits never compound. At 100%, let
-    // application and native popup fonts resolve their original platform sizes again.
-    if (m_baseAppFont.pointSizeF() > 0) {
-        config.appFont.setPointSizeF(m_baseAppFont.pointSizeF() * scale);
-    } else if (m_baseAppFont.pixelSize() > 0) {
-        config.appFont.setPixelSize(qRound(m_baseAppFont.pixelSize() * scale));
-    }
-    if (m_appFontSizePercentage == 100) {
-        config.appFont.setResolveMask(config.appFont.resolveMask() &
-                                      ~static_cast<uint>(QFont::SizeResolved));
-    }
+    config.fontSize = m_appFontSize;
+    config.appFont.setPixelSize(m_appFontSize);
 }
 
 bool ThemeManager::setThemePrimaryColor(const QColor& color) {

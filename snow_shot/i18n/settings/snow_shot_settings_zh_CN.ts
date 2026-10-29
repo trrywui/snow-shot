@@ -20,6 +20,10 @@
             <translation>仅 Windows 支持以管理员身份启动。</translation>
         </message>
         <message>
+            <source>Administrator launch is unavailable in the Microsoft Store version.</source>
+            <translation>Microsoft Store 版本不支持以管理员身份启动。</translation>
+        </message>
+        <message>
             <source>An interrupted startup change needs administrator authorization. Reapply your startup setting.</source>
             <translation>中断的自启动设置更改需要管理员授权。请重新应用自启动设置。</translation>
         </message>
@@ -129,6 +133,21 @@
         <message>
             <source>Screen &amp; System Audio Recording</source>
             <translation>屏幕与系统音频录制</translation>
+        </message>
+    </context>
+    <context>
+        <name>AutoStartRegistration</name>
+        <message>
+            <source>Enable Snow Shot in Windows Settings &gt; Apps &gt; Startup.</source>
+            <translation>请在 Windows 设置 &gt; 应用 &gt; 启动中启用 Snow Shot。</translation>
+        </message>
+        <message>
+            <source>Startup is managed by your organization.</source>
+            <translation>启动设置由您的组织管理。</translation>
+        </message>
+        <message>
+            <source>Windows startup settings are unavailable.</source>
+            <translation>Windows 启动设置不可用。</translation>
         </message>
     </context>
     <context>
@@ -337,6 +356,10 @@
             <translation>复制</translation>
         </message>
         <message>
+            <source>DeepSeek</source>
+            <translation>DeepSeek</translation>
+        </message>
+        <message>
             <source>Delete</source>
             <translation>删除</translation>
         </message>
@@ -347,6 +370,10 @@
         <message>
             <source>Delete model "%1"? If selected, another available model will be used.</source>
             <translation>删除模型“%1”？如果当前已选中此模型，将改用其他可用模型。</translation>
+        </message>
+        <message>
+            <source>Doubao</source>
+            <translation>豆包</translation>
         </message>
         <message>
             <source>Edit</source>
@@ -397,6 +424,10 @@
             <translation>尚未配置自定义模型</translation>
         </message>
         <message>
+            <source>OpenAI</source>
+            <translation>OpenAI</translation>
+        </message>
+        <message>
             <source>OpenAI-compatible Chat Completions. /chat/completions is appended to this base URL.</source>
             <translation>兼容 OpenAI 的 Chat Completions。系统会在此基础 URL 后追加 /chat/completions。</translation>
         </message>
@@ -405,12 +436,28 @@
             <translation>不需要身份验证的服务器可留空。</translation>
         </message>
         <message>
+            <source>Provider Type</source>
+            <translation>提供商类型</translation>
+        </message>
+        <message>
+            <source>Qwen</source>
+            <translation>通义千问</translation>
+        </message>
+        <message>
             <source>Reasoning Support</source>
             <translation>推理支持</translation>
         </message>
         <message>
+            <source>Reasoning is controlled by the model for the OpenAI provider.</source>
+            <translation>选择 OpenAI 提供商时，推理由模型控制。</translation>
+        </message>
+        <message>
             <source>Save</source>
             <translation>保存</translation>
+        </message>
+        <message>
+            <source>Select the provider whose reasoning controls this API uses.</source>
+            <translation>选择此 API 使用的推理控制方式所属的提供商。</translation>
         </message>
         <message>
             <source>The API key must not contain line breaks.</source>
@@ -951,6 +998,10 @@
     <context>
         <name>ScreenshotToolbarEditorSettingsWidget</name>
         <message>
+            <source>AirDrop</source>
+            <translation>隔空投送</translation>
+        </message>
+        <message>
             <source>Barcode recognition</source>
             <translation>条码识别</translation>
         </message>
@@ -1169,8 +1220,8 @@
             <translation>活动窗口</translation>
         </message>
         <message>
-            <source>Add Edit with Snow Shot to the classic Windows context menu to pin a supported image or document file to the screen.</source>
-            <translation>将“使用 Snow Shot 编辑”添加到经典 Windows 右键菜单，以将支持的图像或文档文件贴到屏幕。</translation>
+            <source>Add Edit with Snow Shot to the Windows context menu to pin a supported image or document file to the screen.</source>
+            <translation>将“使用 Snow Shot 编辑”添加到 Windows 右键菜单，以将支持的图像或文档文件贴到屏幕。</translation>
         </message>
         <message>
             <source>Add a mask to highlight text recognition results</source>
@@ -1389,12 +1440,20 @@
             <translation>自动文本识别</translation>
         </message>
         <message>
+            <source>Automatically adapt the icon color to the menu bar background. Uses the image's transparency as its shape and ignores its original colors.</source>
+            <translation>根据菜单栏背景自动调整图标颜色。使用图像的透明度确定形状，忽略其原始颜色。</translation>
+        </message>
+        <message>
             <source>Automatically disable when a focused fullscreen window exists</source>
             <translation>存在焦点全屏窗口时自动禁用</translation>
         </message>
         <message>
             <source>Automatically exit screen recording after the recording is saved.</source>
             <translation>保存录制内容后自动退出屏幕录制。</translation>
+        </message>
+        <message>
+            <source>Automatically select newly created elements</source>
+            <translation>自动选中新创建的元素</translation>
         </message>
         <message>
             <source>Autostart</source>
@@ -1589,6 +1648,10 @@
             <translation>选择更新的下载和安装方式</translation>
         </message>
         <message>
+            <source>Choose the MP4 video encoder. Hardware encoding falls back to software with the same codec if unavailable. H.265 can produce smaller files but requires a compatible player.</source>
+            <translation>选择 MP4 视频编码器。硬件编码不可用时，将回退到相同编码格式的软件编码。H.265 可生成更小的文件，但需要兼容的播放器。</translation>
+        </message>
+        <message>
             <source>Choose the OCR model version and size to balance recognition speed and accuracy</source>
             <translation>选择 OCR 模型版本和大小，以平衡识别速度和准确率</translation>
         </message>
@@ -1699,10 +1762,6 @@
         <message>
             <source>Choose the translation service or AI model</source>
             <translation>选择翻译服务或 AI 模型</translation>
-        </message>
-        <message>
-            <source>Choose the video encoder</source>
-            <translation>选择视频编码器</translation>
         </message>
         <message>
             <source>Choose what happens automatically when text recognition completes</source>
@@ -1821,12 +1880,12 @@
             <translation>压缩级别</translation>
         </message>
         <message>
-            <source>Configuration exported to the clipboard.</source>
-            <translation>配置已导出到剪贴板。</translation>
+            <source>Configuration exported to the clipboard</source>
+            <translation>配置已导出到剪贴板</translation>
         </message>
         <message>
-            <source>Configuration imported.</source>
-            <translation>配置已导入。</translation>
+            <source>Configuration imported</source>
+            <translation>配置已导入</translation>
         </message>
         <message>
             <source>Configure S3-compatible upload destinations</source>
@@ -1877,12 +1936,20 @@
             <translation>控制截图颜色拾取器何时显示</translation>
         </message>
         <message>
+            <source>Copy Translation Results as an Image</source>
+            <translation>将翻译结果复制为图片</translation>
+        </message>
+        <message>
             <source>Copy after text recognition</source>
             <translation>文字识别后复制</translation>
         </message>
         <message>
             <source>Copy application settings as a zip archive to the clipboard</source>
             <translation>将应用设置以 zip 归档形式复制到剪贴板</translation>
+        </message>
+        <message>
+            <source>Copy both the image and its exported file to the clipboard</source>
+            <translation>将图像及其导出的文件同时复制到剪贴板</translation>
         </message>
         <message>
             <source>Copy color</source>
@@ -1941,6 +2008,10 @@
             <translation>将确认的截图选区复制到剪贴板</translation>
         </message>
         <message>
+            <source>Copy the full translation result as an image when no text is selected</source>
+            <translation>未选中文本时，将完整翻译结果复制为图片</translation>
+        </message>
+        <message>
             <source>Copy to Clipboard</source>
             <translation>复制到剪贴板</translation>
         </message>
@@ -1965,8 +2036,8 @@
             <translation>自定义 AI 模型</translation>
         </message>
         <message>
-            <source>Custom DeepL, Baidu, and Youdao-compatible services</source>
-            <translation>自定义兼容 DeepL、百度和有道的服务</translation>
+            <source>Custom DeepL, DeepLX, Baidu, and Youdao-compatible services</source>
+            <translation>自定义兼容 DeepL、DeepLX、百度和有道的服务</translation>
         </message>
         <message>
             <source>Custom Models</source>
@@ -2133,6 +2204,10 @@
             <translation>删除屏幕录制临时文件？</translation>
         </message>
         <message>
+            <source>Delete text after the cursor</source>
+            <translation>删除光标后的文字</translation>
+        </message>
+        <message>
             <source>Delete the current recording files when closing an active recording. Stopping recording still saves the output.</source>
             <translation>关闭进行中的录制时，删除本次录制的文件。停止录制仍会保存输出文件。</translation>
         </message>
@@ -2179,6 +2254,10 @@
         <message>
             <source>Distance annotation</source>
             <translation>距离标注</translation>
+        </message>
+        <message>
+            <source>Do not automatically select elements created with these tools.</source>
+            <translation>不自动选中使用这些工具创建的元素。</translation>
         </message>
         <message>
             <source>Double-click Action</source>
@@ -2457,6 +2536,10 @@
             <translation>GIF、APNG 和 WebP 的分辨率、帧率与循环播放</translation>
         </message>
         <message>
+            <source>GPU</source>
+            <translation>GPU</translation>
+        </message>
+        <message>
             <source>General</source>
             <translation>常规</translation>
         </message>
@@ -2503,6 +2586,14 @@
         <message>
             <source>H.265</source>
             <translation>H.265</translation>
+        </message>
+        <message>
+            <source>H.265 (Hardware)</source>
+            <translation>H.265（硬件）</translation>
+        </message>
+        <message>
+            <source>Hardware acceleration</source>
+            <translation>硬件加速</translation>
         </message>
         <message>
             <source>Hidden tools</source>
@@ -2677,6 +2768,10 @@
             <translation>保持选区宽高一致</translation>
         </message>
         <message>
+            <source>Keep the Snow Shot save dialog open after saving to show the result</source>
+            <translation>保存后保持 Snow Shot 保存对话框打开，以显示保存结果</translation>
+        </message>
+        <message>
             <source>Keep the first button of each toolbar group visible instead of the last used button</source>
             <translation>工具栏的每个分组始终显示第一个按钮，而不是上次使用的按钮</translation>
         </message>
@@ -2731,6 +2826,10 @@
         <message>
             <source>Leftover working files from finished or interrupted recordings will be removed</source>
             <translation>已完成或中断的屏幕录制留下的工作文件将被删除</translation>
+        </message>
+        <message>
+            <source>Let macOS control tray icon color</source>
+            <translation>让 macOS 控制托盘图标颜色</translation>
         </message>
         <message>
             <source>Light</source>
@@ -2955,6 +3054,10 @@
         <message>
             <source>Next frame</source>
             <translation>下一帧</translation>
+        </message>
+        <message>
+            <source>Next recording area</source>
+            <translation>下一个录制区域</translation>
         </message>
         <message>
             <source>Next screenshot history</source>
@@ -3267,6 +3370,10 @@
         <message>
             <source>Previous frame</source>
             <translation>上一帧</translation>
+        </message>
+        <message>
+            <source>Previous recording area</source>
+            <translation>上一个录制区域</translation>
         </message>
         <message>
             <source>Previous screenshot history</source>
@@ -3729,6 +3836,10 @@
             <translation>选择深色主题托盘图标</translation>
         </message>
         <message>
+            <source>Select each newly created element while keeping the current drawing tool active.</source>
+            <translation>选中每个新创建的元素，同时保持当前绘图工具处于启用状态。</translation>
+        </message>
+        <message>
             <source>Select image save directory</source>
             <translation>选择图像保存目录</translation>
         </message>
@@ -3981,6 +4092,14 @@
             <translation>显示原图预览</translation>
         </message>
         <message>
+            <source>Show recording status prompts</source>
+            <translation>显示录屏状态提示</translation>
+        </message>
+        <message>
+            <source>Show save result</source>
+            <translation>显示保存结果</translation>
+        </message>
+        <message>
             <source>Show screenshot guides when a capture starts</source>
             <translation>开始截图时显示辅助线</translation>
         </message>
@@ -4027,6 +4146,10 @@
         <message>
             <source>Show the sub-toolbar for the Edit Selection tool</source>
             <translation>显示编辑选区工具的子工具栏</translation>
+        </message>
+        <message>
+            <source>Show the video format and microphone and speaker status in the center of the motion preview area.</source>
+            <translation>在动效预览区域中央显示视频格式以及麦克风和扬声器状态。</translation>
         </message>
         <message>
             <source>Show toolbar</source>
@@ -4369,6 +4492,10 @@
             <translation>工具栏尺寸</translation>
         </message>
         <message>
+            <source>Tools excluded from automatic selection</source>
+            <translation>禁止自动选中元素的工具</translation>
+        </message>
+        <message>
             <source>Tools that forbid quick selection of same-type elements</source>
             <translation>禁止快速选择同类型元素的工具</translation>
         </message>
@@ -4493,6 +4620,10 @@
             <translation>上传到云端</translation>
         </message>
         <message>
+            <source>Use GPU acceleration when available. Recognition uses the CPU while acceleration is unavailable.</source>
+            <translation>在可用时使用 GPU 加速。加速不可用时，识别将使用 CPU。</translation>
+        </message>
+        <message>
             <source>Use global mouse gestures, select individual window elements, and translate selected text.</source>
             <translation>使用全局鼠标手势、选择窗口内的单个元素，以及翻译选中的文本。</translation>
         </message>
@@ -4593,6 +4724,10 @@
             <translation>将重复内容固定到屏幕时</translation>
         </message>
         <message>
+            <source>While editing text, press Delete to remove selected text or the character after the cursor.</source>
+            <translation>编辑文字时，按 Delete 键删除选中的文字或光标后的字符。</translation>
+        </message>
+        <message>
             <source>Window Element API</source>
             <translation>窗口元素 API</translation>
         </message>
@@ -4613,16 +4748,12 @@
             <translation>Windows 右键菜单</translation>
         </message>
         <message>
-            <source>Write the image to a file and copy that file to the clipboard</source>
-            <translation>将图像写入文件并将该文件复制到剪贴板</translation>
-        </message>
-        <message>
             <source>Zip archives (*.zip);;All files (*.*)</source>
             <translation>Zip 压缩包 (*.zip);;所有文件 (*.*)</translation>
         </message>
         <message>
             <source>px</source>
-            <translation>像素</translation>
+            <translation>px</translation>
         </message>
     </context>
     <context>
@@ -4904,6 +5035,10 @@ Unavailable: %2</source>
             <translation>存储目录不可写。</translation>
         </message>
         <message>
+            <source>The storage directory path is empty</source>
+            <translation>存储目录路径为空</translation>
+        </message>
+        <message>
             <source>Verification failed for %1.</source>
             <translation>%1 校验失败。</translation>
         </message>
@@ -4999,8 +5134,8 @@ Unavailable: %2</source>
             <translation>最近的存储错误</translation>
         </message>
         <message>
-            <source>Log file copied.</source>
-            <translation>日志文件已复制。</translation>
+            <source>Log file copied</source>
+            <translation>日志文件已复制</translation>
         </message>
         <message>
             <source>Log location</source>
@@ -5131,8 +5266,8 @@ Unavailable: %2</source>
             <translation>存储位置</translation>
         </message>
         <message>
-            <source>Storage migration complete.</source>
-            <translation>存储迁移完成。</translation>
+            <source>Storage migration complete</source>
+            <translation>存储迁移完成</translation>
         </message>
         <message>
             <source>Storage mode</source>
@@ -5230,6 +5365,10 @@ Unavailable: %2</source>
             <translation>DeepL</translation>
         </message>
         <message>
+            <source>DeepLX</source>
+            <translation>DeepLX</translation>
+        </message>
+        <message>
             <source>Delete</source>
             <translation>删除</translation>
         </message>
@@ -5264,6 +5403,10 @@ Unavailable: %2</source>
         <message>
             <source>No translation configurations added</source>
             <translation>尚未添加翻译配置</translation>
+        </message>
+        <message>
+            <source>Optional access token sent as a Bearer token.</source>
+            <translation>可选的访问令牌，以 Bearer 令牌形式发送。</translation>
         </message>
         <message>
             <source>Optional for servers that do not require authentication.</source>

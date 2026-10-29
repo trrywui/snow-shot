@@ -18,6 +18,7 @@
 #include "snow_shot/presentation/styles/thememanager.h"
 #include "snow_shot/presentation/translationpagecontroller.h"
 #include "snow_shot/storage/applicationstorage.h"
+#include "snow_shot/storage/settingsadapters.h"
 #include "snow_shot/shortcuts/shortcutdisplayservice.h"
 #include "snow_shot/translation/translationlanguages.h"
 #include "widgets/button.h"
@@ -128,7 +129,7 @@ void sharedServiceSelectors() {
         registry.catalog().page(QStringLiteral("text-recognition-translation"));
     require(definition->sections[1].id == QStringLiteral("interface-text-recognition") &&
                 definition->sections[2].id == QStringLiteral("translation-settings") &&
-                definition->sections[2].items.size() == 7 &&
+                definition->sections[2].items.size() == 8 &&
                 definition->sections[2].items[0].id ==
                     QStringLiteral("translation.source-language") &&
                 definition->sections[2].items[1].id ==
@@ -353,6 +354,10 @@ class SettingsGeometryObserver final : public QObject {
 
 void screenshotSettingsGeometry() {
     auto& configuration = snow_shot::storage::ApplicationStorage::instance().configuration();
+    const snow_shot::storage::ScreenshotTranslationSettings settings;
+    const bool copyResultsAsImage = settings.copyTranslationResultsAsImage();
+    require(settings.setCopyTranslationResultsAsImage(true),
+            "enable image copying in main settings");
     Server server;
     server.holdModels = true;
     SnowShotApiClient client(server.url());
@@ -376,7 +381,11 @@ void screenshotSettingsGeometry() {
         require(qAbs(body->height() - expectedHeight) <= 1,
                 "screenshot settings body fits its content without vertical blank space");
         const auto labels = body->findChildren<QLabel*>(QStringLiteral("ad-form-item-label"));
-        require(labels.size() == 6, "screenshot settings has six form labels");
+        require(labels.size() == 6 &&
+                    labels.at(5)->text() == QStringLiteral("Original Image Translation") &&
+                    !body->findChild<QWidget*>(
+                        QStringLiteral("screenshotTranslationCopyResultsAsImage")),
+                "screenshot settings excludes the main-settings-only image copy option");
         for (auto* label : labels) {
             require(label->width() >= label->fontMetrics().horizontalAdvance(label->text()) &&
                         label->height() >= label->fontMetrics().height(),
@@ -403,9 +412,17 @@ void screenshotSettingsGeometry() {
                                                      : QStringLiteral("settings-discovered.png"))),
                     "save screenshot settings preview");
         }
-        modal->reject();
+        if (cached) {
+            modal->closeRequested(adqt::widgets::AdModal::CloseReason::OkAction);
+        } else {
+            modal->reject();
+        }
+        require(settings.copyTranslationResultsAsImage(),
+                "accepting or cancelling the dialog preserves the main image copy preference");
         flushEvents();
     }
+    require(settings.setCopyTranslationResultsAsImage(copyResultsAsImage),
+            "restore main image copy preference");
 }
 
 void screenshotSettingsProviderLifetime() {

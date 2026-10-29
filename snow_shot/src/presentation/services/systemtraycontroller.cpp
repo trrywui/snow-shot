@@ -79,7 +79,7 @@ QString bundledIconResource(const QString& selection) {
     return bundledIconResources().value(normalizedIconSelection(selection));
 }
 
-QIcon withShortcutsDisabledBadge(const QIcon& base) {
+QIcon withShortcutsDisabledBadge(const QIcon& base, bool templateIcon) {
     QIcon result;
     // Supply native tray sizes and their high-DPI counterparts to keep the badge crisp.
     for (const int size : {16, 20, 22, 24, 32, 40, 44, 48, 64, 128, 256}) {
@@ -89,11 +89,23 @@ QIcon withShortcutsDisabledBadge(const QIcon& base) {
         painter.setRenderHint(QPainter::Antialiasing);
         base.paint(&painter, QRect(0, 0, size, size));
         painter.scale(size / 16.0, size / 16.0);
-        // A white edge separates the centered red badge from both light and dark artwork.
         const QRectF badge(4.25, 4.25, 7.5, 7.5);
-        painter.setPen(QPen(Qt::white, 0.75));
-        painter.setBrush(QColor(QStringLiteral("#e53935")));
-        painter.drawEllipse(badge);
+        if (templateIcon) {
+            // Template images use alpha only: separate the badge and cut out its slash.
+            painter.setCompositionMode(QPainter::CompositionMode_Clear);
+            painter.setPen(QPen(Qt::black, 0.75));
+            painter.setBrush(Qt::black);
+            painter.drawEllipse(badge);
+            painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            painter.setPen(Qt::NoPen);
+            painter.drawEllipse(badge.adjusted(0.375, 0.375, -0.375, -0.375));
+            painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        } else {
+            // A white edge separates the centered red badge from light and dark artwork.
+            painter.setPen(QPen(Qt::white, 0.75));
+            painter.setBrush(QColor(QStringLiteral("#e53935")));
+            painter.drawEllipse(badge);
+        }
         painter.setPen(QPen(Qt::white, 1.15, Qt::SolidLine, Qt::RoundCap));
         painter.drawLine(QPointF(6.45, 9.55), QPointF(9.55, 6.45));
         painter.end();
@@ -103,7 +115,8 @@ QIcon withShortcutsDisabledBadge(const QIcon& base) {
 }
 
 QString normalizedClickAction(const QString& action, const char* defaultAction) {
-    return action == QStringLiteral("screenshot") || action == QStringLiteral("show_main_window") ||
+    return action == QStringLiteral("none") || action == QStringLiteral("screenshot") ||
+                   action == QStringLiteral("show_main_window") ||
                    action == QStringLiteral("screenshot_copy") ||
                    action == QStringLiteral("screenshot_fixed") ||
                    action == QStringLiteral("open_function_settings")
@@ -524,6 +537,9 @@ class SystemTrayController::Impl {
     }
 
     void dispatchClickAction(const QString& action) {
+        if (action == QStringLiteral("none")) {
+            return;
+        }
         if (action == QStringLiteral("show_main_window")) {
             emit q.showMainWindowRequested();
         } else if (action == QStringLiteral("screenshot_copy")) {
@@ -838,13 +854,15 @@ class SystemTrayController::Impl {
             resolvedSource = QCoreApplication::applicationFilePath();
             icon = QIcon(QCoreApplication::applicationFilePath());
         }
-        if (globalShortcutsDisabled || focusedFullscreenSuppressionActive) {
-            icon = withShortcutsDisabledBadge(icon);
-        }
 #ifdef Q_OS_MACOS
-        // Template rendering discards RGB colors, including the selected bundled artwork.
-        icon.setIsMask(false);
+        const bool templateIcon = useSystemIconColor;
+#else
+        constexpr bool templateIcon = false;
 #endif
+        if (globalShortcutsDisabled || focusedFullscreenSuppressionActive) {
+            icon = withShortcutsDisabledBadge(icon, templateIcon);
+        }
+        icon.setIsMask(templateIcon);
         trayIcon->setIcon(icon);
         trayIcon->setProperty("resolvedIconSource", resolvedSource);
         trayIcon->setProperty("customIconCacheHits",
@@ -888,6 +906,7 @@ class SystemTrayController::Impl {
     BalloonKind lastBalloonKind = BalloonKind::None;
     QString lastBalloonFilePath;
     bool enabled = true;
+    bool useSystemIconColor = false;
     bool darkTheme =
         adqt::theme::ThemeManager::instance().config().scheme == adqt::theme::ThemeScheme::Dark;
     bool globalShortcutsDisabled = false;
@@ -984,6 +1003,18 @@ void SystemTrayController::setEnabled(bool enabled) {
 
 bool SystemTrayController::isEnabled() const {
     return m_impl->enabled;
+}
+
+void SystemTrayController::setUseSystemIconColor(bool enabled) {
+    if (m_impl->useSystemIconColor == enabled) {
+        return;
+    }
+    m_impl->useSystemIconColor = enabled;
+    m_impl->updateIcon();
+}
+
+bool SystemTrayController::useSystemIconColor() const {
+    return m_impl->useSystemIconColor;
 }
 
 void SystemTrayController::setIconSelection(const QString& selection) {

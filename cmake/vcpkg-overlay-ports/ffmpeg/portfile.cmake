@@ -610,7 +610,7 @@ else()
 endif()
 
 if ("qsv" IN_LIST FEATURES)
-    set(OPTIONS "${OPTIONS} --enable-libvpl --enable-encoder=h264_qsv")
+    set(OPTIONS "${OPTIONS} --enable-libvpl --enable-encoder=h264_qsv,hevc_qsv")
     if(NOT "snow-shot-minimal" IN_LIST FEATURES)
         string(APPEND OPTIONS " --enable-decoder=h264_qsv")
     endif()
@@ -648,7 +648,7 @@ if("snow-shot-minimal" IN_LIST FEATURES)
     if(NOT VCPKG_TARGET_IS_WINDOWS OR VCPKG_TARGET_IS_UWP)
         message(FATAL_ERROR "ffmpeg[snow-shot-minimal] currently supports desktop Windows only")
     endif()
-    set(SNOW_SHOT_ENCODERS "libx264,libx265,h264_mf,gif,apng,libwebp_anim,aac")
+    set(SNOW_SHOT_ENCODERS "libx264,libx265,h264_mf,hevc_mf,gif,apng,libwebp_anim,aac")
     set(SNOW_SHOT_COMPAT_COMPONENTS)
     if("snow-recording-compat" IN_LIST FEATURES)
         # Standalone compatibility capture/export can write Matroska and AVI.
@@ -662,9 +662,9 @@ if("snow-shot-minimal" IN_LIST FEATURES)
     foreach(SNOW_HARDWARE_FEATURE IN ITEMS nvcodec amf qsv)
         if(SNOW_HARDWARE_FEATURE IN_LIST FEATURES)
             if(SNOW_HARDWARE_FEATURE STREQUAL "nvcodec")
-                string(APPEND SNOW_SHOT_ENCODERS ",h264_nvenc")
+                string(APPEND SNOW_SHOT_ENCODERS ",h264_nvenc,hevc_nvenc")
             else()
-                string(APPEND SNOW_SHOT_ENCODERS ",h264_${SNOW_HARDWARE_FEATURE}")
+                string(APPEND SNOW_SHOT_ENCODERS ",h264_${SNOW_HARDWARE_FEATURE},hevc_${SNOW_HARDWARE_FEATURE}")
             endif()
         endif()
     endforeach()
@@ -676,7 +676,7 @@ if("snow-shot-minimal" IN_LIST FEATURES)
         " --enable-muxer=mp4,gif,apng,webp"
         " --enable-demuxer=matroska,mov,gif,apng,webp,webp_anim"
         " --enable-parser=h264,hevc,aac,gif"
-        " --enable-bsf=h264_mp4toannexb,aac_adtstoasc"
+        " --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc"
         " --enable-protocol=file"
         " --enable-filter=abuffer,abuffersink,atempo"
         " --enable-hwaccel=h264_d3d11va,h264_d3d11va2,h264_dxva2,hevc_d3d11va,hevc_d3d11va2,hevc_dxva2"

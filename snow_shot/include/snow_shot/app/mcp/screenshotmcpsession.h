@@ -59,9 +59,10 @@ class ScreenshotMcpSession final : public QObject {
     ScreenshotMcpResponse failure(const ScreenshotMcpRequest&, const QString& code,
                                   const QString& field = {}) const;
     void startPending(const ScreenshotMcpRequest&, ScreenshotMcpServer::Completion);
-    void complete(ScreenshotMcpResponse response);
-    void failPending(const QString& code, const QString& field = {});
-    void cancelPending(const QString& code);
+    void complete(ScreenshotMcpResponse response, std::optional<bool> releaseSession = {});
+    void failPending(const QString& code, const QString& field = {},
+                     std::optional<bool> releaseSession = {});
+    void cancelPending(const QString& code, bool releaseSession = false);
     void release(bool cancel);
     void output(const ScreenshotMcpRequest&, bool finish);
     void encodeOutput(const ScreenshotMcpRequest&, bool finish, quint64 generation, qreal scale);
@@ -79,6 +80,7 @@ class ScreenshotMcpSession final : public QObject {
     bool m_silent = false;
     bool m_ready = false;
     bool m_releasing = false;
+    bool m_stopping = false;
     QJsonObject m_observed;
     QJsonObject m_artifactState;
     QJsonObject m_captureMetadata;

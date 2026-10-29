@@ -1,6 +1,7 @@
 #include "snow_shot/app/edition.h"
 #include "snow_shot/platform/windows/administratorlaunch.h"
 #include "snow_shot/platform/windows/autostartregistration.h"
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/runtime/runtimeactivitytracker.h"
 
 #include <QCoreApplication>
@@ -577,6 +578,8 @@ AdministratorResult runStartupTransaction(const StartupTransactionOperations& op
 AdministratorPresentation administratorPresentation(AdministratorState state, bool autoStart,
                                                     bool pending) {
     AdministratorPresentation result;
+    if (app::distribution::isStoreManaged())
+        return result;
     const bool allowed = state.valid && state.member;
     result.launchEnabled = allowed && autoStart && !pending;
     result.restartEnabled = state.valid && (state.elevated || (state.member && !pending));
@@ -623,6 +626,12 @@ AdministratorState administratorState() {
 }
 std::optional<StartupMode> observedStartupMode() {
 #ifdef Q_OS_WIN
+    if (app::distribution::isStoreManaged()) {
+        const auto current = AutoStartRegistration::snapshot();
+        return current.valid
+                   ? std::optional(current.exists ? StartupMode::Registry : StartupMode::Off)
+                   : std::nullopt;
+    }
     try {
         Tasks tasks;
         if (tasks.current())
@@ -645,6 +654,23 @@ void setAdministratorRestartGuard(std::function<bool()> guard) {
     restartGuard = std::move(guard);
 }
 AdministratorResult changeStartupMode(StartupMode mode, const std::function<bool()>& persist) {
+    if (app::distribution::isStoreManaged()) {
+        if (mode == StartupMode::ElevatedTask)
+            return failure(text(QT_TRANSLATE_NOOP(
+                "AdministratorLaunch",
+                "Administrator launch is unavailable in the Microsoft Store version.")));
+        const auto previous = AutoStartRegistration::snapshot();
+        if (!previous.valid)
+            return failure(previous.error);
+        QString error;
+        if (!AutoStartRegistration::setEnabled(mode == StartupMode::Registry, &error))
+            return failure(error);
+        if (persist())
+            return {true, false, {}};
+        static_cast<void>(AutoStartRegistration::restore(previous, &error));
+        return failure(
+            text(QT_TRANSLATE_NOOP("AdministratorLaunch", "Settings could not be saved.")));
+    }
     if (operationPending)
         return failure(text(QT_TRANSLATE_NOOP("AdministratorLaunch",
                                               "Another administrator operation is in progress.")));
@@ -693,6 +719,10 @@ AdministratorResult changeStartupMode(StartupMode mode, const std::function<bool
 #endif
 }
 AdministratorResult restartAsAdministrator(const std::function<bool()>& flush) {
+    if (app::distribution::isStoreManaged())
+        return failure(text(QT_TRANSLATE_NOOP(
+            "AdministratorLaunch",
+            "Administrator launch is unavailable in the Microsoft Store version.")));
     const auto state = administratorState();
     if (state.elevated)
         return {true, false, {}};
@@ -724,6 +754,8 @@ AdministratorResult restartAsAdministrator(const std::function<bool()>& flush) {
 int dispatchAdministratorHelper(const QStringList& arguments) {
     if (arguments.size() < 2 || arguments[1] != u"--administrator-helper")
         return -1;
+    if (app::distribution::isStoreManaged())
+        return 20;
 #ifdef Q_OS_WIN
     if (arguments.size() != 4 || !administratorState().elevated)
         return 20;
@@ -798,6 +830,10 @@ int dispatchAdministratorHelper(const QStringList& arguments) {
 #endif
 }
 AdministratorResult reconcileStartupMode(StartupMode mode) {
+    if (app::distribution::isStoreManaged()) {
+        Q_UNUSED(mode);
+        return {true, false, {}};
+    }
 #ifdef Q_OS_WIN
     try {
         Tasks tasks;
@@ -838,6 +874,8 @@ AdministratorResult reconcileStartupMode(StartupMode mode) {
 
 static AdministratorResult updateInstallationStartup(const QString& root,
                                                      const QString& replacementRoot) {
+    if (app::distribution::isStoreManaged())
+        return {true, false, {}};
 #ifdef Q_OS_WIN
     try {
         Tasks tasks;

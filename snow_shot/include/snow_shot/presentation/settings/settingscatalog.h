@@ -134,10 +134,12 @@ enum class SettingsSwitchBinding {
     SmartSelection,
     OcrResidentProcess,
     OcrModelHotStart,
+    OcrHardwareAcceleration,
     ScreenshotAreaTypeHint,
     ShowGuidesByDefault,
     ShowEditSelectionToolbar,
     TrayEnabled,
+    TrayUseSystemIconColor,
     FloatingToolbarEnabled,
     ScreenshotQuickSelectionModification,
     ScreenshotShowCursor,
@@ -148,6 +150,7 @@ enum class SettingsSwitchBinding {
     ScreenshotAutoRecognizeQrCode,
     ScreenshotRestoreOriginalScreenColors,
     ScreenshotCopyImageFileToClipboard,
+    ScreenshotShowSaveResult,
     SaveRecognitionResultAsImage,
     ShowOriginalImagePreview,
     ShowTextHighlighting,
@@ -160,6 +163,7 @@ enum class SettingsSwitchBinding {
     PinConfirmBeforeClosingWindow,
     PinConfirmBeforeDestroyingWindow,
     OriginalImageTranslation,
+    CopyTranslationResultsAsImage,
     TranslationPageEnabled,
     JumpToTranslationPage,
     StandaloneTranslationWindow,
@@ -167,6 +171,7 @@ enum class SettingsSwitchBinding {
     LoopAnimatedImages,
     ScreenRecordingCaptureToolbar,
     ScreenRecordingAutoHideToolbar,
+    ScreenRecordingShowStatusPrompts,
     ScreenRecordingAutoExitAfterRecordingEnds,
     ScreenRecordingNotifyAfterExportCompletes,
     ScreenRecordingDeleteFilesOnRecordingClose,
@@ -174,6 +179,8 @@ enum class SettingsSwitchBinding {
     McpEnabled,
     AutoStartAtBoot,
     LaunchAsAdministrator,
+    DrawingAutomaticallySelectNewlyCreatedElements,
+    DrawingDeleteTextAfterCursor,
     DrawingRememberLastUsedTool,
     DrawingAlwaysShowFirstToolbarGroupButton,
 };
@@ -196,6 +203,7 @@ enum class SettingsIntegerBinding {
 };
 
 enum class SettingsMultiSelectBinding {
+    DrawingAutomaticSelectionExcludedTools,
     DrawingQuickSelectionDisabledTools,
     TrayMenuOptions,
     ScreenshotAutoSaveAfterExecution,

@@ -4,6 +4,7 @@
 #include "snow_shot/presentation/components/pinnedwindowmanagementpagewidget.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/capturehistoryrepository.h"
+#include "snow_shot/storage/settingsadapters.h"
 #include "snow_shot/presentation/styles/thememanager.h"
 #include "snow_shot/presentation/historypinplacement.h"
 #include "snow_shot/presentation/screenshotclipboardcontent.h"
@@ -21,7 +22,9 @@
 #include "widgets/pagination.h"
 #include "widgets/context_menu.h"
 #include "widgets/popconfirm.h"
+#include "widgets/message.h"
 #include "widgets/scroll_area.h"
+#include "history_sticky_selection_test_support.h"
 #include "snow_shot/storage/storageusagetracker.h"
 
 #include <QApplication>
@@ -44,6 +47,7 @@
 #include <QUuid>
 #include <QLabel>
 #include <QLayout>
+#include <QBoxLayout>
 #include <QKeyEvent>
 #include <QTemporaryDir>
 #include <QTranslator>
@@ -54,6 +58,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <utility>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 namespace storage = snow_shot::storage;
 
@@ -123,6 +130,12 @@ class MutableHistoryDataSource : public ScreenshotHistoryPageDataSource {
         removedIds.push_back(id);
     }
     QVector<QString> removedIds;
+    QStringList revealedIds;
+    bool revealSucceeds = true;
+    bool revealRecord(const QString& id) override {
+        revealedIds.append(id);
+        return revealSucceeds;
+    }
     bool requestRemoveMany(const QVector<QString>& ids) override {
         removedBatches.push_back(ids);
         return acceptRemoval;
@@ -174,6 +187,28 @@ class SkinBackdrop final : public QWidget {
     }
 };
 
+void selectionPanelSticksWhileScrolling() {
+    MutableHistoryDataSource source;
+    source.setRecords(historyRecords(55));
+    storage::InterfaceSettings settings;
+    const int originalPageSize = settings.screenshotHistoryPageSize();
+    const auto restorePageSize =
+        qScopeGuard([&] { settings.setScreenshotHistoryPageSize(originalPageSize); });
+    for (const int pageSize : {10, 20, 50}) {
+        require(settings.setScreenshotHistoryPageSize(pageSize), "save history fixture page size");
+        ScreenshotHistoryPageWidget page(&source, nullptr);
+        require(page.findChild<adqt::widgets::AdPagination*>()->pageSize() == pageSize,
+                "sticky history fixture restores the saved page size");
+        page.resize(980, 640);
+        page.show();
+        history_sticky_test::settleLayout();
+        auto* row = page.findChild<QWidget*>(QStringLiteral("screenshotHistoryEntry-record-0"));
+        require(row != nullptr, "sticky history fixture has an entry");
+        history_sticky_test::verifySelection(page, QStringLiteral("screenshotHistory"),
+                                             row->findChild<adqt::widgets::AdCheckbox*>(), require);
+    }
+}
+
 class StyleChangeRecorder final : public QObject {
   public:
     QStringList styles;
@@ -186,6 +221,63 @@ class StyleChangeRecorder final : public QObject {
         return false;
     }
 };
+
+void entryDescriptionsUseSmallThemeText() {
+    MutableHistoryDataSource source;
+    source.setRecords(historyRecords(2));
+    QWidget host;
+    QFont inheritedFont = host.font();
+    inheritedFont.setPixelSize(14);
+    inheritedFont.setHintingPreference(QFont::PreferNoHinting);
+    host.setFont(inheritedFont);
+    ScreenshotHistoryPageWidget page(&source, &host);
+    host.resize(980, 640);
+    page.resize(host.size());
+    host.show();
+    page.show();
+    page.setActive(true);
+    flushEvents();
+
+    for (const int fontSize : {14, 20, 14}) {
+        snow_shot::presentation::styles::ThemeStyleConfig config;
+        config.fontSize = fontSize;
+        const auto scheme = snow_shot::presentation::styles::generateThemeColorScheme(config);
+        page.applyTheme(scheme);
+        const auto requireDescriptionFonts = [&] {
+            for (const auto* name :
+                 {"screenshotHistorySourceBadge", "screenshotHistoryEntrySummary",
+                  "screenshotHistoryEntryMetadata"}) {
+                const auto labels = page.findChildren<QLabel*>(QString::fromLatin1(name));
+                require(labels.size() == source.records().size(),
+                        "every screenshot entry exposes all three description labels");
+                for (const auto* label : labels) {
+                    require(label->font().pixelSize() == scheme.metricAlias.fontSizeSM &&
+                                label->font().weight() == QFont::Normal &&
+                                label->font().hintingPreference() == QFont::PreferNoHinting,
+                            "screenshot descriptions use small theme text and inherited hinting");
+                }
+            }
+            const auto timestamps = page.findChildren<adqt::widgets::AdCheckbox*>(
+                QStringLiteral("screenshotHistoryEntrySelection"));
+            for (const auto* timestamp : timestamps) {
+                require(timestamp->font().pixelSize() == scheme.metricAlias.fontSizeLG &&
+                            timestamp->font().weight() == QFont::DemiBold,
+                        "screenshot timestamps retain their heading text style");
+            }
+        };
+        flushEvents();
+        requireDescriptionFonts();
+        inheritedFont.setPointSizeF(24);
+        inheritedFont.setWeight(QFont::Bold);
+        host.setFont(inheritedFont);
+        flushEvents();
+        requireDescriptionFonts();
+        source.setRecords(historyRecords(static_cast<int>(source.records().size()) + 1));
+        page.refresh();
+        flushEvents();
+        requireDescriptionFonts();
+    }
+}
 
 void historyThemeChangesDoNotRestyleTwice() {
     auto& themeManager = snow_shot::presentation::styles::ThemeManager::instance();
@@ -438,6 +530,19 @@ void requireUniformEntryBorder(QWidget* entry) {
             "history entries must visibly paint a border around the container fill");
 }
 
+void triggerBatchStitch(adqt::widgets::AdButton* trigger) {
+    trigger->click();
+    QCoreApplication::processEvents();
+    auto* menu = trigger->window()->findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("screenshotHistoryBatchActionsMenu"));
+    require(menu && menu->isPopupVisible(), "Batch Actions opens its menu");
+    menu->setActiveAction(menu->actions().first());
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(menu, &enter);
+    QCoreApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
 void entriesUseBordersAndSupportCrossPageSelection() {
     MutableHistoryDataSource dataSource;
     const QVector<storage::CaptureHistoryRecord> records = historyRecords(12);
@@ -473,8 +578,8 @@ void entriesUseBordersAndSupportCrossPageSelection() {
         page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistoryDeleteSelected"));
     auto* selectAll =
         page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistorySelectAll"));
-    auto* collage =
-        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistoryCollage"));
+    auto* batchActions =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistoryBatchActions"));
     auto* deselectAll =
         page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistoryDeselectAll"));
     auto* pagination =
@@ -485,23 +590,24 @@ void entriesUseBordersAndSupportCrossPageSelection() {
         QStringLiteral("screenshotHistoryDateRangeFilter"));
     require(filters != nullptr && selectionBar != nullptr && selectionPanel != nullptr &&
                 selectionActions != nullptr && summary != nullptr && deleteSelected != nullptr &&
-                selectAll != nullptr && collage != nullptr && deselectAll != nullptr &&
+                selectAll != nullptr && batchActions != nullptr && deselectAll != nullptr &&
                 pagination != nullptr && sourceFilter != nullptr && dateFilter != nullptr,
             "history selection controls must be discoverable");
     require(!selectionBar->isVisible(), "selection bar must be hidden before selection");
-    require(!collage->isVisible(), "Collage must be hidden when no history entry is selected");
+    require(!batchActions->isVisible(),
+            "Batch Actions must be hidden when no history entry is selected");
     QWidget* firstEntry = checkboxes.first()->parentWidget()->parentWidget();
     require(verticalLayoutGap(page, filters, firstEntry) > 0,
             "history entries must retain a gap below the filters when selection is empty");
     require(selectionActions->layout() != nullptr && selectionActions->layout()->spacing() == 0,
             "selection actions must not add redundant spacing between link buttons");
-    require(selectionActions->layout()->indexOf(collage) + 1 ==
+    require(selectionActions->layout()->indexOf(batchActions) + 1 ==
                 selectionActions->layout()->indexOf(selectAll),
-            "Collage must appear immediately to the left of Select all");
+            "Batch Actions must appear immediately to the left of Select all");
     require(deleteSelected->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link &&
                 deleteSelected->accentRole() == adqt::widgets::AdButton::AccentRole::Danger &&
                 selectAll->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link &&
-                collage->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link &&
+                batchActions->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link &&
                 deselectAll->buttonStyle() == adqt::widgets::AdButton::ButtonStyle::Link,
             "selection actions must use link styling with a danger Delete action");
 
@@ -518,14 +624,14 @@ void entriesUseBordersAndSupportCrossPageSelection() {
     flushEvents();
     require(selectionBar->isVisible() && summary->text() == QStringLiteral("Selected 1 item"),
             "selecting one entry must show the singular selection summary");
-    require(collage->isVisible() && collage->text() == QStringLiteral("Collage") &&
-                !collage->toolTip().isEmpty() && !collage->accessibleName().isEmpty(),
-            "one selected screenshot exposes an accessible Collage action");
+    require(batchActions->isVisible() && batchActions->text() == QStringLiteral("Batch Actions") &&
+                !batchActions->toolTip().isEmpty() && !batchActions->accessibleName().isEmpty(),
+            "one selected screenshot exposes an accessible Batch Actions menu");
     QVector<QVector<storage::CaptureHistoryRecord>> collageRequests;
     QObject::connect(
         &page, &ScreenshotHistoryPageWidget::collageRequested, &page,
         [&collageRequests](const auto& selected) { collageRequests.append(selected); });
-    collage->click();
+    triggerBatchStitch(batchActions);
     require(collageRequests.size() == 1 && collageRequests.first() == QVector{records.first()},
             "Collage emits the selected complete history record");
     auto* countLabel = page.findChild<QLabel*>(QStringLiteral("screenshotHistoryCountLabel"));
@@ -573,11 +679,11 @@ void entriesUseBordersAndSupportCrossPageSelection() {
     flushEvents();
     require(summary->text() == QStringLiteral("Selected 11 items"),
             "cross-page selection count must include the newly selected entry");
-    collage->click();
-    collage->click();
+    triggerBatchStitch(batchActions);
+    triggerBatchStitch(batchActions);
     require(collageRequests.size() == 3 && collageRequests.at(1).size() == 11 &&
                 collageRequests.at(2) == collageRequests.at(1),
-            "each Collage click independently emits all selections across pages");
+            "each Stitch Image activation independently emits all selections across pages");
     for (qsizetype index = 0; index < collageRequests.at(1).size(); ++index)
         require(collageRequests.at(1).at(index) == records.at(index),
                 "collage inputs must preserve history list order and the complete record metadata");
@@ -603,7 +709,7 @@ void entriesUseBordersAndSupportCrossPageSelection() {
                 std::none_of(checkboxes.cbegin(), checkboxes.cend(),
                              [](const auto* checkbox) { return checkbox->isChecked(); }),
             "Deselect all must clear the complete cross-page selection");
-    require(!collage->isVisible(), "clearing history selection hides Collage");
+    require(!batchActions->isVisible(), "clearing history selection hides Batch Actions");
 
     entryCheckboxes(page).first()->click();
     sourceFilter->setCurrentValues({QStringLiteral("clipboard")});
@@ -779,6 +885,293 @@ void pageTextAndEmptyStateMatchPinnedWindowManagement() {
                     label->font().weight() == QFont::Normal &&
                     label->palette().color(QPalette::WindowText) == scheme.map.colorTextSecondary,
                 "both page subtitles and selection summaries must use the same theme text style");
+        }
+    }
+}
+
+void batchPinUsesEligibleSelectionAtActivation() {
+    MutableHistoryDataSource source;
+    auto records = historyRecords(12);
+    for (auto& record : records)
+        record.result = storage::CaptureHistoryResultRecord{};
+    records[1].result.reset();
+    source.setRecords(records);
+    ScreenshotHistoryPageWidget page(&source, nullptr);
+    page.resize(900, 720);
+    page.show();
+    page.setActive(true);
+    flushEvents();
+    auto* trigger =
+        page.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotHistoryBatchActions"));
+    auto* pagination =
+        page.findChild<adqt::widgets::AdPagination*>(QStringLiteral("screenshotHistoryPagination"));
+    auto boxes = entryCheckboxes(page);
+    boxes[1]->setChecked(true);
+    QStringList pinned;
+    bool refreshOnPin = false;
+    QObject::connect(&page, &ScreenshotHistoryPageWidget::pinRequested, &page,
+                     [&](const QString& id) {
+                         pinned.append(id);
+                         if (refreshOnPin) {
+                             source.setRecords(records);
+                             page.refresh();
+                         }
+                     });
+    int stitched = 0;
+    QObject::connect(&page, &ScreenshotHistoryPageWidget::collageRequested, &page,
+                     [&](const auto&) { ++stitched; });
+    QKeyEvent open(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+    QApplication::sendEvent(trigger, &open);
+    flushEvents();
+    QPointer<adqt::widgets::AdContextMenu> menu = page.findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("screenshotHistoryBatchActionsMenu"));
+    require(menu && menu->isPopupVisible() && !menu->nativeMenuEnabled() &&
+                menu->actions().size() == 2 && pinned.isEmpty() && stitched == 0,
+            "keyboard opens Batch Actions without dispatching either action");
+    auto* stitch = menu->actions()[0];
+    auto* pin = menu->actions()[1];
+    require(stitch->text() == QStringLiteral("Stitch Image") &&
+                pin->text() == QStringLiteral("Pin to screen") && !stitch->icon().isNull() &&
+                !pin->icon().isNull() && !pin->isEnabled(),
+            "batch menu has ordered themed actions and disables pin for unavailable records");
+    boxes[0]->setChecked(true);
+    require(pin->isEnabled(), "adding an eligible record enables the open menu pin action");
+    boxes[0]->setChecked(false);
+    require(!pin->isEnabled(), "removing the last eligible record disables the open pin action");
+    boxes[0]->setChecked(true);
+    for (const QString& locale : {QStringLiteral("zh_CN"), QStringLiteral("zh_TW")}) {
+        QTranslator translator;
+        require(translator.load(QStringLiteral(":/i18n/snow_shot_%1.qm").arg(locale)),
+                "load batch action translations");
+        QCoreApplication::installTranslator(&translator);
+        QEvent language(QEvent::LanguageChange);
+        QApplication::sendEvent(&page, &language);
+        require(trigger->text() ==
+                        translator.translate("ScreenshotHistoryPageWidget", "Batch Actions") &&
+                    trigger->accessibleName() == trigger->text() &&
+                    stitch->text() ==
+                        translator.translate("ScreenshotHistoryPageWidget", "Stitch Image") &&
+                    pin->text() ==
+                        translator.translate("ScreenshotHistoryPageWidget", "Pin to screen") &&
+                    pin->toolTip() == pin->text(),
+                "language changes translate the trigger and both actions in the open menu");
+        QCoreApplication::removeTranslator(&translator);
+    }
+    QEvent language(QEvent::LanguageChange);
+    QApplication::sendEvent(&page, &language);
+    pagination->setCurrentPage(2);
+    flushEvents();
+    entryCheckboxes(page).first()->setChecked(true);
+    menu->setActiveAction(pin);
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(menu, &enter);
+    flushEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    require(pinned == QStringList{records[0].id, records[10].id},
+            "batch pin uses the current cross-page selection and skips unavailable records");
+    require(!menu, "batch pin closes and retires its menu");
+    require(entryCheckboxes(page).first()->isChecked(), "batch pin retains selection");
+    pagination->setCurrentPage(1);
+    flushEvents();
+    entryCheckboxes(page)[1]->setChecked(false);
+    pinned.clear();
+    refreshOnPin = true;
+    trigger->click();
+    flushEvents();
+    menu = page.findChild<adqt::widgets::AdContextMenu*>(
+        QStringLiteral("screenshotHistoryBatchActionsMenu"));
+    require(menu && menu->actions()[1]->isEnabled(), "all eligible selections can be pinned again");
+    menu->setActiveAction(menu->actions()[1]);
+    QApplication::sendEvent(menu, &enter);
+    flushEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    require(pinned == QStringList{records[0].id, records[10].id},
+            "synchronous history refresh cannot invalidate the batch pin snapshot");
+    page.resize(500, 720);
+    flushEvents();
+    auto* panel = page.findChild<QWidget*>(QStringLiteral("screenshotHistorySelectionPanel"));
+    const QPoint origin = trigger->parentWidget()->mapTo(panel, QPoint());
+    require(origin.x() >= 0 && origin.x() + trigger->parentWidget()->width() <= panel->width(),
+            "Batch Actions fits the narrow history selection toolbar");
+}
+
+class PinnedLayoutDataSource final : public PinnedWindowManagementDataSource {
+  public:
+    storage::PinnedWindowSummary record;
+
+    QVector<storage::PinnedWindowSummary> records() const override {
+        return {record};
+    }
+    QVector<storage::PinnedWindowGroup> groups() const override {
+        return {};
+    }
+    std::optional<quint64> previewRevision(const QString&) const override {
+        return 1;
+    }
+    void requestPreview(const QString& id, quint64 request, const QSize&) override {
+        QImage image(120, 60, QImage::Format_RGB32);
+        image.fill(Qt::green);
+        emit previewReady(id, request, image, image.size());
+    }
+    void requestFullImage(const QString&, quint64) override {}
+    void showRecord(const QString&) override {}
+    void showRecords(const QStringList&) override {}
+    void removeRecords(const QVector<QString>&) override {}
+};
+
+void pageSizesRememberedIndependently(const QString& storageDirectory) {
+    MutableHistoryDataSource historySource;
+    historySource.setRecords(historyRecords(55));
+    PinnedLayoutDataSource pinnedSource;
+    pinnedSource.record.id = QStringLiteral("page-size-pin");
+    pinnedSource.record.createdUtc = historySource.records().first().createdUtc;
+    int previousHistorySize = 10;
+    int previousPinnedSize = 10;
+
+    for (const auto sizes : {std::pair{20, 50}, std::pair{50, 20}, std::pair{10, 10}}) {
+        {
+            ScreenshotHistoryPageWidget historyPage(&historySource, nullptr);
+            PinnedWindowManagementPageWidget pinnedPage(&pinnedSource, nullptr);
+            auto* historyPagination = historyPage.findChild<adqt::widgets::AdPagination*>();
+            auto* pinnedPagination = pinnedPage.findChild<adqt::widgets::AdPagination*>();
+            require(historyPagination->pageSize() == previousHistorySize &&
+                        pinnedPagination->pageSize() == previousPinnedSize,
+                    "each management page restores its own previous page size");
+            historyPagination->setPageSize(sizes.first);
+            require(pinnedPagination->pageSize() == previousPinnedSize,
+                    "changing history page size leaves pinned management unchanged");
+            pinnedPagination->setPageSize(sizes.second);
+            historyPage.setActive(true);
+            historyPage.refresh();
+            pinnedPage.refresh();
+            require(historyPagination->pageSize() == sizes.first &&
+                        pinnedPagination->pageSize() == sizes.second,
+                    "refresh preserves both selected page sizes");
+            require(historyPage
+                            .findChildren<adqt::widgets::AdCheckbox*>(
+                                QStringLiteral("screenshotHistoryEntrySelection"))
+                            .size() == sizes.first,
+                    "history renders the selected number of entries");
+        }
+
+        storage::ApplicationStorage::instance().shutdown();
+        require(storage::ApplicationStorage::instance()
+                    .initialize({storageDirectory, storageDirectory, 8000})
+                    .success,
+                "reload persisted management page preferences");
+        {
+            ScreenshotHistoryPageWidget historyPage(&historySource, nullptr);
+            PinnedWindowManagementPageWidget pinnedPage(&pinnedSource, nullptr);
+            require(historyPage.findChild<adqt::widgets::AdPagination*>()->pageSize() ==
+                            sizes.first &&
+                        pinnedPage.findChild<adqt::widgets::AdPagination*>()->pageSize() ==
+                            sizes.second,
+                    "both management page sizes survive storage shutdown and reload");
+        }
+        previousHistorySize = sizes.first;
+        previousPinnedSize = sizes.second;
+    }
+
+    auto& configuration = storage::ApplicationStorage::instance().configuration();
+    for (const auto& key : {QStringLiteral("interface/screenshot_history_page_size"),
+                            QStringLiteral("interface/pinned_window_management_page_size")}) {
+        for (const auto& value : {QJsonValue(0), QJsonValue(15), QJsonValue(100), QJsonValue(20.5),
+                                  QJsonValue(QStringLiteral("20")), QJsonValue(QJsonValue::Null)}) {
+            require(!configuration.setValue(key, value) && configuration.value(key).toInt() == 10,
+                    "unsupported page sizes and invalid types preserve the saved preference");
+        }
+    }
+}
+
+void entryLayoutsMatchAcrossManagementPages() {
+    auto& themeManager = snow_shot::presentation::styles::ThemeManager::instance();
+    const auto originalThemeMode = themeManager.themeMode();
+    const auto restoreTheme = qScopeGuard([&] { themeManager.setThemeMode(originalThemeMode); });
+    MutableHistoryDataSource historySource;
+    auto records = historyRecords(1);
+    records[0].createdUtc =
+        QDateTime::fromString(QStringLiteral("2026-10-22T10:00:00Z"), Qt::ISODate);
+    historySource.setRecords(records);
+    PinnedLayoutDataSource pinnedSource;
+    pinnedSource.record.id = QStringLiteral("layout-pin");
+    pinnedSource.record.createdUtc = historySource.records().first().createdUtc;
+    ScreenshotHistoryPageWidget historyPage(&historySource, nullptr);
+    PinnedWindowManagementPageWidget pinnedPage(&pinnedSource, nullptr);
+    historyPage.show();
+    pinnedPage.show();
+    historyPage.setActive(true);
+
+    for (const auto appearance : {snow_shot::presentation::styles::ThemeAppearance::Light,
+                                  snow_shot::presentation::styles::ThemeAppearance::Dark}) {
+        themeManager.setThemeAppearance(appearance);
+        snow_shot::presentation::styles::ThemeStyleConfig config;
+        config.appearance = appearance;
+        config.lineWidth =
+            appearance == snow_shot::presentation::styles::ThemeAppearance::Dark ? 3 : 1;
+        const auto scheme = snow_shot::presentation::styles::generateThemeColorScheme(config);
+        historyPage.applyTheme(scheme);
+        pinnedPage.applyTheme(scheme);
+        for (const int width : {980, 608, 607, 500, 980}) {
+            historyPage.resize(width, 720);
+            pinnedPage.resize(width, 720);
+            flushEvents();
+            flushEvents();
+            auto* history =
+                historyPage.findChild<QFrame*>(QStringLiteral("screenshotHistoryEntry-record-0"));
+            auto* pinned = pinnedPage.findChild<QFrame*>(QStringLiteral("pinnedManagementRecord"));
+            require(history && pinned, "both management pages expose a seeded entry");
+            auto* historyLayout = dynamic_cast<QBoxLayout*>(history->layout());
+            auto* pinnedLayout = dynamic_cast<QBoxLayout*>(pinned->layout());
+            require(historyLayout && pinnedLayout &&
+                        historyLayout->contentsMargins() == QMargins(18, 16, 18, 16) &&
+                        pinnedLayout->contentsMargins() == historyLayout->contentsMargins() &&
+                        pinnedLayout->spacing() == historyLayout->spacing(),
+                    "both entry layouts use Screenshot History padding and spacing");
+            require(pinned->contentsRect() == history->contentsRect() &&
+                        pinnedLayout->direction() == historyLayout->direction(),
+                    "entry borders preserve equal content insets and responsive geometry");
+            const auto relativeRect = [](QWidget* child, QWidget* row) {
+                return QRect(child->mapTo(row, QPoint()), child->size());
+            };
+            auto* historyDate = history->findChild<adqt::widgets::AdCheckbox*>();
+            auto* pinnedDate = pinned->findChild<adqt::widgets::AdCheckbox*>();
+            require(relativeRect(pinnedDate, pinned) == relativeRect(historyDate, history),
+                    "timestamps use identical alignment and leave no stretched checkbox area");
+            for (const auto& names :
+                 {std::pair{"screenshotHistorySourceBadge", "pinnedManagementSourceBadge"},
+                  std::pair{"screenshotHistoryEntrySummary", "pinnedManagementGroup"},
+                  std::pair{"screenshotHistoryEntryMetadata", "pinnedManagementStatus"},
+                  std::pair{"screenshotHistoryEntryEdit", "pinnedManagementEntryShow"}}) {
+                auto* historyControl =
+                    history->findChild<QWidget*>(QString::fromLatin1(names.first));
+                auto* pinnedControl =
+                    pinned->findChild<QWidget*>(QString::fromLatin1(names.second));
+                require(
+                    historyControl && pinnedControl &&
+                        relativeRect(pinnedControl, pinned).topLeft() ==
+                            relativeRect(historyControl, history).topLeft() &&
+                        pinnedControl->height() == historyControl->height(),
+                    "badges, descriptions, and actions share entry padding and vertical spacing");
+            }
+            auto* historyPreview =
+                history->findChild<QWidget*>(QStringLiteral("screenshotHistoryImageCarousel"));
+            auto* pinnedPreview =
+                pinned->findChild<QWidget*>(QStringLiteral("pinnedManagementPreview"));
+            require(historyPreview && pinnedPreview &&
+                        relativeRect(pinnedPreview, pinned) ==
+                            relativeRect(historyPreview, history),
+                    "previews share size and placement when narrowing and widening the pages");
+            const QString reviewDirectory = qEnvironmentVariable("SNOW_HISTORY_LAYOUT_REVIEW_DIR");
+            if (!reviewDirectory.isEmpty()) {
+                require(QDir().mkpath(reviewDirectory), "create history layout review directory");
+                const QString suffix =
+                    QStringLiteral("%1-%2.png").arg(static_cast<int>(appearance)).arg(width);
+                require(history->grab().save(
+                            QDir(reviewDirectory).filePath(QStringLiteral("history-") + suffix)) &&
+                            pinned->grab().save(
+                                QDir(reviewDirectory).filePath(QStringLiteral("pinned-") + suffix)),
+                        "save both entry layouts for visual review");
+            }
         }
     }
 }
@@ -1012,18 +1405,31 @@ void moreMenuOffersPinStitchAndDelete() {
     hover(more);
     flushEvents();
     QPointer<adqt::widgets::AdContextMenu> menu = visibleMenu(pinnableEntry);
-    require(menu != nullptr && menu->actions().size() == 4 && !menu->nativeMenuEnabled(),
+    require(menu != nullptr && menu->actions().size() == 6 && !menu->nativeMenuEnabled(),
             "hovering More must show the shared widget action menu");
     QAction* pin = menu->actions().at(0);
     QAction* stitch = menu->actions().at(1);
     QAction* split = menu->actions().at(2);
-    QAction* remove = menu->actions().at(3);
+    QAction* reveal = menu->actions().at(4);
+    QAction* remove = menu->actions().at(5);
+    auto* imageEditing =
+        menu->findChild<QAction*>(QStringLiteral("screenshotHistoryEntryImageEditing"));
+    require(imageEditing && menu->actions().at(3) == imageEditing && imageEditing->isEnabled() &&
+                imageEditing->text() == QStringLiteral("Image Editing") &&
+                !imageEditing->icon().isNull(),
+            "independent image editing follows Image Splitting in the record menu");
+    require(reveal->objectName() == QStringLiteral("screenshotHistoryEntryReveal") &&
+                reveal->text() ==
+                    snow_shot::presentation::components::history_page::revealActionText() &&
+                reveal->toolTip() == reveal->text() && reveal->isEnabled() &&
+                !reveal->icon().isNull(),
+            "the platform reveal action sits between image editing and Delete with its icon");
     require(pin->text() == QStringLiteral("Pin to screen") && pin->isEnabled() &&
                 stitch->text() == QStringLiteral("Stitch Image") && stitch->isEnabled() &&
                 split->text() == QStringLiteral("Image Splitting") && split->isEnabled() &&
                 remove->text() == QStringLiteral("Delete") && menu->actionDanger(remove) &&
                 menu->actionGeometry(pin).isValid(),
-            "the More menu offers Pin to screen, Stitch Image, Image Splitting, and danger Delete");
+            "the More menu preserves its existing image actions and danger Delete");
     QEvent languageChange(QEvent::LanguageChange);
     QApplication::sendEvent(pinnableEntry, &languageChange);
     flushEvents();
@@ -1038,6 +1444,19 @@ void moreMenuOffersPinStitchAndDelete() {
     require(pinnedId == QStringLiteral("record-0") && !menu,
             "Pin to screen must request that history entry and close the menu");
 
+    storage::CaptureHistoryRecord editorRecord;
+    QObject::connect(&page, &ScreenshotHistoryPageWidget::imageEditingRequested, &page,
+                     [&](const auto& record) { editorRecord = record; });
+    more->click();
+    flushEvents();
+    auto* editorMenu = visibleMenu(pinnableEntry);
+    require(editorMenu, "reopen More for independent editing");
+    activateMenuAction(editorMenu, editorMenu->findChild<QAction*>(
+                                       QStringLiteral("screenshotHistoryEntryImageEditing")));
+    flushEvents();
+    require(editorRecord == records[0] && dataSource.removedIds.isEmpty(),
+            "Image Editing dispatches the source record without altering history");
+
     auto* plainMore = plainEntry->findChild<adqt::widgets::AdButton*>(
         QStringLiteral("screenshotHistoryEntryMore"));
     require(plainMore != nullptr, "every history entry must expose More");
@@ -1048,8 +1467,66 @@ void moreMenuOffersPinStitchAndDelete() {
                 plainMenu->actions().at(0)->toolTip() ==
                     QStringLiteral("This screenshot cannot be pinned"),
             "Pin to screen must stay unavailable when the history entry has no image");
-    plainMenu->dismissPopup();
+    require(plainMenu->actions().at(4)->isEnabled(),
+            "resultless history still supports revealing its stored source or directory");
+    activateMenuAction(plainMenu, plainMenu->actions().at(4));
     flushEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    require(dataSource.revealedIds == QStringList{QStringLiteral("record-1")},
+            "resultless reveal uses its own record");
+
+    auto* selected = plainEntry->findChild<adqt::widgets::AdCheckbox*>();
+    selected->setChecked(true);
+    more->click();
+    flushEvents();
+    menu = visibleMenu(pinnableEntry);
+    require(menu, "reopen the menu for reveal translation");
+    for (const QString& locale : {QStringLiteral("zh_CN"), QStringLiteral("zh_TW")}) {
+        QTranslator translator;
+        require(translator.load(QStringLiteral(":/i18n/snow_shot_%1.qm").arg(locale)),
+                "load reveal action translations");
+        QCoreApplication::installTranslator(&translator);
+        QApplication::sendEvent(pinnableEntry, &languageChange);
+        const QString label = snow_shot::presentation::components::history_page::revealActionText();
+        require(menu && menu->actions().at(4)->text() == label &&
+                    menu->actions().at(4)->toolTip() == label &&
+                    !translator.translate("HistoryFileLocation", "Open in Explorer").isEmpty() &&
+                    !translator.translate("HistoryFileLocation", "Reveal in Finder").isEmpty(),
+                "open history menus translate their reveal label and tooltip");
+        QCoreApplication::removeTranslator(&translator);
+    }
+    activateMenuAction(menu, menu->actions().at(4));
+    flushEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    require(!menu && selected->isChecked() &&
+                dataSource.revealedIds.last() == QStringLiteral("record-0") &&
+                dataSource.removedIds.isEmpty() && dataSource.readFailures == 0,
+            "reveal preserves selection, targets only its row, and retires the popup");
+
+    dataSource.revealSucceeds = false;
+    QString failureMessage;
+    auto* messages = adqt::widgets::AdMessageService::instance(&page);
+    QObject::connect(
+        messages, &adqt::widgets::AdMessage::messageOpened, &page,
+        [&](adqt::widgets::AdMessageHandle* handle) { failureMessage = handle->content(); });
+    more->click();
+    flushEvents();
+    menu = visibleMenu(pinnableEntry);
+    require(menu, "reopen reveal failure fixture menu");
+    // Exercise keyboard dispatch as well as the successful mouse activations above.
+    menu->setActiveAction(menu->actions().at(4));
+    QKeyEvent revealKey(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(menu, &revealKey);
+    flushEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    require(!menu && dataSource.removedIds.isEmpty() && dataSource.readFailures == 0 &&
+                dataSource.records().size() == 2 && selected->isChecked(),
+            "failed reveal preserves history and selection without invoking read-failure cleanup");
+    require(dataSource.revealedIds.size() == 3 &&
+                failureMessage == QStringLiteral("Unable to open this entry's file location.") &&
+                QApplication::activeModalWidget() == nullptr,
+            "failed reveal displays a non-modal error");
+    adqt::widgets::AdMessageService::destroyAll(&page);
 
     hover(more);
     flushEvents();
@@ -1224,6 +1701,41 @@ void waitUntil(const std::function<bool()>& complete, const char* message) {
     require(complete(), message);
 }
 
+// Production publishes native Windows formats even under the offscreen plugin.
+// Read that boundary explicitly rather than inspecting the unrelated offscreen clipboard.
+std::optional<ScreenshotClipboardContentSnapshot> historyClipboardSnapshot() {
+#ifdef Q_OS_WIN
+    if (QGuiApplication::platformName() == QStringLiteral("offscreen")) {
+        if (!OpenClipboard(nullptr))
+            return std::nullopt;
+        const auto close = qScopeGuard([] { CloseClipboard(); });
+        const auto bytes = [](const wchar_t* name) {
+            const auto handle =
+                static_cast<HGLOBAL>(GetClipboardData(RegisterClipboardFormatW(name)));
+            const auto size = handle ? GlobalSize(handle) : 0;
+            const void* memory = handle ? GlobalLock(handle) : nullptr;
+            QByteArray result;
+            if (memory && size)
+                result = QByteArray(static_cast<const char*>(memory), qsizetype(size));
+            if (memory)
+                GlobalUnlock(handle);
+            return result;
+        };
+        ScreenshotClipboardContentSnapshot snapshot;
+        const auto png = bytes(L"PNG");
+        if (png.isEmpty())
+            return std::nullopt;
+        snapshot.encodedImages.append({png, QStringLiteral("image/png")});
+        snapshot.placement =
+            decodeScreenshotClipboardPlacement(bytes(L"SnowShotScreenshotPlacement"));
+        snapshot.appearance =
+            decodeScreenshotClipboardAppearance(bytes(L"SnowShotScreenshotAppearance"));
+        return snapshot;
+    }
+#endif
+    return ScreenshotClipboardContentReader::snapshot(QApplication::clipboard(), 1);
+}
+
 void historyCopiesPreservePositionAndAppearance() {
     auto& repository = storage::ApplicationStorage::instance().captureHistory();
     for (int mode : {0, 1, 2}) {
@@ -1272,16 +1784,30 @@ void historyCopiesPreservePositionAndAppearance() {
                 QStringLiteral("screenshotHistoryEntryCopy"));
             require(copy != nullptr && copy->isVisible(), "history copy action is unavailable");
             QApplication::clipboard()->setText(QStringLiteral("before history copy"));
+#ifdef Q_OS_WIN
+            require(OpenClipboard(nullptr), "open clipboard for history fixture");
+            require(EmptyClipboard(), "clear native clipboard for history fixture");
+            CloseClipboard();
+#endif
             copy->click();
+            std::optional<ScreenshotClipboardContentSnapshot> snapshot;
             waitUntil(
                 [&] {
-                    return copy->isEnabled() && QApplication::clipboard()->mimeData()->hasFormat(
-                                                    QStringLiteral("image/png"));
+                    // Async asset resolution may replace the row while copying.
+                    auto* currentEntry = page.findChild<QWidget*>(
+                        QStringLiteral("screenshotHistoryEntry-%1").arg(published.record.id));
+                    auto* currentCopy = currentEntry
+                                            ? currentEntry->findChild<adqt::widgets::AdButton*>(
+                                                  QStringLiteral("screenshotHistoryEntryCopy"))
+                                            : nullptr;
+                    snapshot = historyClipboardSnapshot();
+                    return currentCopy && currentCopy->isEnabled() && snapshot &&
+                           !snapshot->encodedImages.isEmpty();
                 },
                 "history image copy did not finish");
-            auto snapshot =
-                ScreenshotClipboardContentReader::snapshot(QApplication::clipboard(), 1);
-            require(snapshot.has_value(), "history clipboard snapshot is unavailable");
+            require(std::any_of(snapshot->encodedImages.cbegin(), snapshot->encodedImages.cend(),
+                                [&](const auto& image) { return image.bytes == stored->bytes(); }),
+                    "history copy changes the stored PNG");
             auto content = ScreenshotClipboardContentReader::decode(std::move(*snapshot));
             require(content && content->appearance &&
                         content->appearance->borderAppearance ==
@@ -1289,9 +1815,6 @@ void historyCopiesPreservePositionAndAppearance() {
                                 published.record) &&
                         !content->appearance->checkerboardEnabled,
                     "history copy loses its baked selection appearance");
-            require(QApplication::clipboard()->mimeData()->data(QStringLiteral("image/png")) ==
-                        stored->bytes(),
-                    "history copy changes the stored PNG");
             const auto direct =
                 snow_shot::presentation::historySelectionPinPlacement(published.record);
             require(content->placement.has_value() == direct.isPrepared(),
@@ -1475,6 +1998,31 @@ int main(int argc, char** argv) {
                 .initialize({temporary.path(), temporary.path(), 8000})
                 .success,
             "isolated application storage must initialize");
+    if (application.arguments().contains(QStringLiteral("--sticky-only"))) {
+        selectionPanelSticksWhileScrolling();
+        storage::ApplicationStorage::instance().shutdown();
+        QCoreApplication::removeTranslator(&englishTranslator);
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--page-size-only"))) {
+        pageSizesRememberedIndependently(temporary.path());
+        storage::ApplicationStorage::instance().shutdown();
+        QCoreApplication::removeTranslator(&englishTranslator);
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--entry-layout-only"))) {
+        entryLayoutsMatchAcrossManagementPages();
+        storage::ApplicationStorage::instance().shutdown();
+        QCoreApplication::removeTranslator(&englishTranslator);
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--clipboard-only"))) {
+        historyCopiesPreservePositionAndAppearance();
+        storage::ApplicationStorage::instance().shutdown();
+        QCoreApplication::removeTranslator(&englishTranslator);
+        return 0;
+    }
+    batchPinUsesEligibleSelectionAtActivation();
     entryStitchActionUsesOnlyItsRecord();
     entrySplitActionUsesOnlyItsRecord();
     if (application.arguments().contains(QStringLiteral("--collage-only"))) {
@@ -1492,11 +2040,14 @@ int main(int argc, char** argv) {
         QCoreApplication::removeTranslator(&englishTranslator);
         return 0;
     }
+    entryDescriptionsUseSmallThemeText();
     historyThemeChangesDoNotRestyleTwice();
     historyRowsRespectSkinMask();
+    selectionPanelSticksWhileScrolling();
     continuousHistoryPreview();
     emptyStateRemainsVisibleAfterFilteringEmptyHistory();
     pageTextAndEmptyStateMatchPinnedWindowManagement();
+    entryLayoutsMatchAcrossManagementPages();
     if (application.arguments().contains(QStringLiteral("--loading-only"))) {
         entriesUseBordersAndSupportCrossPageSelection();
         storage::ApplicationStorage::instance().shutdown();

@@ -8,14 +8,6 @@
 #include <utility>
 
 namespace snow_canvas_runtime {
-namespace {
-
-bool containsViewportId(const std::vector<std::uint64_t>& viewportIds, std::uint64_t viewportId) {
-    return std::find(viewportIds.begin(), viewportIds.end(), viewportId) != viewportIds.end();
-}
-
-} // namespace
-
 ClientRegistry::~ClientRegistry() {
     m_lifetime.reset();
     abandonClientsWithoutDetach();
@@ -146,7 +138,9 @@ void ClientRegistry::syncChangedViewports(std::vector<std::uint64_t> changedView
         if (client == nullptr) {
             continue;
         }
-        if (containsViewportId(changedViewportIds, client->runtimeViewportId())) {
+        if (std::any_of(
+                changedViewportIds.begin(), changedViewportIds.end(),
+                [client](std::uint64_t id) { return client->observesRuntimeViewport(id); })) {
             client->syncAfterEngineMutation();
         } else {
             client->refreshStateFromEngine(true);

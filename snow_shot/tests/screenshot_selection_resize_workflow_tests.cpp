@@ -7,12 +7,16 @@
 #include "widgets/input_line_edit.h"
 #include "widgets/modal.h"
 #include "widgets/select.h"
+#include "widgets/segmented.h"
+#include "widgets/form.h"
+#include "widgets/color_picker.h"
 #include "widgets/input_number.h"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QPainterPath>
 #include <QPointer>
+#include <QRadioButton>
 #include <QString>
 #include <QWidget>
 #include <QWindow>
@@ -287,8 +291,143 @@ void compoundPreviousSelectionKeepsPresetsRectangular(ScreenshotSelectionSetting
     settings.clear();
 }
 
+void borderTypeKeepsIndependentValues() {
+    ScreenshotSelectionParams params;
+    params.selection = QRect(10, 20, 200, 100);
+    params.shadowWidth = 8;
+    params.shadowColor = QColor(20, 30, 40);
+    ScreenshotSelectionResizeModalContent content(params, QRect(0, 0, 800, 600), true, params, {});
+    auto* type =
+        content.findChild<adqt::widgets::AdSegmented*>(QStringLiteral("selectionBorderType"));
+    auto* form = content.findChild<adqt::widgets::AdForm*>(QStringLiteral("selectionResizeForm"));
+    require(type && form && type->currentValue() == QStringLiteral("shadow"),
+            "legacy modal defaults to Shadow");
+    type->setCurrentValue(QStringLiteral("border"));
+    ScreenshotSelectionParams selected;
+    static_cast<void>(content.commit(&selected, nullptr, nullptr));
+    require(selected.borderType == ScreenshotSelectionBorderType::Border &&
+                selected.borderWidth == 0 && selected.borderColor == QColor(Qt::white) &&
+                selected.shadowWidth == 8,
+            "first Border selection is disabled white and preserves shadow settings");
+    form->setValues({{QStringLiteral("effectWidth"), 5},
+                     {QStringLiteral("effectColor"),
+                      QVariant::fromValue(adqt::widgets::AdColorValue::solid(QColor(Qt::red)))}});
+    type->setCurrentValue(QStringLiteral("shadow"));
+    static_cast<void>(content.commit(&selected, nullptr, nullptr));
+    require(selected.shadowWidth == 8 && selected.shadowColor == params.shadowColor &&
+                selected.borderWidth == 5 && selected.borderColor == QColor(Qt::red),
+            "switching back restores independent shadow settings");
+    type->setCurrentValue(QStringLiteral("border"));
+    require(form->values().value(QStringLiteral("effectWidth")).toInt() == 5,
+            "border width is remembered");
+    bool found = false;
+    for (const auto* item : form->items())
+        found |= item->label() == QStringLiteral("Border width");
+    require(found, "active effect labels describe borders");
+    content.show();
+    content.adjustSize();
+    flushEvents();
+    if (const auto path = qEnvironmentVariable("SNOW_TEST_SELECTION_BORDER_PREVIEW");
+        !path.isEmpty())
+        require(content.grab().save(path), "border dialog preview must save");
+    auto& languages = snow_shot::presentation::LanguageManager::instance();
+    require(languages.setLanguage(QStringLiteral("zh_CN")),
+            "border controls support language changes");
+    QEvent translatedEvent(QEvent::LanguageChange);
+    QCoreApplication::sendEvent(&content, &translatedEvent);
+    found = false;
+    for (const auto* item : form->items())
+        found |= item->label() == QStringLiteral("\u8fb9\u6846\u5bbd\u5ea6");
+    require(found && type->currentValue() == QStringLiteral("border"),
+            "border labels translate without changing the selected type");
+    require(languages.setLanguage(QStringLiteral("en_US")),
+            "restore English after border translation test");
+
+    QEvent languageChange(QEvent::LanguageChange);
+    QCoreApplication::sendEvent(&content, &languageChange);
+    require(type->currentValue() == QStringLiteral("border"),
+            "retranslation preserves active effect");
+    static_cast<void>(content.commit(&selected, nullptr, nullptr));
+    require(selected.borderWidth == 5 && selected.shadowWidth == 8,
+            "retranslation preserves both widths");
+}
+
+void restoredBorderTypeMatchesControl() {
+    ScreenshotSelectionParams current;
+    current.selection = QRect(10, 20, 200, 100);
+    current.borderType = ScreenshotSelectionBorderType::Border;
+    current.borderWidth = 5;
+    current.borderColor = QColor(Qt::red);
+    current.shadowWidth = 8;
+    current.shadowColor = QColor(Qt::blue);
+    auto previous = current;
+    previous.borderType = ScreenshotSelectionBorderType::Shadow;
+    previous.shadowWidth = 12;
+    auto preset = current;
+    preset.borderWidth = 17;
+    ScreenshotSelectionParams committed;
+    {
+        ScreenshotSelectionResizeModalContent content(current, QRect(0, 0, 800, 600), true,
+                                                      previous,
+                                                      {{QStringLiteral("Border preset"), preset}});
+        auto* type =
+            content.findChild<adqt::widgets::AdSegmented*>(QStringLiteral("selectionBorderType"));
+        auto* form =
+            content.findChild<adqt::widgets::AdForm*>(QStringLiteral("selectionResizeForm"));
+        auto* presets =
+            content.findChild<adqt::widgets::AdSelect*>(QStringLiteral("selectionPresetSelect"));
+        require(type && form && presets, "resize controls exist");
+        const auto check = [&](const ScreenshotSelectionParams& expected) {
+            const auto value = screenshotSelectionBorderTypeId(expected.borderType);
+            require(type->currentValue() == value &&
+                        form->value(QStringLiteral("borderType")) == value,
+                    "restored type must match both the form and Segmented selection");
+            const auto buttons = type->findChildren<QRadioButton*>();
+            require(buttons.size() == 2, "Segmented exposes both accessible options");
+            for (const auto* button : buttons) {
+                require(button->isChecked() ==
+                            (button->property("optionIndex").toInt() == type->currentIndex()),
+                        "restored type must match the visible and accessible selected option");
+            }
+            require(content.commit(&committed, nullptr, nullptr) ==
+                            ScreenshotSelectionResizeModalContent::CommitResult::ApplySelection &&
+                        committed.borderType == expected.borderType &&
+                        committed.borderWidth == expected.borderWidth &&
+                        committed.borderColor == expected.borderColor &&
+                        committed.shadowWidth == expected.shadowWidth &&
+                        committed.shadowColor == expected.shadowColor,
+                    "restoring a type preserves both effect value sets");
+        };
+        check(current);
+        content.show();
+        content.adjustSize();
+        flushEvents();
+        check(current);
+        presets->selected(QStringLiteral("previous"), QString());
+        check(previous);
+        presets->selected(QStringLiteral("preset:0"), QString());
+        check(preset);
+        presets->selected(QStringLiteral("current"), QString());
+        check(current);
+    }
+    ScreenshotSelectionResizeModalContent reopened(committed, QRect(0, 0, 800, 600), true, previous,
+                                                   {});
+    auto* type =
+        reopened.findChild<adqt::widgets::AdSegmented*>(QStringLiteral("selectionBorderType"));
+    require(type && type->currentValue() == QStringLiteral("border"),
+            "reopening the committed Border selection must select Border");
+    type->setCurrentValue(QStringLiteral("shadow"));
+    static_cast<void>(reopened.commit(&committed, nullptr, nullptr));
+    require(committed.borderType == ScreenshotSelectionBorderType::Shadow &&
+                committed.shadowWidth == current.shadowWidth &&
+                committed.borderWidth == current.borderWidth,
+            "switching a reopened Border selection restores the saved shadow width");
+}
+
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
+    restoredBorderTypeMatchesControl();
+    borderTypeKeepsIndependentValues();
     ScreenshotSelectionSettingsStore settingsStore;
     settingsStore.clear();
     ScreenshotSelectionResizeWorkflow workflow(settingsStore);

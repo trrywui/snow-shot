@@ -27,6 +27,7 @@ struct FilterRenderDiagnostics {
     bool usedFilterPath = false;
     std::size_t referenceSceneBuildCount = 0;
     std::size_t referenceSceneHits = 0;
+    std::size_t referenceSceneUpdatedPixels = 0;
     std::size_t retainedReferenceSceneBytes = 0;
     std::size_t executionPlanBuildCount = 0;
     std::size_t dependencyItemVisits = 0;
@@ -134,14 +135,26 @@ struct SceneRenderRequest {
     // Tiled exports must retain the full export's background resampling pass,
     // including tiles outside filters. Interactive paints leave this disabled.
     bool forceBackgroundRaster = false;
+    // Backdrop decoration, painted before all scene items and sampled by filters.
+    const SpotlightDisplayInfo* spotlightInfo = nullptr;
+    const SnowSpotlightCutout* spotlightCutouts = nullptr;
+    std::uint32_t spotlightCutoutCount = 0;
+    // Canvas coordinates keep this independent of the live or reference viewport.
+    QRectF spotlightRenderArea{};
+    bool hasSpotlightRenderArea = false;
 };
+
+std::uint64_t spotlightFingerprint(const SceneRenderRequest& request);
+void renderSpotlightBackdrop(QPainter& painter, const SceneRenderRequest& request,
+                             const QRegion& exposedRegion);
 
 QColor toQColor(const SnowColorRgba8& color);
 void copyPainterFontAndHints(QPainter& destination, const QPainter& source);
 std::size_t hatchTextureCacheEntryCountForCurrentThread();
 FilterRenderDiagnostics filterRenderDiagnosticsForCurrentThread();
 void resetFilterRenderDiagnosticsForCurrentThread();
-void recordReferenceScenePresentation(bool rebuilt, std::size_t retainedBytes);
+void recordReferenceScenePresentation(bool rebuilt, std::size_t retainedBytes,
+                                      std::size_t updatedPixels);
 void accumulateFilterRenderDiagnostics(FilterRenderDiagnostics& target,
                                        const FilterRenderDiagnostics& source);
 std::size_t watermarkLayoutCacheBuildCountForCurrentThread();

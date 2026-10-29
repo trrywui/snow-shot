@@ -1,4 +1,5 @@
 #include "snow_shot/runtime/runtimeactivitytracker.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 #include "recordingrenderjob.h"
 #include "recordingrenderdialog.h"
 #include "snow_shot/platform/applicationqos.h"
@@ -6,14 +7,20 @@
 #include "widgets/modal.h"
 #include <QCoreApplication>
 #include <QEvent>
+#include <QFutureWatcher>
 #include <QPointer>
+#include <QPromise>
 #include <QScreen>
 #include <QTimer>
+#include <QUuid>
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <future>
 #include <optional>
 #include <thread>
+#include <type_traits>
+#include <utility>
 
 namespace {
 QString renderText(const char* source) {
@@ -39,6 +46,28 @@ struct CleanupResult {
     QString error;
     SnowRecordingSource* retainedSource = nullptr;
 };
+
+// Keep native ownership in std::future for detached shutdown, and notify the GUI
+// only after that future is ready. Finishing a Qt promise inside std::async's
+// callable would race with std::async making its result ready on return.
+template <typename Work> auto runNotifying(QFutureWatcher<void>& watcher, Work work) {
+    using Result = std::invoke_result_t<Work>;
+    std::promise<Result> result;
+    auto future = result.get_future();
+    QPromise<void> completion;
+    completion.start();
+    watcher.setFuture(completion.future());
+    std::thread([work = std::move(work), result = std::move(result),
+                 completion = std::move(completion)]() mutable {
+        try {
+            result.set_value(work());
+        } catch (...) {
+            result.set_exception(std::current_exception());
+        }
+        completion.finish();
+    }).detach();
+    return future;
+}
 } // namespace
 
 struct RecordingRenderJob::Impl {
@@ -50,9 +79,16 @@ struct RecordingRenderJob::Impl {
             return snow_recording_source_path(source, buffer, capacity);
         });
         timer.setInterval(100);
+        timer.setParent(&owner);
+        timer.setObjectName(QStringLiteral("recordingRenderProgressPollTimer"));
         QObject::connect(&timer, &QTimer::timeout, &owner, [this] { poll(); });
+        QObject::connect(&startCompletion, &QFutureWatcher<void>::finished, &owner,
+                         [this] { poll(); });
+        QObject::connect(&cleanupCompletion, &QFutureWatcher<void>::finished, &owner,
+                         [this] { poll(); });
     }
     void shutdown() {
+        completionEnabled = false;
         timer.stop();
         if (modal) {
             modal->close();
@@ -95,6 +131,13 @@ struct RecordingRenderJob::Impl {
     void setError(QString error, const char* fallback = nullptr) {
         errorTranslation = error.isEmpty() ? fallback : nullptr;
         lastError = errorTranslation ? renderText(errorTranslation) : std::move(error);
+        if (!lastError.isEmpty())
+            snow_shot::diagnostics::DiagnosticsService::instance().record(
+                QtWarningMsg, QStringLiteral("snow_shot.recording"),
+                QStringLiteral("recording.render_failed"), lastError,
+                {{QStringLiteral("operation"), operation},
+                 {QStringLiteral("stage"), static_cast<int>(stage)},
+                 {QStringLiteral("duration_ms"), static_cast<qint64>(durationMs)}});
     }
     void ensureModal() {
         if (!visible || modal)
@@ -129,8 +172,8 @@ struct RecordingRenderJob::Impl {
         stage = SNOW_RECORDING_RENDER_STAGE_PREPARE;
         lastError.clear();
         errorTranslation = nullptr;
-        startFuture = std::async(
-            std::launch::async, snow_shot::runtime::trackRuntimeWork([renderSource = source] {
+        startFuture = runNotifying(
+            startCompletion, snow_shot::runtime::trackRuntimeWork([renderSource = source] {
                 snow_shot::platform::applyApplicationQoSToCurrentThread();
                 StartResult result;
                 if (snow_recording_source_render_start(renderSource, &result.task) !=
@@ -161,15 +204,15 @@ struct RecordingRenderJob::Impl {
             return;
         auto* retiring = task;
         task = nullptr;
-        cleanupFuture = std::async(
-            std::launch::async, snow_shot::runtime::trackRuntimeWork(
-                                    [retiring, cancellation = std::move(cancelFuture)]() mutable {
-                                        snow_shot::platform::applyApplicationQoSToCurrentThread();
-                                        if (cancellation.valid())
-                                            cancellation.get();
-                                        snow_recording_render_task_destroy(retiring);
-                                        return CleanupResult{};
-                                    }));
+        cleanupFuture = runNotifying(
+            cleanupCompletion, snow_shot::runtime::trackRuntimeWork(
+                                   [retiring, cancellation = std::move(cancelFuture)]() mutable {
+                                       snow_shot::platform::applyApplicationQoSToCurrentThread();
+                                       if (cancellation.valid())
+                                           cancellation.get();
+                                       snow_recording_render_task_destroy(retiring);
+                                       return CleanupResult{};
+                                   }));
     }
     void requestCancellation() {
         if (!task || cancelFuture.valid())
@@ -187,8 +230,8 @@ struct RecordingRenderJob::Impl {
         releasing = outcome;
         auto* retiring = source;
         source = nullptr;
-        cleanupFuture = std::async(
-            std::launch::async, snow_shot::runtime::trackRuntimeWork([retiring, discard, outcome] {
+        cleanupFuture = runNotifying(
+            cleanupCompletion, snow_shot::runtime::trackRuntimeWork([retiring, discard, outcome] {
                 snow_shot::platform::applyApplicationQoSToCurrentThread();
                 CleanupResult result;
                 if (discard &&
@@ -206,6 +249,8 @@ struct RecordingRenderJob::Impl {
         notify();
     }
     void poll() {
+        if (!completionEnabled)
+            return;
         if (cleanupFuture.valid()) {
             if (cleanupFuture.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
                 return;
@@ -296,6 +341,9 @@ struct RecordingRenderJob::Impl {
     const QRect anchorGeometry;
     QPointer<QWidget> windowOwner;
     QTimer timer;
+    QFutureWatcher<void> startCompletion;
+    QFutureWatcher<void> cleanupCompletion;
+    bool completionEnabled = true;
     std::future<StartResult> startFuture;
     std::future<CleanupResult> cleanupFuture;
     std::future<void> cancelFuture;
@@ -307,6 +355,7 @@ struct RecordingRenderJob::Impl {
     uint32_t stage = SNOW_RECORDING_RENDER_STAGE_PREPARE;
     uint64_t durationMs = 0;
     QString path;
+    const QString operation = QUuid::createUuid().toString(QUuid::Id128);
     QString lastError;
     const char* errorTranslation = nullptr;
     QPointer<adqt::widgets::AdModal> modal;
@@ -324,6 +373,21 @@ RecordingRenderJob::~RecordingRenderJob() {
 }
 void RecordingRenderJob::start() {
     m_impl->start();
+}
+void RecordingRenderJob::prepareForSessionEnd() {
+    m_impl->completionEnabled = false;
+    m_impl->timer.stop();
+    changed = {};
+    finished = {};
+    if (m_impl->dialog) {
+        m_impl->dialog->cancel = {};
+        m_impl->dialog->retry = {};
+        m_impl->dialog->keep = {};
+        m_impl->dialog->discard = {};
+    }
+    // This process is ending. Native render destruction cancels and joins, so the complete
+    // owner is deliberately retained rather than entering ordinary cancellation/cleanup.
+    setParent(nullptr);
 }
 void RecordingRenderJob::detachWindowOwner() {
     auto& s = *m_impl;

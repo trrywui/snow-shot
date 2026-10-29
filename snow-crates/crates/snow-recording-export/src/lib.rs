@@ -10,6 +10,7 @@ pub mod export;
 pub mod gpu;
 pub mod resize;
 pub mod streaming;
+mod webcam;
 
 #[cfg(feature = "bench-timing")]
 pub mod bench_timing;
@@ -17,7 +18,6 @@ pub mod bench_timing;
 mod animation;
 #[doc(hidden)]
 pub mod ffmpeg_util;
-#[cfg(any(test, feature = "bench-experiments"))]
 mod frame_converter;
 mod gif_encoder;
 mod gif_palette;
@@ -42,7 +42,8 @@ pub use hdr::preserves_hdr_output;
 pub use snow_recording_model::PlaybackSpeed;
 pub use streaming::{
     StreamingAudioConfig, StreamingEncoder, StreamingEncoderBuilder, StreamingEncoderConfig,
-    StreamingEncoderReport, VideoFrameReuse, cleanup_stale_staging_files, scaled_output_dimensions,
+    StreamingEncoderReport, VideoFrameReuse, VideoStartupReport, cleanup_stale_staging_files,
+    scaled_output_dimensions,
 };
 
 #[cfg(target_os = "macos")]

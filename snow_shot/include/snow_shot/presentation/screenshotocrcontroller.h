@@ -98,6 +98,7 @@ class ScreenshotOcrController final : public QObject {
     void mergeTableSelection();
     void splitTableSelection();
     void resetTable();
+    [[nodiscard]] bool openSpreadsheetFile();
     void undoTableEdit();
     void redoTableEdit();
     void undoTextEdit();

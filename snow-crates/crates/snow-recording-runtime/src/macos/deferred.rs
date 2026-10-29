@@ -42,6 +42,7 @@ pub(crate) fn run_capture(
     native.execution = ExportExecutionMode::HardwarePreferred;
     native.video.quality = config.quality.max(95);
     native.video.speed = snow_recording_model::VideoEncodingSpeed::VeryFast;
+    native.webcam = None;
     native.codec = if native.capture.dynamic_range == DynamicRange::Hdr {
         VideoCodec::H265
     } else {
@@ -66,6 +67,7 @@ pub(crate) fn run_capture(
     let origin = Instant::now();
     clock.controller().mark_resume(origin);
     input.reset(&clock, origin)?;
+    let webcam = crate::webcam::DeferredWebcam::start(config, path, clock.clone());
     let mut paused = false;
     let mut since = origin;
     let mut stop = None;
@@ -74,156 +76,163 @@ pub(crate) fn run_capture(
     *control_clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock.clone());
     state.store(1, Ordering::Release);
     let _ = ready.send(());
-    while stop.is_none() {
-        let first = if paused {
-            commands.recv_timeout(Duration::from_millis(10)).ok()
-        } else {
-            commands.try_recv().ok()
-        };
-        for command in first.into_iter().chain(commands.try_iter()) {
-            match command {
-                Command::Pause(at) if !paused => {
-                    recording.pause_capture_at(at);
-                    if let Some(audio) = &audio {
-                        audio.pause();
+    let capture_result = (|| -> Result<()> {
+        while stop.is_none() {
+            let first = if paused {
+                commands.recv_timeout(Duration::from_millis(10)).ok()
+            } else {
+                commands.try_recv().ok()
+            };
+            for command in first.into_iter().chain(commands.try_iter()) {
+                match command {
+                    Command::Pause(at) if !paused => {
+                        recording.pause_capture_at(at);
+                        if let Some(audio) = &audio {
+                            audio.pause();
+                        }
+                        input.reset(&clock, at)?;
+                        paused = true;
                     }
-                    input.reset(&clock, at)?;
-                    paused = true;
-                }
-                Command::Resume(at) if paused => {
-                    recording.resume_capture();
-                    if let Some(audio) = &audio {
-                        audio.resume();
+                    Command::Resume(at) if paused => {
+                        recording.resume_capture();
+                        if let Some(audio) = &audio {
+                            audio.resume();
+                        }
+                        input.reset(&clock, at)?;
+                        paused = false;
+                        since = at;
                     }
-                    input.reset(&clock, at)?;
-                    paused = false;
-                    since = at;
+                    Command::Stop(at) => {
+                        stop = Some(at);
+                        break;
+                    }
+                    Command::Cancel => return Err(ScreenRecorderError::ExportCanceled),
+                    _ => {}
                 }
-                Command::Stop(at) => {
-                    stop = Some(at);
-                    break;
+            }
+            if stop.is_some() {
+                break;
+            }
+            if state.load(Ordering::Acquire) == 3 {
+                return Err(ScreenRecorderError::ExportCanceled);
+            }
+            if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
+                stop = Some(at);
+                break;
+            }
+            if paused {
+                recording.capture.poll_exclusions().map_err(native_error)?;
+                input.drain(&clock, true, since, None)?;
+                continue;
+            }
+            let event =
+                recording.step(schedule.wait(clock.active_elapsed_duration(Instant::now())))?;
+            match event {
+                NativeRecordingEvent::Frame { pts } => {
+                    frame_index.push(pts)?;
+                    admitted = true;
                 }
-                Command::Cancel => return Err(ScreenRecorderError::ExportCanceled),
-                _ => {}
+                NativeRecordingEvent::Interruption { .. } => {
+                    input.reset(&clock, Instant::now())?;
+                }
+                NativeRecordingEvent::Configuration { .. } | NativeRecordingEvent::Idle => {}
             }
-        }
-        if stop.is_some() {
-            break;
-        }
-        if state.load(Ordering::Acquire) == 3 {
-            return Err(ScreenRecorderError::ExportCanceled);
-        }
-        if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
-            stop = Some(at);
-            break;
-        }
-        if paused {
-            recording.capture.poll_exclusions().map_err(native_error)?;
-            input.drain(&clock, true, since, None)?;
-            continue;
-        }
-        let event = recording.step(schedule.wait(clock.active_elapsed_duration(Instant::now())))?;
-        match event {
-            NativeRecordingEvent::Frame { pts } => {
-                frame_index.push(pts)?;
-                admitted = true;
+            if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
+                stop = Some(at);
+                break;
             }
-            NativeRecordingEvent::Interruption { .. } => {
-                input.reset(&clock, Instant::now())?;
-            }
-            NativeRecordingEvent::Configuration { .. } | NativeRecordingEvent::Idle => {}
-        }
-        if let Some(at) = *stop_boundary.lock().unwrap_or_else(|e| e.into_inner()) {
-            stop = Some(at);
-            break;
-        }
-        if admitted
-            && let Some(slot) = crate::deferred::admit_source_slot(
-                &mut schedule,
-                &clock,
-                &stop_boundary,
-                &control_clock,
-            )
-        {
-            let slot_ms = (u128::from(slot.pts) * 1000 / u128::from(config.output_fps)) as u64;
-            let at = Instant::now();
-            input.begin_slot(slot_ms);
-            let transform = recording.source_transform();
-            if input.update_geometry(
-                &clock,
-                at,
-                (transform.output.width, transform.output.height),
-                Some(transform),
-            )? {
-                // Placement changes reset replay's shape cache too. Re-advertise
-                // the sampled native shape even when its pixel scale is unchanged.
-                last_cursor = None;
-            }
-            input.drain(&clock, false, since, None)?;
-            let mut captured_pointer = None;
-            if let Some(cursor) = &mut cursor {
-                let sample = cursor.sample().map_err(native_error)?;
+            if admitted
+                && let Some(slot) = crate::deferred::admit_source_slot(
+                    &mut schedule,
+                    &clock,
+                    &stop_boundary,
+                    &control_clock,
+                )
+            {
+                let slot_ms = (u128::from(slot.pts) * 1000 / u128::from(config.output_fps)) as u64;
+                let at = Instant::now();
+                input.begin_slot(slot_ms);
                 let transform = recording.source_transform();
-                let destination = aspect_fit(transform.output, logical)
-                    .map_err(|e| ScreenRecorderError::InvalidConfig(e.to_string()))?;
-                let point =
-                    crate::macos_effects::project(sample.x, sample.y, transform, destination);
-                let mut shape_record = None;
-                let mut shape_id = None;
-                if point.is_some() {
-                    let shape = sample.shape.ok_or_else(|| {
-                        ScreenRecorderError::UnsupportedFeature(
-                    "public system cursor shape is unavailable for post-recording rendering".into())
-                    })?;
-                    let scale = (
-                        destination.width as f64 / transform.source.width,
-                        destination.height as f64 / transform.source.height,
-                    );
-                    let same = last_cursor
-                        .as_ref()
-                        .is_some_and(|(cached, cached_scale, _)| {
-                            *cached_scale == scale
-                                && cached.width == shape.width
-                                && cached.height == shape.height
-                                && cached.point_width == shape.point_width
-                                && cached.point_height == shape.point_height
-                                && cached.hotspot_x == shape.hotspot_x
-                                && cached.hotspot_y == shape.hotspot_y
-                                && cached.rgba == shape.rgba
-                        });
-                    if same {
-                        shape_id = last_cursor.as_ref().map(|(_, _, id)| *id);
-                    } else {
-                        let id = next_shape;
-                        next_shape = next_shape.checked_add(1).ok_or_else(|| {
-                            ScreenRecorderError::InvalidConfig(
-                                "cursor shape identifier overflow".into(),
-                            )
-                        })?;
-                        shape_record =
-                            Some(super::cursor_rasterizer::rasterize(&shape, scale, id)?);
-                        shape_id = Some(id);
-                        last_cursor = Some((shape, scale, id));
-                    }
-                }
-                let (x, y) = point.unwrap_or((0, 0));
-                captured_pointer = Some(point);
-                input.native_cursor(
+                if input.update_geometry(
                     &clock,
                     at,
-                    shape_record,
-                    CursorFrameRecord {
-                        timestamp_ms: slot_ms,
-                        x,
-                        y,
-                        visible: point.is_some(),
-                        shape_id,
-                    },
-                )?;
+                    (transform.output.width, transform.output.height),
+                    Some(transform),
+                )? {
+                    // Placement changes reset replay's shape cache too. Re-advertise
+                    // the sampled native shape even when its pixel scale is unchanged.
+                    last_cursor = None;
+                }
+                input.drain(&clock, false, since, None)?;
+                let mut captured_pointer = None;
+                if let Some(cursor) = &mut cursor {
+                    let sample = cursor.sample().map_err(native_error)?;
+                    let transform = recording.source_transform();
+                    let destination = aspect_fit(transform.output, logical)
+                        .map_err(|e| ScreenRecorderError::InvalidConfig(e.to_string()))?;
+                    let point =
+                        crate::macos_effects::project(sample.x, sample.y, transform, destination);
+                    let mut shape_record = None;
+                    let mut shape_id = None;
+                    if point.is_some() {
+                        let shape = sample.shape.ok_or_else(|| {
+                            ScreenRecorderError::UnsupportedFeature(
+                        "public system cursor shape is unavailable for post-recording rendering".into())
+                        })?;
+                        let scale = (
+                            destination.width as f64 / transform.source.width,
+                            destination.height as f64 / transform.source.height,
+                        );
+                        let same = last_cursor
+                            .as_ref()
+                            .is_some_and(|(cached, cached_scale, _)| {
+                                *cached_scale == scale
+                                    && cached.width == shape.width
+                                    && cached.height == shape.height
+                                    && cached.point_width == shape.point_width
+                                    && cached.point_height == shape.point_height
+                                    && cached.hotspot_x == shape.hotspot_x
+                                    && cached.hotspot_y == shape.hotspot_y
+                                    && cached.rgba == shape.rgba
+                            });
+                        if same {
+                            shape_id = last_cursor.as_ref().map(|(_, _, id)| *id);
+                        } else {
+                            let id = next_shape;
+                            next_shape = next_shape.checked_add(1).ok_or_else(|| {
+                                ScreenRecorderError::InvalidConfig(
+                                    "cursor shape identifier overflow".into(),
+                                )
+                            })?;
+                            shape_record =
+                                Some(super::cursor_rasterizer::rasterize(&shape, scale, id)?);
+                            shape_id = Some(id);
+                            last_cursor = Some((shape, scale, id));
+                        }
+                    }
+                    let (x, y) = point.unwrap_or((0, 0));
+                    captured_pointer = Some(point);
+                    input.native_cursor(
+                        &clock,
+                        at,
+                        shape_record,
+                        CursorFrameRecord {
+                            timestamp_ms: slot_ms,
+                            x,
+                            y,
+                            visible: point.is_some(),
+                            shape_id,
+                        },
+                    )?;
+                }
+                input.pointer(&clock, at, captured_pointer, slot_ms)?;
+                input.end_slot();
             }
-            input.pointer(&clock, at, captured_pointer, slot_ms)?;
-            input.end_slot();
         }
+        Ok(())
+    })();
+    if let Err(error) = capture_result {
+        return Err(recording.preserve_failure(error));
     }
     let stop = stop.expect("stop boundary");
     let duration_ms = clock
@@ -232,7 +241,12 @@ pub(crate) fn run_capture(
         .div_ceil(1_000_000)
         .max(1) as u64;
     recording.freeze_source(stop);
-    input.drain(&clock, true, since, Some(stop))?;
+    if let Some(webcam) = webcam {
+        webcam.finish(duration_ms);
+    }
+    input
+        .drain(&clock, true, since, Some(stop))
+        .map_err(|error| recording.preserve_failure(error))?;
     if !admitted {
         return Err(ScreenRecorderError::Encode(
             "no screen frame was captured".into(),

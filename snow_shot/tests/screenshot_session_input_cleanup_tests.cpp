@@ -204,11 +204,16 @@ void runScreenshotSessionInputCleanupTests() {
     QTemporaryDir directory;
     require(directory.isValid(), "session input cleanup tests require isolated storage");
     auto& storage = snow_shot::storage::ApplicationStorage::instance();
+    const bool ownsStorage = !storage.isInitialized();
     const snow_shot::storage::StorageInitializationOptions options{
         directory.filePath(QStringLiteral("bin")), directory.filePath(QStringLiteral("data")),
         60000};
-    require(storage.initialize(options).success, "session input test storage must initialize");
-    const auto shutdown = qScopeGuard([&storage] { storage.shutdown(); });
+    if (ownsStorage)
+        require(storage.initialize(options).success, "session input test storage must initialize");
+    const auto shutdown = qScopeGuard([&storage, ownsStorage] {
+        if (ownsStorage)
+            storage.shutdown();
+    });
 
     captureTerminationReleasesActiveCustomRegionDrafts();
     captureTerminationReleasesCompletedFreehandInput();

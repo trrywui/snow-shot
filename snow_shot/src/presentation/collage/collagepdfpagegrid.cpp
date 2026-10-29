@@ -1091,10 +1091,14 @@ CollagePdfPageGrid::CollagePdfPageGrid(CollageDocument* document, QWidget* paren
     d.selectionToolbar->setObjectName(QStringLiteral("collagePdfImageToolbar"));
     d.selectionToolbar->hide();
     const std::array<adqt::icons::IconRef, 8> refs{
-        icons::RotateRight(), icons::RotateLeft(),
-        icons::Swap(),        snow_shot::presentation::icons::custom::outlined::FlipVertical(),
-        icons::Reload(),      icons::Edit(),
-        icons::Eye(),         icons::IconDelete()};
+        icons::RotateRight(),
+        icons::RotateLeft(),
+        snow_shot::presentation::icons::custom::outlined::FlipHorizontal(),
+        snow_shot::presentation::icons::custom::outlined::FlipVertical(),
+        icons::Reload(),
+        icons::Edit(),
+        icons::Eye(),
+        icons::IconDelete()};
     constexpr std::array<const char*, 8> names{
         "collagePdfRotateRight",  "collagePdfRotateLeft",     "collagePdfFlipHorizontal",
         "collagePdfFlipVertical", "collagePdfResetTransform", "collagePdfReplaceImage",

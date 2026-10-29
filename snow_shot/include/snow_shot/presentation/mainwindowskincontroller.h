@@ -10,6 +10,7 @@
 #include <memory>
 
 class SnowCanvasRegionFilterScratch;
+class QThreadPool;
 
 namespace snow_shot::presentation {
 
@@ -103,6 +104,9 @@ class MainWindowSkinController final : public QObject {
     void statusChanged();
 
   private:
+    friend class MainWindowSkinControllerTestAccess;
+    [[nodiscard]] QThreadPool* executorThreadPoolForTesting() const;
+
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

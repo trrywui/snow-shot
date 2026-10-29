@@ -1,4 +1,5 @@
 #include "snow_draw_engine_qt/snow_canvas_image.h"
+#include "snow_draw_engine_qt/snow_canvas_widget.h"
 #include "snow_shot/presentation/screenshotcanvascolorsampler.h"
 
 #include <QPixmap>
@@ -26,6 +27,7 @@ void ScreenshotCanvasColorSampler::reset() {
     m_canvas.clear();
     m_physicalRaster = {};
     m_physicalBounds = {};
+    m_contentSnapshot = false;
 }
 
 bool ScreenshotCanvasColorSampler::ensureSnapshot(QWidget& canvas, const QRect& physicalBounds) {
@@ -34,7 +36,8 @@ bool ScreenshotCanvasColorSampler::ensureSnapshot(QWidget& canvas, const QRect& 
         reset();
         return false;
     }
-    if (m_canvas == &canvas && m_physicalBounds == normalizedBounds && !m_physicalRaster.isNull()) {
+    if (!m_contentSnapshot && m_canvas == &canvas && m_physicalBounds == normalizedBounds &&
+        !m_physicalRaster.isNull()) {
         return true;
     }
 
@@ -51,6 +54,32 @@ bool ScreenshotCanvasColorSampler::ensureSnapshot(QWidget& canvas, const QRect& 
     m_canvas = &canvas;
     m_physicalRaster = std::move(raster);
     m_physicalBounds = normalizedBounds;
+    m_contentSnapshot = false;
+    return true;
+}
+
+bool ScreenshotCanvasColorSampler::ensureContentSnapshot(SnowCanvasWidget& canvas,
+                                                         const QRect& physicalBounds) {
+    const QRect normalizedBounds = physicalBounds.normalized();
+    if (!normalizedBounds.isValid() || normalizedBounds.isEmpty()) {
+        reset();
+        return false;
+    }
+    if (m_contentSnapshot && m_canvas == &canvas && m_physicalBounds == normalizedBounds &&
+        !m_physicalRaster.isNull()) {
+        return true;
+    }
+
+    // Use physical output dimensions directly, even when Qt rounds a fractional-DPI viewport.
+    QImage raster = canvas.renderContentToImage(normalizedBounds.size());
+    if (raster.isNull()) {
+        reset();
+        return false;
+    }
+    m_canvas = &canvas;
+    m_physicalRaster = std::move(raster);
+    m_physicalBounds = normalizedBounds;
+    m_contentSnapshot = true;
     return true;
 }
 

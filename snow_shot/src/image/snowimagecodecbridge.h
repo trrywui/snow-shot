@@ -242,6 +242,8 @@ snow_shot_image_codec_encode_rgba8_stream(const SnowShotImageCodecRgba8Source* s
                                           SnowShotImageCodecEncodeResult* result, char* error,
                                           uint64_t error_capacity);
 
+// Packed decoding (RGBA/BGRA/first frame) and inspect/inspect_canvas accept FORMAT_UNKNOWN
+// to detect content. Other expected_format values require a matching encoded format.
 SNOW_SHOT_IMAGE_CODEC_API int32_t SNOW_SHOT_IMAGE_CODEC_CALL snow_shot_image_codec_decode_rgba8(
     const uint8_t* encoded, uint64_t encoded_size, uint32_t expected_format,
     SnowShotImageCodecBuffer* output, char* error, uint64_t error_capacity);

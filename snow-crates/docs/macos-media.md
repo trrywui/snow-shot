@@ -145,6 +145,14 @@ reported in sample time and included in the editable media manifest. Pause/resum
 alignment uses the same recording clock. Audio workers honor broadcast
 cancellation, including while paused and when native packets complete late.
 
+Microphone startup uses the selected device's hardware input rate and channel
+count for a planar Float32 tap. AVAudioEngine setup and cleanup run behind an
+Objective-C exception boundary, including in Rust `panic=abort` builds. Hosts
+can register `snow_recording_macos_set_microphone_diagnostic_callback` to retain
+native exception names/reasons, operation, device ID and input/output formats
+before optional-source handling reduces the failure to an unavailable status.
+Snow Shot records these as `microphone.native_failed` in its diagnostic logs.
+
 Editable recording supports embedded, hidden and separate cursors. Separate
 cursor shapes, positions, click events (including the middle button), and trail
 observations are spooled incrementally to disk. The in-memory shape cache holds

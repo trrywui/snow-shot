@@ -7,6 +7,7 @@ pub struct SnowArrowTextLayoutRequest {
     pub style: SnowTextStyle,
     pub key: u64,
     pub max_width: f64,
+    pub distance_value_chars: u32,
 }
 
 #[repr(C)]
@@ -24,6 +25,7 @@ pub struct SnowArrowTextLayoutMetrics {
     pub key: u64,
     pub size: SnowTextLayoutSize,
     pub natural_width: f64,
+    pub distance_value_width: f64,
 }
 
 #[repr(C)]

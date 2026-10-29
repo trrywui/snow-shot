@@ -16,7 +16,12 @@ class ScreenshotSelectionSettingsStore final {
     [[nodiscard]] int cornerRadius() const;
     [[nodiscard]] int shadowWidth() const;
     [[nodiscard]] QColor shadowColor() const;
+    [[nodiscard]] ScreenshotSelectionBorderType borderType() const;
+    [[nodiscard]] int borderWidth() const;
+    [[nodiscard]] QColor borderColor() const;
+    void setSelectionBorder(ScreenshotSelectionBorderType type, int width, const QColor& color);
     void setSelectionEffects(int cornerRadius, int shadowWidth, const QColor& shadowColor);
+    void setSelectionEffects(const ScreenshotSelectionParams& params);
     [[nodiscard]] ScreenshotSelectionAspectRatioPreset aspectRatioPreset() const;
     [[nodiscard]] bool aspectRatioLocked() const;
     void setAspectRatioPreference(ScreenshotSelectionAspectRatioPreset preset, bool locked);

@@ -1,7 +1,7 @@
 # snow-selected-text
 
 Selected-text acquisition for translation and other explicitly invoked desktop actions. Rust 2024;
-Apache-2.0; Windows 10/11 x64 and macOS 15+ on Apple Silicon or Intel are supported. Other
+GPL-3.0-or-later; Windows 10/11 x64 and macOS 15+ on Apple Silicon or Intel are supported. Other
 platforms compile and return `UnsupportedPlatform`. There is no translation service, global hook,
 UI, permission prompt, or network access.
 

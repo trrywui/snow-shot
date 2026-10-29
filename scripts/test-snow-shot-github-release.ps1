@@ -152,6 +152,12 @@ $global:SnowGitHubTestEvents.Add('website')
     }
     }
     }
+    $storeOutput = Join-Path $fixture 'artifacts/msix/2.0.0'
+    $null = New-Item -ItemType Directory -Path $storeOutput -Force
+    foreach ($name in @('snow-shot-2.0.0.0-windows-x64.msix',
+            'snow-shot-2.0.0.0-windows-x64.msix.sha256', 'store-packages.manifest.json')) {
+        [IO.File]::WriteAllText((Join-Path $storeOutput $name), 'reserved Store artifact')
+    }
     function global:Invoke-WebRequest { param($Uri, $OutFile, $TimeoutSec, $MaximumRedirection)
         Require ($Uri.AbsoluteUri -eq 'https://example.invalid/ocr') 'Unexpected public network access.'
         Copy-Item -LiteralPath $global:SnowGitHubTestOcr -Destination $OutFile
@@ -176,6 +182,9 @@ $global:SnowGitHubTestEvents.Add('website')
     & (Join-Path $fixtureScripts 'publish-snow-shot-release.ps1') -BuildDirectory $build -Arm64BuildDirectory $build -SigningKeyPath $keyPath -SkipBuild -SkipGitee
     Require ($global:SnowGitHubTestEvents[0] -eq 'audit' -and $global:SnowGitHubTestEvents[-1] -eq 'edit') 'GitHub-only publication audits before publishing.'
     Require ($global:SnowGitHubTestBytes.ContainsKey('latest-version.json') -and $global:SnowGitHubTestBytes.ContainsKey('latest-version-windows-arm64.json') -and $global:SnowGitHubTestBytes.Count -eq 52) 'Publish all sixteen packages, sidecars, audit manifests, and four signed feeds.'
+    Require (@($global:SnowGitHubTestBytes.Keys | Where-Object {
+        $_ -match '\.msix(?:\.sha256)?$|^store-packages\.manifest\.json$'
+    }).Count -eq 0) 'Reserved Store packages and evidence must remain local during release publication.'
     $miniEnvelope = [Text.Encoding]::UTF8.GetString($global:SnowGitHubTestBytes['latest-version-mini.json']) | ConvertFrom-Json
     $miniPayload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($miniEnvelope.payload)) | ConvertFrom-Json
     Require ($miniPayload.product -ceq 'snow-shot-mini' -and $miniPayload.packages.Count -eq 3) 'Mini signs its three packages with a product identity.'

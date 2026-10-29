@@ -276,6 +276,7 @@ class ScreenshotToolPaletteStyleControls final {
     [[nodiscard]] bool stepTextFontSize(int direction);
     [[nodiscard]] bool handleArrowRatioWheel(const QPoint& globalPosition, int direction);
     [[nodiscard]] bool handleCornerRadiusWheel(const QPoint& globalPosition, int direction);
+    [[nodiscard]] bool handleArrowOutlineWidthWheel(const QPoint& globalPosition, int direction);
     [[nodiscard]] bool handleTextStrokeWidthWheel(const QPoint& globalPosition, int direction);
     [[nodiscard]] bool handleTextCornerRadiusWheel(const QPoint& globalPosition, int direction);
     [[nodiscard]] bool handleSerialNumberWheel(const QPoint& globalPosition, int direction);
@@ -322,7 +323,8 @@ class ScreenshotToolPaletteStyleControls final {
         ShapeArrowTypeRefresh = 1u << 5,
         ShapeArrowheadsRefresh = 1u << 6,
         ShapeBrushModeRefresh = 1u << 7,
-        AllShapeRefreshes = (1u << 8) - 1,
+        ShapeArrowOutlineRefresh = 1u << 8,
+        AllShapeRefreshes = (1u << 9) - 1,
     };
     enum TextRefreshGroup : quint32 {
         TextColorRefresh = 1u << 0,
@@ -416,6 +418,8 @@ class ScreenshotToolPaletteStyleControls final {
     void setArrowStrokeRenderingStyle(SnowCanvasStrokeRenderingStyle style);
     void setArrowType(SnowCanvasArrowType arrowType);
     void setLineType(SnowCanvasArrowType arrowType);
+    void setArrowOutlineWidth(double width);
+    void setArrowOutlineColor(const QColor& color);
     void setArrowRatio(double ratio);
     void setArrowShaftType(SnowCanvasArrowShaftType shaftType);
     void setArrowhead(bool start, SnowCanvasArrowhead arrowhead);
@@ -472,7 +476,8 @@ class ScreenshotToolPaletteStyleControls final {
     void updateWatermarkControls();
     ScreenshotToolPaletteShapeFamilyResult
     buildShapeSelector(QWidget* controls, const ScreenshotToolPaletteStyleFamilyHost& host,
-                       const ScreenshotToolPaletteButtonMetrics& metrics, bool spotlight);
+                       const ScreenshotToolPaletteButtonMetrics& metrics, bool spotlight,
+                       bool speechBubble = false);
     void updateSpotlightShapeControls();
     void setSpotlightShape(SnowCanvasRectangleShape shape);
     void buildCornerRadiusEditor(QWidget* controls, int radius,
@@ -576,6 +581,7 @@ class ScreenshotToolPaletteStyleControls final {
     adqt::widgets::AdRadioButtonGroup* m_arrowTypeButtonGroup = nullptr;
     QPointer<adqt::widgets::AdRadioButtonGroup> m_brushModeButtonGroup;
     std::unique_ptr<ScreenshotToolPaletteIconOptionEditor> m_arrowShaftEditor;
+    std::unique_ptr<ScreenshotToolPaletteWidthColorEditor> m_arrowOutlineEditor;
     IconNumericValuePreviewButton* m_arrowRatioEditor = nullptr;
     std::unique_ptr<ScreenshotToolPaletteIconOptionEditor> m_startArrowheadEditor;
     std::unique_ptr<ScreenshotToolPaletteIconOptionEditor> m_endArrowheadEditor;

@@ -2,7 +2,7 @@
 
 #include "snowimagecodecbridge.h"
 
-#define SNOW_SHOT_ANIMATION_CODEC_ABI_VERSION 2U
+#define SNOW_SHOT_ANIMATION_CODEC_ABI_VERSION 3U
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,8 +43,9 @@ SNOW_SHOT_IMAGE_CODEC_API uint32_t SNOW_SHOT_IMAGE_CODEC_CALL snow_shot_animatio
 // The caller keeps encoded bytes immutable and alive until destroy. All session
 // operations, including destroy, are serialized. Published frames are independent.
 SNOW_SHOT_IMAGE_CODEC_API SnowShotAnimationDecoder* SNOW_SHOT_IMAGE_CODEC_CALL
-snow_shot_animation_open(const uint8_t* encoded, uint64_t size, SnowShotAnimationCancel cancelled,
-                         void* cancel_context, SnowShotAnimationAdmit admit, void* admit_context,
+snow_shot_animation_open(const uint8_t* encoded, uint64_t size, int first_frame_only,
+                         SnowShotAnimationCancel cancelled, void* cancel_context,
+                         SnowShotAnimationAdmit admit, void* admit_context,
                          SnowShotAnimationInfo* info, char* error, uint64_t error_capacity);
 SNOW_SHOT_IMAGE_CODEC_API void SNOW_SHOT_IMAGE_CODEC_CALL
 snow_shot_animation_destroy(SnowShotAnimationDecoder* decoder);

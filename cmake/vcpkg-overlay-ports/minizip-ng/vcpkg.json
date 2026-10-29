@@ -10,7 +10,7 @@
     { "name": "vcpkg-cmake-config", "host": true }
   ],
   "default-features": ["zlib"],
-  "port-version": 2,
+  "port-version": 3,
   "features": {
     "zlib": { "description": "Enable ZLIB compression", "dependencies": ["zlib"] }
   }

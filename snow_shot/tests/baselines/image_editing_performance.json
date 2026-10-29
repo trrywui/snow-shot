@@ -1,0 +1,77 @@
+{
+  "policy": "report-only",
+  "measured_at": "2026-10-19",
+  "preset": "windows-msvc-performance",
+  "configuration": "Release",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "qt_platform": "offscreen",
+  "sessions_per_fixture": 3,
+  "camera_frames_per_session": 40,
+  "fixtures": {
+    "4k": {
+      "width": 3840,
+      "height": 2160,
+      "annotations": 0
+    },
+    "tall": {
+      "width": 2160,
+      "height": 16000,
+      "annotations": 0
+    },
+    "annotation-heavy": {
+      "width": 3840,
+      "height": 2160,
+      "annotations": 500
+    }
+  },
+  "measurement_notes": [
+    "Opening measures an owned, already-decoded source through first event processing, including editor creation and annotation restoration.",
+    "Pan/zoom includes event delivery and painting. Crop/undo/redo measures pixel preparation and history transition together.",
+    "Export renders an immutable full-resolution image snapshot on the export worker.",
+    "Peak resident bytes is the cumulative process high-water mark. Retained private bytes is the change after three sessions close, relative to the preloaded-source baseline.",
+    "Wall-clock measurements on a shared desktop are report-only and are not latency thresholds. Repeat on an idle host before comparing performance regressions.",
+    "The host was at 100% total CPU utilization immediately after the final run, with another linker still active. Treat these timings as contended-host observations."
+  ],
+  "results": [
+    {
+      "crop_mean_ms": 13.834,
+      "export_mean_ms": 44.97,
+      "fixture": "4k",
+      "open_mean_ms": 165.565,
+      "pan_zoom_p95_ms": 23.885,
+      "peak_resident_bytes": 138100736,
+      "redo_mean_ms": 27.188,
+      "retained_private_bytes_delta": 1896448,
+      "undo_mean_ms": 22.414
+    },
+    {
+      "crop_mean_ms": 101.316,
+      "export_mean_ms": 106.868,
+      "fixture": "tall",
+      "open_mean_ms": 52.519,
+      "pan_zoom_p95_ms": 28.586,
+      "peak_resident_bytes": 470757376,
+      "redo_mean_ms": 159.824,
+      "retained_private_bytes_delta": 4096,
+      "undo_mean_ms": 127.875
+    },
+    {
+      "crop_mean_ms": 51.354,
+      "export_mean_ms": 73.624,
+      "fixture": "annotation-heavy",
+      "open_mean_ms": 184.829,
+      "pan_zoom_p95_ms": 50.109,
+      "peak_resident_bytes": 470757376,
+      "redo_mean_ms": 47.434,
+      "retained_private_bytes_delta": 1462272,
+      "undo_mean_ms": 48.592
+    }
+  ],
+  "cpu": {
+    "reported_name": "AMD Ryzen 9 5950X 16-Core Processor",
+    "available_physical_cores": 12,
+    "available_logical_processors": 24
+  },
+  "physical_memory_bytes": 68621430784,
+  "host_cpu_percent_after_run": 100
+}

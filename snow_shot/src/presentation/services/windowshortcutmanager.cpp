@@ -69,13 +69,15 @@ shortcuts::ShortcutBindingList normalizedBindings(const shortcuts::ShortcutBindi
         const bool modifierOnlyAlt =
             candidate.portableText.compare(QStringLiteral("Alt"), Qt::CaseInsensitive) == 0;
         const shortcuts::ShortcutBinding binding = shortcuts::canonicalBinding(
-            candidate, modifierOnlyShift, modifierOnlyAlt, allowModifierOnlyControl);
+            candidate, modifierOnlyShift, modifierOnlyAlt, allowModifierOnlyControl,
+            shortcuts::ShortcutPolicy::Application);
         if (binding.portableText.isEmpty()) {
             continue;
         }
         const bool duplicate = std::any_of(
             result.cbegin(), result.cend(), [&binding](const shortcuts::ShortcutBinding& existing) {
-                return shortcuts::bindingsConflict(existing, binding);
+                return shortcuts::bindingsConflict(existing, binding,
+                                                   shortcuts::ShortcutPolicy::Application);
             });
         if (!duplicate) {
             result.push_back(binding);
@@ -134,17 +136,21 @@ struct WindowShortcutManager::Impl {
     // press state lets the manager recognize such mislabeled presses and
     // dispatch them as the fresh presses they physically are.
     [[nodiscard]] bool isStaleAutoRepeat(const QKeyEvent& event) const {
-        const quint64 token = shortcuts::eventKeyToken(event);
+        const quint64 token =
+            shortcuts::eventKeyToken(event, shortcuts::ShortcutPolicy::Application);
         return event.isAutoRepeat() &&
-               shortcuts::eventKeyToken(event) != static_cast<quint64>(Qt::Key_unknown) &&
+               shortcuts::eventKeyToken(event, shortcuts::ShortcutPolicy::Application) !=
+                   static_cast<quint64>(Qt::Key_unknown) &&
                !m_heldKeys.contains(token) && m_unreleasedKeys.contains(token);
     }
 
     void noteKeyPress(const QKeyEvent& event) {
-        if (shortcuts::eventKeyToken(event) == static_cast<quint64>(Qt::Key_unknown)) {
+        if (shortcuts::eventKeyToken(event, shortcuts::ShortcutPolicy::Application) ==
+            static_cast<quint64>(Qt::Key_unknown)) {
             return;
         }
-        const quint64 token = shortcuts::eventKeyToken(event);
+        const quint64 token =
+            shortcuts::eventKeyToken(event, shortcuts::ShortcutPolicy::Application);
         ++m_keyStateRevisions[token];
         m_heldKeys.insert(token);
         m_unreleasedKeys.remove(token);
@@ -154,8 +160,10 @@ struct WindowShortcutManager::Impl {
         // Auto-repeat sequences include synthetic repeat releases that must not
         // end the held state; only a real release clears the records.
         if (!event.isAutoRepeat() &&
-            shortcuts::eventKeyToken(event) != static_cast<quint64>(Qt::Key_unknown)) {
-            const quint64 token = shortcuts::eventKeyToken(event);
+            shortcuts::eventKeyToken(event, shortcuts::ShortcutPolicy::Application) !=
+                static_cast<quint64>(Qt::Key_unknown)) {
+            const quint64 token =
+                shortcuts::eventKeyToken(event, shortcuts::ShortcutPolicy::Application);
             ++m_keyStateRevisions[token];
             m_heldKeys.remove(token);
             m_unreleasedKeys.remove(token);
@@ -299,8 +307,8 @@ struct WindowShortcutManager::Impl {
         for (RegisteredBinding& registered : m_bindings) {
             if (!registered.activeReleaseBindings.isEmpty()) {
                 for (const auto& binding : registered.activeReleaseBindings) {
-                    applicationKeyState().releaseOwners.remove(
-                        shortcuts::shortcutKeyToken(binding));
+                    applicationKeyState().releaseOwners.remove(shortcuts::shortcutKeyToken(
+                        binding, shortcuts::ShortcutPolicy::Application));
                 }
                 pending.push_back({registered.owner, registered.binding.cancel});
                 registered.activeReleaseBindings.clear();
@@ -359,7 +367,8 @@ struct WindowShortcutManager::Impl {
                              registered.binding.shortcutBindings.cend(),
                              [&event, &registered](const auto& binding) {
                                  return shortcuts::shortcutMatchesEvent(
-                                     binding, event, registered.binding.allowedAdditionalModifiers);
+                                     binding, event, registered.binding.allowedAdditionalModifiers,
+                                     shortcuts::ShortcutPolicy::Application);
                              });
             if (match != registered.binding.shortcutBindings.cend()) {
                 result.push_back(Candidate{registered.handle, registered.binding.priority,
@@ -382,7 +391,8 @@ struct WindowShortcutManager::Impl {
             const auto match = std::find_if(
                 registered.activeReleaseBindings.cbegin(), registered.activeReleaseBindings.cend(),
                 [&event](const auto& binding) {
-                    return shortcuts::shortcutReleaseMatchesEvent(binding, event);
+                    return shortcuts::shortcutReleaseMatchesEvent(
+                        binding, event, shortcuts::ShortcutPolicy::Application);
                 });
             if (match != registered.activeReleaseBindings.cend()) {
                 result.push_back(Candidate{registered.handle, registered.binding.priority,
@@ -546,7 +556,8 @@ bool WindowShortcutManager::removeBinding(BindingHandle handle) {
     m_impl->cancelReleaseActivations(handle);
     if (const auto* registered = m_impl->findBinding(handle)) {
         for (const auto& binding : registered->activeReleaseBindings) {
-            applicationKeyState().releaseOwners.remove(shortcuts::shortcutKeyToken(binding));
+            applicationKeyState().releaseOwners.remove(
+                shortcuts::shortcutKeyToken(binding, shortcuts::ShortcutPolicy::Application));
         }
         disconnect(registered->destroyedConnection);
     }
@@ -663,7 +674,8 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
     }
 
     auto* keyEvent = static_cast<QKeyEvent*>(event);
-    const quint64 keyToken = shortcuts::eventKeyToken(*keyEvent);
+    const quint64 keyToken =
+        shortcuts::eventKeyToken(*keyEvent, shortcuts::ShortcutPolicy::Application);
     const bool keyRelease = event->type() == QEvent::KeyRelease;
     if (event->type() == QEvent::KeyPress) {
         m_impl->cancelPendingTaps(keyToken);
@@ -727,7 +739,8 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
             if (std::any_of(registered.activeReleaseBindings.cbegin(),
                             registered.activeReleaseBindings.cend(),
                             [keyEvent](const auto& binding) {
-                                return shortcuts::shortcutReleaseMatchesEvent(binding, *keyEvent);
+                                return shortcuts::shortcutReleaseMatchesEvent(
+                                    binding, *keyEvent, shortcuts::ShortcutPolicy::Application);
                             })) {
                 const auto repeat = std::find_if(
                     candidates.cbegin(), candidates.cend(),
@@ -805,8 +818,8 @@ bool WindowShortcutManager::eventFilter(QObject* watched, QEvent* event) {
                 std::remove_if(registered->activeReleaseBindings.begin(),
                                registered->activeReleaseBindings.end(),
                                [keyEvent](const auto& binding) {
-                                   return shortcuts::shortcutReleaseMatchesEvent(binding,
-                                                                                 *keyEvent);
+                                   return shortcuts::shortcutReleaseMatchesEvent(
+                                       binding, *keyEvent, shortcuts::ShortcutPolicy::Application);
                                }),
                 registered->activeReleaseBindings.end());
             if (registered->activeReleaseBindings.size() == previousSize) {

@@ -25,7 +25,8 @@ constexpr quint32 kArrowShapeProperties =
     SnowCanvasShapeStylePropertyStartArrowhead | SnowCanvasShapeStylePropertyEndArrowhead |
     SnowCanvasShapeStylePropertyStrokeStyle | SnowCanvasShapeStylePropertyArrowType |
     SnowCanvasShapeStylePropertyStrokeRenderingStyle | SnowCanvasShapeStylePropertyArrowShaftType |
-    SnowCanvasShapeStylePropertyArrowRatio;
+    SnowCanvasShapeStylePropertyArrowRatio | SnowCanvasShapeStylePropertyArrowOutlineColor |
+    SnowCanvasShapeStylePropertyArrowOutlineWidth;
 constexpr quint32 kLineShapeProperties =
     SnowCanvasShapeStylePropertyFillColor | SnowCanvasShapeStylePropertyFillStyle |
     SnowCanvasShapeStylePropertyStrokeColor | SnowCanvasShapeStylePropertyStrokeWidth |
@@ -165,6 +166,8 @@ void readCornerRadii(const QJsonObject& object, SnowCanvasCornerRadii* radii) {
 
 QJsonObject shapeValue(const SnowCanvasShapeStyle& style) {
     QJsonObject value;
+    value.insert(QStringLiteral("arrow_outline_color"), colorValue(style.arrowOutlineColor));
+    putDouble(&value, QStringLiteral("arrow_outline_width"), style.arrowOutlineWidth);
     value.insert(QStringLiteral("fill"), colorValue(style.fill));
     putEnum(&value, QStringLiteral("fill_style"), style.fillStyle);
     value.insert(QStringLiteral("stroke"), colorValue(style.stroke));
@@ -309,7 +312,8 @@ QJsonObject freeDrawValue(const SnowCanvasShapeStyle& style) {
     return value;
 }
 
-void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style) {
+void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style,
+                    bool speechBubble = false) {
     if (style == nullptr)
         return;
     QColor color;
@@ -322,6 +326,11 @@ void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style) {
     style->arrowRatio = 1.0;
     readDouble(object, QStringLiteral("arrow_ratio"), &style->arrowRatio);
     style->arrowRatio = snowCanvasNormalizeArrowRatio(style->arrowRatio);
+    style->arrowOutlineColor = QColor(0xff, 0xcc, 0xc7);
+    colorValue(object.value(QStringLiteral("arrow_outline_color")), &style->arrowOutlineColor);
+    style->arrowOutlineWidth = 0.0;
+    readDouble(object, QStringLiteral("arrow_outline_width"), &style->arrowOutlineWidth);
+    style->arrowOutlineWidth = bounded(style->arrowOutlineWidth, 0.0, 72.0);
     readEnum(object, QStringLiteral("fill_style"), static_cast<int>(SnowCanvasFillStyle::Border),
              &style->fillStyle);
     readEnum(object, QStringLiteral("start_arrowhead"),
@@ -341,7 +350,9 @@ void readShapeValue(const QJsonObject& object, SnowCanvasShapeStyle* style) {
     readDouble(object, QStringLiteral("opacity"), &style->opacity);
     readEnum(object, QStringLiteral("highlight_shape"),
              static_cast<int>(SnowCanvasHighlightShape::Ellipse), &style->highlightShape);
-    readEnum(object, QStringLiteral("shape"), static_cast<int>(SnowCanvasRectangleShape::Diamond),
+    readEnum(object, QStringLiteral("shape"),
+             static_cast<int>(speechBubble ? SnowCanvasRectangleShape::ThoughtBubble
+                                           : SnowCanvasRectangleShape::Diamond),
              &style->shape);
 }
 
@@ -522,7 +533,7 @@ SnowCanvasStyleDefaults screenshotCanvasToolStyleDefaults() {
         return defaults;
     const auto& configuration = storage.configuration();
     readShapeValue(configuration.value(kShapeKey).toObject(), &defaults.rectangle);
-    readShapeValue(configuration.value(kSpeechBubbleKey).toObject(), &defaults.speechBubble);
+    readShapeValue(configuration.value(kSpeechBubbleKey).toObject(), &defaults.speechBubble, true);
     readShapeValue(configuration.value(kArrowKey).toObject(), &defaults.arrow);
     readDistanceValue(configuration.value(kDistanceKey).toObject(), &defaults.distance);
     readAngleValue(configuration.value(kAngleKey).toObject(), &defaults.angle);
@@ -702,9 +713,7 @@ void applyScreenshotCanvasToolStyles(SnowCanvasWidget& canvas,
         static_cast<void>(canvas.setCanvasShapeStylePatch(style, properties, kind));
     };
     applyShape(defaults.rectangle, kRectangleShapeProperties, SnowCanvasShapeKind::Rectangle);
-    applyShape(defaults.speechBubble,
-               kRectangleShapeProperties & ~SnowCanvasShapeStylePropertyStrokeRenderingStyle,
-               SnowCanvasShapeKind::SpeechBubble);
+    applyShape(defaults.speechBubble, kRectangleShapeProperties, SnowCanvasShapeKind::SpeechBubble);
     applyShape(defaults.arrow, kArrowShapeProperties, SnowCanvasShapeKind::Arrow);
     static_cast<void>(canvas.setCanvasDistanceStyle(defaults.distance));
     static_cast<void>(canvas.setCanvasAngleStyle(defaults.angle));

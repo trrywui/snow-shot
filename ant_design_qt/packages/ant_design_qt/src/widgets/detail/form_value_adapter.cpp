@@ -4,6 +4,7 @@
 #include "widgets/input_number.h"
 #include "widgets/input_text_edit.h"
 #include "widgets/select.h"
+#include "widgets/segmented.h"
 
 #include <QAbstractButton>
 #include <QComboBox>
@@ -190,6 +191,9 @@ QVariant readWidgetValue(QWidget* widget, const QString& valuePropertyName) {
   if (auto* formList = qobject_cast<AdFormList*>(widget)) {
     return formList->values();
   }
+  if (auto* segmented = qobject_cast<AdSegmented*>(widget)) {
+    return segmented->currentValue();
+  }
   if (auto* select = qobject_cast<AdSelect*>(widget)) {
     if (select->mode() == AdSelect::Mode::Multiple || select->mode() == AdSelect::Mode::Tags) {
       return select->currentValues();
@@ -251,6 +255,11 @@ QVariant readWidgetValue(QWidget* widget, const QString& valuePropertyName) {
 
 void writeWidgetValue(QWidget* widget, const QVariant& value, const QString& valuePropertyName) {
   if (!widget) {
+    return;
+  }
+
+  if (auto* segmented = qobject_cast<AdSegmented*>(widget)) {
+    segmented->setCurrentValue(value);
     return;
   }
 
@@ -344,6 +353,12 @@ QVector<QMetaObject::Connection> connectWidgetValueSignals(QWidget* widget, QObj
   auto bind = [&connections](const QMetaObject::Connection& connection) {
     connections.append(connection);
   };
+
+  if (auto* segmented = qobject_cast<AdSegmented*>(widget)) {
+    bind(QObject::connect(segmented, &AdSegmented::currentValueChanged, receiver,
+                          [callback]() { callback(); }));
+    return connections;
+  }
 
   if (auto* formList = qobject_cast<AdFormList*>(widget)) {
     bind(QObject::connect(formList, &AdFormList::valuesChanged, receiver,

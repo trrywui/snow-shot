@@ -74,6 +74,7 @@ class ScreenshotTableEditor final : public QTableView {
     [[nodiscard]] bool isEditingCell() const;
     bool commitActiveEdit();
     bool cancelActiveEdit();
+    [[nodiscard]] std::unique_ptr<QMimeData> clipboardMimeData() const;
     [[nodiscard]] bool copySelectionToClipboard();
 
   public slots:

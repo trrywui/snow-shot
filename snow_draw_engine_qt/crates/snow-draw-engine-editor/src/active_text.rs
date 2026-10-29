@@ -123,6 +123,7 @@ impl Editor {
             return Ok(true);
         }
 
+        self.state.active_distance_value_owner = None;
         self.state.active_text_draft = Some(draft);
         self.bump_scene_state_revision();
         self.bump_overlay_state_revision();
@@ -130,6 +131,7 @@ impl Editor {
     }
 
     pub fn clear_active_text_draft_presentation(&mut self) -> bool {
+        self.state.active_distance_value_owner = None;
         let had_draft = self.state.active_text_draft.take().is_some();
         let had_bubble_geometry = self.speech_bubble_draft_geometry.take().is_some();
         if !had_draft && !had_bubble_geometry {

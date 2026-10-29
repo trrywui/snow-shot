@@ -106,6 +106,34 @@ void popupOwnership() {
         popup.releaseSurface();
     }
 }
+void ownershipSurvivesNativeReplacement() {
+    if (!cocoa())
+        return;
+    Tool owner;
+    Tool popup;
+    owner.show();
+    adqt::widgets::detail::syncTopLevelToolTransientParent(&popup, &owner);
+    popup.show();
+    for (QWidget* surface : {static_cast<QWidget*>(&owner), static_cast<QWidget*>(&popup)}) {
+        QWindow* handle = surface->windowHandle();
+        const WId identity = surface->internalWinId();
+        NSWindow* previous = [native(*surface) retain];
+        handle->hide();
+        handle->setFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+        handle->show();
+        require(surface->windowHandle() == handle && surface->internalWinId() == identity &&
+                    native(*surface) != previous,
+                "ownership fixture must replace NSWindow without replacing Qt identity");
+        require(popup.windowHandle()->transientParent() == owner.windowHandle() &&
+                    native(popup).parentWindow == native(owner),
+                "native ownership must follow replacement of either owner or popup immediately");
+        [previous release];
+    }
+    popup.hide();
+    require(native(popup).parentWindow == nil,
+            "hiding a rebound popup must release its current native owner");
+}
+
 QWidget* visibleSurface(const char* name) {
     for (QWidget* widget : QApplication::topLevelWidgets()) {
         if (widget->isVisible() && widget->objectName() == QString::fromLatin1(name))
@@ -183,6 +211,7 @@ int main(int argc, char** argv) {
     settle();
     @autoreleasepool {
         popupOwnership();
+        ownershipSurvivesNativeReplacement();
         componentsKeepOwnership();
     }
     std::cout << "Popup native stacking tests passed\n";

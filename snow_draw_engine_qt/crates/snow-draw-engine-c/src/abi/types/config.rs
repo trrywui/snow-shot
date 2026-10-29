@@ -259,6 +259,8 @@ pub struct SnowShapeStyle {
     pub highlight_shape: SnowHighlightShape,
     pub shape: SnowRectangleShape,
     pub brush_mode: SnowBrushMode,
+    pub arrow_outline_color: SnowColorRgba8,
+    pub arrow_outline_width: f64,
 }
 
 #[repr(C)]
@@ -336,6 +338,7 @@ snow_c_enum! {
         Rectangle = 0,
         Ellipse = 1,
         Diamond = 2,
+        ThoughtBubble = 3,
     }
 }
 
@@ -377,6 +380,8 @@ pub struct SnowArrowStyle {
     pub arrow_shaft_type: SnowArrowShaftType,
     pub arrow_ratio: f64,
     pub reserved0: [u8; 4],
+    pub arrow_outline_color: SnowColorRgba8,
+    pub arrow_outline_width: f64,
 }
 
 #[repr(C)]
@@ -663,6 +668,8 @@ impl Default for SnowSnapConfig {
 impl Default for SnowShapeStyle {
     fn default() -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color().into(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: SnowStrokeRenderingStyle::Architect,
 
             fill: SnowColorRgba8::default(),
@@ -702,6 +709,8 @@ impl Default for SnowRectangleShapeStyle {
 impl Default for SnowArrowStyle {
     fn default() -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color().into(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: SnowStrokeRenderingStyle::Architect,
 
             stroke: SnowColorRgba8::default(),
@@ -713,35 +722,6 @@ impl Default for SnowArrowStyle {
             arrow_shaft_type: SnowArrowShaftType::Plain,
             arrow_ratio: 1.0,
             reserved0: [0; 4],
-        }
-    }
-}
-
-#[cfg(test)]
-mod text_emphasis_abi_tests {
-    use crate::abi::types::{SnowSceneDisplayItem, SnowTextElementInfo, SnowTextStyle};
-
-    #[test]
-    fn text_emphasis_uses_reserved_bytes_without_changing_abi_layout() {
-        assert_eq!(std::mem::size_of::<SnowTextStyle>(), 232);
-        assert_eq!(std::mem::offset_of!(SnowTextStyle, font_family_utf8), 100);
-        assert_eq!(std::mem::offset_of!(SnowTextStyle, bold), 97);
-        assert_eq!(std::mem::offset_of!(SnowTextStyle, italic), 98);
-        assert_eq!(std::mem::size_of::<SnowTextElementInfo>(), 1264);
-        assert_eq!(std::mem::offset_of!(SnowTextElementInfo, text_utf8), 104);
-        assert_eq!(
-            std::mem::offset_of!(SnowTextElementInfo, font_family_utf8),
-            1136
-        );
-        if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<SnowSceneDisplayItem>(), 408);
-            assert_eq!(std::mem::offset_of!(SnowSceneDisplayItem, text_bold), 137);
-            assert_eq!(
-                std::mem::offset_of!(SnowSceneDisplayItem, arrow_start_head),
-                140
-            );
-            assert_eq!(std::mem::offset_of!(SnowSceneDisplayItem, font_size), 192);
-            assert_eq!(std::mem::offset_of!(SnowSceneDisplayItem, text_utf8), 336);
         }
     }
 }

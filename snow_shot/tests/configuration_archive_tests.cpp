@@ -488,6 +488,59 @@ void applySnapshotReplacesConfiguration(const QTemporaryDir& temporary) {
             "read-only stores must reject snapshots");
 }
 
+void pinnedShortcutDefaultsRespectExclusiveContexts(const QTemporaryDir& temporary) {
+    const QString drawingKey = QStringLiteral("pin_to_screen_shortcuts/drawing_mode");
+    const QString playbackKey = QStringLiteral("pin_to_screen_shortcuts/toggle_playback");
+    const auto space = storage::ConfigurationSchema::defaultValue(drawingKey);
+    require(!space.toArray().isEmpty() &&
+                storage::ConfigurationSchema::defaultValue(playbackKey) == space,
+            "static drawing and animation playback must share their contextual default");
+    struct Case {
+        QMap<QString, QJsonValue> values;
+        bool drawing = true;
+        bool playback = true;
+    };
+    const QList<Case> cases{
+        {{}, true, true},
+        {{{drawingKey, space}}, true, true},
+        {{{playbackKey, space}}, true, true},
+        {{{QStringLiteral("pin_to_screen_shortcuts/resize_window"), space}}, false, true},
+        {{{QStringLiteral("pin_to_screen_shortcuts/next_frame"), space}}, true, false},
+        {{{QStringLiteral("pin_to_screen_shortcuts/print"), space}}, false, false},
+    };
+    for (qsizetype index = 0; index < cases.size(); ++index) {
+        const auto& testCase = cases.at(index);
+        storage::ConfigurationStore store(
+            temporary.filePath(QStringLiteral("pinned-shortcut-snapshot-%1.json").arg(index)), true,
+            true, 60000);
+        require(store.applySnapshot(testCase.values) &&
+                    store.value(drawingKey) == (testCase.drawing ? space : QJsonArray{}) &&
+                    store.value(playbackKey) == (testCase.playback ? space : QJsonArray{}),
+                "snapshot defaults must preserve exclusive contexts and yield to real conflicts");
+    }
+
+    auto document = storage::ConfigurationSchema::completeDefaultDocument();
+    auto pinned = document.value(QStringLiteral("pin_to_screen_shortcuts")).toObject();
+    pinned.remove(QStringLiteral("toggle_playback"));
+    document.insert(QStringLiteral("pin_to_screen_shortcuts"), pinned);
+    const QString path = temporary.filePath(QStringLiteral("pinned-playback-upgrade.json"));
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly), "open the legacy pinned shortcut fixture");
+    const auto bytes = QJsonDocument(document).toJson();
+    require(file.write(bytes) == bytes.size(), "write the legacy pinned shortcut fixture");
+    file.close();
+    {
+        storage::ConfigurationStore upgraded(path, true, true, 60000);
+        require(upgraded.value(drawingKey) == space && upgraded.value(playbackKey) == space &&
+                    upgraded.flushNow().success,
+                "adding animation shortcuts must preserve Space in the existing drawing context");
+    }
+    storage::ConfigurationStore reloaded(path, true, true, 60000);
+    require(reloaded.value(drawingKey) == space && reloaded.value(playbackKey) == space &&
+                !reloaded.isDirty(),
+            "contextual shortcut migration must remain stable after reload");
+}
+
 void selectionAspectRatioArchivesPreservePreferences(const QTemporaryDir& temporary) {
     const QString ratioKey = QStringLiteral("screenshot_selection/aspect_ratio");
     const QString lockKey = QStringLiteral("screenshot_selection/lock_aspect_ratio");
@@ -527,7 +580,10 @@ void mcpCredentialRedactionAndRevision(const QTemporaryDir& temporary) {
         QStringLiteral("https://example.invalid/v1"),
         QStringLiteral("private-test-secret"),
         QStringLiteral("model"),
-        false};
+        false,
+        false,
+        4,
+        QStringLiteral("doubao")};
     const QMap<QString, QJsonValue> original{{key, snow_shot::customAiModelsToJson({model})}};
     const auto path = temporary.filePath(QStringLiteral("mcp-redacted.zip"));
     require(storage::ConfigurationArchive::write(
@@ -537,6 +593,9 @@ void mcpCredentialRedactionAndRevision(const QTemporaryDir& temporary) {
     auto imported = storage::ConfigurationArchive::read(path);
     require(imported.isValid() && imported.redactedCredentialIds.contains(model.id),
             "redacted archives identify omitted credentials");
+    require(snow_shot::customAiModelsFromJson(imported.values.value(key)).first().provider ==
+                model.provider,
+            "redacted archives retain the custom model provider");
     require(snow_shot::customAiModelsFromJson(imported.values.value(key)).first().apiKey.isEmpty(),
             "an MCP archive must not contain the stored credential");
     imported.preserveOmittedCredentials(original);
@@ -605,6 +664,7 @@ int main(int argc, char** argv) {
     writeRejectsUnwritableTargets(temporary);
     unicodePathsRoundTrip();
     applySnapshotReplacesConfiguration(temporary);
+    pinnedShortcutDefaultsRespectExclusiveContexts(temporary);
     selectionAspectRatioArchivesPreservePreferences(temporary);
     recognitionModelPreferencesSurviveRestart(temporary);
     mcpCredentialRedactionAndRevision(temporary);

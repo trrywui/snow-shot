@@ -99,6 +99,7 @@ pub unsafe extern "C" fn snow_viewport_get_arrow_text_layout_requests(
                                 style: style.into(),
                                 key: request.key,
                                 max_width: request.max_width,
+                                distance_value_chars: request.distance_value_chars,
                             },
                         );
                     }
@@ -149,6 +150,22 @@ pub unsafe extern "C" fn snow_viewport_apply_arrow_text_layout_metrics_ex(
         } else {
             unsafe { std::slice::from_raw_parts(layouts, count as usize) }
         };
+        if layouts
+            .iter()
+            .any(|r| !r.distance_value_width.is_finite() || r.distance_value_width < 0.0)
+        {
+            return SnowError::InvalidArgument;
+        }
+        let value_widths: Vec<_> = layouts
+            .iter()
+            .map(|r| {
+                (
+                    snow_element_id_to_rust(r.text_id),
+                    r.key,
+                    r.distance_value_width,
+                )
+            })
+            .collect();
         let layouts: Vec<_> = layouts
             .iter()
             .map(|r| {
@@ -167,6 +184,7 @@ pub unsafe extern "C" fn snow_viewport_apply_arrow_text_layout_metrics_ex(
                 let result = engine
                     .apply_arrow_text_measurements(id, &layouts)
                     .map_err(SnowError::from)?;
+                engine.apply_distance_value_widths(&value_widths);
                 write_changed_viewports(out_changed_viewports, result.changed_viewports);
                 Ok(())
             },
@@ -1141,6 +1159,105 @@ pub unsafe extern "C" fn snow_scene_resolve_shape_text_connection(
             },
         );
         1
+    })
+}
+
+/// # Safety
+/// Handles must be live and all output pointers must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snow_viewport_take_distance_value_edit_target(
+    runtime: SnowRuntime,
+    viewport: SnowViewport,
+    out_info: *mut SnowTextElementInfo,
+    out_style: *mut SnowTextStyle,
+    out_found: *mut u8,
+) -> SnowError {
+    ffi_error(|| {
+        if out_info.is_null() || out_style.is_null() || out_found.is_null() {
+            return SnowError::InvalidArgument;
+        }
+        ffi_status(with_runtime_viewport_mut(
+            runtime,
+            viewport,
+            |engine, id| {
+                let target = engine
+                    .take_distance_value_edit_request(id)
+                    .map_err(SnowError::from)?;
+                write_out(out_found, u8::from(target.is_some()));
+                if let Some((info, style)) = target {
+                    write_out(out_info, snow_text_element_info_from_rust(info));
+                    write_out(out_style, style.into());
+                }
+                Ok(())
+            },
+        ))
+    })
+}
+
+/// # Safety
+/// Handles must be live, text must contain length readable UTF-8 bytes, and output must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snow_viewport_set_distance_value_draft_ex(
+    runtime: SnowRuntime,
+    viewport: SnowViewport,
+    owner: SnowElementId,
+    text: *const std::ffi::c_char,
+    length: u32,
+    layout: SnowTextLayoutSize,
+    out_changed_viewports: *mut SnowChangedViewportList,
+) -> SnowError {
+    ffi_error(|| {
+        if out_changed_viewports.is_null() {
+            return SnowError::InvalidArgument;
+        }
+        let text = match text_string_from_raw(text, length) {
+            Ok(text) => text,
+            Err(error) => return error,
+        };
+        ffi_status(with_runtime_viewport_mut(
+            runtime,
+            viewport,
+            |engine, id| {
+                let result = engine
+                    .set_distance_value_draft(
+                        id,
+                        snow_element_id_to_rust(owner),
+                        text,
+                        layout.into(),
+                    )
+                    .map_err(SnowError::from)?;
+                write_changed_viewports(out_changed_viewports, result.changed_viewports);
+                Ok(())
+            },
+        ))
+    })
+}
+
+/// # Safety
+/// Handles must be live and output must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snow_viewport_commit_distance_value_ex(
+    runtime: SnowRuntime,
+    viewport: SnowViewport,
+    owner: SnowElementId,
+    value: f64,
+    out_changed_viewports: *mut SnowChangedViewportList,
+) -> SnowError {
+    ffi_error(|| {
+        if out_changed_viewports.is_null() {
+            return SnowError::InvalidArgument;
+        }
+        ffi_status(with_runtime_viewport_mut(
+            runtime,
+            viewport,
+            |engine, id| {
+                let result = engine
+                    .commit_distance_value(id, snow_element_id_to_rust(owner), value)
+                    .map_err(SnowError::from)?;
+                write_changed_viewports(out_changed_viewports, result.changed_viewports);
+                Ok(())
+            },
+        ))
     })
 }
 

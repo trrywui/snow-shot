@@ -1,5 +1,101 @@
 # Recording optimization evidence
 
+## Capture pipeline changes, 2026-10-20
+
+The capture changes below were implemented against `98c999225`. Their local
+measurements are separate from the earlier Windows throughput experiments in
+this document; the gains must not be added together.
+
+- macOS output deadlines now advance independently of screen updates. A held
+  desktop can still drive cursor, trail, keyboard and webcam animation at the
+  requested output rate. Identical source/effect/webcam revisions skip composition
+  and encoding, while the encoder holds the existing frame for its full duration.
+  Scheduling retains one current and one pending source lease, preserving
+  output-boundary ordering while leaving capacity for capture. Failed desktop
+  composition retries the latest sources even without another screen update.
+  Source leases are released at pause, interruption and stop.
+- macOS multi-display capture drains all available sources before waiting on any
+  source, error or cancellation. An idle first display no longer consumes the
+  wait budget ahead of another display's ready frame.
+- macOS SDR software encoding uses recycled owned raster storage and a fused
+  packed copy/channel conversion. HDR retains its existing color conversion.
+- Windows deferred capture now negotiates native GPU capture, RGB area filtering
+  and NV12 hardware input. Startup probes verify actual encoded packets. Explicit
+  exclusions and pixel-trace requests use CPU capture. Runtime GPU failure seals
+  completed media and resumes through software encoding; a recovered source's
+  frame index is rebuilt from decoded presentation timestamps after finalization.
+  A shared encoder admission policy establishes the first recoverable packet
+  before skipping static frames. Failure preservation follows encoder-owned
+  storage, so retained segments survive teardown and explicit cancellation cleans
+  staging files.
+- Windows direct GPU composition caches the clean desktop independently of
+  effects. CPU effect rasterization and webcam pixel conversion happen before
+  acquiring the shared D3D context lock. DXGI copies only the selected region
+  into owned textures, including before HDR conversion; WGC crops SDR copies.
+  WGC's HDR conversion retains its existing full-surface operation.
+- The CPU clean-source canvas writes into encoder-recycled storage, applies
+  channel conversion after reduction where possible, and avoids redundant
+  full-frame intermediates and clears. Area filtering, letterboxing and edge
+  padding remain unchanged.
+
+Review follow-up: capture failure preservation now takes its endpoint from the
+active recording clock, independent of sparse image submissions. The regression
+first reproduced 100 ms of retained video after a static ten-second sequence.
+Coverage now verifies static and changed images, 10/60 fps, pause/resume, delayed
+teardown, exact Stop boundaries, cancellation cleanup, both encoder drivers, and
+the exact boundary in retained segment manifests. Direct and deferred Windows
+recording share capture negotiation and the four-frame packet probe. Startup
+fallback diagnostics are retained separately from runtime recovery diagnostics.
+This follow-up adds no new end-to-end performance claim.
+
+GPU backpressure follow-up: direct and deferred recording now share a two-frame
+inbox and a two-frame stream queue, leaving capture capacity alongside the held
+output image. A deterministic lease-pressure regression reproduces exhaustion
+with the former four-frame deferred inbox and preserves the final desktop update
+with the shared bound. DXGI also checks both copy and HDR-conversion pool capacity
+before acquiring an update, so extra retained leases cannot consume an update
+that has nowhere to be copied. An offscreen WARP regression covers each exhausted
+pool, repeated backpressure, release, and delivery without another desktop change;
+native Windows execution is still required.
+
+The following are **CPU canvas stage timings**, measured on macOS ARM64 with
+Release dependencies from `snow-shot-macos-arm64-performance`. The comparison
+used nine alternating A/B rounds, five warmups and twenty iterations per member,
+with identical source bytes and byte-for-byte output checks. These numbers do
+not establish end-to-end frame-rate or CPU-usage improvements on Windows.
+
+| BGRA source → output | Previous median | New median | Stage speedup |
+|---|---:|---:|---:|
+| 1920×1080 → same size | 1.434 ms | 0.382 ms | 3.75× |
+| 3840×2160 → same size | 5.851 ms | 1.503 ms | 3.89× |
+| 3840×2160 → 1920×1080 | 4.005 ms | 1.091 ms | 3.67× |
+| 3840×2160 → 2560×1440 | 14.286 ms | 11.255 ms | 1.27× |
+
+The existing macOS `capture_path_bench` measured 4K `to_cpu + memcpy` at 3.098 ms
+and fused packed readback with channel swapping at 1.176 ms. This compares the
+readback primitives, not the complete recorder. Raw outputs and the isolated
+canvas comparison source are under the ignored `build/capture-optimization/`.
+
+Removing the per-copy Metal texture-cache flush measured 0.997 → 0.991 ms at 4K
+and 0.487 → 0.504 ms at 1080p. This did not demonstrate a benefit, so production
+flushing remains. Asynchronous Metal publication would need a new completion
+and lease-ownership contract; the current copy worker continues to publish only
+completed images. Capture downscaling and extra worker/capture-rate policies were
+not changed without evidence of preserved text detail, latency and fresh-frame
+throughput.
+
+Deterministic coverage includes output cadence at 30/60/120/144/240 fps, source
+causality, bounded queues, effect expiry, multi-display wakeup, retained Metal
+pool images, CPU pixel equivalence, source recovery policy and recovered indexes.
+Windows offscreen regressions cover crop rotations, immutable texture leases,
+desktop cache invalidation, and clean-source crop/filter/padding/gap equivalence.
+Windows code was cross-checked and linted with genuine Windows-target headers;
+native MSVC, GPU-driver execution and end-to-end endurance/quality measurements
+remain required on Windows. See the targeted commands in
+[the performance protocol](recording-performance.md#capture-pipeline-regression-checks).
+
+## Earlier Windows throughput experiments
+
 **In progress: validated resize and restoration defaults are enabled in restricted
 domains; hardware cumulative and endurance validation remains.** Final scoped
 Rust and Qt integration checks passed for v19. Screening results are

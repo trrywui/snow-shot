@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "snow_shot/presentation/collagedocument.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
+#include "../src/presentation/collage/collageresourcebudget_p.h"
 
 #include <QCoreApplication>
 #include <QColorSpace>
@@ -666,8 +667,10 @@ void snapshotsAndResources() {
     QString error;
     auto reservation = reserveCollageImport(1, &error);
     require(reservation && reservation->resize(2, &error), "import reservation can grow");
-    require(!reservation->resize(qint64{513} * 1024 * 1024, &error) && !error.isEmpty(),
-            "transient import work has deterministic shared resource limits");
+    require(reservation->resize(qint64{513} * 1024 * 1024, &error),
+            "import rasters are not charged to the smaller painting scratch pool");
+    require(!reservation->resize(collageResourceUsage().limitBytes + 1, &error) && !error.isEmpty(),
+            "imports still enforce the shared memory budget");
     reservation.reset();
     require(collageResourceUsage().reservedBytes == baseline,
             "rejected reservation growth retains and later releases prior admission");
@@ -722,10 +725,10 @@ void capturedImagesAdmitMemoryBeforePaintingAndOwnTheirReservation() {
         return fixture({3, 2});
     };
     QString error;
-    require(captureCollageImage({8001, 8000}, capture, &error).isNull() && captures == 0 &&
+    require(captureCollageImage({65536, 32769}, capture, &error).isNull() && captures == 0 &&
                 !error.isEmpty(),
             "oversized captures fail before calling the rasterizer");
-    auto occupied = reserveCollageImport(qint64{512} * 1024 * 1024);
+    auto occupied = collage_detail::reserveWorking(qint64{512} * 1024 * 1024);
     require(occupied != nullptr, "occupy the shared painting budget without allocating pixels");
     require(captureCollageImage({3, 2}, capture, &error).isNull() && captures == 0 &&
                 !error.isEmpty(),
@@ -760,7 +763,7 @@ void capturedImagesAdmitMemoryBeforePaintingAndOwnTheirReservation() {
     captured = {};
     require(collageResourceUsage().reservedBytes == baseline + queuedCopy.sizeInBytes(),
             "a queued image copy keeps its raster accounted for");
-    occupied = reserveCollageImport(qint64{512} * 1024 * 1024);
+    occupied = collage_detail::reserveWorking(qint64{512} * 1024 * 1024);
     require(occupied != nullptr, "retained captures do not occupy the temporary painting budget");
     occupied.reset();
     queuedCopy = {};
@@ -774,6 +777,16 @@ void capturedImagesAdmitMemoryBeforePaintingAndOwnTheirReservation() {
     require(collageImageImportBytes({8000, 8000}, &error) == 512'000'000 && error.isEmpty() &&
                 collageImageImportBytes({}, &error) == 0 && !error.isEmpty(),
             "capture and import share inclusive pixel limits and reject invalid dimensions");
+    require(collageImageImportBytes({2048, 32769}, &error) == qint64{2048} * 32769 * 8 &&
+                error.isEmpty(),
+            "scrolling imports above 64 million pixels reserve both raster and preparation bytes");
+    require(collageImageImportBytes({65536, 32768}, &error) == qint64{16} * 1024 * 1024 * 1024 &&
+                error.isEmpty() && collageImageImportBytes({65536, 32769}, &error) == 0 &&
+                !error.isEmpty(),
+            "image imports use the inclusive 8 GiB raster ceiling");
+    require(collageImageImportBytes({std::numeric_limits<int>::max(), 1}, &error) == 0 &&
+                !error.isEmpty(),
+            "imports reject dimensions that cannot be represented by the image bridge");
 }
 
 void scalingAndLargeAxes() {

@@ -41,6 +41,9 @@ struct ScreenshotSaveDialogState {
 
 class ScreenshotSaveAsFileDialog final {
   public:
+    // Both callbacks run only when the dialog is dismissed, Finished before Saved. The result
+    // view can save repeatedly; Saved receives the latest successful path. Finished reports
+    // whether any save succeeded, even when the user subsequently cancels further editing.
     using Saved = std::function<void(const QString& path)>;
     using Finished = std::function<void(bool saved)>;
     // owner selects the display/centering; stackingOwner optionally keeps a floating toolbar

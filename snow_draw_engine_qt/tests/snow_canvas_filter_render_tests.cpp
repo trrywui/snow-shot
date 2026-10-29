@@ -15,6 +15,7 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QColorSpace>
 #include <QFontDatabase>
 #include <QImage>
 #include <QPainter>
@@ -26,6 +27,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <future>
 #include <limits>
 #include <random>
 #include <utility>
@@ -1503,6 +1505,93 @@ void filteredBackgroundIsCompositedOnce() {
             "a semitransparent filtered background must be composited exactly once");
 }
 
+void cachedFiltersPreserveTransparentBackdrops() {
+    class Backdrop final : public SnowCanvasCustomRenderer {
+      public:
+        QImage image;
+        void renderBeforeCanvas(QPainter& painter,
+                                const SnowCanvasRenderContext& context) override {
+            painter.drawImage(context.viewportRect, image);
+        }
+    } backdrop;
+    backdrop.image = QImage(40, 40, QImage::Format_ARGB32_Premultiplied);
+    backdrop.image.fill(QColor(40, 120, 200, 96));
+    {
+        QPainter painter(&backdrop.image);
+        painter.setCompositionMode(QPainter::CompositionMode_Source);
+        painter.fillRect(QRect(0, 0, 12, 40), Qt::transparent);
+    }
+    SceneDisplayInfo info{};
+    info.surface_width = 80;
+    info.surface_height = 80;
+    info.camera_zoom = 1.0;
+    info.clear_color = {255, 255, 255, 255};
+    const QRect viewport(0, 0, 80, 80);
+    SnowSceneDisplayItem annotation{};
+    annotation.kind = SNOW_SCENE_DISPLAY_ITEM_DRAW_RECT;
+    annotation.width = 40;
+    annotation.height = 80;
+    annotation.fill = {40, 120, 200, 96};
+    annotation.fill_style = SNOW_FILL_STYLE_SOLID;
+    annotation.opacity = 1.0;
+    SnowSceneDisplayItem filter{};
+    filter.kind = SNOW_SCENE_DISPLAY_ITEM_FILTER;
+    filter.width = 32;
+    filter.height = 32;
+    filter.opacity = 1.0;
+    filter.element_id = {1, 1};
+    for (const qreal dpr : {1.0, 1.25, 2.0}) {
+        const SnowCanvasRenderContext context{viewport, QRegion(viewport), QTransform(), dpr};
+        for (int sourceKind = 0; sourceKind < 3; ++sourceKind) {
+            for (const std::uint32_t type : {0u, 1u, 2u, 3u, 4u, 6u}) {
+                filter.filter = snow_filter_render_spec_resolve(type, 0.7);
+                const SnowCanvasSceneItem items[]{SnowCanvasSceneItem(annotation),
+                                                  SnowCanvasSceneItem(filter)};
+                int namespaceToken = 0;
+                snow_canvas_filter_render::RenderWorkspace workspace;
+                const auto render = [&](int mode) {
+                    QImage output(QSize(qCeil(80 * dpr), qCeil(80 * dpr)),
+                                  QImage::Format_ARGB32_Premultiplied);
+                    output.setDevicePixelRatio(dpr);
+                    output.fill(Qt::transparent);
+                    QPainter painter(&output);
+                    snow_canvas_renderer::SceneRenderRequest request;
+                    request.painter = &painter;
+                    request.displayInfo = &info;
+                    request.sceneItems = sourceKind == 2 ? items : items + 1;
+                    request.sceneItemCount = sourceKind == 2 ? 2 : 1;
+                    request.exposedRegion = QRegion(viewport);
+                    request.backgroundImage = sourceKind == 0 ? &backdrop.image : nullptr;
+                    request.backgroundRenderer = sourceKind == 1 ? &backdrop : nullptr;
+                    request.backgroundContext = &context;
+                    request.workspace = &workspace;
+                    request.cacheNamespace = &namespaceToken;
+                    request.clearBackgroundEnabled = false;
+                    request.enableFilterTileCache = mode != 0;
+                    if (mode == 2)
+                        snow_canvas_renderer::renderSceneItemsTiled(request);
+                    else
+                        snow_canvas_renderer::renderSceneItems(request);
+                    painter.end();
+                    return output;
+                };
+                const QImage direct = render(0);
+                require(direct.pixelColor(0, 0).alpha() == 0 &&
+                            direct.pixelColor(qRound(40 * dpr), qRound(40 * dpr)).alpha() > 0 &&
+                            direct.pixelColor(qRound(40 * dpr), qRound(40 * dpr)).alpha() < 255,
+                        "filter backdrop fixture must retain transparent and translucent pixels");
+                for (const int mode : {1, 2}) {
+                    snow_canvas_filter_tile_cache::invalidateNamespace(&namespaceToken);
+                    require(render(mode) == direct && render(mode) == direct,
+                            "cold and retained filters must honor disabled background clearing "
+                            "for scaled images, custom backdrops and translucent annotations");
+                }
+                snow_canvas_filter_tile_cache::invalidateNamespace(&namespaceToken);
+            }
+        }
+    }
+}
+
 void emptySceneStillRendersBackgroundOnce() {
     QImage image(QSize(24, 18), QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
@@ -2017,6 +2106,46 @@ void exportWithoutRuntimeStillRendersSources() {
     require(pixel.alpha() == 128 && std::abs(pixel.red() - 40) <= 1 &&
                 std::abs(pixel.green() - 120) <= 1 && std::abs(pixel.blue() - 200) <= 1,
             "export sources must remain visible when no runtime scene is available");
+}
+
+void sourceOnlyExportMatchesDocumentSamplingOnWorkers() {
+    QImage source(QSize(9, 7), QImage::Format_ARGB32_Premultiplied);
+    source.setColorSpace(QColorSpace::SRgb);
+    for (int y = 0; y < source.height(); ++y)
+        for (int x = 0; x < source.width(); ++x)
+            source.setPixelColor(x, y, (x + y) % 2 == 0 ? Qt::white : Qt::black);
+    QImage overlay(QSize(3, 4), QImage::Format_ARGB32_Premultiplied);
+    overlay.fill(QColor(240, 60, 30, 128));
+    overlay.setPixelColor(1, 2, QColor(20, 160, 240, 192));
+    const QList<CanvasExportSource> sources{
+        {source, QRectF(-3.25, 2.5, 9, 7), QRectF(-2.25, 3.25, 6.5, 5)},
+        {overlay, QRectF(3.125, 4.75, 1.5, 2), QRectF(3.375, 5, 1, 1.25)}};
+    const QRectF frame(-1.75, 3.5, 7.25, 4.25);
+    SnowCanvasRuntime runtime;
+    for (const QSize size : {QSize(9, 6), QSize(29, 17), QSize(5, 3)}) {
+        const auto expected = runtime.renderToImage(frame, size, sources);
+        snow_canvas_export::resetDiagnosticsForCurrentThread();
+        const auto actual = SnowCanvasRuntime::renderImageSourcesToImage(frame, size, sources);
+        const auto diagnostics = snow_canvas_export::diagnosticsForCurrentThread();
+        require(!actual.isNull() && actual == expected,
+                "source-only export must retain document export sampling at fractional scales");
+        require(actual.devicePixelRatio() == 1 && !actual.colorSpace().isValid(),
+                "source-only exports must leave source color metadata to their caller");
+        require(actual.pixelColor(size.width() - 1, size.height() / 2).alpha() == 0,
+                "source coverage must clip projected pixels outside the retained layer");
+        require(diagnostics.directSourceFastPathCount == 0 &&
+                    diagnostics.fullCompositorPathCount == 0 &&
+                    diagnostics.unsynchronizedFallbackCount == 0,
+                "stateless source rendering must not count as a runtime export or fallback");
+        auto worker = std::async(std::launch::async, [&] {
+            return SnowCanvasRuntime::renderImageSourcesToImage(frame, size, sources);
+        });
+        require(worker.get() == expected,
+                "source-only export must produce the same pixels without a worker runtime");
+    }
+    require(SnowCanvasRuntime::renderImageSourcesToImage({}, QSize(9, 6), sources).isNull() &&
+                SnowCanvasRuntime::renderImageSourcesToImage(frame, {}, sources).isNull(),
+            "source-only export must reject an empty projection");
 }
 
 void plainExportUsesDirectSourceFastPath() {
@@ -2724,6 +2853,51 @@ void runtimeExportUsesExactFractionalProjection() {
             "fractional export must preserve the source pixel before the filter edge");
     require(exported.pixelColor(130, 128) == QColor(135, 225, 245),
             "fractional export must place the filter edge using the exact export projection");
+
+    for (int y = 0; y < base.height(); ++y)
+        for (int x = 0; x < base.width(); ++x)
+            base.setPixelColor(x, y,
+                               QColor((x * 17 + y * 11) % 256, (x * 31 + y * 7) % 256,
+                                      (x * 3 + y * 23) % 256, 48 + (x * 13 + y * 19) % 208));
+    QImage overlay(7, 9, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < overlay.height(); ++y)
+        for (int x = 0; x < overlay.width(); ++x)
+            overlay.setPixelColor(
+                x, y, QColor((x * 37) % 256, (y * 29) % 256, 190, 32 + (x * 23 + y * 17) % 224));
+    const QList<CanvasExportSource> translucentSources{
+        {base, QRectF(-0.75, -0.5, 100.25, 64.75), QRectF(1.125, 1.75, 90.5, 60.25)},
+        {overlay, QRectF(29.25, 8.125, 10.25, 14.5), QRectF(30.375, 9.25, 7.75, 11.5)}};
+    const QRectF frame(0.25, 0, 64.5, 64);
+    for (const QSize size : {QSize(83, 81), QSize(129, 127), QSize(257, 253)}) {
+        QImage background(size, QImage::Format_ARGB32_Premultiplied);
+        background.fill(Qt::transparent);
+        {
+            // The pre-refactor compositor backdrop contract paints at DPR 1 with
+            // independently projected pixel rectangles, before filtering occurs.
+            QPainter painter(&background);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            const auto project = [&](const QRectF& rect) {
+                const qreal sx = size.width() / frame.width();
+                const qreal sy = size.height() / frame.height();
+                return QRectF((rect.x() - frame.x()) * sx, (rect.y() - frame.y()) * sy,
+                              rect.width() * sx, rect.height() * sy);
+            };
+            for (const auto& source : translucentSources) {
+                painter.save();
+                painter.setClipRect(project(source.coverage), Qt::IntersectClip);
+                painter.drawImage(project(source.canvasRect), source.image);
+                painter.restore();
+            }
+        }
+        const auto expected = runtime.renderToImage(frame, size, translucentSources, background);
+        const auto actual = runtime.renderToImage(frame, size, translucentSources);
+        require(
+            !actual.isNull() && actual == expected,
+            "automatic fractional backdrops must preserve DPR-1 source sampling before filters");
+        require(expected != background,
+                "fractional translucent backdrop comparison must exercise the partial filter");
+    }
 }
 
 void explicitRenderPlanValidatesBoundariesAndCrops() {
@@ -3889,6 +4063,7 @@ int main(int argc, char** argv) {
     }
     if (application.arguments().contains(QStringLiteral("--export-only"))) {
         exportWithoutRuntimeStillRendersSources();
+        sourceOnlyExportMatchesDocumentSamplingOnWorkers();
         plainExportUsesDirectSourceFastPath();
         annotatedExportUsesDirectSourceFastPath();
         runtimeExportPreservesOffscreenSourceBoundaries();
@@ -3908,6 +4083,13 @@ int main(int argc, char** argv) {
     if (application.arguments().contains(QStringLiteral("--retained-filter-paint-only"))) {
         retainedFilterCopiesPreserveScratchRowPadding();
         retainedFilterTilesRenderWithoutReopeningAnActivePainter();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--background-alpha-only"))) {
+        cachedFiltersPreserveTransparentBackdrops();
+        filteredBackgroundIsCompositedOnce();
+        emptySceneStillRendersBackgroundOnce();
+        customBackdropIsRenderedOnceBelowFilters();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--sparse-filter-damage-only"))) {
@@ -3953,6 +4135,7 @@ int main(int argc, char** argv) {
     mosaicPlanningCropsDirtyOutputAndBatchesEquivalentBlocks();
     movedFiltersMatchAFullRenderAfterDirtyRectangleUpdate();
     filteredBackgroundIsCompositedOnce();
+    cachedFiltersPreserveTransparentBackdrops();
     emptySceneStillRendersBackgroundOnce();
     penFilterUsesRawRoundStrokeMaskForEveryEffect();
     penSpatialFiltersUseSingleImmutableSource();
@@ -3962,6 +4145,7 @@ int main(int argc, char** argv) {
     sparseAndForcedDensePenFiltersMatch();
     customBackdropIsRenderedOnceBelowFilters();
     exportWithoutRuntimeStillRendersSources();
+    sourceOnlyExportMatchesDocumentSamplingOnWorkers();
     plainExportUsesDirectSourceFastPath();
     annotatedExportUsesDirectSourceFastPath();
     scalarAvx2AndThreadingProduceIdenticalPixels();

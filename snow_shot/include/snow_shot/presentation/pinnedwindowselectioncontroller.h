@@ -48,7 +48,8 @@ class PinnedWindowSelectionController final : public QObject {
 
     bool handlePointer(ScreenshotPinnedWindow* window, QObject* watched, QEvent* event);
     [[nodiscard]] bool routesPointerToClient(const ScreenshotPinnedWindow& window,
-                                             const QPoint& position) const;
+                                             const QPoint& position,
+                                             Qt::KeyboardModifiers modifiers) const;
     bool beginGeometry(ScreenshotPinnedWindow* window, const QPointF& desktopPress,
                        std::optional<int> handle = {}, std::optional<QPoint> nativePress = {});
     void updateGeometry(const QPointF& desktopPosition);

@@ -21,6 +21,13 @@ const TEXT_BACKGROUND_HORIZONTAL_PADDING_PER_LINE_HEIGHT: f64 = 0.32;
 const TEXT_BACKGROUND_VERTICAL_PADDING_PER_LINE_HEIGHT: f64 = 0.1;
 
 pub fn validate_rectangle(rect: &RectangleData) -> Result<(), ErrorCode> {
+    if rect.highlight_shape == crate::HighlightShape::ThoughtBubble {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    validate_rectangle_properties(rect)
+}
+
+pub(crate) fn validate_rectangle_properties(rect: &RectangleData) -> Result<(), ErrorCode> {
     if rect.text_element_id.is_some()
         && rect.rectangle_kind != crate::RectangleElementKind::Rectangle
     {
@@ -1141,6 +1148,15 @@ fn sanitize_positive(value: f64, fallback: f64) -> f64 {
 }
 
 pub fn rectangle_hit_test(rect: &RectangleData, point: Point<f64>, hit_tolerance: f64) -> bool {
+    if rect.highlight_shape == crate::HighlightShape::ThoughtBubble {
+        return !rect.is_highlight()
+            && !rect.is_spotlight()
+            && crate::speech_bubble_hit_test(
+                &crate::SpeechBubbleData::new(*rect),
+                point,
+                hit_tolerance,
+            );
+    }
     let hit_tolerance = hit_tolerance.max(0.0) + rectangle_stroke_rendering_outset(rect);
     if rect.highlight_shape == crate::HighlightShape::Diamond
         && !rect.is_highlight()
@@ -1190,6 +1206,7 @@ pub fn rectangle_hit_test(rect: &RectangleData, point: Point<f64>, hit_tolerance
             crate::HighlightShape::Ellipse => {
                 (local.x / half_width).powi(2) + (local.y / half_height).powi(2) <= 1.0
             }
+            crate::HighlightShape::ThoughtBubble => false,
             crate::HighlightShape::Diamond => {
                 local.x.abs() / half_width + local.y.abs() / half_height <= 1.0
             }
@@ -1214,6 +1231,7 @@ pub fn rectangle_hit_test(rect: &RectangleData, point: Point<f64>, hit_tolerance
                     local.x * local.x / (x * x) + local.y * local.y / (y * y) <= 1.0
                 }
                 crate::HighlightShape::Diamond => local.x.abs() / x + local.y.abs() / y <= 1.0,
+                crate::HighlightShape::ThoughtBubble => unreachable!(),
                 crate::HighlightShape::Rectangle => unreachable!(),
             }
         };
@@ -1411,7 +1429,7 @@ pub fn highlight_hit_test(rect: &RectangleData, point: Point<f64>, hit_tolerance
             let expanded_y = half_height + rect.stroke_width / 2.0 + hit_tolerance;
             dx * dx / (expanded_x * expanded_x) + dy * dy / (expanded_y * expanded_y) <= 1.0
         }
-        crate::HighlightShape::Diamond => false,
+        crate::HighlightShape::Diamond | crate::HighlightShape::ThoughtBubble => false,
     }
 }
 

@@ -1,0 +1,10 @@
+include([==[@CMAKE_CURRENT_FUNCTION_LIST_DIR@/SnowShotLicenseBundle.cmake]==])
+set(_snow_license_destination "${CMAKE_INSTALL_PREFIX}/@NOTICES_DESTINATION@/LICENSES.txt")
+snow_write_license_bundle(
+    SOURCE_DIRECTORY [==[@NOTICES_SOURCE_DIRECTORY@]==]
+    THIRD_PARTY_DIRECTORY [==[@NOTICES_THIRD_PARTY_DIRECTORY@]==]
+    PRODUCT [==[@NOTICES_PRODUCT@]==]
+    OUTPUT "$ENV{DESTDIR}${_snow_license_destination}")
+# Generation compares contents, avoiding timestamp-only install checks. Record
+# the generated file so CMake/CPack uninstall manifests include it as usual.
+list(APPEND CMAKE_INSTALL_MANIFEST_FILES "${_snow_license_destination}")

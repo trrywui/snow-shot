@@ -1,3 +1,4 @@
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/presentation/components/settingscustomwidget.h"
 #include "snow_shot/presentation/globalshortcutmanager.h"
 #include "snow_shot/presentation/settings/settingsregistry.h"
@@ -12,11 +13,13 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDir>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLayout>
 #include <QScrollBar>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTranslator>
@@ -66,7 +69,9 @@ void mcpSettingsWidget() {
     auto* config =
         widget->findChild<adqt::widgets::AdTextEdit*>(QStringLiteral("settings-mcp-config"));
     auto* copy = widget->findChild<adqt::widgets::AdButton*>(QStringLiteral("settings-mcp-copy"));
-    require(status && clients && config && copy, "MCP exposes Ant Design status, input and button");
+    auto* endpoint = widget->findChild<QLabel*>(QStringLiteral("settings-mcp-endpoint"));
+    require(status && clients && config && copy && endpoint,
+            "MCP exposes Ant Design status, input, button and endpoint descriptor");
     require(status->text() == QStringLiteral("Unavailable"), "stopped service is unavailable");
     require(config->isReadOnly(), "client configuration is read-only");
     require(config->lineWrapMode() == QTextEdit::WidgetWidth,
@@ -81,6 +86,25 @@ void mcpSettingsWidget() {
     require(QDir::isAbsolutePath(server.value(QStringLiteral("command")).toString()) &&
                 server.value(QStringLiteral("args")).isArray(),
             "configuration contains an absolute bridge command and arguments array");
+    QString expectedStoreDescriptor;
+    if (snow_shot::app::distribution::isStoreManaged()) {
+        const QString localAppData =
+            QDir::fromNativeSeparators(qEnvironmentVariable("LOCALAPPDATA"));
+        require(QDir::isAbsolutePath(localAppData), "Store fixture has an absolute LOCALAPPDATA");
+        const QString expectedCommand =
+            QDir(localAppData)
+                .filePath(QStringLiteral("Microsoft/WindowsApps/snow-shot-store-mcp.exe"));
+        expectedStoreDescriptor = QDir::toNativeSeparators(
+            QDir(localAppData)
+                .filePath(QStringLiteral(
+                    "Packages/SnowApps.SnowShot_3pp9w6ncw7bs0/LocalState/mcp/snow-shot-mcp.json")));
+        require(server.value(QStringLiteral("command")).toString() == expectedCommand &&
+                    server.value(QStringLiteral("args")).toArray().isEmpty(),
+                "Store JSON uses the stable execution alias without installation-path arguments");
+        require(endpoint->text() ==
+                    QStringLiteral("Local endpoint descriptor: %1").arg(expectedStoreDescriptor),
+                "Store endpoint uses the package LocalState path rather than the installation");
+    }
     copy->click();
     require(QApplication::clipboard()->text() == json && copy->text() == QStringLiteral("Copied"),
             "copy publishes the exact configuration and confirms success");
@@ -111,6 +135,11 @@ void mcpSettingsWidget() {
             "language changes update status label");
     require(config->isReadOnly(), "language changes preserve the textarea read-only mode");
     require(config->toPlainText() == json, "language changes preserve configuration JSON");
+    if (!expectedStoreDescriptor.isEmpty()) {
+        require(endpoint->text() == QStringLiteral("Translated: Local endpoint descriptor: %1")
+                                        .arg(expectedStoreDescriptor),
+                "language changes preserve the stable Store endpoint descriptor path");
+    }
     QCoreApplication::removeTranslator(&translator);
     QApplication::sendEvent(widget.get(), &languageChange);
 
@@ -154,14 +183,31 @@ void mcpSettingsWidget() {
 } // namespace
 
 int main(int argc, char** argv) {
+    QTemporaryDir directory;
+    require(directory.isValid(), "temporary storage directory exists");
+    const bool hadLocalAppData = qEnvironmentVariableIsSet("LOCALAPPDATA");
+    const QByteArray previousLocalAppData = qgetenv("LOCALAPPDATA");
+    const auto restoreEnvironment = qScopeGuard([hadLocalAppData, previousLocalAppData] {
+        if (hadLocalAppData)
+            qputenv("LOCALAPPDATA", previousLocalAppData);
+        else
+            qunsetenv("LOCALAPPDATA");
+    });
+    // ThemeManager construction reads InterfaceSettings, which lazily initializes storage.
+    // Establish the hermetic environment before Qt/product startup, and initialize storage
+    // exactly once before any theme/settings consumers can observe its repositories.
+    require(qputenv("LOCALAPPDATA", QDir::toNativeSeparators(directory.path()).toUtf8()),
+            "the fixture isolates LOCALAPPDATA before product initialization");
     QApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("SnowShotTests"));
     QCoreApplication::setApplicationName(QStringLiteral("mcp_settings_widget_tests"));
-    styles::ThemeManager::instance().initialize(application);
-    QTemporaryDir directory;
-    require(directory.isValid(), "temporary storage directory exists");
     auto& storage = snow_shot::storage::ApplicationStorage::instance();
-    static_cast<void>(storage.initialize({directory.path(), directory.path(), 8000}));
+    require(!storage.isInitialized(), "the fixture owns the first storage initialization");
+    require(storage.initialize({directory.path(), directory.path(), 8000}).success,
+            "initialize isolated MCP settings storage before theme consumers");
+    styles::ThemeManager::instance().initialize(application);
+    require(storage.configurationDirectory() == directory.path(),
+            "theme initialization preserves the fixture storage lifetime");
     mcpSettingsWidget();
     storage.shutdown();
     return 0;

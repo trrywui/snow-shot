@@ -133,6 +133,10 @@
             <translation>The bundled text recognition runtime is damaged or incompatible. Reinstall Snow Shot for this Mac.</translation>
         </message>
         <message>
+            <source>The packaged text recognition runtime is missing or damaged. Repair or reinstall Snow Shot from Microsoft Store.</source>
+            <translation>The packaged text recognition runtime is missing or damaged. Repair or reinstall Snow Shot from Microsoft Store.</translation>
+        </message>
+        <message>
             <source>Unable to open the recognized link</source>
             <translation>Unable to open the recognized link</translation>
         </message>
@@ -228,6 +232,10 @@
             <translation>Some text could not be translated</translation>
         </message>
         <message>
+            <source>Some text could not be translated: %1</source>
+            <translation>Some text could not be translated: %1</translation>
+        </message>
+        <message>
             <source>Table recognition failed</source>
             <translation>Table recognition failed</translation>
         </message>
@@ -266,6 +274,10 @@
         <message>
             <source>Translation service is unavailable</source>
             <translation>Translation service is unavailable</translation>
+        </message>
+        <message>
+            <source>Unable to copy translation results</source>
+            <translation>Unable to copy translation results</translation>
         </message>
         <message>
             <source>Unable to load Snow Shot vision models</source>

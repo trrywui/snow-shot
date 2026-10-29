@@ -4,6 +4,8 @@
 #include "snow_shot/app/edition.h"
 
 #include <QString>
+#include <functional>
+class QUrl;
 #if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
 #include "snow_shot/presentation/screenshottabledocument.h"
 #include <optional>
@@ -23,6 +25,8 @@ struct ScreenshotRecognitionFileSnapshot {
     QString source;
 #if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
     std::optional<ScreenshotTableDocument> table = std::nullopt;
+    // Full column widths in device-independent pixels, captured from the table editor.
+    QVector<int> tableColumnWidths = {};
 #endif
 
     [[nodiscard]] bool hasContent() const {
@@ -50,6 +54,12 @@ struct ScreenshotRecognitionFileSaveResult {
 
 class ScreenshotRecognitionFileExport final {
   public:
+#if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
+    // Successful launches retain their temporary workbook for the external application.
+    [[nodiscard]] static ScreenshotRecognitionFileSaveResult
+    openTemporaryTable(const ScreenshotRecognitionFileSnapshot& snapshot,
+                       std::function<bool(const QUrl&)> openUrl = {});
+#endif
     [[nodiscard]] static QString extension(ScreenshotRecognitionFileKind kind);
     [[nodiscard]] static QString dialogFilter(ScreenshotRecognitionFileKind kind);
     [[nodiscard]] static QString normalizedPath(const QString& path,

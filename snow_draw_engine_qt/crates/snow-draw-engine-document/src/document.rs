@@ -739,6 +739,7 @@ pub enum HighlightShape {
     Rectangle,
     Ellipse,
     Diamond,
+    ThoughtBubble,
 }
 
 impl RectangleData {
@@ -776,7 +777,11 @@ impl RectangleData {
     }
 
     pub fn supports_corner_radius(&self) -> bool {
-        !self.is_highlight() && self.highlight_shape != HighlightShape::Ellipse
+        !self.is_highlight()
+            && !matches!(
+                self.highlight_shape,
+                HighlightShape::Ellipse | HighlightShape::ThoughtBubble
+            )
     }
 
     pub fn element_kind(&self) -> ElementKind {
@@ -1153,6 +1158,21 @@ pub struct Document {
     /// paint order. Deserialized documents must establish these invariants again.
     #[serde(skip)]
     annotation_sync_certified: bool,
+    /// Derived only after complete ownership/order validation. Local edits use
+    /// this reverse index to synchronize an edited label without a scene scan.
+    #[serde(skip)]
+    synchronized_label_owners: HashMap<ElementId, ElementId>,
+    #[serde(skip)]
+    paint_ranks: std::sync::OnceLock<Vec<Option<(u32, u32)>>>,
+    #[cfg(test)]
+    #[serde(skip)]
+    synchronization_work: (u64, u64),
+}
+
+#[derive(Default)]
+struct LocalSynchronization {
+    arrows: Vec<(ElementId, ElementId)>,
+    bubbles: Vec<(ElementId, ElementId)>,
 }
 
 impl PartialEq for Document {
@@ -1195,6 +1215,31 @@ impl ElementData {
 }
 
 impl Document {
+    /// Canonical committed content for dirty checks, independent of history and allocation state.
+    /// Deleted trailing slots and the revision/next-index counters do not affect document content.
+    pub fn content_checkpoint(&self) -> impl Serialize + '_ {
+        #[derive(Serialize)]
+        struct Content<'a> {
+            slots: &'a [Option<ElementRecord>],
+            paint_order: &'a [ElementId],
+            watermark: &'a WatermarkConfig,
+            spotlight: &'a SpotlightConfig,
+            auto_filter_regions: &'a Option<crate::AutoFilterRegionRecord>,
+        }
+        let slot_count = self
+            .slots
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |index| index + 1);
+        Content {
+            slots: &self.slots[..slot_count],
+            paint_order: &self.paint_order,
+            watermark: &self.watermark,
+            spotlight: &self.spotlight,
+            auto_filter_regions: &self.auto_filter_regions,
+        }
+    }
+
     pub fn normalize_angle_invariants(&mut self) -> Result<(), ErrorCode> {
         for element in self.slots.iter_mut().flatten() {
             element.data.normalize_angle_invariant()?;
@@ -1391,7 +1436,45 @@ impl Document {
         let bindings = self.arrow_text_bindings();
         self.synchronize_arrow_text_pairs(&bindings, inverse, changes)?;
         let bubble_bindings = self.speech_bubble_text_bindings();
-        for (bubble_id, text_id) in &bubble_bindings {
+        self.synchronize_bubble_text_pairs(&bubble_bindings, inverse, changes)?;
+        let bindings: Vec<_> = bindings.into_iter().chain(bubble_bindings).collect();
+        if !bindings.is_empty() {
+            let labels: HashSet<_> = bindings.iter().map(|(_, text)| *text).collect();
+            let owners: HashMap<_, _> = bindings.iter().copied().collect();
+            let mut order = Vec::with_capacity(self.paint_order.len());
+            for id in &self.paint_order {
+                if labels.contains(id) {
+                    continue;
+                }
+                order.push(*id);
+                if let Some(label) = owners.get(id) {
+                    order.push(*label);
+                }
+            }
+            if order != self.paint_order {
+                inverse.push(self.apply_operation(
+                    &Operation::ReorderElements {
+                        ids: order,
+                        paint_index: 0,
+                    },
+                    changes,
+                )?);
+            }
+        }
+        self.synchronized_label_owners = bindings
+            .into_iter()
+            .map(|(owner, label)| (label, owner))
+            .collect();
+        Ok(())
+    }
+
+    fn synchronize_bubble_text_pairs(
+        &mut self,
+        bindings: &[(ElementId, ElementId)],
+        inverse: &mut Vec<Operation>,
+        changes: &mut DocumentDelta,
+    ) -> Result<(), ErrorCode> {
+        for (bubble_id, text_id) in bindings {
             let bubble = self.speech_bubble(*bubble_id)?;
             let mut text = self.text(*text_id)?.clone();
             text.center = bubble.body.center;
@@ -1409,30 +1492,6 @@ impl Document {
             if self.element(*text_id)?.meta != meta {
                 inverse.push(self.apply_operation(
                     &Operation::UpdateElementMeta { id: *text_id, meta },
-                    changes,
-                )?);
-            }
-        }
-        let bindings: Vec<_> = bindings.into_iter().chain(bubble_bindings).collect();
-        if !bindings.is_empty() {
-            let labels: HashSet<_> = bindings.iter().map(|(_, text)| *text).collect();
-            let owners: HashMap<_, _> = bindings.into_iter().collect();
-            let mut order = Vec::with_capacity(self.paint_order.len());
-            for id in &self.paint_order {
-                if labels.contains(id) {
-                    continue;
-                }
-                order.push(*id);
-                if let Some(label) = owners.get(id) {
-                    order.push(*label);
-                }
-            }
-            if order != self.paint_order {
-                inverse.push(self.apply_operation(
-                    &Operation::ReorderElements {
-                        ids: order,
-                        paint_index: 0,
-                    },
                     changes,
                 )?);
             }
@@ -1476,74 +1535,83 @@ impl Document {
         Ok(())
     }
 
-    /// Only owner/style/measurement updates can retain the full synchronization
-    /// certificate. Resolve owners from the transaction rather than scanning all
-    /// labels; Text-only or structural commands use the general synchronization.
+    /// A successful full synchronization certifies ownership, label adjacency,
+    /// and fixed filter layers. Data/meta edits preserving those relationships
+    /// need only resynchronize their owners; validation of each payload remains
+    /// in apply_operation. Structural/imported changes still take the full path.
+    fn local_synchronization_plan(
+        &self,
+        transaction: &Transaction,
+    ) -> Option<LocalSynchronization> {
+        if !self.annotation_sync_certified {
+            return None;
+        }
+        let mut owners = HashSet::new();
+        for operation in transaction.operations() {
+            let (id, previous) = match operation {
+                Operation::UpdateElementData { id, data } => {
+                    let previous = &self.element(*id).ok()?.data;
+                    if previous.kind() != data.kind()
+                        || element_data_relation_targets_changed(previous, data)
+                        || previous.is_smart_erase() != data.is_smart_erase()
+                    {
+                        return None;
+                    }
+                    if let (ElementData::Filter(previous), ElementData::Filter(next)) =
+                        (previous, data)
+                        && (previous.auto_region_id != next.auto_region_id
+                            || (next.auto_region_id.is_some()
+                                && (next.opacity != 1.0 || next.rotation != 0.0)))
+                    {
+                        return None;
+                    }
+                    (*id, previous)
+                }
+                Operation::UpdateElementMeta { id, .. } => (*id, &self.element(*id).ok()?.data),
+                Operation::UpdateWatermark { .. } | Operation::UpdateSpotlight { .. } => continue,
+                _ => return None,
+            };
+            match previous {
+                ElementData::Arrow(arrow) if arrow.text_element_id.is_some() => {
+                    owners.insert(id);
+                }
+                ElementData::SpeechBubble(bubble) if bubble.text_element_id.is_some() => {
+                    owners.insert(id);
+                }
+                ElementData::Text(_) => {
+                    if let Some(owner) = self.synchronized_label_owners.get(&id) {
+                        owners.insert(*owner);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Stable owner order makes inverse transactions and delta ordering
+        // deterministic, independent of HashSet insertion/randomization.
+        let mut owners: Vec<_> = owners.into_iter().collect();
+        owners.sort_unstable();
+        let mut plan = LocalSynchronization::default();
+        for owner in owners {
+            match &self.element(owner).ok()?.data {
+                ElementData::Arrow(arrow) => {
+                    plan.arrows.push((owner, arrow.text_element_id?));
+                }
+                ElementData::SpeechBubble(bubble) => {
+                    plan.bubbles.push((owner, bubble.text_element_id?));
+                }
+                _ => return None,
+            }
+        }
+        Some(plan)
+    }
+
+    #[cfg(test)]
     fn annotation_sync_pairs_for_transaction(
         &self,
         transaction: &Transaction,
     ) -> Option<Vec<(ElementId, ElementId)>> {
-        if !self.annotation_sync_certified {
-            return None;
-        }
-        let mut owners = HashMap::new();
-        for operation in transaction.operations() {
-            let id = match operation {
-                Operation::UpdateElementData {
-                    id,
-                    data: ElementData::Arrow(next),
-                } => {
-                    let previous = self.arrow(*id).ok()?;
-                    if !previous.is_generated_annotation()
-                        || previous.linear_kind != next.linear_kind
-                        || previous.text_element_id != next.text_element_id
-                        || previous.start_binding != next.start_binding
-                        || previous.end_binding != next.end_binding
-                    {
-                        return None;
-                    }
-                    Some(*id)
-                }
-                Operation::UpdateElementMeta { id, .. } => self
-                    .arrow(*id)
-                    .ok()
-                    .filter(|arrow| arrow.is_generated_annotation())
-                    .map(|_| *id),
-                Operation::UpdateElementData {
-                    data: ElementData::Text(_),
-                    ..
-                } => None,
-                _ => return None,
-            };
-            if let Some(id) = id {
-                owners.insert(id, self.arrow(id).ok()?.text_element_id);
-            }
-        }
-        if owners.is_empty() {
-            return None;
-        }
-        let labels: HashSet<_> = owners.values().copied().flatten().collect();
-        for operation in transaction.operations() {
-            match operation {
-                Operation::UpdateElementData {
-                    id,
-                    data: ElementData::Arrow(_),
-                } if owners.contains_key(id) => {}
-                Operation::UpdateElementData {
-                    id,
-                    data: ElementData::Text(_),
-                } if labels.contains(id) => {}
-                Operation::UpdateElementMeta { id, .. }
-                    if owners.contains_key(id) || labels.contains(id) => {}
-                _ => return None,
-            }
-        }
-        let mut bindings: Vec<_> = owners
-            .into_iter()
-            .filter_map(|(owner, text)| text.map(|text| (owner, text)))
-            .collect();
-        bindings.sort_unstable_by_key(|(owner, _)| *owner);
-        Some(bindings)
+        self.local_synchronization_plan(transaction)
+            .map(|plan| plan.arrows)
     }
 
     pub fn has_same_session_content(&self, other: &Self) -> bool {
@@ -1606,11 +1674,7 @@ impl Document {
 
     pub fn element_state(&self, id: ElementId) -> Result<ElementState<'_>, ErrorCode> {
         let element = self.element(id)?;
-        let z_index = self
-            .paint_order
-            .iter()
-            .position(|paint_id| *paint_id == id)
-            .ok_or(ErrorCode::NotFound)?;
+        let z_index = self.paint_rank(id).ok_or(ErrorCode::NotFound)? as usize;
         Ok(ElementState {
             id,
             rect: element.data.state_rect(),
@@ -1809,8 +1873,8 @@ impl Document {
         }
 
         let mut inverse = Vec::with_capacity(transaction.operations.len());
-        let annotation_sync_pairs = self.annotation_sync_pairs_for_transaction(transaction);
-        let local_annotation_sync = annotation_sync_pairs.is_some();
+        let local_plan = self.local_synchronization_plan(transaction);
+        let local_annotation_sync = local_plan.is_some();
         let start_annotation_sync_certified = self.annotation_sync_certified;
         // Type conversion changes fixed-layer membership. Its inverse must restore
         // the previous ordinary layer position as well as the previous type.
@@ -1848,9 +1912,20 @@ impl Document {
             }
         }
 
-        let synchronized = if let Some(bindings) = annotation_sync_pairs {
-            self.synchronize_arrow_text_pairs(&bindings, &mut inverse, &mut changes)
+        let synchronized = if let Some(plan) = local_plan {
+            #[cfg(test)]
+            {
+                self.synchronization_work.1 += (plan.arrows.len() + plan.bubbles.len()) as u64;
+            }
+            self.synchronize_arrow_text_pairs(&plan.arrows, &mut inverse, &mut changes)
+                .and_then(|()| {
+                    self.synchronize_bubble_text_pairs(&plan.bubbles, &mut inverse, &mut changes)
+                })
         } else {
+            #[cfg(test)]
+            {
+                self.synchronization_work.0 += self.paint_order.len() as u64;
+            }
             self.validate_auto_filters()
                 .and_then(|()| self.synchronize_arrow_text(&mut inverse, &mut changes))
         };
@@ -1987,16 +2062,31 @@ impl Document {
     fn element_change_snapshot(&self, id: ElementId) -> Option<ElementChangeSnapshot> {
         let element = self.element(id).ok()?;
         let bounds = element_visible_bounds(element);
-        let paint_index = self
-            .paint_order
-            .iter()
-            .position(|candidate| *candidate == id)
-            .map(|index| index as u32);
         Some(ElementChangeSnapshot {
             kind: element.data.kind(),
             bounds,
-            paint_index,
+            paint_index: self.paint_rank(id),
         })
+    }
+
+    fn paint_rank(&self, id: ElementId) -> Option<u32> {
+        self.paint_ranks
+            .get_or_init(|| {
+                let mut ranks = vec![None; self.slots.len()];
+                for (rank, id) in self.paint_order.iter().enumerate() {
+                    if let Some(entry) = ranks.get_mut(id.index as usize) {
+                        *entry = Some((id.generation, rank as u32));
+                    }
+                }
+                ranks
+            })
+            .get(id.index as usize)
+            .and_then(|entry| *entry)
+            .and_then(|(generation, rank)| (generation == id.generation).then_some(rank))
+    }
+
+    pub(crate) fn invalidate_paint_ranks(&mut self) {
+        self.paint_ranks.take();
     }
 
     fn apply_operation(
@@ -2134,11 +2224,7 @@ impl Document {
             }
             Operation::RemoveElement { id } => {
                 let old_snapshot = self.element_change_snapshot(*id);
-                let paint_index = self
-                    .paint_order
-                    .iter()
-                    .position(|candidate| *candidate == *id)
-                    .ok_or(ErrorCode::NotFound)? as u32;
+                let paint_index = self.paint_rank(*id).ok_or(ErrorCode::NotFound)?;
                 let element = self.lookup(*id)?.clone();
                 if element.meta.locked {
                     return Err(ErrorCode::InvalidState);
@@ -2244,6 +2330,14 @@ impl Document {
         }
 
         let paint_index = paint_index.min(self.paint_order.len() as u32) as usize;
+        if paint_index == self.paint_order.len() {
+            if let Some(ranks) = self.paint_ranks.get_mut() {
+                ranks.resize(self.slots.len(), None);
+                ranks[index] = Some((id.generation, paint_index as u32));
+            }
+        } else {
+            self.invalidate_paint_ranks();
+        }
         self.paint_order.insert(paint_index, id);
         self.next_index = self.next_index.max(id.index.saturating_add(1));
         Ok(())
@@ -2263,6 +2357,7 @@ impl Document {
 
         *slot = None;
         self.paint_order.retain(|candidate| *candidate != id);
+        self.invalidate_paint_ranks();
         Ok(())
     }
 
@@ -2289,6 +2384,7 @@ impl Document {
         let insert_at = paint_index.min(self.paint_order.len() as u32) as usize;
         self.paint_order
             .splice(insert_at..insert_at, moving.iter().copied());
+        self.invalidate_paint_ranks();
         Ok(())
     }
 
@@ -2684,17 +2780,208 @@ mod annotation_sync_tests {
     }
 
     #[test]
-    fn angle_annotation_sync_structural_and_unrelated_text_commands_use_full_path() {
+    fn local_scene_edits_visit_no_unrelated_elements_in_ten_thousand_element_document() {
+        let mut document = Document::new();
+        let shape = crate::MagnifierData::default().magnified_rect();
+        for index in 0..10_000 {
+            let id = document.allocate_element_id();
+            let data = if index % 2 == 0 {
+                ElementData::Rectangle(shape)
+            } else {
+                ElementData::Text(TextData::default())
+            };
+            document.slots.push(Some(ElementRecord {
+                id,
+                meta: ElementMeta::default(),
+                data,
+            }));
+            document.paint_order.push(id);
+        }
+        document.validate_session().unwrap();
+        let rectangle = document.paint_order[5000];
+        let text_id = document.paint_order[5001];
+        let mut certify = Transaction::new("establish imported invariants");
+        certify.update_rectangle(rectangle, shape);
+        document.apply(&certify).unwrap();
+        let work = document.synchronization_work;
+        assert_eq!(work, (10_000, 0));
+        let ranks = document.paint_ranks.get().unwrap().as_ptr();
+        for value in [0.2, 0.6, 0.8] {
+            let mut rect = *document.rectangle(rectangle).unwrap();
+            rect.opacity = value;
+            let mut text = document.text(text_id).unwrap().clone();
+            text.opacity = value;
+            let mut update = Transaction::new("local material edits");
+            update.update_rectangle(rectangle, rect);
+            update.update_text(text_id, text);
+            let before = document.clone();
+            let applied = document.apply(&update).unwrap();
+            assert_eq!(applied.changes.touched, [rectangle, text_id]);
+            assert!(!applied.changes.z_order_changed);
+            assert_eq!(document.synchronization_work, work);
+            assert_eq!(document.paint_ranks.get().unwrap().as_ptr(), ranks);
+            document.apply(&applied.inverse).unwrap();
+            assert!(document.has_same_session_content(&before));
+            assert_eq!(document.synchronization_work, work);
+        }
+    }
+
+    #[test]
+    fn local_owner_and_label_edits_match_full_synchronization_and_undo() {
+        let (mut document, pairs) = fixture();
+        let bubble_id = document.allocate_element_id();
+        let bubble_label = document.allocate_element_id();
+        let shape_id = document.allocate_element_id();
+        let shape_label = document.allocate_element_id();
+        let mut bubble =
+            crate::SpeechBubbleData::new(crate::MagnifierData::default().magnified_rect());
+        bubble.text_element_id = Some(bubble_label);
+        let mut shape = crate::MagnifierData::default().magnified_rect();
+        shape.text_element_id = Some(shape_label);
+        let mut insert = Transaction::new("mixed owners");
+        insert.insert_speech_bubble(bubble_id, ElementMeta::default(), bubble);
+        insert.insert_text(bubble_label, ElementMeta::default(), TextData::default());
+        insert.insert_rectangle(shape_id, ElementMeta::default(), shape);
+        insert.insert_text(shape_label, ElementMeta::default(), TextData::default());
+        document.apply(&insert).unwrap();
+        assert_eq!(document.synchronized_label_owners.len(), 3);
+
+        let mut update = owner_update(&document, pairs[0].0);
+        let mut text = document.text(pairs[1].1).unwrap().clone();
+        text.layout = TextLayoutSize::new(77.0, 33.0);
+        text.text = "must derive from owner".to_owned();
+        update.update_text(pairs[1].1, text);
+        let mut bubble = document.speech_bubble(bubble_id).unwrap().clone();
+        bubble.body.center.x += 15.0;
+        bubble.body.rotation = 0.3;
+        update.update_speech_bubble(bubble_id, bubble);
+        update.update_element_meta(
+            bubble_id,
+            ElementMeta {
+                visible: false,
+                locked: false,
+            },
+        );
+        let mut text = document.text(bubble_label).unwrap().clone();
+        text.center.x = -999.0;
+        text.text = "preserve editable content".to_owned();
+        update.update_text(bubble_label, text);
+        let mut shape = *document.rectangle(shape_id).unwrap();
+        shape.opacity = 0.4;
+        update.update_rectangle(shape_id, shape);
+        let before = document.clone();
+        let mut full = document.clone();
+        full.annotation_sync_certified = false;
+        let work = document.synchronization_work;
+        let local_result = document.apply(&update).unwrap();
+        let full_result = full.apply(&update).unwrap();
+        assert_eq!(document, full);
+        assert_eq!(document.synchronization_work, (work.0, work.1 + 3));
+        assert_eq!(
+            document.text(bubble_label).unwrap().text,
+            "preserve editable content"
+        );
+        document.apply(&local_result.inverse).unwrap();
+        full.apply(&full_result.inverse).unwrap();
+        assert!(document.has_same_session_content(&before));
+        assert!(full.has_same_session_content(&before));
+        assert_eq!(document, full);
+    }
+
+    #[test]
+    fn derived_paint_ranks_follow_append_remove_restore_reorder_and_rollback() {
+        let mut document = Document::new();
+        let mut insert = Transaction::new("rank fixture");
+        for _ in 0..6 {
+            let id = document.allocate_element_id();
+            insert.insert_rectangle(
+                id,
+                ElementMeta::default(),
+                crate::MagnifierData::default().magnified_rect(),
+            );
+        }
+        document.apply(&insert).unwrap();
+        let original = document.clone();
+        let ids = document.paint_order().to_vec();
+        let assert_ranks = |document: &Document| {
+            for (index, id) in document.paint_order().iter().copied().enumerate() {
+                assert_eq!(document.paint_rank(id), Some(index as u32));
+                assert_eq!(document.element_state(id).unwrap().z_index, index);
+            }
+        };
+        assert_ranks(&document);
+        let mut remove = Transaction::new("remove middle");
+        remove.remove_element(ids[2]);
+        let removed = document.apply(&remove).unwrap();
+        assert_eq!(removed.changes.element_changes[0].old_paint_index, Some(2));
+        assert_eq!(removed.changes.element_changes[0].new_paint_index, None);
+        assert_eq!(document.paint_rank(ids[2]), None);
+        assert_ranks(&document);
+        document.apply(&removed.inverse).unwrap();
+        assert_ranks(&document);
+        assert!(document.has_same_session_content(&original));
+
+        let mut reorder = Transaction::new("reorder then invalid edit");
+        reorder.reorder_elements(vec![ids[4], ids[0]], 1);
+        let mut invalid = *document.rectangle(ids[2]).unwrap();
+        invalid.opacity = f64::NAN;
+        reorder.update_rectangle(ids[2], invalid);
+        assert_eq!(document.apply(&reorder), Err(ErrorCode::InvalidArgument));
+        assert_ranks(&document);
+        assert!(document.has_same_session_content(&original));
+        let saved = serde_json::to_value(&document).unwrap();
+        assert!(saved.get("paint_ranks").is_none());
+        assert!(saved.get("synchronized_label_owners").is_none());
+        let restored: Document = serde_json::from_value(saved).unwrap();
+        assert!(restored.paint_ranks.get().is_none());
+        assert_ranks(&restored);
+    }
+
+    #[test]
+    fn local_filter_invariants_reject_invalid_auto_regions_and_reorder_smart_erase() {
+        let mut document = Document::new();
+        let shape_id = document.allocate_element_id();
+        let filter_id = document.allocate_element_id();
+        let mut insert = Transaction::new("filter layers");
+        insert.insert_rectangle(
+            shape_id,
+            ElementMeta::default(),
+            crate::MagnifierData::default().magnified_rect(),
+        );
+        insert.insert_filter(filter_id, ElementMeta::default(), FilterData::default());
+        document.apply(&insert).unwrap();
+        let mut filter = *document.filter(filter_id).unwrap();
+        filter.filter_type = CanvasFilterType::SmartErase;
+        let mut convert = Transaction::new("smart erase conversion");
+        convert.update_filter(filter_id, filter);
+        assert!(document.local_synchronization_plan(&convert).is_none());
+        let converted = document.apply(&convert).unwrap();
+        assert_eq!(document.paint_order(), &[filter_id, shape_id]);
+        document.apply(&converted.inverse).unwrap();
+        assert_eq!(document.paint_order(), &[shape_id, filter_id]);
+
+        let mut filter = *document.filter(filter_id).unwrap();
+        filter.auto_region_id = Some(7);
+        let mut invalid = Transaction::new("missing auto region");
+        invalid.update_filter(filter_id, filter);
+        assert!(document.local_synchronization_plan(&invalid).is_none());
+        let before = document.clone();
+        assert_eq!(document.apply(&invalid), Err(ErrorCode::InvalidArgument));
+        assert_eq!(document, before);
+        assert!(document.annotation_sync_certified);
+    }
+
+    #[test]
+    fn annotation_sync_owned_text_is_local_and_structural_commands_use_full_path() {
         let (mut document, pairs) = fixture();
         let original = document.clone();
         let mut text_only = Transaction::new("modify label");
         let mut text = document.text(pairs[0].1).unwrap().clone();
         text.text = "stale".to_owned();
         text_only.update_text(pairs[0].1, text);
-        assert!(
-            document
-                .annotation_sync_pairs_for_transaction(&text_only)
-                .is_none()
+        assert_eq!(
+            document.annotation_sync_pairs_for_transaction(&text_only),
+            Some(vec![pairs[0]])
         );
         document.apply(&text_only).unwrap();
         assert_derived_labels(&document, &pairs);

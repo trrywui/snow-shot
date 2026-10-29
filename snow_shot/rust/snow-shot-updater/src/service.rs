@@ -485,6 +485,9 @@ impl Service {
         let gitee_api_url = validate_api_url(&options.gitee_api_url, options.allow_local_http)?;
         transaction::validate_root(&options.root)?;
         let record = transaction::installation_record(&options.root)?;
+        if let Err(error) = transaction::prune_update_work(&options.root) {
+            tracing::warn!("could not clean completed update work: {error}");
+        }
         std::fs::create_dir_all(&options.cache_directory).map_err(|error| {
             io_error(
                 "update_cache_create_failed",
@@ -2384,6 +2387,61 @@ mod tests {
 
     fn initialize_cache(inputs: &DownloadInputs) {
         std::fs::create_dir_all(&inputs.options.cache_directory).unwrap();
+    }
+
+    #[test]
+    fn initialization_prunes_completed_transaction_payloads_and_preserves_retry_state() {
+        for pending in [false, true] {
+            let temporary = TempDir::new().unwrap();
+            let inputs = download_inputs(
+                &temporary,
+                Arc::new(FakeNetwork::new(Vec::new())),
+                Arc::new(FakeClock::new(fixed_time(), Vec::new())),
+                0,
+            );
+            let root = &inputs.options.root;
+            std::fs::create_dir_all(root.join("bin")).unwrap();
+            std::fs::write(
+                root.join(transaction::INSTALLATION_RECORD),
+                serde_json::to_vec(&json!({
+                    "schema": 1,
+                    "platform": crate::edition::PLATFORM,
+                    "product": crate::edition::PRODUCT,
+                    "variant": "portable",
+                    "version": "1.0.0",
+                    "files": [{"path": crate::edition::APP_PATH, "size": 0, "sha256": "0".repeat(64)}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let work = root.join(transaction::UPDATE_WORK);
+            for name in ["stage", "backup"] {
+                std::fs::create_dir_all(work.join(name)).unwrap();
+                std::fs::write(work.join(name).join("payload"), b"update payload").unwrap();
+            }
+            std::fs::write(work.join("failed-version.txt"), b"2.0.0").unwrap();
+            if pending {
+                std::fs::write(work.join("journal.json"), b"damaged journal").unwrap();
+            }
+
+            Service::initialize(
+                inputs.options,
+                ServiceDependencies {
+                    clock: inputs.clock,
+                    network: inputs.network,
+                },
+            )
+            .unwrap();
+
+            for name in ["stage", "backup"] {
+                assert_eq!(work.join(name).exists(), pending);
+            }
+            assert_eq!(work.join("journal.json").exists(), pending);
+            assert_eq!(
+                std::fs::read(work.join("failed-version.txt")).unwrap(),
+                b"2.0.0"
+            );
+        }
     }
 
     fn ready_service(temporary: &TempDir, network: FakeNetwork) -> Service {

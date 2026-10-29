@@ -59,7 +59,10 @@ class MiniBuildContractTests(unittest.TestCase):
 add_library(opencv_core INTERFACE)
 add_library(opencv_imgproc INTERFACE)
 add_library(snow_shot_storage_mini INTERFACE)
-target_link_libraries(mini INTERFACE opencv_imgproc snow_shot_storage_mini)
+add_library(snow_shot_print_mini INTERFACE)
+add_library(snow_shot_diagnostics_mini INTERFACE)
+target_link_libraries(mini INTERFACE opencv_imgproc snow_shot_storage_mini snow_shot_print_mini)
+target_link_libraries(snow_shot_print_mini INTERFACE snow_shot_diagnostics_mini)
 target_link_libraries(opencv_imgproc INTERFACE opencv_core)
 target_sources(snow_shot_storage_mini INTERFACE screenshotocrcontroller.h)
 ''')
@@ -69,7 +72,7 @@ target_sources(snow_shot_storage_mini INTERFACE screenshotocrcontroller.h)
                    "snow_shot_full_rust_ffi_bundle",
                    "opencv_wechat_qrcode", "opencv_objdetect", "opencv_dnn",
                    "snow_shot_latex_renderer", "snow_shot_microtex",
-                   "snow_shot_storage", "snow_shot_edition_full"]
+                   "snow_shot_storage", "snow_shot_edition_full", "snow_shot_print"]
         if sys.platform == "win32":
             targets.extend(("snow_ocr_process",))
         for target in targets:

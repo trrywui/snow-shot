@@ -5,8 +5,86 @@
 #include <QJsonArray>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace snow_shot::app::mcp {
+inline QJsonObject selectionStyleState(const ScreenshotSelectionModel& model) {
+    const auto color = [](const QColor& value) {
+        return QJsonArray{value.red(), value.green(), value.blue(), value.alpha()};
+    };
+    return {{QStringLiteral("corner_radius"), model.cornerRadius()},
+            {QStringLiteral("shadow_width"), model.shadowWidth()},
+            {QStringLiteral("shadow_color"), color(model.shadowColor())},
+            {QStringLiteral("border_type"), screenshotSelectionBorderTypeId(model.borderType())},
+            {QStringLiteral("border_width"), model.borderWidth()},
+            {QStringLiteral("border_color"), color(model.borderColor())},
+            {QStringLiteral("aspect_ratio_locked"), model.aspectRatioLocked()}};
+}
+
+// Both interactive screenshots and background documents patch the same model.
+// Parse into a candidate so invalid fields cannot partially modify either host.
+inline bool applySelectionStyle(ScreenshotSelectionModel& model, const QJsonObject& params,
+                                QString* field, qreal minimumSelectionSize = 1.0) {
+    const auto fail = [field](const QString& key) {
+        if (field)
+            *field = key;
+        return false;
+    };
+    auto candidate = model;
+    for (const auto& key : {QStringLiteral("corner_radius"), QStringLiteral("shadow_width"),
+                            QStringLiteral("border_width")}) {
+        if (!params.contains(key))
+            continue;
+        const auto value = params.value(key);
+        const double number = value.toDouble(-1);
+        if (!value.isDouble() || !std::isfinite(number) || number < 0 || number > 8192 ||
+            std::floor(number) != number)
+            return fail(key);
+        if (key == QStringLiteral("corner_radius"))
+            static_cast<void>(candidate.setCornerRadius(static_cast<int>(number)));
+        else if (key == QStringLiteral("shadow_width"))
+            static_cast<void>(candidate.setShadowWidth(static_cast<int>(number)));
+        else
+            static_cast<void>(candidate.setBorderWidth(static_cast<int>(number)));
+    }
+    for (const auto& key : {QStringLiteral("shadow_color"), QStringLiteral("border_color")}) {
+        if (!params.contains(key))
+            continue;
+        const auto values = params.value(key).toArray();
+        if (values.size() != 4)
+            return fail(key);
+        for (const auto& value : values) {
+            const double number = value.toDouble(-1);
+            if (!value.isDouble() || !std::isfinite(number) || number < 0 || number > 255 ||
+                std::floor(number) != number)
+                return fail(key);
+        }
+        const QColor color(values[0].toInt(), values[1].toInt(), values[2].toInt(),
+                           values[3].toInt());
+        if (key == QStringLiteral("shadow_color"))
+            candidate.setShadowColor(color);
+        else
+            candidate.setBorderColor(color);
+    }
+    if (params.contains(QStringLiteral("border_type"))) {
+        const auto type = params.value(QStringLiteral("border_type"));
+        if (type != QStringLiteral("shadow") && type != QStringLiteral("border"))
+            return fail(QStringLiteral("border_type"));
+        static_cast<void>(candidate.setBorderType(type == QStringLiteral("border")
+                                                      ? ScreenshotSelectionBorderType::Border
+                                                      : ScreenshotSelectionBorderType::Shadow));
+    }
+    if (params.contains(QStringLiteral("aspect_ratio_locked"))) {
+        const auto locked = params.value(QStringLiteral("aspect_ratio_locked"));
+        if (!locked.isBool())
+            return fail(QStringLiteral("aspect_ratio_locked"));
+        static_cast<void>(
+            candidate.setAspectRatioLockEnabled(locked.toBool(), minimumSelectionSize));
+    }
+    model = std::move(candidate);
+    return true;
+}
+
 // Validates the complete operand before touching the live model. All coordinates are
 // half-open canvas coordinates; out-of-canvas values are rejected, never silently rounded in.
 inline bool applySelection(ScreenshotSelectionModel& model, const QRectF& canvas,

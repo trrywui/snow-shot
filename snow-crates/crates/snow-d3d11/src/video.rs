@@ -541,6 +541,62 @@ mod tests {
             }
         }
         let nv12 = device.texture(64, 64, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET.0 as u32)?;
+        // Crop and resize compute passes produce RGBA, while desktop and
+        // overlay passes produce BGRA. Exercise both orders on the same processor.
+        for format in [
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_B8G8R8X8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+        ] {
+            for (rgba, yuv) in [
+                ([255u8, 0, 0, 255], [63u8, 102, 240]),
+                ([0, 0, 255, 255], [32, 240, 118]),
+            ] {
+                let texture = device.texture(64, 64, format, binds)?;
+                let mut pixel = rgba;
+                if format != DXGI_FORMAT_R8G8B8A8_UNORM {
+                    pixel.swap(0, 2);
+                }
+                let pixels = pixel.repeat(64 * 64);
+                unsafe {
+                    device.context().UpdateSubresource(
+                        texture.raw(),
+                        0,
+                        None,
+                        pixels.as_ptr().cast(),
+                        256,
+                        0,
+                    );
+                }
+                let mut layer = background.clone();
+                layer.texture = texture;
+                for target in [&output, &nv12] {
+                    processor.blit(std::slice::from_ref(&layer), target.raw(), 0)?;
+                    let actual = read(target)?;
+                    if target.desc().Format == DXGI_FORMAT_NV12 {
+                        ensure!(
+                            actual[..4096].iter().all(|v| v.abs_diff(yuv[0]) <= 2)
+                                && actual[4096..]
+                                    .chunks_exact(2)
+                                    .all(|uv| uv[0].abs_diff(yuv[1]) <= 2
+                                        && uv[1].abs_diff(yuv[2]) <= 2),
+                            "{format:?} {rgba:?} to NV12: Y={} UV={:?}, expected {yuv:?}",
+                            actual[0],
+                            &actual[4096..4098]
+                        );
+                    } else {
+                        ensure!(
+                            actual.chunks_exact(4).all(|p| p[0].abs_diff(rgba[2]) <= 2
+                                && p[1].abs_diff(rgba[1]) <= 2
+                                && p[2].abs_diff(rgba[0]) <= 2),
+                            "{format:?} {rgba:?} to BGRA: {:?}",
+                            &actual[..4]
+                        );
+                    }
+                }
+            }
+        }
         for (bgra, yuv) in [
             ([0, 0, 0, 255], [16u8, 128, 128]),
             ([255, 255, 255, 255], [235, 128, 128]),

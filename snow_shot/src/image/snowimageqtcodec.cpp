@@ -1,6 +1,7 @@
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include "snowimageqtcodec.h"
 #include "snowimageqtsrgbrowreader.h"
+#include "snowimageopacity.h"
 
 #include "snowimagecodecbridge.h"
 
@@ -351,7 +352,8 @@ QImage decodeBytes(const QByteArray& encoded, snow::image::Format expectedFormat
                    bool firstFrameOnly = false) {
     const uint32_t bridgeExpectedFormat = bridgeFormat(expectedFormat);
     if (!backendAbiIsCompatible() || encoded.isEmpty() ||
-        bridgeExpectedFormat == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN) {
+        (bridgeExpectedFormat == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN &&
+         expectedFormat != snow::image::Format::unknown)) {
         return {};
     }
 
@@ -383,7 +385,8 @@ bool inspectBytes(const QByteArray& encoded, snow::image::Format expectedFormat,
                   const QSize& expectedSize) {
     const uint32_t bridgeExpectedFormat = bridgeFormat(expectedFormat);
     if (!backendAbiIsCompatible() || encoded.isEmpty() || !expectedSize.isValid() ||
-        bridgeExpectedFormat == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN) {
+        (bridgeExpectedFormat == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN &&
+         expectedFormat != snow::image::Format::unknown)) {
         return false;
     }
 
@@ -465,7 +468,7 @@ bool encodeToDevice(const ScreenshotImageRowSource& source, QIODevice* device,
     bridgeSink.seekable = device->isSequential() ? 0 : 1;
 
     auto verifiedOptions = options;
-    if (!verifiedOptions.verified_alpha_content && source.isKnownOpaque)
+    if (!verifiedOptions.verified_alpha_content && source.hasVerifiedOpaquePixels())
         verifiedOptions.verified_alpha_content = snow::image::AlphaContent::opaque;
     const SnowShotImageCodecEncodeOptions encodedOptions = bridgeOptions(format, verifiedOptions);
     std::array<char, kBackendErrorCapacity> backendError{};
@@ -756,6 +759,7 @@ ScreenshotImageRowSource resizedRowSource(ScreenshotImageRowSource source, QSize
     result.cancellationRequested = source.cancellationRequested;
     result.reserveResources = source.reserveResources;
     result.isKnownOpaque = source.isKnownOpaque;
+    result.verifyOpaque = source.verifyOpaque;
     result.previewImage = source.previewImage;
     auto reader = std::make_shared<ResizeRowReader>(std::move(source), output);
     if (!reader->prepare(error))
@@ -785,6 +789,18 @@ ScreenshotImageRowSource srgbRowSource(const QImage& image) {
     ScreenshotImageRowSource source;
     source.size = image.size();
     source.isKnownOpaque = !image.hasAlphaChannel();
+    if (!source.isKnownOpaque) {
+        struct Opacity final {
+            std::once_flag once;
+            bool opaque = false;
+        };
+        auto opacity = std::make_shared<Opacity>();
+        source.verifyOpaque = [image, opacity] {
+            std::call_once(opacity->once,
+                           [&] { opacity->opaque = detail::imageHasOnlyOpaquePixels(image); });
+            return opacity->opaque;
+        };
+    }
     // Untagged images retain the existing assumption that their pixels are
     // sRGB. Retagging a shared image here would detach its complete raster.
     if (!convertColor && image.format() == QImage::Format_RGBA8888) {
@@ -858,6 +874,10 @@ QImage decodeFirstFrame(const QByteArray& encoded, snow::image::Format expectedF
     return decodeBytes(encoded, expectedFormat, 0, QImage::Format_RGBA8888, true);
 }
 
+QImage decodeBgra(const QByteArray& encoded, snow::image::Format expectedFormat) {
+    return decodeBgraBytes(encoded, expectedFormat);
+}
+
 QImage readManagedImage(QImageReader& reader) {
     const auto fallback = [&reader] {
         QImage image = reader.read();
@@ -906,7 +926,8 @@ QImage decodeIconFile(const QString& path, uint32_t preferredExtent) {
 QSize inspectSize(const QByteArray& encoded, snow::image::Format expectedFormat) {
     const auto format = bridgeFormat(expectedFormat);
     if (!backendAbiIsCompatible() || encoded.isEmpty() ||
-        format == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN)
+        (format == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN &&
+         expectedFormat != snow::image::Format::unknown))
         return {};
     SnowShotImageCodecImageInfo information{};
     std::array<char, kBackendErrorCapacity> backendError{};
@@ -923,7 +944,8 @@ QSize inspectSize(const QByteArray& encoded, snow::image::Format expectedFormat)
 QSize inspectCanvasSize(const QByteArray& encoded, snow::image::Format expectedFormat) {
     const auto format = bridgeFormat(expectedFormat);
     if (!backendAbiIsCompatible() || encoded.isEmpty() ||
-        format == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN)
+        (format == SNOW_SHOT_IMAGE_CODEC_FORMAT_UNKNOWN &&
+         expectedFormat != snow::image::Format::unknown))
         return {};
     SnowShotImageCodecImageInfo information{};
     std::array<char, kBackendErrorCapacity> error{};

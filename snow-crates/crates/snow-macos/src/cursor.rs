@@ -15,7 +15,7 @@ use std::{
 pub fn cursor_visible() -> bool {
     CGCursorIsVisible()
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct CursorShape {
     pub width: u32,
     pub height: u32,

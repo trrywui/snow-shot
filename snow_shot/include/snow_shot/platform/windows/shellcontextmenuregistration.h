@@ -55,6 +55,7 @@ class ShellContextMenuRegistration final {
         QString verbName;
         QStringList fileExtensions;
         ShellContextMenuRegistryAccess registry;
+        QString packagedPreferencePath;
     };
 
     ShellContextMenuRegistration();
@@ -78,6 +79,9 @@ class ShellContextMenuRegistration final {
                   const std::function<bool()>& commitPreference) const;
 
   private:
+    [[nodiscard]] ShellContextMenuResult
+    changePackagedEnabled(bool enabled, const QString& accessKey,
+                          const std::function<bool()>& commitPreference) const;
     [[nodiscard]] bool ownedByProduct(const ShellContextMenuRegistryKey& key) const;
     [[nodiscard]] ShellContextMenuRegistryKey enabledKey(ShellContextMenuRegistryKey previous,
                                                          const QString& accessKey) const;
@@ -90,6 +94,7 @@ class ShellContextMenuRegistration final {
     QString m_verbName;
     QStringList m_extensions;
     ShellContextMenuRegistryAccess m_registry;
+    QString m_packagedPreferencePath;
 };
 
 } // namespace snow_shot::platform::windows

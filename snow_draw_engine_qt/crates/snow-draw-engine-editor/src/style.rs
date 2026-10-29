@@ -3,11 +3,11 @@ use snow_draw_engine_core::{
     arrow::{ArrowType, Arrowhead, StrokeStyle},
 };
 use snow_draw_engine_document::{
-    ArrowData, FillStyle, FilterData, MIN_SERIAL_NUMBER_FONT_SIZE, MIN_TEXT_FONT_SIZE,
-    RectangleData, SerialNumberData, SpotlightConfig, TextData, Transaction, WatermarkConfig,
-    normalize_font_family, resolve_serial_number_data_diameter, serial_number_rect_proxy,
-    serial_number_with_label_style, text_with_auto_resize_layout, text_with_wrapped_layout,
-    validate_serial_number, validate_text,
+    ArrowData, FillStyle, FilterData, HighlightShape, MIN_SERIAL_NUMBER_FONT_SIZE,
+    MIN_TEXT_FONT_SIZE, RectangleData, SerialNumberData, SpotlightConfig, TextData, Transaction,
+    WatermarkConfig, normalize_font_family, resolve_serial_number_data_diameter,
+    serial_number_rect_proxy, serial_number_with_label_style, text_with_auto_resize_layout,
+    text_with_wrapped_layout, validate_serial_number, validate_text,
 };
 use snow_draw_engine_interaction::Modifiers;
 use snow_draw_engine_model::DocumentModel;
@@ -92,6 +92,8 @@ impl ShapeStyle {
 
     pub fn arrow_style(self) -> ArrowStyle {
         ArrowStyle {
+            arrow_outline_color: self.arrow_outline_color,
+            arrow_outline_width: self.arrow_outline_width,
             stroke: self.stroke,
             stroke_width: self.stroke_width,
             start_arrowhead: self.start_arrowhead,
@@ -126,6 +128,9 @@ impl ShapeStyle {
         self.arrow_type = style.arrow_type;
         self.arrow_shaft_type = style.arrow_shaft_type;
         self.arrow_ratio = snow_draw_engine_core::arrow::normalize_arrow_ratio(style.arrow_ratio);
+        self.arrow_outline_color = style.arrow_outline_color;
+        self.arrow_outline_width =
+            snow_draw_engine_core::arrow::normalize_arrow_outline_width(style.arrow_outline_width);
         self
     }
 
@@ -139,6 +144,8 @@ impl ShapeStyle {
 
     pub fn from_rectangle_shape_style(style: RectangleShapeStyle) -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             brush_mode: Default::default(),
             fill: style.fill,
             fill_style: style.fill_style,
@@ -226,6 +233,15 @@ impl ShapeStylePatch {
         if properties & crate::SHAPE_STYLE_PROPERTY_STROKE_RENDERING_STYLE != 0 {
             current.stroke_rendering_style = self.style.stroke_rendering_style;
         }
+        if properties & crate::SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR != 0 {
+            current.arrow_outline_color = self.style.arrow_outline_color;
+        }
+        if properties & crate::SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH != 0 {
+            current.arrow_outline_width =
+                snow_draw_engine_core::arrow::normalize_arrow_outline_width(
+                    self.style.arrow_outline_width,
+                );
+        }
         if properties & crate::SHAPE_STYLE_PROPERTY_ARROW_RATIO != 0 {
             current.arrow_ratio =
                 snow_draw_engine_core::arrow::normalize_arrow_ratio(self.style.arrow_ratio);
@@ -307,6 +323,8 @@ struct ShapeStyleSample {
     arrow_type: Option<ArrowType>,
     arrow_shaft_type: Option<snow_draw_engine_core::arrow::ArrowShaftType>,
     arrow_ratio: Option<f64>,
+    arrow_outline_color: Option<ColorRgba8>,
+    arrow_outline_width: Option<f64>,
     opacity: f64,
     highlight_shape: Option<snow_draw_engine_document::HighlightShape>,
     shape: Option<snow_draw_engine_document::HighlightShape>,
@@ -315,6 +333,8 @@ struct ShapeStyleSample {
 impl ShapeStyleSample {
     fn from_rectangle(rectangle: &RectangleData) -> Self {
         Self {
+            arrow_outline_color: None,
+            arrow_outline_width: None,
             brush_mode: None,
             fill: Some(rectangle.fill),
             fill_style: Some(rectangle.fill_style),
@@ -339,6 +359,12 @@ impl ShapeStyleSample {
 
     fn from_arrow(arrow: &ArrowData) -> Self {
         Self {
+            arrow_outline_color: arrow
+                .is_regular_arrow()
+                .then_some(arrow.arrow_outline_color),
+            arrow_outline_width: arrow
+                .is_regular_arrow()
+                .then_some(arrow.arrow_outline_width),
             brush_mode: None,
             fill: arrow.is_line().then_some(arrow.fill),
             fill_style: arrow.is_line().then_some(arrow.fill_style),
@@ -361,6 +387,8 @@ impl ShapeStyleSample {
 
     fn from_free_draw(free_draw: &snow_draw_engine_document::FreeDrawData) -> Self {
         Self {
+            arrow_outline_color: None,
+            arrow_outline_width: None,
             brush_mode: Some(free_draw.brush_mode),
             fill: Some(free_draw.fill),
             fill_style: Some(free_draw.fill_style),
@@ -399,6 +427,8 @@ impl RectangleShapeStyle {
 impl ArrowStyle {
     pub(crate) fn from_arrow(arrow: &ArrowData) -> Self {
         Self {
+            arrow_outline_color: arrow.arrow_outline_color,
+            arrow_outline_width: arrow.arrow_outline_width,
             stroke: arrow.stroke,
             stroke_width: arrow.stroke_width,
             start_arrowhead: arrow.start_arrowhead,
@@ -415,6 +445,8 @@ impl ArrowStyle {
 impl ShapeStyle {
     pub(crate) fn from_line(line: &ArrowData) -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             brush_mode: Default::default(),
             fill: line.fill,
             fill_style: line.fill_style,
@@ -436,6 +468,8 @@ impl ShapeStyle {
 
     pub(crate) fn from_free_draw(free_draw: &snow_draw_engine_document::FreeDrawData) -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: Default::default(),
             brush_mode: free_draw.brush_mode,
             fill: free_draw.fill,
@@ -482,14 +516,18 @@ pub(crate) fn normalized_line_arrow_type(arrow_type: ArrowType) -> ArrowType {
     }
 }
 fn validate_shape_style_patch(patch: ShapeStylePatch) -> Result<(), ErrorCode> {
-    if patch.has_unsupported_properties() {
+    if patch.has_unsupported_properties()
+        || (patch.kind != ShapeKind::SpeechBubble
+            && patch.style.shape == HighlightShape::ThoughtBubble)
+    {
         return Err(ErrorCode::InvalidArgument);
     }
 
     match patch.kind {
-        ShapeKind::Rectangle | ShapeKind::SpeechBubble => {
-            validate_rectangle_shape_style(patch.style.rectangle_shape_style())
+        ShapeKind::SpeechBubble => {
+            validate_speech_bubble_style(patch.style.rectangle_shape_style())
         }
+        ShapeKind::Rectangle => validate_rectangle_shape_style(patch.style.rectangle_shape_style()),
         ShapeKind::Arrow => validate_arrow_style(patch.style.arrow_style()),
         ShapeKind::Line
         | ShapeKind::FreeDraw
@@ -500,7 +538,9 @@ fn validate_shape_style_patch(patch: ShapeStylePatch) -> Result<(), ErrorCode> {
 }
 
 pub(crate) fn validate_line_style(style: ShapeStyle) -> Result<(), ErrorCode> {
-    if !style.stroke_width.is_finite()
+    if style.shape == HighlightShape::ThoughtBubble
+        || style.highlight_shape == HighlightShape::ThoughtBubble
+        || !style.stroke_width.is_finite()
         || style.stroke_width < 0.0
         || !style.opacity.is_finite()
         || !(0.0..=1.0).contains(&style.opacity)
@@ -511,6 +551,13 @@ pub(crate) fn validate_line_style(style: ShapeStyle) -> Result<(), ErrorCode> {
 }
 
 pub(crate) fn validate_rectangle_shape_style(style: RectangleShapeStyle) -> Result<(), ErrorCode> {
+    if style.shape == HighlightShape::ThoughtBubble {
+        return Err(ErrorCode::InvalidArgument);
+    }
+    validate_speech_bubble_style(style)
+}
+
+pub(crate) fn validate_speech_bubble_style(style: RectangleShapeStyle) -> Result<(), ErrorCode> {
     let scalar_fields = [
         style.stroke_width,
         style.corner_radii.top_left,
@@ -1546,6 +1593,12 @@ impl Editor {
             if style.end_arrowhead != first.end_arrowhead {
                 mixed |= SHAPE_STYLE_MIXED_END_ARROWHEAD;
             }
+            if style.arrow_outline_color != first.arrow_outline_color {
+                mixed |= crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR;
+            }
+            if style.arrow_outline_width != first.arrow_outline_width {
+                mixed |= crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_WIDTH;
+            }
             if style.arrow_ratio != first.arrow_ratio {
                 mixed |= crate::SHAPE_STYLE_MIXED_ARROW_RATIO;
             }
@@ -1852,6 +1905,10 @@ impl Editor {
         rectangle_style: RectangleShapeStyle,
         mut arrow_style: ArrowStyle,
     ) {
+        arrow_style.arrow_outline_width =
+            snow_draw_engine_core::arrow::normalize_arrow_outline_width(
+                arrow_style.arrow_outline_width,
+            );
         arrow_style.arrow_ratio =
             snow_draw_engine_core::arrow::normalize_arrow_ratio(arrow_style.arrow_ratio);
         if self.state.default_rectangle_shape_style == rectangle_style
@@ -2830,6 +2887,8 @@ mod tests {
             corner_radii: CornerRadii::splat(6.0),
         };
         let arrow_style = ArrowStyle {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: Default::default(),
             stroke: ColorRgba8 {
                 r: 90,
@@ -3439,6 +3498,130 @@ mod tests {
         document.apply_transaction(command.transaction).unwrap();
         for selected in &editor.state.selection.arrows {
             assert_eq!(selected.arrow.arrow_ratio, 2.5);
+            assert_eq!(selected.arrow.stroke_width, 2.0);
+            assert!(snow_draw_engine_document::tapered_arrow_geometry(&selected.arrow).is_none());
+        }
+    }
+
+    #[test]
+    fn arrow_outline_width_mixed_selection_and_style_changes() {
+        use snow_draw_engine_core::arrow::ArrowShaftType;
+        let mut document = DocumentModel::new();
+        let mut insert = Transaction::new("insert mixed shafts");
+        let mut ids = Vec::new();
+        for (i, shaft) in [ArrowShaftType::Plain, ArrowShaftType::Tapered]
+            .into_iter()
+            .enumerate()
+        {
+            let id = document.allocate_element_id();
+            let mut arrow = ArrowData::from_global_points(
+                &[
+                    Point::new(0.0, i as f64 * 30.0),
+                    Point::new(100.0, i as f64 * 30.0),
+                ],
+                ColorRgba8::default(),
+                2.0,
+                StrokeStyle::Solid,
+                ArrowType::Straight,
+                None,
+                Some(Arrowhead::Triangle),
+            )
+            .unwrap();
+            arrow.arrow_shaft_type = shaft;
+            arrow.arrow_outline_width = 1.0 + i as f64;
+            arrow.arrow_outline_color.r = i as u8;
+            insert.insert_arrow(id, ElementMeta::default(), arrow);
+            ids.push(id);
+        }
+        document.apply_transaction(insert).unwrap();
+        let mut editor = Editor::new(Default::default()).unwrap();
+        editor.set_selection_state_with_document(Some(&document), ids.clone(), Some(ids[0]));
+        assert_ne!(
+            editor.shape_style_mixed(&document) & crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_WIDTH,
+            0
+        );
+        assert_ne!(
+            editor.shape_style_mixed(&document) & crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR,
+            0
+        );
+        let mut style = editor.shape_style(&document);
+        style.arrow_outline_width = 2.5;
+        let Some(EditorCommand::ApplyTransaction(command)) = editor
+            .set_shape_style_patch(
+                &document,
+                ShapeStylePatch {
+                    kind: ShapeKind::Arrow,
+                    style,
+                    properties: crate::SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("shaft change needs transaction")
+        };
+        document.apply_transaction(command.transaction).unwrap();
+        assert_eq!(
+            editor.shape_style_mixed(&document) & crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_WIDTH,
+            0
+        );
+        for selected in &editor.state.selection.arrows {
+            assert_eq!(selected.arrow.arrow_outline_width, 2.5);
+            assert_eq!(selected.arrow.stroke_width, 2.0);
+        }
+        assert_ne!(
+            editor.shape_style_mixed(&document) & crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR,
+            0
+        );
+        style.arrow_outline_color = ColorRgba8 {
+            r: 20,
+            g: 100,
+            b: 200,
+            a: 128,
+        };
+        let Some(EditorCommand::ApplyTransaction(command)) = editor
+            .set_shape_style_patch(
+                &document,
+                ShapeStylePatch {
+                    kind: ShapeKind::Arrow,
+                    style,
+                    properties: crate::SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("outline color change needs transaction")
+        };
+        document.apply_transaction(command.transaction).unwrap();
+        assert_eq!(
+            editor.shape_style_mixed(&document) & crate::SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR,
+            0
+        );
+        for selected in &editor.state.selection.arrows {
+            assert_eq!(
+                selected.arrow.arrow_outline_color,
+                style.arrow_outline_color
+            );
+            assert_eq!(selected.arrow.arrow_outline_width, 2.5);
+        }
+        style.end_arrowhead = Some(Arrowhead::Circle);
+        style.arrow_type = ArrowType::Elbow;
+        let Some(EditorCommand::ApplyTransaction(command)) = editor
+            .set_shape_style_patch(
+                &document,
+                ShapeStylePatch {
+                    kind: ShapeKind::Arrow,
+                    style,
+                    properties: SHAPE_STYLE_PROPERTY_END_ARROWHEAD
+                        | SHAPE_STYLE_PROPERTY_ARROW_TYPE,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("head change needs transaction")
+        };
+        document.apply_transaction(command.transaction).unwrap();
+        for selected in &editor.state.selection.arrows {
+            assert_eq!(selected.arrow.arrow_outline_width, 2.5);
             assert_eq!(selected.arrow.stroke_width, 2.0);
             assert!(snow_draw_engine_document::tapered_arrow_geometry(&selected.arrow).is_none());
         }

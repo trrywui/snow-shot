@@ -17,6 +17,9 @@ class PinnedWindowWindowsEvents {
   public:
     static bool handle(ScreenshotPinnedWindow& window, const QByteArray& type, void* message,
                        qintptr* result);
+    // Route against one captured modifier snapshot, independently of key delivery.
+    static bool handle(ScreenshotPinnedWindow& window, const QByteArray& type, void* message,
+                       qintptr* result, Qt::KeyboardModifiers modifiers);
 };
 
 namespace snow_shot::presentation {

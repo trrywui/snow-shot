@@ -11,11 +11,25 @@
 #include <QPointer>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QThreadPool>
 
 #include <cstdlib>
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <iostream>
+#include <mutex>
+#include <thread>
+
+namespace snow_shot::presentation {
+class MainWindowSkinControllerTestAccess {
+  public:
+    static QThreadPool* executorThreadPool(const MainWindowSkinController& controller) {
+        return controller.executorThreadPoolForTesting();
+    }
+};
+} // namespace snow_shot::presentation
 
 namespace {
 namespace presentation = snow_shot::presentation;
@@ -39,6 +53,82 @@ void waitUntil(const std::function<bool()>& condition) {
         QThread::msleep(1);
     } while (timer.elapsed() < 15000);
     require(false, "skin operation must complete within the test timeout");
+}
+
+class BlockedSkinExecutor final {
+  public:
+    explicit BlockedSkinExecutor(presentation::MainWindowSkinController& controller)
+        : state(std::make_shared<State>()) {
+        auto* pool =
+            presentation::MainWindowSkinControllerTestAccess::executorThreadPool(controller);
+        require(pool != nullptr, "the lifecycle check must start with an allocated executor");
+        pool->start([shared = state] {
+            std::unique_lock lock(shared->mutex);
+            shared->entered = true;
+            shared->changed.notify_all();
+            shared->changed.wait(lock, [&] { return shared->released; });
+            shared->finished = true;
+            shared->changed.notify_all();
+        });
+        watchdog = std::thread([shared = state] {
+            std::unique_lock lock(shared->mutex);
+            // Only diagnose deadlock: success is determined by ordering while the worker is held.
+            if (!shared->changed.wait_for(lock, std::chrono::seconds(15),
+                                          [&] { return shared->released; })) {
+                shared->released = true;
+                shared->changed.notify_all();
+            }
+        });
+        std::unique_lock lock(state->mutex);
+        state->changed.wait(lock, [&] { return state->entered || state->released; });
+    }
+
+    ~BlockedSkinExecutor() {
+        release();
+        watchdog.join();
+        std::unique_lock lock(state->mutex);
+        state->changed.wait(lock, [&] { return state->finished; });
+    }
+
+    bool isHeld() const {
+        std::lock_guard lock(state->mutex);
+        return state->entered && !state->released;
+    }
+
+    bool release() {
+        std::lock_guard lock(state->mutex);
+        const bool held = state->entered && !state->released;
+        state->released = true;
+        state->changed.notify_all();
+        return held;
+    }
+
+  private:
+    struct State {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered = false;
+        bool released = false;
+        bool finished = false;
+    };
+    std::shared_ptr<State> state;
+    std::thread watchdog;
+};
+
+void requireReturnsWithExecutorBlocked(presentation::MainWindowSkinController& controller,
+                                       const std::function<void()>& action, const char* message) {
+    bool entered = false;
+    bool returnedWhileHeld = false;
+    {
+        BlockedSkinExecutor blocked(controller);
+        entered = blocked.isHeld();
+        if (entered) {
+            action();
+            returnedWhileHeld = blocked.release();
+        }
+    }
+    require(entered, "the lifecycle check timed out waiting for its executor barrier");
+    require(returnedWhileHeld, message);
 }
 
 void writeImage(const QString& path, const QColor& color, const QSize& size = QSize(120, 80),
@@ -428,10 +518,9 @@ void controllerCachingAndLifetime(const QTemporaryDir& directory) {
     require(configuration.setValue(QStringLiteral("interface/skin_path"), firstPath),
             "start a load before deleting the window");
     controller.reload();
-    QElapsedTimer deletion;
-    deletion.start();
-    delete widget;
-    require(deletion.elapsed() < 100, "window destruction must not wait for the image executor");
+    requireReturnsWithExecutorBlocked(
+        controller, [&] { delete widget; },
+        "window destruction must return while the image executor is still blocked");
     waitUntil([&] { return !controller.diagnostics().busy; });
     require(controller.diagnostics().retainedBytes <= 128LL * 1024 * 1024,
             "retained source and prepared caches must stay bounded");
@@ -1146,10 +1235,9 @@ void singletonRetirementAndRapidReenable(const QTemporaryDir& directory) {
                 active.scratchRetainedBytes > 0 &&
                 active.scratchRetainedBytes <= 16LL * 1024 * 1024,
             "an active blurred skin should own one executor and bounded dedicated scratch");
-    QElapsedTimer suspension;
-    suspension.start();
-    current->detach(&view);
-    require(suspension.elapsed() < 100, "suspending a skin must not wait for its executor");
+    requireReturnsWithExecutorBlocked(
+        *current, [&] { current->detach(&view); },
+        "suspending a skin must return while its executor is still blocked");
     waitUntil([&] { return !current->diagnostics().busy; });
     const auto suspended = current->diagnostics();
     require(!suspended.executorAllocated && suspended.executorCount == 0 &&
@@ -1164,10 +1252,9 @@ void singletonRetirementAndRapidReenable(const QTemporaryDir& directory) {
     current->reload();
     require(configuration.setValue(QStringLiteral("interface/skin_path"), QString()),
             "clear a singleton while its executor is processing");
-    QElapsedTimer clearing;
-    clearing.start();
-    current->reload();
-    require(clearing.elapsed() < 100, "clear must retire executor work away from the GUI thread");
+    requireReturnsWithExecutorBlocked(
+        *current, [&] { current->reload(); },
+        "clear must return while the retired executor is still blocked");
     waitUntil(
         [&] { return presentation::MainWindowSkinController::existingInstance() == nullptr; });
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
@@ -1223,12 +1310,13 @@ void signalListenersCanCancelOrClose(const QTemporaryDir& directory) {
                 return;
             }
             closed = true;
-            QElapsedTimer deletion;
-            deletion.start();
-            delete widget;
-            widget = nullptr;
-            require(deletion.elapsed() < 100,
-                    "closing from a loading notification must not wait for the executor");
+            requireReturnsWithExecutorBlocked(
+                controller,
+                [&] {
+                    delete widget;
+                    widget = nullptr;
+                },
+                "closing from a loading notification must return while its executor is blocked");
         });
     require(configuration.setValue(QStringLiteral("interface/skin_path"), path),
             "start a load with a synchronous window-close listener");

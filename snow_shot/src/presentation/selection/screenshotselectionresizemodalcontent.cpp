@@ -11,6 +11,7 @@
 #include "widgets/input_number.h"
 #include "widgets/modal.h"
 #include "widgets/select.h"
+#include "widgets/segmented.h"
 #include "theme/theme_manager.h"
 
 #include <QAbstractItemDelegate>
@@ -52,8 +53,8 @@ constexpr auto kFieldY = "y";
 constexpr auto kFieldWidth = "width";
 constexpr auto kFieldHeight = "height";
 constexpr auto kFieldRadius = "radius";
-constexpr auto kFieldShadowWidth = "shadowWidth";
-constexpr auto kFieldShadowColor = "shadowColor";
+constexpr auto kFieldEffectWidth = "effectWidth";
+constexpr auto kFieldEffectColor = "effectColor";
 constexpr auto kFieldPresetName = "presetName";
 constexpr auto kTranslationSourceProperty = "selectionResizeTranslationSource";
 
@@ -288,6 +289,24 @@ void ScreenshotSelectionResizeModalContent::changeEvent(QEvent* event) {
     QWidget::changeEvent(event);
 }
 
+void ScreenshotSelectionResizeModalContent::updateEffectLabels() {
+    const bool border = m_effectParams.borderType == ScreenshotSelectionBorderType::Border;
+    const QString width = border ? tr("Border width") : tr("Shadow width");
+    const QString color = border ? tr("Border color") : tr("Shadow color");
+    m_effectWidthItem->setLabel(width);
+    m_effectColorItem->setLabel(color);
+    m_effectWidthInput->setAccessibleName(width);
+    m_effectWidthInput->setToolTip(width);
+    m_effectWidthInput->setAccessibleDescription(width);
+    m_effectColorPicker->setAccessibleName(color);
+    m_effectColorPicker->setToolTip(color);
+    m_effectColorPicker->setAccessibleDescription(color);
+    m_borderTypeItem->setLabel(tr("Border type"));
+    m_borderTypeControl->setAccessibleName(tr("Border type"));
+    m_borderTypeControl->setOptionLabel(0, tr("Shadow"));
+    m_borderTypeControl->setOptionLabel(1, tr("Border"));
+}
+
 void ScreenshotSelectionResizeModalContent::retranslateUi() {
     const auto translate = [](const char* source) {
         return QCoreApplication::translate("ScreenshotSelectionResizeModalContent", source);
@@ -338,6 +357,7 @@ void ScreenshotSelectionResizeModalContent::retranslateUi() {
         m_deletePresetModal->setAcceptText(translate("Delete"));
         m_deletePresetModal->setRejectText(translate("Cancel"));
     }
+    updateEffectLabels();
     updateQuickSetOptions();
 }
 
@@ -467,16 +487,46 @@ QWidget* ScreenshotSelectionResizeModalContent::createNormalPage() {
     addNormalField(tr("Corner radius"), m_radiusInput, QString::fromLatin1(kFieldRadius));
     addNormalColumnSpacer();
 
-    m_shadowWidthInput = createIntegerInput(0, kScreenshotSelectionShadowWidthMax);
-    m_shadowColorPicker = new adqt::widgets::AdColorPicker(page);
-    m_shadowColorPicker->setSize(adqt::widgets::AdColorPicker::Size::Middle);
-    m_shadowColorPicker->setModeOptions({adqt::widgets::AdColorPicker::Mode::Solid});
-    m_shadowColorPicker->setMode(adqt::widgets::AdColorPicker::Mode::Solid);
-    m_shadowColorPicker->setAlphaChannelEnabled(false);
-    m_shadowColorPicker->setTriggerTextVisible(true);
-    m_shadowColorPicker->setFixedWidth(kColorPickerWidth);
-    addNormalField(tr("Shadow width"), m_shadowWidthInput, QString::fromLatin1(kFieldShadowWidth));
-    addNormalField(tr("Shadow color"), m_shadowColorPicker, QString::fromLatin1(kFieldShadowColor));
+    m_borderTypeControl = new adqt::widgets::AdSegmented(page);
+    m_borderTypeControl->setObjectName(QStringLiteral("selectionBorderType"));
+    m_borderTypeControl->setDistribution(adqt::widgets::AdSegmented::Distribution::Fill);
+    m_borderTypeControl->addOption(tr("Shadow"), QStringLiteral("shadow"));
+    m_borderTypeControl->addOption(tr("Border"), QStringLiteral("border"));
+    m_borderTypeItem =
+        addNormalField(tr("Border type"), m_borderTypeControl, QStringLiteral("borderType"));
+    m_effectWidthInput = createIntegerInput(0, kScreenshotSelectionShadowWidthMax);
+    m_effectColorPicker = new adqt::widgets::AdColorPicker(page);
+    m_effectColorPicker->setSize(adqt::widgets::AdColorPicker::Size::Middle);
+    m_effectColorPicker->setModeOptions({adqt::widgets::AdColorPicker::Mode::Solid});
+    m_effectColorPicker->setMode(adqt::widgets::AdColorPicker::Mode::Solid);
+    m_effectColorPicker->setAlphaChannelEnabled(false);
+    m_effectColorPicker->setTriggerTextVisible(true);
+    m_effectColorPicker->setFixedWidth(kColorPickerWidth);
+    m_effectWidthItem = addNormalField(tr("Shadow width"), m_effectWidthInput,
+                                       QString::fromLatin1(kFieldEffectWidth));
+    addNormalColumnSpacer();
+    m_effectColorItem = addNormalField(tr("Shadow color"), m_effectColorPicker,
+                                       QString::fromLatin1(kFieldEffectColor));
+    connect(m_borderTypeControl, &adqt::widgets::AdSegmented::currentValueChanged, this,
+            [this](const QVariant& value) {
+                if (m_syncing)
+                    return;
+                m_effectParams = paramsFromFields();
+                m_effectParams.borderType = value == QStringLiteral("border")
+                                                ? ScreenshotSelectionBorderType::Border
+                                                : ScreenshotSelectionBorderType::Shadow;
+                m_syncing = true;
+                m_normalForm->setValues({
+                    {QString::fromLatin1(kFieldEffectWidth), m_effectParams.effectWidth()},
+                    {QString::fromLatin1(kFieldEffectColor),
+                     QVariant::fromValue(
+                         adqt::widgets::AdColorValue::solid(m_effectParams.effectColor()))},
+                });
+                m_syncing = false;
+                updateEffectLabels();
+                clearQuickSetSelection();
+            });
+    updateEffectLabels();
 
     const QStringList geometryFields{
         QString::fromLatin1(kFieldX),
@@ -581,9 +631,9 @@ ScreenshotSelectionResizeModalContent::addNormalField(const QString& label, QWid
         source = "Height";
     } else if (fieldName == QString::fromLatin1(kFieldRadius)) {
         source = "Corner radius";
-    } else if (fieldName == QString::fromLatin1(kFieldShadowWidth)) {
+    } else if (fieldName == QString::fromLatin1(kFieldEffectWidth)) {
         source = "Shadow width";
-    } else if (fieldName == QString::fromLatin1(kFieldShadowColor)) {
+    } else if (fieldName == QString::fromLatin1(kFieldEffectColor)) {
         source = "Shadow color";
     }
     if (source != nullptr) {
@@ -610,6 +660,7 @@ void ScreenshotSelectionResizeModalContent::applyParamsToFields(
     m_lockAspectRatioButton->setEnabled(rectangular);
     const bool lockAspectRatio = clamped.lockAspectRatio || clamped.lockDragAspectRatio;
     m_syncing = true;
+    m_effectParams = clamped;
     if (m_normalForm != nullptr) {
         m_normalForm->setValues({
             {QString::fromLatin1(kFieldX), clamped.selection.left()},
@@ -617,9 +668,10 @@ void ScreenshotSelectionResizeModalContent::applyParamsToFields(
             {QString::fromLatin1(kFieldWidth), clamped.selection.width()},
             {QString::fromLatin1(kFieldHeight), clamped.selection.height()},
             {QString::fromLatin1(kFieldRadius), clamped.radius},
-            {QString::fromLatin1(kFieldShadowWidth), clamped.shadowWidth},
-            {QString::fromLatin1(kFieldShadowColor),
-             QVariant::fromValue(adqt::widgets::AdColorValue::solid(clamped.shadowColor))},
+            {QStringLiteral("borderType"), screenshotSelectionBorderTypeId(clamped.borderType)},
+            {QString::fromLatin1(kFieldEffectWidth), clamped.effectWidth()},
+            {QString::fromLatin1(kFieldEffectColor),
+             QVariant::fromValue(adqt::widgets::AdColorValue::solid(clamped.effectColor()))},
         });
         m_normalForm->resetValidation();
     }
@@ -631,19 +683,25 @@ void ScreenshotSelectionResizeModalContent::applyParamsToFields(
                                   static_cast<double>(std::max(1, clamped.selection.width()))
                             : 0.0;
     m_syncing = false;
+    updateEffectLabels();
     updateGeometryRanges();
 }
 
 ScreenshotSelectionParams ScreenshotSelectionResizeModalContent::paramsFromFields() const {
     const QVariantMap values = m_normalForm != nullptr ? m_normalForm->values() : QVariantMap();
-    ScreenshotSelectionParams params;
+    ScreenshotSelectionParams params = m_effectParams;
     params.selection =
         QRect(formIntValue(values, kFieldX, m_selectionBounds.left()),
               formIntValue(values, kFieldY, m_selectionBounds.top()),
               formIntValue(values, kFieldWidth, 1), formIntValue(values, kFieldHeight, 1));
     params.radius = formIntValue(values, kFieldRadius, 0);
-    params.shadowWidth = formIntValue(values, kFieldShadowWidth, 0);
-    params.shadowColor = formColorValue(values, kFieldShadowColor);
+    if (params.borderType == ScreenshotSelectionBorderType::Border) {
+        params.borderWidth = formIntValue(values, kFieldEffectWidth, 0);
+        params.borderColor = formColorValue(values, kFieldEffectColor);
+    } else {
+        params.shadowWidth = formIntValue(values, kFieldEffectWidth, 0);
+        params.shadowColor = formColorValue(values, kFieldEffectColor);
+    }
     const bool lockAspectRatio =
         m_lockAspectRatioButton != nullptr && m_lockAspectRatioButton->isChecked();
     params.lockAspectRatio = lockAspectRatio;

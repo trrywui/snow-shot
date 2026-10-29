@@ -35,6 +35,13 @@ class SnowCanvasRuntime {
     bool reset();
     bool cloneDocumentSessionFrom(const SnowCanvasRuntime& source);
     QByteArray serializeDocumentSession() const;
+    // Restorable committed document/configuration without undo/redo or input drafts.
+    // Cost and size depend only on current content, never on accumulated history.
+    // Retains the persisted-session limit of 16 MiB for current content.
+    QByteArray serializeDocumentSnapshot() const;
+    // Canonical current-document JSON bytes, not a hash or a restorable session.
+    // Excludes history, editor defaults, revisions and unused trailing element slots.
+    QByteArray documentCheckpoint() const;
     QByteArray serializeSelectedDrawTemplate() const;
     QJsonArray selectedElementIds() const;
     bool restoreDocumentSession(const QByteArray& payload);
@@ -44,12 +51,17 @@ class SnowCanvasRuntime {
     bool clearDocumentPreservingViewports();
     // Releases derived drawing caches without changing the document, history, or viewports.
     void clearRenderState();
+    bool setAutomaticallySelectNewlyCreatedElements(bool enabled);
+    bool setAutomaticSelectionExcludedTools(const QSet<SnowCanvasTool>& tools);
     bool setQuickSelectionDisabledTools(const QSet<SnowCanvasTool>& tools);
     QByteArray applyAnnotationTransaction(const QByteArray& payload);
     bool undo();
     bool redo();
     bool canUndo() const;
     bool canRedo() const;
+    // direction: -1 previews undo, 0 reads the current state, +1 previews redo.
+    quint64 hostHistoryState(int direction = 0) const;
+    bool commitHostHistoryState(quint64 state);
     quint64 documentRevision() const;
     // Includes hidden elements and watermark content, but excludes creation styles and history.
     bool hasDocumentContent() const;
@@ -59,7 +71,23 @@ class SnowCanvasRuntime {
     void destroyAsync();
     void setBaseImageSources(const QList<SnowCanvasBaseImageSource>& sources);
     SnowCanvasSmartEraseSnapshot smartEraseSnapshot() const;
+    // Reuses completed results for the same base pixels and canvas coordinates while keeping
+    // reconstruction synchronized with subsequent document edits.
+    void seedSmartEraseSnapshot(const SnowCanvasSmartEraseSnapshot& snapshot);
+    // Freezes captured appearance for worker exports; subsequent document edits are not tracked.
     void restoreSmartEraseSnapshot(const SnowCanvasSmartEraseSnapshot& snapshot);
+    // Complete missing reconstruction on the calling export worker, reusing matching seed pixels.
+    // Only erasures affecting outputCanvasRect are required. Failure/cancellation leaves the
+    // existing snapshot unchanged; success freezes the completed snapshot for rendering.
+    bool prepareSmartEraseForExport(const SnowCanvasSmartEraseSnapshot& seed,
+                                    const QList<SnowCanvasBaseImageSource>& sources,
+                                    const QRectF& outputCanvasRect,
+                                    const std::function<bool()>& cancelled = {});
+    // Projects source layers with the same sampling and clipping as document exports.
+    // Requires no runtime and can be called on any thread. The result has DPR 1
+    // and no color profile; callers supply metadata for their source color space.
+    static QImage renderImageSourcesToImage(const QRectF& canvasRect, const QSize& outputSize,
+                                            const QList<CanvasExportSource>& sources);
     // An optional output-sized background replaces capture painting, while sources
     // remain available to magnifiers and background restoration.
     QImage renderToImage(const QRectF& virtualSelectionRect, const QSize& outputSize,

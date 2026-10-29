@@ -1,0 +1,295 @@
+{
+  "schema": 1,
+  "platform": "arm64-Darwin",
+  "recorded_utc": "2026-10-23T13:51:00.445965+00:00",
+  "iterations": 7,
+  "settings": "generated-ui v1; retained RGBA8 source; native RasterSource encode to file; PNG6 adaptive RGBA (alpha PNG1); JPEG95/444/sequential; exact fit2048 n/8 reduced JPEG decode then linear premultiplied Lanczos3 max8threads; reduced-only preview separately; one warmup; PSNR includes RGBA; no worker isolation",
+  "build_directory": "/Users/chao/workspaces/snow-apps/build/snow-shot-macos-arm64-performance",
+  "records": [
+    {
+      "name": "png-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 19.074167,
+      "output_bytes": 34098,
+      "psnr_db": null,
+      "samples_ms": [
+        23.03325,
+        20.265375,
+        19.156,
+        19.074167,
+        19.0565,
+        18.884791,
+        19.0285
+      ]
+    },
+    {
+      "name": "png-alpha-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 23.539375,
+      "output_bytes": 161868,
+      "psnr_db": null,
+      "samples_ms": [
+        23.539375,
+        23.399459,
+        23.313792,
+        24.370542,
+        23.598333,
+        23.334708,
+        23.61425
+      ]
+    },
+    {
+      "name": "jpeg-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 9.128625,
+      "output_bytes": 1570998,
+      "psnr_db": 42.019671,
+      "samples_ms": [
+        9.128625,
+        8.953583,
+        9.2095,
+        9.180792,
+        9.109333,
+        9.146709,
+        9.070917
+      ]
+    },
+    {
+      "name": "preview-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 8.22475,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        8.394375,
+        8.128625,
+        8.22475,
+        8.159625,
+        8.054417,
+        8.258584,
+        8.266625
+      ]
+    },
+    {
+      "name": "preview-reduced-only-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 8.103625,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        8.249041,
+        8.122666,
+        8.069709,
+        8.103625,
+        8.122625,
+        8.087416,
+        8.069083
+      ]
+    },
+    {
+      "name": "png-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 3840,
+      "output_height": 2160,
+      "median_ms": 75.810333,
+      "output_bytes": 115940,
+      "psnr_db": null,
+      "samples_ms": [
+        75.651125,
+        79.521791,
+        75.262583,
+        75.810333,
+        76.002958,
+        75.218042,
+        75.9115
+      ]
+    },
+    {
+      "name": "png-alpha-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 3840,
+      "output_height": 2160,
+      "median_ms": 94.524667,
+      "output_bytes": 623174,
+      "psnr_db": null,
+      "samples_ms": [
+        94.46175,
+        93.586667,
+        94.672209,
+        95.626208,
+        95.577667,
+        94.524667,
+        94.0965
+      ]
+    },
+    {
+      "name": "jpeg-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 3840,
+      "output_height": 2160,
+      "median_ms": 36.432167,
+      "output_bytes": 6279534,
+      "psnr_db": 42.013578,
+      "samples_ms": [
+        36.844292,
+        36.653292,
+        35.916583,
+        36.565833,
+        36.050917,
+        36.432167,
+        36.158791
+      ]
+    },
+    {
+      "name": "preview-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 2048,
+      "output_height": 1152,
+      "median_ms": 52.709459,
+      "output_bytes": 9437184,
+      "psnr_db": null,
+      "samples_ms": [
+        52.369584,
+        52.709459,
+        52.032375,
+        52.464084,
+        54.950875,
+        53.995375,
+        55.557167
+      ]
+    },
+    {
+      "name": "preview-reduced-only-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 30.234375,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        31.077625,
+        30.435291,
+        30.296,
+        30.234375,
+        30.171875,
+        30.143875,
+        29.840167
+      ]
+    },
+    {
+      "name": "png-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 7680,
+      "output_height": 4320,
+      "median_ms": 301.573666,
+      "output_bytes": 417317,
+      "psnr_db": null,
+      "samples_ms": [
+        305.005834,
+        302.391167,
+        301.573666,
+        301.194625,
+        300.167625,
+        298.323292,
+        303.639042
+      ]
+    },
+    {
+      "name": "png-alpha-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 7680,
+      "output_height": 4320,
+      "median_ms": 379.338083,
+      "output_bytes": 2332389,
+      "psnr_db": null,
+      "samples_ms": [
+        379.338083,
+        374.888791,
+        375.005458,
+        375.760583,
+        379.394583,
+        399.19325,
+        393.624792
+      ]
+    },
+    {
+      "name": "jpeg-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 7680,
+      "output_height": 4320,
+      "median_ms": 147.783667,
+      "output_bytes": 25153744,
+      "psnr_db": 42.01566,
+      "samples_ms": [
+        153.156625,
+        161.189042,
+        145.045167,
+        144.001833,
+        149.824125,
+        145.818084,
+        147.783667
+      ]
+    },
+    {
+      "name": "preview-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 2048,
+      "output_height": 1152,
+      "median_ms": 140.364667,
+      "output_bytes": 9437184,
+      "psnr_db": null,
+      "samples_ms": [
+        137.3845,
+        139.589833,
+        139.705208,
+        144.332958,
+        140.364667,
+        142.173,
+        143.815583
+      ]
+    },
+    {
+      "name": "preview-reduced-only-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 112.657959,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        114.509459,
+        114.000792,
+        114.495333,
+        112.325542,
+        112.657959,
+        111.308708,
+        108.374166
+      ]
+    }
+  ]
+}

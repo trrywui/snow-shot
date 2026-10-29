@@ -14,6 +14,7 @@ mod frame_pages;
 #[cfg(windows)]
 pub mod gpu;
 pub mod monitor;
+pub mod packed_pixels;
 mod platform;
 pub mod region;
 pub mod streaming;

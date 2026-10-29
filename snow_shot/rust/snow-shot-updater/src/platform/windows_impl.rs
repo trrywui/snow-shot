@@ -118,7 +118,7 @@ pub fn replace_application_file(source: &Path, destination: &Path, retired: &Pat
         return Err(replacement_error(source, destination, error));
     }
     // Mapped images are retained until their clients exit. prune_update_work retries only
-    // these reserved files on later updates; their lifetime never blocks commit or recovery.
+    // these reserved files on later service starts; their lifetime never blocks commit or recovery.
     let _ = std::fs::remove_file(retired);
     Ok(())
 }

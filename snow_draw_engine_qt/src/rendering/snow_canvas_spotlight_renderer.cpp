@@ -128,14 +128,17 @@ void resetDiagnosticsForCurrentThread() {
     g_diagnostics = RenderDiagnostics{};
 }
 
+bool isVisible(const SpotlightDisplayInfo& spotlightInfo) {
+    return spotlightInfo.active && spotlightInfo.color.a != 0 &&
+           std::isfinite(spotlightInfo.opacity) && spotlightInfo.opacity > 0.0;
+}
+
 void render(QPainter& painter, const SceneDisplayInfo& sceneInfo,
             const SpotlightDisplayInfo& spotlightInfo, const SnowSpotlightCutout* cutouts,
             std::uint32_t cutoutCount, const QRectF& renderArea, const QRegion& exposedRegion) {
-    const QColor baseColor = snow_canvas_renderer::toQColor(spotlightInfo.color);
-    const float opacity = static_cast<float>(std::clamp(spotlightInfo.opacity, 0.0, 1.0));
     const QRectF normalizedArea = renderArea.normalized();
-    if (!spotlightInfo.active || baseColor.alphaF() <= 0.0F || opacity <= 0.0F ||
-        !normalizedArea.isValid() || normalizedArea.isEmpty() || exposedRegion.isEmpty()) {
+    if (!isVisible(spotlightInfo) || !normalizedArea.isValid() || normalizedArea.isEmpty() ||
+        exposedRegion.isEmpty()) {
         ++g_diagnostics.earlyExitCount;
         return;
     }
@@ -154,6 +157,8 @@ void render(QPainter& painter, const SceneDisplayInfo& sceneInfo,
         g_diagnostics.renderedRegionCount += static_cast<std::size_t>(paintRegion.rectCount());
     }
 
+    const QColor baseColor = snow_canvas_renderer::toQColor(spotlightInfo.color);
+    const float opacity = static_cast<float>(std::clamp(spotlightInfo.opacity, 0.0, 1.0));
     if (visible.empty()) {
         ++g_diagnostics.zeroCutoutFastPathCount;
         fillDirect(painter, baseColor, opacity, normalizedArea, paintRegion, visible, canvasToView);

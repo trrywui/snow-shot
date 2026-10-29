@@ -461,6 +461,8 @@ struct AdButton::Private {
   bool busyIndicatorVisible = false;
 
   bool focusVisible = false;
+  bool outlinedDefaultButton = false;
+  quint64 outlineStyleRevision = 0;
   bool enterPressed = false;
   bool busyDefaultSuspended = false;
   bool suspendedDefault = false;
@@ -780,6 +782,7 @@ bool AdButton::event(QEvent* event) {
       updateInteractionFocusOverlay();
       update();
     } else if (event->type() == QEvent::ParentAboutToChange) {
+      stopInteractionFocusForOwner(this);
       resetDisabledCursorOverlay();
       if (d_->busyIndicatorSurface) {
         d_->busyIndicatorSurface->hide();
@@ -806,6 +809,12 @@ void AdButton::paintEvent(QPaintEvent* event) {
   const Shape visualShape = effectiveShape(textToRender);
   const bool hasMenuIndicator = option.features.testFlag(QStyleOptionButton::HasMenu);
   const bool defaultButton = option.features.testFlag(QStyleOptionButton::DefaultButton);
+  // QPushButton::setDefault is nonvirtual and has no change notification. Observe its repaint
+  // so base-class calls and QDialog's automatic default transitions update the shared outline.
+  if (d_->outlinedDefaultButton != defaultButton ||
+      d_->outlineStyleRevision != d_->resolvedStyleRevision) {
+    updateInteractionFocusOverlay();
+  }
 
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing, true);
@@ -863,24 +872,6 @@ void AdButton::paintEvent(QPaintEvent* event) {
     painter.setPen(borderPen);
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(borderPath);
-  }
-
-  if (defaultButton && isEnabled() && style.metrics.defaultOutline.isValid() &&
-      style.metrics.defaultOutline.alpha() > 0 && style.metrics.defaultOutlineWidth > 0.0) {
-    const qreal outlineOffset = std::max<qreal>(0.0, style.metrics.defaultOutlineOffset);
-    const QRectF outlineRect =
-        shapeRect.adjusted(-outlineOffset, -outlineOffset, outlineOffset, outlineOffset);
-    const QPainterPath outlinePath =
-        roundedRectPath(outlineRect, corners.topLeft > 0.0 ? corners.topLeft + outlineOffset : 0.0,
-                        corners.topRight > 0.0 ? corners.topRight + outlineOffset : 0.0,
-                        corners.bottomRight > 0.0 ? corners.bottomRight + outlineOffset : 0.0,
-                        corners.bottomLeft > 0.0 ? corners.bottomLeft + outlineOffset : 0.0);
-    painter.save();
-    painter.setPen(QPen(style.metrics.defaultOutline, style.metrics.defaultOutlineWidth,
-                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPath(outlinePath);
-    painter.restore();
   }
 
   painter.setFont(style.metrics.font);
@@ -1705,12 +1696,15 @@ void AdButton::updateCursorForRole() {
 }
 
 void AdButton::updateInteractionFocusOverlay() {
-  if (!(hasFocus() && isEnabled() && d_->focusVisible && isVisible())) {
+  const detail::ButtonVisualStyle style = resolvedStyle();
+  d_->outlinedDefaultButton = isDefault();
+  d_->outlineStyleRevision = d_->resolvedStyleRevision;
+  const bool keyboardFocus = hasFocus() && d_->focusVisible;
+  if (!(isEnabled() && isVisible() && (keyboardFocus || d_->outlinedDefaultButton))) {
     stopInteractionFocusForOwner(this);
     return;
   }
 
-  const detail::ButtonVisualStyle style = resolvedStyle();
   const detail::ButtonStateStyle state = currentStateStyle(style);
   const Shape visualShape = effectiveShape(renderText());
   const InteractionOutline outline = resolveInteractionOutline(rect(), style, state, visualShape,
@@ -1726,8 +1720,10 @@ void AdButton::updateInteractionFocusOverlay() {
     return;
   }
 
-  const QColor focusColor = style.metrics.focusOutline;
-  const qreal focusWidth = std::max<qreal>(1.0, style.metrics.focusOutlineWidth);
+  const QColor focusColor =
+      keyboardFocus ? style.metrics.focusOutline : style.metrics.defaultOutline;
+  const qreal focusWidth =
+      keyboardFocus ? style.metrics.focusOutlineWidth : style.metrics.defaultOutlineWidth;
   if (!focusColor.isValid() || focusColor.alpha() <= 0 || focusWidth <= 0.0) {
     stopInteractionFocusForOwner(this);
     return;
@@ -1743,7 +1739,11 @@ void AdButton::updateInteractionFocusOverlay() {
   request.bottomLeft = outline.corners.bottomLeft;
   request.color = focusColor;
   request.strokeWidth = focusWidth;
-  request.offset = std::max<qreal>(0.0, style.metrics.focusOutlineOffset);
+  // Both outlines extend beyond the button. The window overlay owns those pixels, avoiding
+  // clipping at the button's rectangular paint bounds. Keyboard focus takes precedence.
+  request.offset =
+      std::max<qreal>(0.0, keyboardFocus ? style.metrics.focusOutlineOffset
+                                         : style.metrics.defaultOutlineOffset - focusWidth / 2.0);
   triggerInteractionFocus(request);
 }
 

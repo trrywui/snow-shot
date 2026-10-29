@@ -8,14 +8,66 @@ pub(crate) fn compose_scene_items(
     presentation: &EditorPresentationState,
     frame_view: FrameView,
 ) -> Vec<SceneDisplayItem> {
-    let viewport = canvas_viewport(frame_view.camera, frame_view.surface);
+    compose_scene_candidates(cache, model, presentation, frame_view, None)
+}
+
+/// Compose an uncropped subset of owners. Callers include relation dependents;
+/// the normal lowering still supplies labels, connector placement and previews.
+pub(crate) fn compose_retained_items(
+    cache: &DocumentSceneCache,
+    model: &DocumentModel,
+    presentation: &EditorPresentationState,
+    owners: &[ElementId],
+) -> Vec<SceneDisplayItem> {
+    compose_scene_candidates(
+        cache,
+        model,
+        presentation,
+        FrameView::default(),
+        Some(owners),
+    )
+}
+
+fn compose_scene_candidates(
+    cache: &DocumentSceneCache,
+    model: &DocumentModel,
+    presentation: &EditorPresentationState,
+    frame_view: FrameView,
+    owners: Option<&[ElementId]>,
+) -> Vec<SceneDisplayItem> {
+    let viewport = if owners.is_some() {
+        (
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::INFINITY,
+        )
+    } else {
+        canvas_viewport(frame_view.camera, frame_view.surface)
+    };
     // Resolve bound text through the same committed/preview paths even when its
     // box is offscreen: its connector can still cross the viewport.
-    let connector_text_ids: std::collections::HashSet<_> = model.connector_text_ids().collect();
-    let mut ordered_ids = model.visible_element_ids(ViewportQuery {
-        camera: frame_view.camera,
-        surface: frame_view.surface,
-    });
+    let connector_text_ids: std::collections::HashSet<_> = match owners {
+        Some(ids) => ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                !model.serials_for_text(*id).is_empty() || !model.shapes_for_text(*id).is_empty()
+            })
+            .collect(),
+        None => model.connector_text_ids().collect(),
+    };
+    let mut ordered_ids = match owners {
+        Some(ids) => {
+            let mut ids = ids.to_vec();
+            ids.sort_unstable_by_key(|id| model.paint_rank(*id).unwrap_or(u32::MAX));
+            ids
+        }
+        None => model.visible_element_ids(ViewportQuery {
+            camera: frame_view.camera,
+            surface: frame_view.surface,
+        }),
+    };
     let preview_magnifiers: HashMap<_, _> = presentation
         .preview_magnifiers
         .iter()
@@ -380,12 +432,21 @@ pub(crate) fn compose_scene_items(
         _ => true,
     });
     if let Some(copy) = duplicate_preview_scene(cache, presentation) {
-        let mut copies = compose_scene_items(
-            &copy.cache,
-            &copy.model,
-            &EditorPresentationState::default(),
-            frame_view,
-        );
+        let mut copies = if owners.is_some() {
+            compose_retained_items(
+                &copy.cache,
+                &copy.model,
+                &EditorPresentationState::default(),
+                copy.model.paint_order(),
+            )
+        } else {
+            compose_scene_items(
+                &copy.cache,
+                &copy.model,
+                &EditorPresentationState::default(),
+                frame_view,
+            )
+        };
         for item in &mut copies {
             remap_copy_display_ids(item, &copy.ids);
         }

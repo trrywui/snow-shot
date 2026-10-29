@@ -291,8 +291,8 @@ void textSelectionSettings() {
     GlobalShortcutManager manager(std::make_unique<Backend>(), nullptr, [] { return false; });
     settings::BuiltInSettingsBackend backend(manager);
     settings::SettingsRuntimeSession session(settings::builtInSettingsRegistry(), backend);
-    require(stored.textSelectionOnRecognitionResults() == QStringLiteral("only_when_displayed"),
-            "hidden text selection defaults off");
+    require(stored.textSelectionOnRecognitionResults() == QStringLiteral("always"),
+            "recognition result text selection defaults to always");
     const auto* field = settings::builtInSettingsRegistry().fieldForSelect(binding);
     require(field &&
                 field->id ==
@@ -317,14 +317,14 @@ void textSelectionSettings() {
     require(index > 0 && section->items[index - 1].id ==
                              QStringLiteral("pin-to-screen.automatic-text-recognition"),
             "selection setting follows automatic recognition");
-    require(session.applySelectValue(binding, QStringLiteral("always")) &&
-                stored.textSelectionOnRecognitionResults() == QStringLiteral("always"),
+    require(session.applySelectValue(binding, QStringLiteral("only_when_displayed")) &&
+                stored.textSelectionOnRecognitionResults() == QStringLiteral("only_when_displayed"),
             "settings session writes selection policy through backend");
     require(!stored.setTextSelectionOnRecognitionResults(QStringLiteral("invalid")) &&
-                stored.textSelectionOnRecognitionResults() == QStringLiteral("always"),
+                stored.textSelectionOnRecognitionResults() == QStringLiteral("only_when_displayed"),
             "schema rejects unsupported selection modes");
     require(backend.resetSection(settings::SettingsSectionReset::PinToScreenBehavior) &&
-                stored.textSelectionOnRecognitionResults() == QStringLiteral("only_when_displayed"),
+                stored.textSelectionOnRecognitionResults() == QStringLiteral("always"),
             "pin behavior reset restores default selection policy");
 }
 

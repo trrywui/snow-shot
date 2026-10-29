@@ -35,6 +35,9 @@ class SnowCanvasTextEditorSession final {
         SnowTextStyle style{};
         bool autoResize = false;
         bool styleChanged = false;
+        bool distanceValue = false;
+        bool distanceValueChanged = false;
+        std::optional<double> parsedDistanceValue;
 
         bool shouldCommit(bool hasViewport) const;
     };
@@ -43,6 +46,7 @@ class SnowCanvasTextEditorSession final {
         None,
         Commit,
         DeleteElement,
+        Cancel,
     };
 
     struct KeyResult {
@@ -54,6 +58,14 @@ class SnowCanvasTextEditorSession final {
     bool begin(const SnowTextElementInfo& info, const SnowSceneDisplayItem* existingSceneItem,
                const QFont& baseFont, const SnowTextStyle* newTextStyle = nullptr,
                const QString* completeText = nullptr);
+    void beginDistanceValue(const QFont& baseFont);
+    bool isDistanceValue() const {
+        return !m_distanceSuffix.isEmpty();
+    }
+    QString distanceValuePresentationText() const {
+        return m_draft.displayText();
+    }
+    std::optional<double> parsedDistanceValue() const;
     FinishedEdit finish(const QFont& baseFont);
     void cancel();
     void releaseRetainedState();
@@ -75,7 +87,8 @@ class SnowCanvasTextEditorSession final {
         return m_textInkReserve;
     }
     bool isActive() const;
-    bool containsViewPosition(const SceneDisplayInfo& sceneInfo, const QPointF& viewPosition) const;
+    bool containsViewPosition(const SceneDisplayInfo& sceneInfo, const QPointF& viewPosition,
+                              const QFont& baseFont) const;
 
     const SnowSceneDisplayItem* previewItem() const;
     QString presentationText() const;
@@ -97,7 +110,7 @@ class SnowCanvasTextEditorSession final {
     bool setCursorFromViewPosition(const QFont& baseFont, const SceneDisplayInfo& sceneInfo,
                                    const QPointF& viewPosition, bool keepSelection = false);
     KeyResult handleKeyPress(QKeyEvent* event, const QFont& baseFont,
-                             const SceneDisplayInfo& sceneInfo);
+                             const SceneDisplayInfo& sceneInfo, bool deleteTextAfterCursor = false);
     bool handleInputMethodEvent(QInputMethodEvent* event, const QFont& baseFont);
     QVariant inputMethodQuery(Qt::InputMethodQuery query, const QFont& baseFont,
                               const SceneDisplayInfo& sceneInfo) const;
@@ -105,6 +118,7 @@ class SnowCanvasTextEditorSession final {
                              const SceneDisplayInfo& sceneInfo, bool caretVisible = true) const;
 
   private:
+    SnowCanvasSceneItem editableItem(const QFont& baseFont) const;
     void resetState();
     void updatePreviewLayout(const QFont& baseFont, bool forceLayout);
     void updatePreviewAnchor();
@@ -127,5 +141,7 @@ class SnowCanvasTextEditorSession final {
     bool m_previewAutoResize = false;
     bool m_styleChanged = false;
     SnowCanvasTextDraft m_draft;
+    QString m_distanceSuffix;
+    QString m_initialDistanceValue;
     std::optional<QRectF> m_textEditingBounds;
 };

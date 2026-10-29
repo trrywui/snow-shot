@@ -6,12 +6,24 @@
 #include "snow_shot/presentation/screenshotsourceimagecomposer.h"
 
 #include <QApplication>
+#include <QClipboard>
 #include <QColor>
+#include <QCryptographicHash>
 #include <QImage>
 #include <QMimeData>
 #include <QPointF>
 #include <QTextCursor>
+#include <QTextBlock>
 #include <QTextBlockFormat>
+#include <QThread>
+
+#if defined(Q_OS_WIN)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <ole2.h>
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -804,6 +816,50 @@ void translationHistoryEstablishesSuccessfulAndPartialBaselines() {
             "a partial translation should gain independent edit history after streaming stops");
 }
 
+void streamingTextUpdatesPreserveUnchangedBlocksAndCursorAnchors() {
+    const QString prefix =
+        QStringLiteral("Stable first paragraph\n") + QString(8192, QLatin1Char('x'));
+    ScreenshotOcrTextEditingSession session(prefix);
+    QTextCursor anchor(session.document());
+    anchor.setPosition(7);
+    const QTextBlock first = session.document()->begin();
+    const int firstRevision = first.revision();
+    for (int chunk = 1; chunk <= 20; ++chunk)
+        session.replaceTextWithoutHistory(prefix + QString(chunk, QLatin1Char('y')));
+    require(session.text() == prefix + QString(20, QLatin1Char('y')) && !session.canUndo(),
+            "streaming appends preserve the complete content without creating history");
+    require(anchor.position() == 7 && first.revision() == firstRevision,
+            "streaming appends preserve cursor anchors and untouched paragraph layout revisions");
+    session.replaceTextWithoutHistory(prefix + QStringLiteral(" corrected"));
+    require(anchor.position() == 7 && session.text() == prefix + QStringLiteral(" corrected"),
+            "streaming corrections replace only the changed suffix");
+    session.establishBaseline(session.text());
+    QTextCursor cursor(session.document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(QStringLiteral(" edited"));
+    session.undo();
+    require(session.text() == prefix + QStringLiteral(" corrected"),
+            "native edits remain independently undoable after incremental streaming");
+}
+
+void replacementTextMatchesQtNewlineAndUnicodeSemantics() {
+    for (const bool preserve : {false, true}) {
+        ScreenshotOcrTextEditingSession session(QStringLiteral("before"), preserve);
+        const QStringList values{
+            QStringLiteral("first\r\nsecond\rthird\nlast"), QStringLiteral("first\nsecond\n"),
+            QStringLiteral("left\u00a0right\u2028line\u2029paragraph \U0001f600"),
+            QStringLiteral("left\u00a0right\u2028line\u2029paragraph \U0001f601"), QString{}};
+        for (const auto& text : values) {
+            QTextDocument reference;
+            reference.setPlainText(text);
+            session.replaceTextWithoutHistory(text);
+            require(session.document()->toRawText() == reference.toRawText() &&
+                        session.text() == (preserve ? text : reference.toPlainText()),
+                    "incremental replacements preserve Qt paragraphs and exact-source mode");
+        }
+    }
+}
+
 void tableDocumentPreservesSpansAndExportsCoveredCoordinates() {
     const ScreenshotTableDocument document = ScreenshotTableDocument::fromHtml(QStringLiteral(
         "<table><tr><th rowspan=\"2\">Group</th><th colspan=\"2\">Values</th></tr>"
@@ -878,6 +934,161 @@ void tableDocumentExportsExcelTextCells() {
                 !document.toClipboardMimeData(ScreenshotTableRange{}),
             "empty documents and invalid selections should have no clipboard payload");
 }
+
+void tableClipboardHtmlHasDocumentContext() {
+    const ScreenshotTableDocument document = ScreenshotTableDocument::fromHtml(QStringLiteral(
+        "<table><tr><th colspan=\"2\">\u5e74\u4efd</th></tr>"
+        "<tr><td>2024</td><td>00123456789012345678</td></tr>"
+        "<tr><td>&lt;value&gt; &amp; text<br/>next</td><td>\U0001f642</td></tr></table>"));
+    for (const ScreenshotTableRange range :
+         {ScreenshotTableRange{0, 0, 2, 1}, ScreenshotTableRange{1, 0, 2, 1},
+          ScreenshotTableRange{0, 1, 0, 1}}) {
+        const auto mime = document.toClipboardMimeData(range);
+        require(mime != nullptr, "a valid table range should produce clipboard data");
+        const QString html = mime->html();
+        const qsizetype htmlStart = html.indexOf(QStringLiteral("<html>"));
+        const qsizetype bodyStart = html.indexOf(QStringLiteral("<body>"));
+        const qsizetype fragmentStart = html.indexOf(QStringLiteral("<!--StartFragment-->"));
+        const qsizetype tableStart = html.indexOf(QStringLiteral("<table"));
+        const qsizetype tableEnd = html.indexOf(QStringLiteral("</table>"));
+        const qsizetype fragmentEnd = html.indexOf(QStringLiteral("<!--EndFragment-->"));
+        const qsizetype bodyEnd = html.indexOf(QStringLiteral("</body>"));
+        const qsizetype htmlEnd = html.indexOf(QStringLiteral("</html>"));
+        require(htmlStart >= 0 && bodyStart > htmlStart && fragmentStart > bodyStart &&
+                    tableStart > fragmentStart && tableEnd > tableStart && fragmentEnd > tableEnd &&
+                    bodyEnd > fragmentEnd && htmlEnd > bodyEnd,
+                "spreadsheet clipboard HTML needs a complete document with the table fragment "
+                "inside its body so clipboard headers cannot become worksheet rows");
+        require(html.contains(QStringLiteral("charset=\"utf-8\"")),
+                "the clipboard HTML document should declare its Unicode encoding");
+        require(!html.contains(QStringLiteral("StartHTML:")) &&
+                    !mime->text().contains(QStringLiteral("StartHTML:")),
+                "native clipboard transport headers must not be part of HTML or TSV content");
+        require(ScreenshotTableDocument::fromHtml(html).toPlainText() == mime->text(),
+                "document context must preserve the table's Unicode text and protected numbers");
+        require(ScreenshotTableDocument::fromClipboardMimeData(*mime).toHtml() ==
+                    document.toHtml(range),
+                "document context must preserve selected spans and original internal values");
+    }
+}
+
+#if defined(Q_OS_WIN)
+bool publishNativeClipboard(const QMimeData& source) {
+    // Windows clipboard history can briefly lock the shared clipboard between writes.
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        auto copy = std::make_unique<QMimeData>();
+        for (const auto& format : source.formats())
+            copy->setData(format, source.data(format));
+        if (source.hasImage())
+            copy->setImageData(source.imageData());
+        if (source.hasUrls())
+            copy->setUrls(source.urls());
+        QApplication::clipboard()->setMimeData(copy.release());
+        QApplication::processEvents();
+        if (QApplication::clipboard()->ownsClipboard())
+            return true;
+        QThread::msleep(25);
+    }
+    return false;
+}
+
+QByteArray nativeTableClipboardHtml(std::unique_ptr<QMimeData> mime) {
+    auto previous = std::make_unique<QMimeData>();
+    if (const auto* source = QApplication::clipboard()->mimeData()) {
+        for (const auto& format : source->formats())
+            previous->setData(format, source->data(format));
+        if (source->hasImage())
+            previous->setImageData(source->imageData());
+        if (source->hasUrls())
+            previous->setUrls(source->urls());
+    }
+    const bool published = publishNativeClipboard(*mime);
+
+    QByteArray bytes;
+    HRESULT clipboardResult = E_FAIL;
+    for (int attempt = 0; published && attempt < 12; ++attempt) {
+        IDataObject* current = nullptr;
+        clipboardResult = OleGetClipboard(&current);
+        if (SUCCEEDED(clipboardResult) && current != nullptr) {
+            FORMATETC format{static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"HTML Format")),
+                             nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            STGMEDIUM medium{};
+            clipboardResult = current->GetData(&format, &medium);
+            if (SUCCEEDED(clipboardResult)) {
+                if (medium.tymed == TYMED_HGLOBAL) {
+                    if (const auto* data = static_cast<const char*>(GlobalLock(medium.hGlobal))) {
+                        bytes =
+                            QByteArray(data, static_cast<qsizetype>(GlobalSize(medium.hGlobal)));
+                        GlobalUnlock(medium.hGlobal);
+                    }
+                }
+                ReleaseStgMedium(&medium);
+            }
+            current->Release();
+        }
+        if (clipboardResult != CLIPBRD_E_CANT_OPEN)
+            break;
+        QApplication::processEvents();
+        QThread::msleep(25);
+    }
+
+    require(publishNativeClipboard(*previous), "restore the clipboard after native tests");
+    HRESULT flushed = E_FAIL;
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        flushed = OleFlushClipboard();
+        if (flushed != CLIPBRD_E_CANT_OPEN)
+            break;
+        QApplication::processEvents();
+        QThread::msleep(25);
+    }
+    if (FAILED(flushed))
+        std::cerr << "clipboard flush HRESULT: " << std::hex << flushed << '\n';
+    require(SUCCEEDED(flushed), "flush the restored clipboard after native tests");
+    require(SUCCEEDED(clipboardResult), "read native table HTML from the Windows clipboard");
+    return bytes;
+}
+
+void tableClipboardNativeHtmlOffsetsEncloseOnlyTheTable() {
+    const ScreenshotTableDocument document = ScreenshotTableDocument::fromHtml(
+        QStringLiteral("<table><tr><th colspan=\"2\">\u5e74\u4efd</th></tr>"
+                       "<tr><td>2024</td><td>00123456789012345678</td></tr>"
+                       "<tr><td>\U0001f642 &amp; text<br/>next</td><td>42</td></tr></table>"));
+    for (const ScreenshotTableRange range :
+         {ScreenshotTableRange{0, 0, 2, 1}, ScreenshotTableRange{1, 0, 2, 1},
+          ScreenshotTableRange{0, 1, 0, 1}}) {
+        const auto mime = document.toClipboardMimeData(range);
+        const QByteArray expected = mime->html().toUtf8();
+        const QString expectedText = mime->text();
+        const QByteArray bytes = nativeTableClipboardHtml(document.toClipboardMimeData(range));
+        const auto offset = [&bytes](const QByteArray& field) {
+            const qsizetype start = bytes.indexOf(field);
+            require(start >= 0, "native clipboard HTML must have all byte-offset fields");
+            bool valid = false;
+            const qlonglong value = bytes.mid(start + field.size(), 10).toLongLong(&valid);
+            require(valid && value >= 0 && value <= bytes.size(),
+                    "native clipboard HTML offsets must be valid byte positions");
+            return static_cast<qsizetype>(value);
+        };
+        const qsizetype htmlStart = offset(QByteArrayLiteral("StartHTML:"));
+        const qsizetype htmlEnd = offset(QByteArrayLiteral("EndHTML:"));
+        const qsizetype fragmentStart = offset(QByteArrayLiteral("StartFragment:"));
+        const qsizetype fragmentEnd = offset(QByteArrayLiteral("EndFragment:"));
+        require(htmlStart < fragmentStart && fragmentStart < fragmentEnd && fragmentEnd < htmlEnd,
+                "native HTML must enclose the table fragment in document context");
+        const QByteArray html = bytes.mid(htmlStart, htmlEnd - htmlStart);
+        require(html == expected && html.startsWith("<html>") && html.endsWith("</html>"),
+                "native StartHTML and EndHTML must delimit a complete HTML document");
+        const QByteArray fragment = bytes.mid(fragmentStart, fragmentEnd - fragmentStart);
+        require(fragment.startsWith("<table") && fragment.endsWith("</table>") &&
+                    !fragment.contains("Version:1.0") &&
+                    ScreenshotTableDocument::fromHtml(QString::fromUtf8(fragment)).toPlainText() ==
+                        expectedText,
+                "native fragment offsets must delimit only table cells and preserve UTF-8 bytes");
+        require(bytes.indexOf("Version:1.0") == bytes.lastIndexOf("Version:1.0"),
+                "Qt must add the native transport header exactly once");
+    }
+}
+#endif
 void tableDocumentMergeSplitClearAndValidationPolicies() {
     ScreenshotTableDocument document =
         ScreenshotTableDocument::fromPlainText(QStringLiteral("A\tB\nC\tD"));
@@ -909,10 +1120,60 @@ void tableDocumentMergeSplitClearAndValidationPolicies() {
                 !document.clear(ScreenshotTableRange{}),
             "invalid and inapplicable edits should be rejected without mutation");
 }
+void cachedTextAndTableCheckpointsFollowContentMutations() {
+    const auto hash = [](const QString& text) {
+        return QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha256);
+    };
+    ScreenshotOcrTextEditingSession text(QStringLiteral("first\r\nsecond"), true);
+    require(text.contentCheckpoint() == hash(text.text()),
+            "initial source checkpoint matches text");
+    text.replaceTextWithoutHistory(QStringLiteral("first\nsecond"));
+    require(text.contentCheckpoint() == hash(text.text()),
+            "source newline changes invalidate a checkpoint even with identical document pixels");
+    text.establishHistory(text.text());
+    for (int i = 0; i < 30; ++i) {
+        QTextCursor cursor(text.document());
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertText(QStringLiteral("x"));
+        require(text.contentCheckpoint() == hash(text.text()),
+                "native edits invalidate checkpoints");
+    }
+    for (int i = 0; i < 30; ++i)
+        text.undo();
+    require(text.text() == QStringLiteral("first\nsecond") && !text.canUndo(),
+            "delta history returns to its exact baseline");
+    for (int i = 0; i < 30; ++i)
+        text.redo();
+    require(text.contentCheckpoint() == hash(text.text()),
+            "redo invalidates the content checkpoint");
+
+    auto table = ScreenshotTableDocument::fromPlainText(QStringLiteral("A\tB\nC\tD"));
+    const auto original = table;
+    const auto saved = table.contentCheckpoint();
+    require(saved == hash(table.toHtml()), "table checkpoint preserves canonical HTML identity");
+    require(table.setCellText(0, 0, QStringLiteral("Changed")), "change checkpoint fixture cell");
+    require(table.contentCheckpoint() != saved && original.contentCheckpoint() == saved,
+            "copying and editing a table does not invalidate another document's identity");
+    require(table.merge({0, 0, 1, 1}) && table.contentCheckpoint() == hash(table.toHtml()),
+            "merge invalidates cached table identity");
+    require(table.split({0, 0, 1, 1}) && table.contentCheckpoint() == hash(table.toHtml()),
+            "split invalidates cached table identity");
+    require(table.clear({0, 0, 1, 1}) && table.contentCheckpoint() == hash(table.toHtml()),
+            "clear invalidates cached table identity");
+    table = original;
+    require(table.contentCheckpoint() == saved,
+            "table history replacement restores its checkpoint");
+}
 } // namespace
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+#if defined(Q_OS_WIN)
+    if (application.arguments().contains(QStringLiteral("--native-table-clipboard"))) {
+        tableClipboardNativeHtmlOffsetsEncloseOnlyTheTable();
+        return 0;
+    }
+#endif
     textSelectionFollowsMouseCharacterRange();
     lineSelectionPreservesSupplementaryCharacters();
     verticalLineHitTestingFollowsTopToBottomGraphemes();
@@ -936,8 +1197,12 @@ int main(int argc, char** argv) {
     textEditingHistoryInvalidatesRedoBranchesAndSurvivesReentry();
     textEditingHistoryIgnoresEditorLayoutFormatting();
     translationHistoryEstablishesSuccessfulAndPartialBaselines();
+    streamingTextUpdatesPreserveUnchangedBlocksAndCursorAnchors();
+    replacementTextMatchesQtNewlineAndUnicodeSemantics();
     tableDocumentPreservesSpansAndExportsCoveredCoordinates();
     tableDocumentExportsExcelTextCells();
+    tableClipboardHtmlHasDocumentContext();
     tableDocumentMergeSplitClearAndValidationPolicies();
+    cachedTextAndTableCheckpointsFollowContentMutations();
     return 0;
 }

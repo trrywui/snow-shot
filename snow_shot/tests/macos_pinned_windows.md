@@ -226,3 +226,66 @@ All five focused Debug checks passed (pin ownership, native pin policies, focus,
 offscreen overlay/layer policy, and native capture stacking). Changed-line format
 and diff whitespace checks passed; this build has clang-tidy disabled. No full
 suite was run.
+
+## Safe-area content alignment — 2026-10-22
+
+Investigation of [issue #2129](https://github.com/mg-chao/snow-apps/issues/2129)
+found a reproducible content-layout defect consistent with the reported border
+and image displacement near the menu bar. Qt enables safe-area contents margins
+for top-level widgets by default. Its Cocoa adapter includes the screen's notch
+safe area when the window overlaps that band. The pin's layout then insets and
+shrinks its canvas, while its manually positioned border retains the full window
+rectangle. Zero layout margins do not disable these widget contents margins.
+
+Pins now explicitly disable `WA_ContentsMarginsRespectsSafeArea`, matching the
+screenshot overlay's full-surface coordinate contract. This preserves canvas,
+border, and image alignment while retaining intentional menu-bar overlap.
+
+The deterministic offscreen regression supplies changing platform safe-area
+margins, including entering and leaving the top band and insets on all sides.
+It checks fresh and prewarmed pins at 1× and 2×. Before the correction, a top
+inset of 10 moved the canvas down and shortened it while leaving the border
+unchanged. Both regression cases failed before the correction and passed after
+it. Related offscreen interaction/pixel checks and Cocoa pixel alignment also
+passed; no full suite ran.
+
+```sh
+ctest --test-dir build/snow-shot-macos-arm64-debug --output-on-failure \
+  -R '^snow-shot-(pinned-(retina-)?safe-area|pinned-(pixel-alignment|retina-interaction|controlled-interaction)|macos-pinned-pixel-alignment)-tests$'
+```
+
+The investigation host's attached external display reports zero safe-area
+insets. The reporter's exact hardware and visual symptom remain unconfirmed.
+On a notched MacBook display, manually move a pin across the menu-bar/notch band
+and beyond the display's top edge, then back down, with menu-bar auto-hide both
+enabled and disabled. Check that image landmarks retain their position relative
+to the border without cropping or extra border lines.
+
+### Related full-screen canvas and recording audit
+
+The screenshot overlay already opts out of safe-area contents margins. The
+full-screen canvas and recording area instead position their drawing children
+explicitly from the window rectangle or capture selection; changing safe-area
+insets does not shift those surfaces.
+
+The canvas audit did reproduce a related interaction defect: Qt delivers a
+same-size resize event for safe-area changes, and the canvas resize handler
+cancelled color sampling and recalculated the camera on every notification.
+The handler now updates only when the drawing surface actually changes. Both
+new canvas cases failed before this correction and passed afterward; the tests
+also check that a real resize still cancels sampling and preserves pan/zoom.
+
+Recording checks passed without production changes for full-display and partial
+regions extending above the display, in drawing and trim-preview modes. They
+verify canvas/border alignment, unchanged capture regions, annotation transforms,
+and input regions under changing top and all-side insets at 1× and 2×.
+
+All six focused checks passed; no full suite ran:
+
+```sh
+ctest --test-dir build/snow-shot-macos-arm64-debug --output-on-failure \
+  -R '^snow-shot-(global-canvas|global-canvas-safe-area-[12]|recording-safe-area-[12]|overlay-safe-area)-tests$'
+```
+
+These are deterministic QPA-inset tests, not native notched-display or encoded
+recording validation. The hardware check described above remains outstanding.

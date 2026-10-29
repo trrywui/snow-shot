@@ -140,7 +140,7 @@ class NoopToolbarCommands final : public ScreenshotToolbarCommandSink,
     std::function<void(int)> adjustBackgroundOpacity = [](int){};
 #endif
     void setSelectionCornerRadiusFromToolbar(int) override {}
-    void setSelectionShadowWidthFromToolbar(int) override {}
+    void setSelectionEffectWidthFromToolbar(int) override {}
     void setSelectionToolbarHovered(bool) override {}
     std::function<void()> hideColorPickers = [] {};
     std::function<ScreenshotSelectionToolbarQuickSets()> readSelectionQuickSets = [] {

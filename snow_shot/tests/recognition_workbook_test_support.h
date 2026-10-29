@@ -52,6 +52,7 @@ struct Sheet {
     QMap<QString, QString> styles;
     QStringList merges;
     QString dimension;
+    QMap<int, double> columnWidths;
 };
 
 inline Sheet sheet(const QMap<QString, QByteArray>& package) {
@@ -59,12 +60,24 @@ inline Sheet sheet(const QMap<QString, QByteArray>& package) {
     QXmlStreamReader xml(package.value(QStringLiteral("xl/worksheets/sheet1.xml")));
     Sheet result;
     QString reference;
+    bool sawSheetData = false;
     while (!xml.atEnd()) {
         xml.readNext();
         if (!xml.isStartElement())
             continue;
         if (xml.name() == u"dimension")
             result.dimension = xml.attributes().value(u"ref").toString();
+        if (xml.name() == u"sheetData")
+            sawSheetData = true;
+        if (xml.name() == u"col") {
+            check(!sawSheetData && xml.attributes().value(u"customWidth") == u"1");
+            const int first = xml.attributes().value(u"min").toInt();
+            const int last = xml.attributes().value(u"max").toInt();
+            const double width = xml.attributes().value(u"width").toDouble();
+            check(first > 0 && last >= first && width > 0.0 && width <= 255.0);
+            for (int column = first; column <= last; ++column)
+                result.columnWidths.insert(column, width);
+        }
         if (xml.name() == u"mergeCell")
             result.merges.append(xml.attributes().value(u"ref").toString());
         if (xml.name() == u"c") {

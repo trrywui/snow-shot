@@ -193,6 +193,14 @@ void brandingRetranslatesWithoutChangingIdentifiers() {
                 "load complete branding catalog");
         require(QCoreApplication::installTranslator(&translator), "install branding catalog");
         flushEvents();
+        const auto translatedText = [&](const char* context, const char* source) {
+            const QString translated = translator.translate(context, source);
+            // Release catalogs omit source-identical English entries. Exercise the same
+            // source fallback as Qt while still requiring every localized branding entry.
+            require(QLatin1String(test.locale) == QLatin1String("en_US") || !translated.isEmpty(),
+                    "localized catalogs must contain the branding text");
+            return translated.isEmpty() ? QString::fromUtf8(source) : translated;
+        };
 
         require(edition::productName() == product,
                 "product branding must remain exact in every locale");
@@ -204,15 +212,14 @@ void brandingRetranslatesWithoutChangingIdentifiers() {
                   "Keep %1 running while using MCP."
                 : "Add this configuration to your MCP client, then restart the client to connect. "
                   "Keep Snow Shot running while using MCP.";
-        const QString translatedMcpHelp =
-            translator.translate("ScreenshotMcpSettings", mcpHelpSource);
+        const QString translatedMcpHelp = translatedText("ScreenshotMcpSettings", mcpHelpSource);
         require(!translatedMcpHelp.isEmpty(), "all catalogs include edition-specific MCP help");
         require(mcpHelp->text() ==
                         (edition::isMini ? translatedMcpHelp.arg(product) : translatedMcpHelp) &&
                     mcpHelp->text().contains(product),
                 "MCP help names the edition to keep running in every language");
         const QString translatedEndpoint =
-            translator.translate("ScreenshotMcpSettings", "Local endpoint descriptor: %1");
+            translatedText("ScreenshotMcpSettings", "Local endpoint descriptor: %1");
         require(!translatedEndpoint.isEmpty() &&
                     mcpEndpoint->text() ==
                         translatedEndpoint.arg(QDir::toNativeSeparators(descriptor)),
@@ -227,10 +234,9 @@ void brandingRetranslatesWithoutChangingIdentifiers() {
         }
         const QString expectedAbout = QString::fromUtf8(test.about).arg(product);
         const QString expectedLogo = QString::fromUtf8(test.logo).arg(product);
-        require(
-            translator.translate("AboutPageWidget", "About %1") == QString::fromUtf8(test.about) &&
-                translator.translate("AboutPageWidget", "%1 logo") == QString::fromUtf8(test.logo),
-            "all catalogs include the reusable Mini branding strings");
+        require(translatedText("AboutPageWidget", "About %1") == QString::fromUtf8(test.about) &&
+                    translatedText("AboutPageWidget", "%1 logo") == QString::fromUtf8(test.logo),
+                "all catalogs include the reusable Mini branding strings");
         for (AboutPageWidget* page : {embedded, &standalone}) {
             require(page->accessibleName() == expectedAbout,
                     "existing standalone and embedded About pages retranslate their product name");
@@ -255,7 +261,7 @@ void brandingRetranslatesWithoutChangingIdentifiers() {
                     ? "%1 will close and restart to install the update. Continue?"
                     : "Snow Shot will close and restart to install the update. Continue?";
             const QString translated =
-                translator.translate("snow_shot::app::ApplicationController", source);
+                translatedText("snow_shot::app::ApplicationController", source);
             require(!translated.isEmpty(), "update confirmation branding exists in every catalog");
             const QString expected = edition::isMini ? translated.arg(product) : translated;
             require(dialog->text() == expected && dialog->text().contains(product),

@@ -10,7 +10,7 @@
 **Snow Shot.app** 拖到“应用程序”。首次启动按提示授予屏幕录制、辅助功能等所需权限。
 
 - 支持 **Intel / x86_64，macOS 14.4 及以上**。
-- 当前版本：**1.1.2+up.1.3.2**；上游基线为 `59782f9bb2ef`（Snow Apps 1.3.2）。
+- 当前版本：**1.1.3+up.1.4.3**；上游基线为 `17fad782a3f9`（Snow Apps 1.4.3）。
 - Bundle ID：`io.github.trrywui.snowshot`。
 - Apple Silicon 不在当前发布包的支持范围内；不声明其他机器已经过交互验证。
 - 使用 ad-hoc 签名，未进行 Apple 公证；重建或升级后可能需要重新授予权限。
@@ -28,6 +28,10 @@
 - 本地 MCP 桥接未编入此发布配置。
 - 保留 macOS 截图交互 30 Hz 上限及放大镜装饰缓存。
 - macOS 14 不调用 macOS 15 新增的鼠标点击圆圈设置；HDR 仍受系统和硬件限制。
+
+上游 1.4.3 完整版默认开启“常驻识别进程”，本分支沿用该可配置默认值。
+以低闲置内存为优先时，可在设置中关闭“常驻识别进程”和“模型热启动”，
+手动识别时按需加载；重置文字识别设置后需重新检查常驻开关。
 
 兼容处理没有增加后台轮询、常驻兼容进程或截图转换缓冲区。
 与其他截图工具的内存和 CPU 对比需要在相同工作负载下测量，不宣称未经验证的节省比例。
@@ -56,15 +60,20 @@ git submodule update --init --recursive
 ## 来源与许可证
 
 原作者：**mg-chao**；本分支兼容修改和维护：**trrywui**，2026 年。
-原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/59782f9bb2ef)。
+原始项目见 [上游仓库](https://github.com/mg-chao/snow-apps/tree/17fad782a3f9)。
 
 这是多许可证仓库，范围见 [LICENSE.md](LICENSE.md)：
 
 | 组件 | 许可证 |
 | --- | --- |
-| Snow Shot、Snow Image、Snow Image Viewer、原始仓库构建编排 | GPL-3.0-or-later |
-| Ant Design Qt、Rust crates、绘图引擎、Rust FFI | Apache-2.0 |
-| simd-paddle-ocr-rs 子模块 | Apache-2.0 |
+| `ant_design_qt/` | [Apache License 2.0](ant_design_qt/LICENSE) |
+| `snow-crates/` | [GNU GPL v3.0 or later](snow-crates/COPYRIGHT) |
+| `snow_draw_engine_qt/` | [Apache License 2.0](snow_draw_engine_qt/LICENSE) |
+| `snow_rust_ffi/` | [GNU GPL v3.0 or later](snow_rust_ffi/COPYRIGHT) |
+| `snow-crates/crates/simd-paddle-ocr-rs/` | [Apache License 2.0](snow-crates/crates/simd-paddle-ocr-rs/LICENSE) |
+| `snow_image/` | [GNU GPL v3.0 or later](snow_image/COPYRIGHT) |
+| `snow_image_viewer/` | [GNU GPL v3.0 or later](snow_image_viewer/COPYRIGHT) |
+| `snow_shot/` | [GNU GPL v3.0 or later](snow_shot/COPYRIGHT) |
 
 第三方材料继续遵循各自许可证，参见 [Snow Shot 第三方声明](snow_shot/THIRD_PARTY_NOTICES.md)
 和 [Ant Design Qt 第三方声明](ant_design_qt/THIRD_PARTY_NOTICES.md)。

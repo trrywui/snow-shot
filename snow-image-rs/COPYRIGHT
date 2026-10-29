@@ -1,0 +1,9 @@
+Snow Image Rust - bounded image loading, processing and encoding for Snow Shot.
+Copyright (C) 2026 mg-chao
+
+Unless otherwise noted, original files in this directory are licensed under
+the GNU General Public License, version 3 or (at your option) any later version.
+They are provided without warranty. See LICENSE for the full terms.
+Third-party components retain their respective licenses and notices.
+
+SPDX-License-Identifier: GPL-3.0-or-later

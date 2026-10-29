@@ -219,10 +219,25 @@ QString ShortcutDisplayService::modifierText(Qt::KeyboardModifiers modifiers) co
 #endif
 }
 
-QString ShortcutDisplayService::text(const ShortcutBinding& binding) const {
-    const ShortcutBinding canonical = canonicalBinding(binding, true, true);
+QString ShortcutDisplayService::text(const ShortcutBinding& binding, ShortcutPolicy policy) const {
+    const ShortcutBinding canonical = canonicalBinding(binding, true, true, false, policy);
     if (canonical.portableText.isEmpty()) {
         return {};
+    }
+    const ShortcutIdentity identity = effectiveIdentity(canonical, policy);
+#ifdef Q_OS_MACOS
+    const bool enter = identity.physicalKey == 36;
+#else
+    const bool enter = identity.key == Qt::Key_Enter;
+#endif
+    if (policy == ShortcutPolicy::Application && enter) {
+        const QString modifiers = modifierText(identity.modifiers);
+        const QString key = QCoreApplication::translate("ShortcutDisplayService", "Enter");
+#ifdef Q_OS_MACOS
+        return modifiers + key;
+#else
+        return modifiers.isEmpty() ? key : modifiers + QStringLiteral("+") + key;
+#endif
     }
 #ifdef Q_OS_MACOS
     if (canonical.portableText == QStringLiteral("Shift")) {
@@ -231,7 +246,6 @@ QString ShortcutDisplayService::text(const ShortcutBinding& binding) const {
     if (canonical.portableText == QStringLiteral("Alt")) {
         return modifierText(Qt::AltModifier);
     }
-    const ShortcutIdentity identity = effectiveIdentity(canonical);
     QString keyText;
     if (identity.physicalKey.has_value()) {
         keyText = translatedMacKeyLegend(*identity.physicalKey);
@@ -251,11 +265,12 @@ QString ShortcutDisplayService::text(const ShortcutBinding& binding) const {
 #endif
 }
 
-QString ShortcutDisplayService::text(const ShortcutBindingList& bindings) const {
+QString ShortcutDisplayService::text(const ShortcutBindingList& bindings,
+                                     ShortcutPolicy policy) const {
     QStringList parts;
     parts.reserve(bindings.size());
     for (const ShortcutBinding& binding : bindings) {
-        const QString display = text(binding);
+        const QString display = text(binding, policy);
         if (!display.isEmpty()) {
             parts.push_back(display);
         }
@@ -267,12 +282,12 @@ void ShortcutDisplayService::refresh() {
     emit displayChanged();
 }
 
-QString formatShortcutDisplayText(const ShortcutBinding& binding) {
-    return ShortcutDisplayService::instance().text(binding);
+QString formatShortcutDisplayText(const ShortcutBinding& binding, ShortcutPolicy policy) {
+    return ShortcutDisplayService::instance().text(binding, policy);
 }
 
-QString formatShortcutListDisplayText(const ShortcutBindingList& bindings) {
-    return ShortcutDisplayService::instance().text(bindings);
+QString formatShortcutListDisplayText(const ShortcutBindingList& bindings, ShortcutPolicy policy) {
+    return ShortcutDisplayService::instance().text(bindings, policy);
 }
 
 } // namespace snow_shot::shortcuts

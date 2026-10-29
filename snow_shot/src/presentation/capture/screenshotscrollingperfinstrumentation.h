@@ -57,6 +57,11 @@ inline constexpr std::array<const char*, static_cast<std::size_t>(Stage::Count)>
     "thumbnail.tile_paint"};
 
 #if defined(SNOW_SHOT_SCROLLING_PERF_INSTRUMENTATION)
+inline constexpr auto rustStageNames = std::to_array<const char*>(
+    {"rust.frame_freeze", "rust.duplicate_check", "rust.reference_preparation", "rust.grayscale",
+     "rust.similarity_maps", "rust.feature_extraction", "rust.descriptor_matching",
+     "rust.candidate_scoring", "rust.refinement", "rust.canvas_composition",
+     "rust.reference_synthesis", "rust.preview_scaling", "rust.push_total", "rust.initialization"});
 using Clock = std::chrono::steady_clock;
 inline qint64 now() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
@@ -78,8 +83,8 @@ struct FrameRecord {
     int outputHeight = 0;
     std::array<qint64, static_cast<std::size_t>(Stage::Count)> elapsed{};
     std::array<bool, static_cast<std::size_t>(Stage::Count)> available{};
-    std::array<std::uint64_t, 16> rustElapsed{};
-    std::array<std::uint64_t, 16> rustCalls{};
+    std::array<std::uint64_t, rustStageNames.size()> rustElapsed{};
+    std::array<std::uint64_t, rustStageNames.size()> rustCalls{};
     void record(Stage stage, qint64 duration) {
         const auto index = static_cast<std::size_t>(stage);
         elapsed[index] += duration;

@@ -12,10 +12,13 @@
 #include <QWidget>
 #include <optional>
 
+class QAction;
 class QBoxLayout;
-class QFrame;
 class QLabel;
 class QVBoxLayout;
+namespace snow_shot::presentation::components {
+class HistoryEntryCard;
+} // namespace snow_shot::presentation::components
 namespace adqt::widgets {
 class AdButton;
 class AdImageViewer;
@@ -42,6 +45,10 @@ class PinnedWindowManagementDataSource : public QObject {
     virtual void requestFullImage(const QString& id, quint64 requestId) = 0;
     virtual void cancelPreviews() {}
     virtual void showRecord(const QString& id) = 0;
+    virtual void showRecords(const QStringList& ids) = 0;
+    [[nodiscard]] virtual bool revealRecord(const QString&) {
+        return false;
+    }
     virtual void removeRecords(const QVector<QString>& ids) = 0;
 
   signals:
@@ -66,6 +73,7 @@ class PinnedWindowManagementPageWidget final : public QWidget {
   signals:
     void collageRequested(const QStringList& recordIds);
     void splitRequested(const QString& recordId);
+    void imageEditingRequested(const QString& recordId);
 
   protected:
     void changeEvent(QEvent* event) override;
@@ -80,9 +88,11 @@ class PinnedWindowManagementPageWidget final : public QWidget {
     void rebuildFilteredRecords(bool resetPage);
     void rebuildEntries();
     void rebuildPreview();
-    void updateResponsiveLayout();
     void updateHeader();
     void updateSelectionBar();
+    void updateBatchActions();
+    [[nodiscard]] QStringList selectedRecordIds() const;
+    [[nodiscard]] std::optional<QString> selectedGroupId() const;
     void clearSelection();
     void selectCurrentPage();
     void deleteSelected();
@@ -104,7 +114,9 @@ class PinnedWindowManagementPageWidget final : public QWidget {
     QLabel* m_selectionSummary = nullptr;
     QWidget* m_selectionActions = nullptr;
     adqt::widgets::AdButton* m_deleteSelected = nullptr;
-    adqt::widgets::AdButton* m_collageButton = nullptr;
+    adqt::widgets::AdButton* m_batchActionsButton = nullptr;
+    QPointer<QAction> m_batchStitchAction;
+    QPointer<QAction> m_batchPinAction;
     adqt::widgets::AdButton* m_selectPage = nullptr;
     adqt::widgets::AdButton* m_deselect = nullptr;
     adqt::widgets::AdPopconfirm* m_deleteSelectedConfirmation = nullptr;
@@ -118,7 +130,7 @@ class PinnedWindowManagementPageWidget final : public QWidget {
     QVector<snow_shot::storage::PinnedWindowSummary> m_records;
     QVector<snow_shot::storage::PinnedWindowSummary> m_filteredRecords;
     QVector<QString> m_pageIds;
-    QHash<QString, QPointer<QFrame>> m_entryRows;
+    QHash<QString, QPointer<snow_shot::presentation::components::HistoryEntryCard>> m_entryRows;
     QHash<QString, quint64> m_entryPreviewRevisions;
     QSet<QString> m_selected;
     snow_shot::presentation::styles::ThemeColorScheme m_scheme;

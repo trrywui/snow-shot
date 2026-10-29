@@ -13,8 +13,8 @@ screenshotSelectionBorderAppearance(const QSize& contentSize, const ScreenshotRe
                                     ScreenshotLayoutCompaction compaction = {}) {
     const auto normalized = ScreenshotResultCompositor::normalizedStyle(style);
     if (compaction.enabled && style.region) {
-        const auto plan = screenshotLayoutCompactionPlan(
-            *style.region, contentSize, style.regionScale, compaction, normalized.shadowWidth);
+        const auto plan = ScreenshotResultCompositor::layoutCompactionForContent(
+            contentSize, normalized, compaction);
         if (!plan->isValid())
             return {};
         if (plan->changed)
@@ -22,9 +22,14 @@ screenshotSelectionBorderAppearance(const QSize& contentSize, const ScreenshotRe
                 plan->outputSize, compactedScreenshotResultStyle(style, *plan));
     }
     const auto layout = ScreenshotResultCompositor::layoutForContent(contentSize, normalized);
-    return {layout.outputRect.size(), QRectF(layout.contentRect),
-            static_cast<qreal>(normalized.cornerRadius), normalized.shadowWidth > 0,
-            normalized.region};
+    return {layout.outputRect.size(),
+            QRectF(layout.contentRect),
+            static_cast<qreal>(normalized.cornerRadius),
+            normalized.borderType == ScreenshotSelectionBorderType::Shadow &&
+                normalized.shadowWidth > 0,
+            normalized.region,
+            normalized.borderType == ScreenshotSelectionBorderType::Border &&
+                normalized.borderWidth > 0};
 }
 
 [[nodiscard]] inline bool screenshotSelectionNeedsCheckerboard(

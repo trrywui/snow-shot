@@ -118,6 +118,16 @@ MutationResult selectElement(SnowRuntime runtime, SnowViewport viewport, SnowEle
     return result;
 }
 
+MutationResult clearSelection(SnowRuntime runtime, SnowViewport viewport) {
+    MutationResult result;
+    if (!hasViewport(runtime, viewport)) {
+        return result;
+    }
+    result.success = snow_viewport_clear_selection_ex(
+                         runtime, viewport, result.changedViewports.outParam()) == SNOW_OK;
+    return result;
+}
+
 MutationResult deleteSelected(SnowRuntime runtime, SnowViewport viewport) {
     MutationResult result;
     if (!hasViewport(runtime, viewport)) {

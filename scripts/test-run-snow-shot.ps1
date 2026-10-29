@@ -48,7 +48,7 @@ try {
     $global:SnowLaunchPath = ''
     function Start-Process {
         param($FilePath, $WorkingDirectory, $WindowStyle, [switch]$PassThru)
-        Require ($WindowStyle -eq 'Hidden') 'Launch helpers must not open a console.'
+        Require ($WindowStyle -eq 'Normal') 'GUI launches must not suppress the first editor window.'
         Require ($WorkingDirectory -eq (Split-Path $FilePath)) 'Use the executable directory.'
         $global:SnowLaunchPath = $FilePath
         if ($PassThru) {

@@ -30,6 +30,41 @@ function Get-SnowShotWingetArchitectures($Release, [string]$Version) {
     return $architectures
 }
 
+function Save-SnowShotWingetInstaller([string]$Url, [string]$Path) {
+    # Release downloads are idempotent. Retry transient network failures without
+    # retrying manifest validation or allowing partial bytes into the SHA-256 hash.
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Write-Host "Downloading WinGet installer $Url (attempt $attempt/3)."
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $Path -TimeoutSec 600
+            return
+        } catch {
+            $retryable = $false
+            for ($cause = $_.Exception; $null -ne $cause; $cause = $cause.InnerException) {
+                if ($cause -is [Microsoft.PowerShell.Commands.HttpResponseException]) {
+                    $retryable = [int]$cause.Response.StatusCode -in @(408, 429, 500, 502, 503, 504)
+                    break
+                }
+                if ($cause -is [Net.Sockets.SocketException]) {
+                    $retryable = [string]$cause.SocketErrorCode -in @('TimedOut', 'ConnectionReset',
+                        'ConnectionAborted', 'ConnectionRefused', 'NetworkDown', 'NetworkUnreachable',
+                        'HostUnreachable', 'TryAgain')
+                    break
+                }
+                if ($cause -is [TimeoutException]) {
+                    $retryable = $true
+                    break
+                }
+            }
+            if (-not $retryable -or $attempt -eq 3) { throw }
+            if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path }
+            $delay = 2 * $attempt
+            Write-Warning "Installer download failed: $($_.Exception.Message) Retrying in $delay seconds."
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 function New-SnowShotWingetManifest([string]$Tag, [string]$OutputDirectory,
     [ValidateSet('Full')][string]$Edition = 'Full') {
     $product = Get-SnowShotEdition $Edition
@@ -53,7 +88,7 @@ function New-SnowShotWingetManifest([string]$Tag, [string]$OutputDirectory,
     if ($assets[0].browser_download_url -cne $url) { throw 'Unexpected installer asset URL.' }
     $download = Join-Path $OutputDirectory "$([guid]::NewGuid().ToString('N')).exe"
     try {
-        Invoke-WebRequest -Uri $url -OutFile $download -TimeoutSec 600
+        Save-SnowShotWingetInstaller -Url $url -Path $download
         if ((Get-Item -LiteralPath $download).Length -ne $assets[0].size -or $assets[0].size -le 0) {
             throw 'Downloaded installer size does not match the release asset.'
         }
@@ -173,15 +208,35 @@ function Get-SnowShotWingetSubmission([string]$Version, [ValidateSet('Full')][st
     return $null
 }
 
+function Get-SnowShotWingetSubmissionAccount {
+    if (-not $env:WINGET_CREATE_GITHUB_TOKEN) {
+        throw 'Set the WINGET_CREATE_GITHUB_TOKEN repository secret (classic PAT, public_repo and workflow scopes). Generated manifests remain available as workflow artifacts.'
+    }
+    $headers = @{
+        Authorization = "Bearer $env:WINGET_CREATE_GITHUB_TOKEN"
+        Accept = 'application/vnd.github+json'
+        'X-GitHub-Api-Version' = '2022-11-28'
+    }
+    $response = Invoke-WebRequest -Uri 'https://api.github.com/user' -Headers $headers
+    $scopes = ($response.Headers['X-OAuth-Scopes'] -join ',') -split ',\s*'
+    if ('public_repo' -notin $scopes -and 'repo' -notin $scopes) {
+        throw 'WinGetCreate requires a classic token with public_repo scope. Update the WINGET_CREATE_GITHUB_TOKEN repository secret.'
+    }
+    # WinGetCreate syncs the fork before submitting. Upstream workflow changes require
+    # workflow scope even though our own submission only contains manifest YAML.
+    if ('workflow' -notin $scopes) {
+        throw 'WinGetCreate fork synchronization requires workflow scope. Add it to the classic PAT used by the WINGET_CREATE_GITHUB_TOKEN repository secret, then rerun the workflow. Generated manifests remain available as workflow artifacts.'
+    }
+    return $response.Content | ConvertFrom-Json
+}
+
 function Submit-SnowShotWingetManifest([string]$Tag, [string]$ManifestDirectory, [string]$WingetCreate,
     [ValidateSet('Full')][string]$Edition = 'Full') {
     $product = Get-SnowShotEdition $Edition
     $version = Get-SnowShotWingetVersion $Tag
     $existing = Get-SnowShotWingetSubmission $version $Edition
     if ($existing) { Write-Output $existing; return }
-    if (-not $env:WINGET_CREATE_GITHUB_TOKEN) {
-        throw 'Set the WINGET_CREATE_GITHUB_TOKEN repository secret (classic PAT, public_repo scope). Generated manifests remain available as workflow artifacts.'
-    }
+    $null = Get-SnowShotWingetSubmissionAccount
     & $WingetCreate submit --no-open --prtitle "New version: $($product.Winget) version $version" $ManifestDirectory
     if ($LASTEXITCODE -ne 0) { throw "WinGetCreate submission failed with exit code $LASTEXITCODE." }
 }

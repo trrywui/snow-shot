@@ -36,6 +36,7 @@ fn passive_tail_fixture(
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();

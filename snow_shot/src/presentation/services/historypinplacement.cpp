@@ -48,6 +48,9 @@ historySelectionBorderAppearance(const snow_shot::storage::CaptureHistoryRecord&
                                                               record.selection.shadowColor,
                                                               {},
                                                               1.0});
+    style.borderType = record.selection.borderType;
+    style.borderWidth = record.selection.borderWidth;
+    style.borderColor = record.selection.borderColor;
     style.backgroundOpacityPercent = record.selection.backgroundOpacityPercent;
     if (record.selection.region)
         style.region = record.selection.region->translated(-record.selection.rectangle.topLeft());
@@ -58,16 +61,21 @@ historySelectionBorderAppearance(const snow_shot::storage::CaptureHistoryRecord&
     // Scrolling changes the content height, but retains the selection width.
     const qreal scale = record.selection.rectangle.width() > 0
                             ? qreal(record.result->imageSize.width()) /
-                                  (record.selection.rectangle.width() + 2 * style.shadowWidth)
+                                  (record.selection.rectangle.width() + 2 * style.effectWidth())
                             : 1.0;
-    const qreal padding = style.shadowWidth * scale;
+    const qreal padding = style.effectWidth() * scale;
     const QRectF content = QRectF(QPointF(), QSizeF(record.result->imageSize))
                                .adjusted(padding, padding, -padding, -padding);
     if (!content.isValid()) {
         return {};
     }
     return snow_shot::storage::PinnedBorderAppearance{
-        record.result->imageSize, content, style.cornerRadius * scale, style.shadowWidth > 0, {}};
+        record.result->imageSize,
+        content,
+        style.cornerRadius * scale,
+        style.borderType == ScreenshotSelectionBorderType::Shadow && style.shadowWidth > 0,
+        {},
+        style.borderType == ScreenshotSelectionBorderType::Border && style.borderWidth > 0};
 }
 
 bool historyRecordSupportsSelectionPin(const snow_shot::storage::CaptureHistoryRecord& record) {
@@ -103,6 +111,9 @@ historySelectionPinPlacement(const snow_shot::storage::CaptureHistoryRecord& rec
                                 record.selection.shadowColor,
                                 {},
                                 1.0};
+    style.borderType = record.selection.borderType;
+    style.borderWidth = record.selection.borderWidth;
+    style.borderColor = record.selection.borderColor;
     style.backgroundOpacityPercent = record.selection.backgroundOpacityPercent;
     if (record.selection.region)
         style.region = record.selection.region->translated(-record.selection.rectangle.topLeft());

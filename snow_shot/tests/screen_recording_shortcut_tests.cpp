@@ -12,9 +12,14 @@
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "../src/presentation/recording/screenrecordingselection.h"
 #include "widgets/button.h"
+#include "widgets/dpi_stable_window_controller.h"
 
 #include <QApplication>
 #include <QDir>
+#include <QDialog>
+#include <QDebug>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLineEdit>
@@ -23,6 +28,7 @@
 #include <QScopeGuard>
 #include <QScreen>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 
 #ifdef Q_OS_MACOS
@@ -66,6 +72,12 @@ class ScreenshotFloatingToolPaletteWindowTestAccess {
 
 class ScreenRecordingAreaWindowTestAccess {
   public:
+    static void beginRegionDrag(ScreenRecordingAreaWindow& area) {
+        area.beginRegionDrag(area.recordingRegion().topLeft(), Qt::LeftEdge);
+    }
+    static void cancelRegionDrag(ScreenRecordingAreaWindow& area) {
+        area.cancelRegionInteraction();
+    }
     static QByteArray history(const ScreenRecordingAreaWindow& area) {
         return area.m_canvasRuntime->serializeDocumentHistory();
     }
@@ -285,10 +297,11 @@ void recordingSelectionEditsAnnotationsAndPreservesPassThrough() {
         area.setDrawingBlocked(false);
         require(canvas.interactionEnabled(), "selection must resume after busy operations");
         select->click();
-        require(!palette.activeTool().has_value() && !canvas.interactionEnabled() &&
-                    area.inputMode() == ScreenRecordingAreaWindow::InputMode::RegionEditing &&
-                    palette.recordingExportSettingsVisible(),
-                "clicking active Select must return to Export Settings");
+        require(palette.activeTool() == ScreenshotToolPalette::Tool::Select &&
+                    canvas.interactionEnabled() &&
+                    area.inputMode() == ScreenRecordingAreaWindow::InputMode::Drawing &&
+                    !palette.recordingExportSettingsVisible(),
+                "clicking active Select must preserve annotation selection");
         select->click();
         settings->click();
         require(!palette.activeTool().has_value() && palette.recordingExportSettingsVisible() &&
@@ -306,9 +319,11 @@ void recordingSelectionEditsAnnotationsAndPreservesPassThrough() {
                     palette.activeTool() == ScreenshotToolPalette::Tool::Shape,
                 "drawing shortcut must activate its tool");
         require(palette.activateDrawingShortcut(QStringLiteral("shape")) &&
-                    !palette.activeTool().has_value() && palette.recordingExportSettingsVisible() &&
-                    area.inputMode() == ScreenRecordingAreaWindow::InputMode::RegionEditing,
-                "repeating a drawing shortcut must switch only to Export Settings");
+                    palette.activeTool() == ScreenshotToolPalette::Tool::Select &&
+                    !palette.recordingExportSettingsVisible() && canvas.interactionEnabled() &&
+                    area.inputMode() == ScreenRecordingAreaWindow::InputMode::Drawing,
+                "repeating a drawing shortcut must return to annotation selection");
+        settings->click();
         settings->click();
         require(palette.recordingExportSettingsVisible(),
                 "repeated Export Settings must stay selected");
@@ -357,9 +372,15 @@ void recordingSelectionEditsAnnotationsAndPreservesPassThrough() {
     require(canvas.canvasStyleToolbarState().source !=
                 SnowCanvasStyleToolbarSource::SelectedRectangle,
             "Delete must remove the selected recording annotation");
-    auto* reset =
-        palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotResetCanvasButton"));
-    require(reset != nullptr, "recording selection should expose canvas reset");
+    const auto resetCanvas = [&] {
+        palette.setActiveTool(ScreenshotToolPalette::Tool::Eraser);
+        palette.prepareForDisplay();
+        auto* reset = palette.findChild<adqt::widgets::AdButton*>(
+            QStringLiteral("screenshotResetCanvasButton"));
+        require(reset != nullptr && reset->isEnabled(),
+                "recording eraser reset must work with or without selection");
+        reset->click();
+    };
     for (const bool selected : {false, true}) {
         drawRectangle(canvas);
         require(canvas.setCanvasTool(SnowCanvasTool::Select), "Select should activate");
@@ -368,8 +389,7 @@ void recordingSelectionEditsAnnotationsAndPreservesPassThrough() {
         if (!selected) {
             require(canvas.resetEditingState(), "reset fixture should clear selection");
         }
-        require(reset->isEnabled(), "recording reset must work with or without selection");
-        reset->click();
+        resetCanvas();
         // Reset deletes every annotation as a single undoable action: the
         // canvas empties while the deletion itself stays undoable.
         require(canvas.canvasHistoryState().canUndo && !canvas.canvasHistoryState().canRedo,
@@ -381,7 +401,7 @@ void recordingSelectionEditsAnnotationsAndPreservesPassThrough() {
                     SnowCanvasStyleToolbarSource::SelectedRectangle,
                 "recording reset must remove unselected annotations as well");
         const QByteArray beforeEmptyReset = ScreenRecordingAreaWindowTestAccess::history(area);
-        reset->click();
+        resetCanvas();
         require(ScreenRecordingAreaWindowTestAccess::history(area) == beforeEmptyReset,
                 "resetting an empty recording canvas should be harmless");
     }
@@ -624,16 +644,48 @@ void autoHiddenRecordingToolbarRetainsAreaShortcuts() {
     toolbar.showWithoutActivating();
     QCoreApplication::processEvents();
 
+    const auto logDock = [&](const char* phase) {
+        qInfo() << "Shortcut dock" << phase << "frame" << toolbar.geometry() << "row"
+                << toolbar.paletteHost()->mainToolbarContentRect().translated(
+                       toolbar.contentPosition())
+                << "screen" << (toolbar.screen() ? toolbar.screen()->name() : QString()) << "DPR"
+                << toolbar.devicePixelRatioF() << "host scale"
+                << toolbar.paletteHost()->physicalScale() << "commits"
+                << toolbar.dpiTransitionDiagnostics().committedGeneration;
+    };
     const QRect relativeRow = toolbar.paletteHost()->mainToolbarContentRect();
-    const QPoint dockedPosition(bounds.left(), bounds.top() + bounds.height() / 3);
+    // Keep the fixed reserve frame on this display. Cross-display dragging has
+    // separate native coverage; this fixture exercises shortcuts while collapsed.
+    const QPoint dockedPosition(bounds.right() - relativeRow.width() + 1,
+                                bounds.top() + bounds.height() / 3);
     toolbar.paletteHost()->dragStarted(toolbar.contentPosition() + relativeRow.center());
     toolbar.moveContentTo(dockedPosition - relativeRow.topLeft());
     toolbar.paletteHost()->dragFinished(dockedPosition);
     ScreenRecordingToolbarWindowTestAccess::cursor(toolbar,
                                                    bounds.bottomRight() + QPoint(100, 100));
     auto* retreat = toolbar.findChild<QTimer*>(QStringLiteral("recordingToolbarRetreatTimer"));
-    require(retreat != nullptr && retreat->isActive(),
-            "an unhovered docked recording toolbar must schedule retreat");
+    require(retreat != nullptr, "the recording toolbar must own its retreat timer");
+    const auto dockReady = [&] {
+        const QRect row =
+            toolbar.paletteHost()->mainToolbarContentRect().translated(toolbar.contentPosition());
+        return toolbar.isVisible() && !toolbar.physicalDragActive() && toolbar.screen() == screen &&
+               qFuzzyCompare(toolbar.devicePixelRatioF(), screen->devicePixelRatio()) &&
+               row.right() == bounds.right() && row.top() == dockedPosition.y() &&
+               retreat->isActive();
+    };
+    QElapsedTimer settlement;
+    settlement.start();
+    do {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        if (dockReady())
+            break;
+        QThread::msleep(1);
+    } while (settlement.elapsed() < 2000);
+    const bool settled = dockReady();
+    if (!settled)
+        logDock("failed native dock settlement");
+    require(settled,
+            "an unhovered settled recording toolbar must remain docked and schedule retreat");
     retreat->stop();
     require(QMetaObject::invokeMethod(retreat, "timeout", Qt::DirectConnection),
             "hidden-toolbar shortcut fixture can expire retreat deterministically");
@@ -646,6 +698,16 @@ void autoHiddenRecordingToolbarRetainsAreaShortcuts() {
         palette->clearActiveTool();
         const int beforeShapes = shapes;
         press(*receiver, Qt::Key_F6);
+        if (shapes != beforeShapes + 1 || toolbar.isVisible()) {
+            logDock("after shortcut");
+            auto* focused = QApplication::focusWidget();
+            std::cerr << "auto-hidden shortcut receiver=" << receiver->objectName().toStdString()
+                      << " shapes=" << beforeShapes << ',' << shapes
+                      << " toolbar visible=" << toolbar.isVisible()
+                      << " area active=" << area.isActiveWindow()
+                      << " focus=" << (focused ? focused->objectName().toStdString() : "none")
+                      << '\n';
+        }
         require(shapes == beforeShapes + 1 && !toolbar.isVisible(),
                 "drawing shortcuts must activate exactly once from the area while auto-hidden");
         palette->setRecordingState(ScreenshotToolPalette::RecordingState::Recording);
@@ -721,9 +783,13 @@ void hiddenRecordingToolsRetainShortcuts() {
                     palette->stylePanel()->isVisible(),
                 "hidden recording tool hotkey activates once from each recording surface");
         press(*receiver, Qt::Key_F6);
-        require(shapes == before + 1 && !palette->activeTool() &&
-                    palette->recordingExportSettingsVisible(),
-                "hidden recording hotkeys retain their Export Settings toggle");
+        require(
+            shapes == before + 1 && palette->activeTool() == ScreenshotToolPalette::Tool::Select &&
+                area.canvas()->canvasTool() == SnowCanvasTool::Select &&
+                area.canvas()->interactionEnabled() &&
+                area.inputMode() == ScreenRecordingAreaWindow::InputMode::Drawing &&
+                !palette->recordingExportSettingsVisible(),
+            "hidden recording hotkeys return to selection without repeating the drawing command");
         require(settings.layout(kind) == savedLayout,
                 "recording hotkeys do not alter the saved hidden layout");
         for (auto* button : palette->mainPanel()->findChildren<adqt::widgets::AdButton*>()) {
@@ -994,11 +1060,10 @@ void recordingShortcutsFollowBothWindowsAndConfiguredKeys() {
     press(toolbar, Qt::Key_F10, Qt::NoModifier, true);
     require(shapes == before, "held drawing keys must not repeatedly activate tools");
     press(toolbar, Qt::Key_F10);
-    require(
-        shapes == before && !palette->activeTool().has_value() &&
-            palette->recordingExportSettingsVisible() &&
-            area.inputMode() == ScreenRecordingAreaWindow::InputMode::RegionEditing,
-        "repeating a recording tool shortcut must return to Export Settings like a button click");
+    require(shapes == before && palette->activeTool() == ScreenshotToolPalette::Tool::Select &&
+                !palette->recordingExportSettingsVisible() &&
+                area.inputMode() == ScreenRecordingAreaWindow::InputMode::Drawing,
+            "repeating a recording tool shortcut must return to selection like a button click");
 
     area.setDrawingBlocked(true);
     press(toolbar, Qt::Key_F10);
@@ -1024,10 +1089,9 @@ void recordingShortcutsFollowBothWindowsAndConfiguredKeys() {
     require(shapes == ++before && palette->activeTool() == ScreenshotToolPalette::Tool::Shape,
             "read-only text controls must allow drawing tool activation");
     press(editor, Qt::Key_F10);
-    require(
-        shapes == before && palette->recordingExportSettingsVisible() &&
-            !palette->activeTool().has_value(),
-        "read-only text controls must allow the active-tool shortcut to return to Export Settings");
+    require(shapes == before && !palette->recordingExportSettingsVisible() &&
+                palette->activeTool() == ScreenshotToolPalette::Tool::Select,
+            "read-only text controls must allow the active-tool shortcut to return to selection");
     editor.hide();
     focus(toolbar);
 
@@ -1074,6 +1138,159 @@ void recordingShortcutsFollowBothWindowsAndConfiguredKeys() {
     press(toolbar, Qt::Key_F10);
     require(shapes == ++before, "recreated shortcut controller must dispatch exactly once");
 }
+void recordingAreaHistoryShortcuts() {
+    using Status = ScreenshotToolPalette::RecordingSessionStatus;
+    namespace storage = snow_shot::storage;
+    ScreenRecordingAreaWindow area;
+    ScreenRecordingToolbarWindow toolbar;
+    area.setRecordingRegion(QRect(30, 30, 320, 240));
+    area.setInputMode(ScreenRecordingAreaWindow::InputMode::Drawing);
+    area.show();
+    toolbar.show();
+    focus(area);
+    drawRectangle(*area.canvas());
+    const auto document = ScreenRecordingAreaWindowTestAccess::history(area);
+    area.setInputMode(ScreenRecordingAreaWindow::InputMode::RegionEditing);
+    int previous = 0;
+    int next = 0;
+    bool eligible = true;
+    ScreenRecordingShortcutController shortcuts(area, toolbar);
+    shortcuts.setAreaHistoryActions([&] { return eligible; },
+                                    [&](bool backwards) {
+                                        if (backwards)
+                                            ++previous;
+                                        else
+                                            ++next;
+                                    });
+    auto* palette = toolbar.palette();
+    auto* settings = palette->findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("screenRecordingExportSettings"));
+    require(settings && palette->recordingExportSettingsVisible(),
+            "Export Settings starts selected");
+    require(storage::DrawingShortcutSettings().setShortcuts(QStringLiteral("shape"),
+                                                            {QStringLiteral("R")}),
+            "drawing shortcut overlaps the area-history key");
+    for (QWidget* receiver : {static_cast<QWidget*>(&area), static_cast<QWidget*>(&toolbar),
+                              static_cast<QWidget*>(area.canvas()), palette->mainPanel()}) {
+        focus(*receiver);
+        press(*receiver, Qt::Key_R);
+    }
+    require(previous == 4 && palette->recordingExportSettingsVisible(),
+            "history keys work in both windows and consume commands without drawing fallback");
+    focus(area);
+    auto rDown = keyEvent(QEvent::KeyPress, Qt::Key_R, Qt::NoModifier);
+    auto rRepeat = keyEvent(QEvent::KeyPress, Qt::Key_R, Qt::NoModifier, true);
+    auto rUp = keyEvent(QEvent::KeyRelease, Qt::Key_R, Qt::NoModifier);
+    QCoreApplication::sendEvent(&area, &rDown);
+    QCoreApplication::sendEvent(&area, &rRepeat);
+    QCoreApplication::sendEvent(&area, &rUp);
+    require(previous == 5, "holding an ordinary history key does not repeat navigation");
+    auto down = keyEvent(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier);
+    auto up = keyEvent(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier);
+    auto nextDown = keyEvent(QEvent::KeyPress, Qt::Key_R, Qt::ShiftModifier);
+    auto nextRepeat = keyEvent(QEvent::KeyPress, Qt::Key_R, Qt::ShiftModifier, true);
+    auto nextUp = keyEvent(QEvent::KeyRelease, Qt::Key_R, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&area, &down);
+    require(next == 0, "Shift alone does not activate the default next-area shortcut");
+    QCoreApplication::sendEvent(&area, &nextDown);
+    require(next == 1 && previous == 5 && palette->recordingExportSettingsVisible(),
+            "Shift+R navigates forward on press without previous-area or drawing fallback");
+    QCoreApplication::sendEvent(&area, &nextRepeat);
+    QCoreApplication::sendEvent(&area, &nextUp);
+    QCoreApplication::sendEvent(&area, &up);
+    QCoreApplication::sendEvent(&area, &down);
+    QCoreApplication::sendEvent(&area, &up);
+    require(next == 1, "holding Shift+R or tapping bare Shift does not repeat default navigation");
+    require(storage::ScreenRecordingShortcutSettings().setShortcuts(
+                QStringLiteral("next_recording_area"), {QStringLiteral("Shift")}),
+            "next-area navigation can be rebound to standalone Shift");
+    next = 0;
+    QCoreApplication::sendEvent(&area, &down);
+    require(next == 0, "Shift does not navigate on press");
+    QCoreApplication::sendEvent(&area, &up);
+    require(next == 1, "standalone Shift navigates once on release");
+    QCoreApplication::sendEvent(&area, &down);
+    press(area, Qt::Key_F24, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&area, &up);
+    require(next == 1, "a Shift chord cancels standalone navigation");
+    QCoreApplication::sendEvent(&area, &down);
+    QMouseEvent mouse(QEvent::MouseButtonPress, QPointF(5, 5), QPointF(5, 5), QPointF(5, 5),
+                      Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(palette->mainPanel(), &mouse);
+    QCoreApplication::sendEvent(&area, &up);
+    require(next == 1, "a Shift mouse gesture cancels standalone navigation");
+    auto repeat = keyEvent(QEvent::KeyPress, Qt::Key_Shift, Qt::ShiftModifier, true);
+    QCoreApplication::sendEvent(&area, &down);
+    QCoreApplication::sendEvent(&area, &repeat);
+    QCoreApplication::sendEvent(&area, &up);
+    require(next == 2, "holding Shift produces only one navigation");
+    const auto restored = QRect(50, 60, 360, 260);
+    int regionChanges = 0;
+    QObject::connect(&area, &ScreenRecordingAreaWindow::recordingRegionChanged,
+                     [&] { ++regionChanges; });
+    require(area.restoreRecordingRegion(restored) && area.recordingRegion() == restored &&
+                regionChanges == 1 &&
+                ScreenRecordingAreaWindowTestAccess::history(area) == document,
+            "restoring an area emits a geometry change and preserves annotation history");
+    require(area.restoreRecordingRegion(restored) && regionChanges == 1,
+            "a duplicate history stop succeeds without a redundant geometry signal");
+    for (const auto status : {Status::countingDown(), Status::starting(), Status::recording(),
+                              Status::paused(), Status::stopping()}) {
+        palette->setRecordingSession(status);
+        area.setRecordingState(status.state());
+        area.setDrawingBlocked(status.busy());
+        press(area, Qt::Key_Shift, Qt::ShiftModifier);
+        require(next == 2 && !area.restoreRecordingRegion(QRect(10, 10, 200, 200)),
+                "recording and busy states block area restoration and shortcuts");
+    }
+    palette->setRecordingSession(Status::idle());
+    area.setRecordingState(ScreenshotToolPalette::RecordingState::Idle);
+    area.setDrawingBlocked(false);
+    eligible = false;
+    press(area, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 2, "controller eligibility blocks scheduled startup and trimming");
+    eligible = true;
+    ScreenRecordingAreaWindowTestAccess::beginRegionDrag(area);
+    press(area, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 2 && !area.canRestoreRecordingRegion(), "active region drags block history");
+    ScreenRecordingAreaWindowTestAccess::cancelRegionDrag(area);
+    require(palette->activateDrawingShortcut(QStringLiteral("shape")), "select a drawing tool");
+    press(area, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 2 && !palette->recordingExportSettingsVisible(),
+            "history shortcuts require the Export Settings tool");
+    settings->click();
+    area.setInputMode(ScreenRecordingAreaWindow::InputMode::Drawing);
+    press(area, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 2, "color sampling and drawing input modes block history");
+    area.setInputMode(ScreenRecordingAreaWindow::InputMode::RegionEditing);
+    QLineEdit editor(&area);
+    editor.show();
+    focus(editor);
+    press(editor, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 2, "text entry does not navigate history");
+    editor.hide();
+    focus(area);
+    QDialog modal(&area);
+    modal.setWindowModality(Qt::ApplicationModal);
+    modal.show();
+    QCoreApplication::processEvents();
+    press(area, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 2, "modal interactions block history navigation");
+    modal.hide();
+    focus(area);
+    require(
+        storage::ScreenRecordingShortcutSettings().setShortcuts(
+            QStringLiteral("next_recording_area"), {QStringLiteral("F8"), QStringLiteral("Shift")}),
+        "live history shortcut reconfiguration succeeds");
+    press(area, Qt::Key_F8);
+    require(next == 3, "ordinary configured bindings activate on press");
+    require(storage::ScreenRecordingShortcutSettings().setShortcuts(
+                QStringLiteral("next_recording_area"), {}),
+            "disable next area");
+    press(area, Qt::Key_F8);
+    press(area, Qt::Key_Shift, Qt::ShiftModifier);
+    require(next == 3, "disabled bindings stop dispatching immediately");
+}
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1091,6 +1308,11 @@ int main(int argc, char* argv[]) {
     auto& storage = snow_shot::storage::ApplicationStorage::instance();
     require(storage.initialize({executableDirectory, temporary.path(), 60000}).success,
             "isolated recording shortcut settings must initialize");
+    if (app.arguments().contains(QStringLiteral("--area-history-only"))) {
+        recordingAreaHistoryShortcuts();
+        storage.shutdown();
+        return 0;
+    }
     if (app.arguments().contains(QStringLiteral("--auto-hide-shortcuts-only"))) {
         autoHiddenRecordingToolbarRetainsAreaShortcuts();
         storage.shutdown();

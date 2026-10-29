@@ -233,7 +233,7 @@ def feature_fingerprint():
 def validate_features(prefix, policy):
     for feature, enabled in policy['features'].items():
         module = 'Gui' if feature == 'system_png' else 'Core'
-        visibility = 'PUBLIC' if feature == 'timezone' else 'PRIVATE'
+        visibility = 'PUBLIC' if feature in ('timezone', 'concurrent') else 'PRIVATE'
         targets = prefix / f'lib/cmake/Qt6{module}/Qt6{module}Targets.cmake'
         text = targets.read_text(encoding='utf-8')
         state = 'ENABLED' if enabled else 'DISABLED'

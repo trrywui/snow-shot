@@ -34,6 +34,7 @@ namespace {
 using AdaptiveScrollCadence = AdaptiveScrollingCaptureCadence;
 using ScrollWorkerFrame = ScrollingPipelineFrame;
 #if defined(SNOW_SHOT_SCROLLING_PERF_DETAIL)
+static_assert(scrolling_perf::rustStageNames.size() == SNOW_STITCH_PERF_STAGE_COUNT);
 class PerfResultReader final {
   public:
     explicit PerfResultReader(scrolling_perf::FrameTrace trace) : m_trace(std::move(trace)) {}
@@ -202,8 +203,6 @@ const char* unmatchedReasonName(SnowStitchUnmatchedReason reason) {
         return "ambiguous";
     case SNOW_STITCH_UNMATCHED_REASON_CONFLICTING_REFERENCES:
         return "conflicting-references";
-    case SNOW_STITCH_UNMATCHED_REASON_FIXED_CONTENT_DOMINATED:
-        return "fixed-content-dominated";
     case SNOW_STITCH_UNMATCHED_REASON_VERIFICATION_FAILED:
         return "verification-failed";
     case SNOW_STITCH_UNMATCHED_REASON_NONE:
@@ -288,13 +287,12 @@ class ScreenshotScrollingCaptureWorker final : public QObject {
         if (outcome.event == SNOW_STITCH_FRAME_EVENT_UNMATCHED) {
             qCDebug(snowShotScrollingCaptureLog,
                     "Scrolling screenshot frame was not verified: reason=%s "
-                    "score=%.3f second=%.3f content=%.3f fixed=%.3f "
+                    "score=%.3f second=%.3f content=%.3f "
                     "inliers=%.3f features=%u references=%u",
                     unmatchedReasonName(outcome.unmatched_reason),
                     static_cast<double>(outcome.metrics.score),
                     static_cast<double>(outcome.metrics.second_score),
                     static_cast<double>(outcome.metrics.content_coverage),
-                    static_cast<double>(outcome.metrics.fixed_coverage),
                     static_cast<double>(outcome.metrics.inlier_ratio),
                     outcome.metrics.feature_support, outcome.metrics.reference_count);
         }

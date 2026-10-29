@@ -1,0 +1,87 @@
+{
+  "animation_sample_interval_ms": 17,
+  "benchmark": "screenshot_selection_presentation",
+  "device_pixel_ratio": 1,
+  "implementation": "optimized",
+  "logical_height": 1050,
+  "logical_width": 1680,
+  "measurement": "Request submission and explicit frame commit are measured separately; preparation includes both phases. Scheduled animation frame_commit_ms is zero, with timer commits included in Qt event processing. Controlled cases commit once per supplied frame; animation uses each implementation's event-driven timer with event pumping and requested idle waits of at most 1ms. Event-processing work and counters cover the entire input interval. Compare animation costs with observed paint and geometry counts. Magnifier cases include pointer presentation and the real picker controller/window. The optional archived legacy baseline target updates hover magnifiers immediately and reports internal sampling/preview counters as null; the current target batches hover magnifiers with the presentation frame. Picker paint/move/owner-change event counts are comparable. Combined cases include animated selection, guides, and magnifier bursts. Manual cases deliver coordinates through the real input handler and include constrained drag geometry; manual magnifier cases also include the real drag anchor sampler. Boolean cases use a concave freehand contour with two holes; pixel reuse keeps sixteen subpixel requests inside one integer marquee per frame, and animation allows displayed marquees to evolve between target requests. Idle waits, selector workers, native mouse delivery, and input-to-photon latency are excluded from work timings.",
+  "physical_height": 1050,
+  "physical_width": 1680,
+  "platform": "offscreen",
+  "results": [
+    {
+      "boolean_region_operation_included": false,
+      "canvas_paints": 60,
+      "clock": "controlled_monotonic",
+      "displayed_geometry_changes": 60,
+      "elapsed_ms": 56.492473,
+      "event_processing_ms": {
+        "max": 1.426424,
+        "mean": 0.7592236333333333,
+        "median": 0.7354445000000001,
+        "min": 0.507674,
+        "p95": 1.05908935
+      },
+      "frame_commit": "explicit_frame",
+      "frame_commit_ms": {
+        "max": 0.371379,
+        "mean": 0.1780484666666667,
+        "median": 0.151394,
+        "min": 0.058892,
+        "p95": 0.30731385
+      },
+      "hint_translation_requests": 0,
+      "input_interval_ms": 8,
+      "iterations": 60,
+      "magnifier_display_mode": "excluded",
+      "magnifier_included": false,
+      "magnifier_move_events": 0,
+      "magnifier_owner_change_events": 0,
+      "magnifier_owner_changes": 0,
+      "magnifier_paints": 0,
+      "magnifier_position_moves": 0,
+      "magnifier_preview_rebuilds": 0,
+      "magnifier_request_count": 0,
+      "magnifier_samples": 0,
+      "manual_input_handler_included": true,
+      "maximum_requested_animation_idle_wait_ms": 0,
+      "mean_canvas_damage_ratio": 0.016660922146636434,
+      "pointer_request_count": 0,
+      "preparation_ms": {
+        "max": 0.375682,
+        "mean": 0.1811983666666666,
+        "median": 0.15437499999999998,
+        "min": 0.061563,
+        "p95": 0.3103256
+      },
+      "request_count": 60,
+      "requests_per_frame": 1,
+      "scenario": "manual_resize_1",
+      "scheduler_wake_events": 0,
+      "selection_request_count": 60,
+      "selection_toolbar_hidden": false,
+      "semantic_notifications": 60,
+      "submission_ms": {
+        "max": 0.00683,
+        "mean": 0.0031499,
+        "median": 0.0029,
+        "min": 0.002654,
+        "p95": 0.0043143
+      },
+      "total_ms": {
+        "max": 1.7363229999999998,
+        "mean": 0.9404219999999998,
+        "median": 0.9824044999999999,
+        "min": 0.571488,
+        "p95": 1.3268029999999997
+      },
+      "ui_paints": 1013,
+      "work_ms_per_canvas_paint": 0.9404220000000001,
+      "work_ms_per_geometry_change": 0.9404220000000001
+    }
+  ],
+  "scheduler_backend": "automatic",
+  "screen_refresh_hz": 60,
+  "warmup": 1
+}

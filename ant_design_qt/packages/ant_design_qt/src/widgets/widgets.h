@@ -27,6 +27,7 @@
 #include "popup_types.h"
 #include "radio.h"
 #include "radio_button_group.h"
+#include "result.h"
 #include "scroll_area.h"
 #include "segmented.h"
 #include "select.h"

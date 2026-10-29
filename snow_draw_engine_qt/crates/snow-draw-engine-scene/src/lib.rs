@@ -4,6 +4,8 @@ mod item_conversions;
 #[cfg(test)]
 mod magnifier_damage_tests;
 mod overlay_composition;
+mod retained;
+pub use retained::RetainedSceneComposer;
 mod scene_cache;
 mod scene_composition;
 mod scene_order;
@@ -398,6 +400,8 @@ fn append_path_geometry_change(
     let style_unchanged = old.zip(next).is_some_and(|(old, next)| {
         old.id == next.id
             && old.stroke == next.stroke
+            && old.arrow_outline_color == next.arrow_outline_color
+            && old.arrow_outline_width == next.arrow_outline_width
             && old.stroke_width == next.stroke_width
             && old.stroke_style == next.stroke_style
             && old.stroke_rendering_style == next.stroke_rendering_style
@@ -814,6 +818,9 @@ fn spotlight_cutout(rect: RectangleData) -> DisplaySpotlightCutout {
         height: rect.height,
         rotation: rect.rotation,
         shape: match rect.highlight_shape {
+            snow_draw_engine_document::HighlightShape::ThoughtBubble => {
+                unreachable!("thought bubbles use dedicated path geometry")
+            }
             snow_draw_engine_document::HighlightShape::Rectangle => {
                 snow_draw_engine_display::DisplayRectangleShape::Rectangle
             }
@@ -1213,6 +1220,8 @@ fn path_geometry_dirty_region(
     };
     let style_unchanged = old.id == new.id
         && old.stroke == new.stroke
+        && old.arrow_outline_color == new.arrow_outline_color
+        && old.arrow_outline_width == new.arrow_outline_width
         && old.stroke_width == new.stroke_width
         && old.stroke_style == new.stroke_style
         && old.stroke_rendering_style == new.stroke_rendering_style
@@ -1277,7 +1286,12 @@ fn path_geometry_dirty_region(
     if bounds.iter().any(|value| !value.is_finite()) {
         return None;
     }
-    let outset = old.stroke_width.max(0.0) * 0.5;
+    let outline_outset = if old.arrow_outline_color.a != 0 && old.stroke_width > 0.0 {
+        old.arrow_outline_width.max(0.0) * 0.5
+    } else {
+        0.0
+    };
+    let outset = old.stroke_width.max(0.0) * 0.5 + outline_outset;
     let top_left =
         canvas_point_to_surface(frame, Point::new(bounds[0] - outset, bounds[1] - outset));
     let bottom_right =
@@ -1807,6 +1821,8 @@ mod tests {
             false,
         ));
         SceneDisplayItem::Arrow(ArrowDisplayItem {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             stroke_rendering_style: Default::default(),
             stroke_rendering_seed: 0,
             brush_mode: Default::default(),
@@ -1935,6 +1951,30 @@ mod tests {
             "unchanged path prefix was invalidated: {dirty:?}"
         );
         assert!(dirty.max_x >= 528.0);
+    }
+
+    #[test]
+    fn arrow_outline_expands_incremental_path_damage() {
+        let mut old = long_path_display(1, 10.0);
+        let mut new = long_path_display(2, 24.0);
+        let plain = path_geometry_dirty_region(&old, &new, frame_view()).unwrap();
+        for item in [&mut old, &mut new] {
+            let SceneDisplayItem::Arrow(arrow) = item else {
+                unreachable!()
+            };
+            arrow.arrow_outline_width = 8.0;
+        }
+        let outlined = path_geometry_dirty_region(&old, &new, frame_view()).unwrap();
+        let extent = 4.0 * frame_view().camera.zoom;
+        assert_eq!(outlined.min_x, plain.min_x - extent);
+        assert_eq!(outlined.min_y, plain.min_y - extent);
+        assert_eq!(outlined.max_x, plain.max_x + extent);
+        assert_eq!(outlined.max_y, plain.max_y + extent);
+        let SceneDisplayItem::Arrow(arrow) = &mut new else {
+            unreachable!()
+        };
+        arrow.arrow_outline_color.a = 0;
+        assert!(path_geometry_dirty_region(&old, &new, frame_view()).is_none());
     }
 
     fn pressure_damage_display(revision: u64, rectangles: &[[f64; 4]]) -> SceneDisplayItem {

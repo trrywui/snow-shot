@@ -433,7 +433,6 @@ function Write-StaticQtBuildStamp {
         )
         DisabledFeatures = @(
             "androiddeployqt",
-            "concurrent",
             "dbus",
             "dynamicgl",
             "opengl",
@@ -446,7 +445,7 @@ function Write-StaticQtBuildStamp {
             "timezone_locale",
             "wasmdeployqt",
             "windeployqt"
-        ) | Where-Object { $_ -notin @("testlib", "concurrent") -or -not $WithDevelopmentModules }
+        ) | Where-Object { $_ -ne "testlib" -or -not $WithDevelopmentModules }
         Parallelism = $BuildParallelism
     } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Path -Encoding utf8
 }
@@ -651,7 +650,7 @@ $configureArguments = @(
     "-DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON",
     "-DFEATURE_timezone=ON",
     "-DFEATURE_timezone_locale=OFF",
-    "-DQT_FEATURE_concurrent=$(if ($enableDevelopmentModules) { 'ON' } else { 'OFF' })",
+    "-DQT_FEATURE_concurrent=ON",
     "-DQT_FEATURE_dbus=OFF",
     "-DQT_FEATURE_linguist=ON",
     "-DQT_FEATURE_printsupport=OFF",
@@ -700,13 +699,13 @@ Assert-CacheEntry -Cache $cache -Pattern "(?m)^FEATURE_system_zlib:BOOL=$systemC
 Assert-CacheEntry -Cache $cache -Pattern "(?m)^QT_FEATURE_system_zlib:INTERNAL=$systemCodecState\r?`$" -Description "the internal $Configuration zlib linkage"
 Assert-CacheEntry -Cache $cache -Pattern '(?m)^FEATURE_timezone:BOOL=ON\r?$' -Description "time-zone handling"
 Assert-CacheEntry -Cache $cache -Pattern '(?m)^QT_FEATURE_timezone:INTERNAL=ON\r?$' -Description "the internal time-zone feature"
+Assert-CacheEntry -Cache $cache -Pattern '(?m)^QT_FEATURE_concurrent:INTERNAL=ON\r?$' -Description "the required Qt Concurrent feature"
 Assert-CacheEntry -Cache $cache -Pattern '(?m)^FEATURE_timezone_locale:BOOL=OFF\r?$' -Description "disabled localized time-zone display names"
 Assert-CacheEntry -Cache $cache `
     -Pattern '(?m)^QT_FEATURE_linguist:(?:INTERNAL|UNINITIALIZED)=ON\r?$' `
     -Description "the LinguistTools feature"
 foreach ($disabledFeature in @(
         "androiddeployqt",
-        "concurrent",
         "dbus",
         "dynamicgl",
         "opengl",
@@ -719,7 +718,7 @@ foreach ($disabledFeature in @(
         "timezone_locale",
         "wasmdeployqt",
         "windeployqt")) {
-    if ($disabledFeature -in @("testlib", "concurrent") -and $enableDevelopmentModules) {
+    if ($disabledFeature -eq "testlib" -and $enableDevelopmentModules) {
         Assert-CacheEntry -Cache $cache `
             -Pattern "(?m)^QT_FEATURE_${disabledFeature}:(?:INTERNAL|UNINITIALIZED)=ON\r?`$" `
             -Description "the development $disabledFeature feature"

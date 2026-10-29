@@ -1078,6 +1078,64 @@ class TstModalWindow : public QObject {
     modal.close();
   }
 
+  void windowInteractionLifecycle() {
+    AdModal modal;
+    modal.setMode(AdModal::Mode::Window);
+    modal.setWindowModeDetached(true);
+    modal.setWindowModality(Qt::NonModal);
+    modal.setWindowResizable(true);
+    modal.setWindowTitle(QStringLiteral("Window interaction"));
+    modal.present();
+    auto* surface = visibleOverlaySurface(modal.windowTitle());
+    QVERIFY(surface);
+    QSignalSpy started(&modal, &AdModal::windowInteractionStarted);
+    QSignalSpy finished(&modal, &AdModal::windowInteractionFinished);
+    const auto interaction = [&](bool active) {
+#ifdef Q_OS_WIN
+      if (QGuiApplication::platformName() == QStringLiteral("windows")) {
+        SendMessageW(reinterpret_cast<HWND>(surface->winId()),
+                     active ? WM_ENTERSIZEMOVE : WM_EXITSIZEMOVE, 0, 0);
+        return;
+      }
+#endif
+#ifdef Q_OS_MACOS
+      if (QGuiApplication::platformName() == QStringLiteral("cocoa")) {
+        NSWindow* window = reinterpret_cast<NSView*>(surface->winId()).window;
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:active ? NSWindowWillStartLiveResizeNotification
+                                        : NSWindowDidEndLiveResizeNotification
+                          object:window];
+        return;
+      }
+#endif
+      Q_UNUSED(active)
+    };
+    if (QGuiApplication::platformName() != QStringLiteral("windows") &&
+        QGuiApplication::platformName() != QStringLiteral("cocoa")) {
+      QSKIP("Native window interaction notifications require Windows or Cocoa");
+    }
+    surface->move(surface->pos() + QPoint(5, 5));
+    surface->resize(surface->size() + QSize(10, 10));
+    QCOMPARE(started.count(), 0);
+    QCOMPARE(finished.count(), 0);
+    interaction(true);
+    interaction(true);
+    QCOMPARE(started.count(), 1);
+    interaction(false);
+    interaction(false);
+    QCOMPARE(finished.count(), 1);
+    interaction(true);
+    surface->hide();
+    QCOMPARE(started.count(), 2);
+    QCOMPARE(finished.count(), 2);
+    QVERIFY(!surface->isVisible());
+    surface->show();
+    interaction(true);
+    QCOMPARE(started.count(), 3);
+    modal.close();
+    QCOMPARE(finished.count(), 3);
+  }
+
   void resizableWindowRetainsGeometryAndReopensAtDefault() {
     AdModal modal;
     modal.setMode(AdModal::Mode::Window);

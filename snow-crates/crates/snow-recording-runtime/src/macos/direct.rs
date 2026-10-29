@@ -111,6 +111,7 @@ pub(super) fn native_config(
             audio
         });
     Ok(NativeRecordingConfig {
+        webcam: config.webcam.clone(),
         audio_mode: config.audio_mode,
         capture,
         output,
@@ -138,6 +139,7 @@ pub(super) fn native_config(
             keyboard: effects.keyboard,
             show_keyboard: effects.show_keyboard,
             record_mouse_clicks: effects.record_mouse_clicks,
+            record_mouse_scrolling: effects.record_mouse_scrolling,
             highlight_radius: effects.mouse_highlight_radius,
             highlight_rgba: if effects.show_cursor {
                 effects.mouse_highlight_rgba
@@ -410,6 +412,7 @@ mod tests {
     }
     fn config() -> DirectRecordingConfig {
         DirectRecordingConfig {
+            webcam: None,
             audio_mode: Default::default(),
             system_audio_gain_db: 0,
             microphone_gain_db: 0,
@@ -436,6 +439,7 @@ mod tests {
             mouse_highlight_radius: snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
             mouse_highlight_rgba: [0; 4],
             record_mouse_clicks: false,
+            record_mouse_scrolling: false,
             show_keyboard: false,
             excluded_windows: vec![123].into(),
             excluded_processes: vec![456].into(),

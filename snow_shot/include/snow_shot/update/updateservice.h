@@ -7,6 +7,7 @@
 #include <QUrl>
 #include <chrono>
 #include <memory>
+#include <optional>
 
 class QEvent;
 
@@ -52,11 +53,14 @@ class UpdateService final : public QObject {
         QUrl giteeApiUrl =
             QUrl(QStringLiteral("https://gitee.com/api/v5/repos/mg-chao/snow-apps/releases"));
         std::chrono::milliseconds requestTimeout = std::chrono::seconds(30);
+        // Unset follows the installed distribution. Tests may select the Store policy explicitly.
+        std::optional<bool> storeManaged;
     };
 
     explicit UpdateService(Options options, QObject* parent = nullptr);
     ~UpdateService() override;
     const UpdateStatus& status() const;
+    bool managedByStore() const;
     bool busy() const;
     bool handoffPending() const;
     void start();

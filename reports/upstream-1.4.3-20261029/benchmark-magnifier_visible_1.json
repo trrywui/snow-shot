@@ -1,0 +1,87 @@
+{
+  "animation_sample_interval_ms": 17,
+  "benchmark": "screenshot_selection_presentation",
+  "device_pixel_ratio": 1,
+  "implementation": "optimized",
+  "logical_height": 1050,
+  "logical_width": 1680,
+  "measurement": "Request submission and explicit frame commit are measured separately; preparation includes both phases. Scheduled animation frame_commit_ms is zero, with timer commits included in Qt event processing. Controlled cases commit once per supplied frame; animation uses each implementation's event-driven timer with event pumping and requested idle waits of at most 1ms. Event-processing work and counters cover the entire input interval. Compare animation costs with observed paint and geometry counts. Magnifier cases include pointer presentation and the real picker controller/window. The optional archived legacy baseline target updates hover magnifiers immediately and reports internal sampling/preview counters as null; the current target batches hover magnifiers with the presentation frame. Picker paint/move/owner-change event counts are comparable. Combined cases include animated selection, guides, and magnifier bursts. Manual cases deliver coordinates through the real input handler and include constrained drag geometry; manual magnifier cases also include the real drag anchor sampler. Boolean cases use a concave freehand contour with two holes; pixel reuse keeps sixteen subpixel requests inside one integer marquee per frame, and animation allows displayed marquees to evolve between target requests. Idle waits, selector workers, native mouse delivery, and input-to-photon latency are excluded from work timings.",
+  "physical_height": 1050,
+  "physical_width": 1680,
+  "platform": "offscreen",
+  "results": [
+    {
+      "boolean_region_operation_included": false,
+      "canvas_paints": 0,
+      "clock": "controlled_monotonic",
+      "displayed_geometry_changes": 0,
+      "elapsed_ms": 17.967535,
+      "event_processing_ms": {
+        "max": 0.545368,
+        "mean": 0.27973966666666666,
+        "median": 0.26498750000000004,
+        "min": 0.210458,
+        "p95": 0.3936031499999999
+      },
+      "frame_commit": "explicit_frame",
+      "frame_commit_ms": {
+        "max": 0.025132,
+        "mean": 0.017362649999999997,
+        "median": 0.017678,
+        "min": 0.015064,
+        "p95": 0.0195416
+      },
+      "hint_translation_requests": 0,
+      "input_interval_ms": 8,
+      "iterations": 60,
+      "magnifier_display_mode": "always_show",
+      "magnifier_included": true,
+      "magnifier_move_events": 60,
+      "magnifier_owner_change_events": 0,
+      "magnifier_owner_changes": 0,
+      "magnifier_paints": 60,
+      "magnifier_position_moves": 60,
+      "magnifier_preview_rebuilds": 60,
+      "magnifier_request_count": 60,
+      "magnifier_samples": 60,
+      "manual_input_handler_included": false,
+      "maximum_requested_animation_idle_wait_ms": 0,
+      "mean_canvas_damage_ratio": 0,
+      "pointer_request_count": 60,
+      "preparation_ms": {
+        "max": 0.028935,
+        "mean": 0.018947533333333336,
+        "median": 0.019261,
+        "min": 0.016397,
+        "p95": 0.021392400000000002
+      },
+      "request_count": 60,
+      "requests_per_frame": 1,
+      "scenario": "magnifier_visible_1",
+      "scheduler_wake_events": 0,
+      "selection_request_count": 0,
+      "selection_toolbar_hidden": false,
+      "semantic_notifications": 0,
+      "submission_ms": {
+        "max": 0.003803,
+        "mean": 0.001584883333333333,
+        "median": 0.0015665,
+        "min": 0.001212,
+        "p95": 0.0019164499999999999
+      },
+      "total_ms": {
+        "max": 0.574303,
+        "mean": 0.2986872,
+        "median": 0.28483800000000004,
+        "min": 0.228497,
+        "p95": 0.4110893499999999
+      },
+      "ui_paints": 60,
+      "work_ms_per_canvas_paint": null,
+      "work_ms_per_geometry_change": null
+    }
+  ],
+  "scheduler_backend": "automatic",
+  "screen_refresh_hz": 60,
+  "warmup": 1
+}

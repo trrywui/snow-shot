@@ -12,11 +12,10 @@
 #include <QClipboard>
 #include <QCursor>
 
-#include <algorithm>
 #include <optional>
 
 namespace {
-constexpr int kSelectionOpacityTolerance = 4;
+constexpr int kSelectionVisibilityTolerance = 4;
 } // namespace
 
 ScreenshotColorPickerController::ScreenshotColorPickerController(
@@ -70,15 +69,15 @@ void ScreenshotColorPickerController::updateForOverlay(
 }
 
 void ScreenshotColorPickerController::updateAtCanvasPoint(
-    const QPointF& point, const ScreenshotColorPickerContext& context, qreal opacity,
+    const QPointF& point, const ScreenshotColorPickerContext& context,
     std::optional<QPoint> cursorLogicalPosition) {
-    updateAtPhysicalPoint(physicalPositionForCanvasPoint(point), context, opacity,
+    updateAtPhysicalPoint(physicalPositionForCanvasPoint(point), context,
                           m_geometry.displayForCanvasPoint(m_displaySession, point),
                           cursorLogicalPosition);
 }
 
 void ScreenshotColorPickerController::updateAtPhysicalPoint(
-    const QPoint& physicalPoint, const ScreenshotColorPickerContext& context, qreal opacity,
+    const QPoint& physicalPoint, const ScreenshotColorPickerContext& context,
     const CapturedDisplayModel* display, std::optional<QPoint> cursorLogicalPosition) {
     if (!enabled(context)) {
         hide();
@@ -99,12 +98,8 @@ void ScreenshotColorPickerController::updateAtPhysicalPoint(
         hide();
         return;
     }
-    const qreal pickerOpacity =
-        std::min(std::clamp<qreal>(opacity, 0.0, 1.0),
-                 opacityForPoint(m_geometry.canvasPositionForPhysicalPoint(*display, physicalPoint),
-                                 opacity < 1.0, context));
-
-    if (pickerOpacity <= 0.0) {
+    if (!visibleForPoint(m_geometry.canvasPositionForPhysicalPoint(*display, physicalPoint),
+                         context)) {
         // Keep color-copy commands current without moving the hidden native popup.
         m_overlayCoordinator.sampleColorPicker(display->image, display->physicalRect, physicalPoint,
                                                m_displaySession.cursorVisible ? display->cursorPatch
@@ -125,8 +120,8 @@ void ScreenshotColorPickerController::updateAtPhysicalPoint(
                                                    context.selectionPixels, conversion)};
     m_overlayCoordinator.updateColorPicker(
         overlay, display->image, display->physicalRect, physicalPoint, overlayLocalPosition,
-        pickerOpacity, displayValues,
-        m_displaySession.cursorVisible ? display->cursorPatch : QImage{}, display->cursorPixelRect);
+        displayValues, m_displaySession.cursorVisible ? display->cursorPatch : QImage{},
+        display->cursorPixelRect);
     m_overlay = overlay;
 }
 
@@ -140,7 +135,7 @@ void ScreenshotColorPickerController::updateAtCurrentCursor(
     if (const auto* startup = m_displaySession.startup.get(); startup && startup->anchored()) {
         const CapturedDisplayModel* display = m_displaySession.startupDisplay();
         if (display)
-            updateAtPhysicalPoint(startup->physicalPosition, context, 1.0, display);
+            updateAtPhysicalPoint(startup->physicalPosition, context, display);
         else
             hide();
         return;
@@ -151,7 +146,7 @@ void ScreenshotColorPickerController::updateAtCurrentCursor(
     const auto* display = m_geometry.displayForLogicalPoint(m_displaySession, point);
     if (display)
         updateAtPhysicalPoint(m_geometry.physicalPositionForLogicalPoint(m_displaySession, point),
-                              context, 1.0, display);
+                              context, display);
     else
         hide();
 #else
@@ -187,19 +182,7 @@ void ScreenshotColorPickerController::updateForSelectionDrag(
             m_geometry.displayForCanvasPoint(m_displaySession, virtualPosition))
         cursorLogicalPosition =
             m_geometry.logicalPositionForCanvasPoint(*cursorDisplay, virtualPosition).toPoint();
-    updateAtCanvasPoint(anchor.value(), context,
-                        screenshotColorPickerOpacity(m_displayMode,
-                                                     ScreenshotColorPickerVisibilityState{
-                                                         context.intelligentSelecting,
-                                                         context.manualSelecting,
-                                                         context.movingSelection,
-                                                         context.dragging,
-                                                         true,
-                                                         context.selectionPixels.width() >= 1 &&
-                                                             context.selectionPixels.height() >= 1,
-                                                         true,
-                                                     }),
-                        cursorLogicalPosition);
+    updateAtCanvasPoint(anchor.value(), context, cursorLogicalPosition);
 }
 
 void ScreenshotColorPickerController::updateAfterCursorMove(
@@ -283,21 +266,18 @@ ScreenshotColorPickerController::canvasPositionForPhysicalPoint(const QPointF& p
     return point;
 }
 
-qreal ScreenshotColorPickerController::opacityForPoint(
-    const QPointF& canvasPoint, bool selectionDrag,
-    const ScreenshotColorPickerContext& context) const {
+bool ScreenshotColorPickerController::visibleForPoint(
+    const QPointF& canvasPoint, const ScreenshotColorPickerContext& context) const {
     const bool hasSelection =
         context.selectionPixels.width() >= 1 && context.selectionPixels.height() >= 1;
-    const QRect toleratedSelection =
-        context.selectionPixels.adjusted(-kSelectionOpacityTolerance, -kSelectionOpacityTolerance,
-                                         kSelectionOpacityTolerance, kSelectionOpacityTolerance);
-    return screenshotColorPickerOpacity(
+    const QRect toleratedSelection = context.selectionPixels.adjusted(
+        -kSelectionVisibilityTolerance, -kSelectionVisibilityTolerance,
+        kSelectionVisibilityTolerance, kSelectionVisibilityTolerance);
+    return screenshotColorPickerVisible(
         m_displayMode, ScreenshotColorPickerVisibilityState{
                            context.intelligentSelecting,
                            context.manualSelecting,
-                           context.movingSelection,
                            context.dragging,
-                           selectionDrag,
                            hasSelection,
                            hasSelection && QRectF(toleratedSelection).contains(canvasPoint),
                        });

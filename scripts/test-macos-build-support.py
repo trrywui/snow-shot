@@ -74,7 +74,7 @@ def write_static_qt_feature_targets(prefix):
     core = prefix / 'lib/cmake/Qt6Core/Qt6CoreTargets.cmake'
     core.parent.mkdir(parents=True, exist_ok=True)
     core.write_text('add_library(Qt6::Core STATIC IMPORTED)\n'
-                    'QT_ENABLED_PUBLIC_FEATURES "timezone;static"\n'
+                    'QT_ENABLED_PUBLIC_FEATURES "timezone;static;concurrent"\n'
                     'QT_ENABLED_PRIVATE_FEATURES "ltcg;system_zlib"\n'
                     'QT_DISABLED_PRIVATE_FEATURES "timezone_locale"\n')
     gui = prefix / 'lib/cmake/Qt6Gui/Qt6GuiTargets.cmake'
@@ -135,6 +135,12 @@ class QtKitValidation(unittest.TestCase):
         self.run_validator('--kit-only')
         self.run_validator(success=False)
         self.assertEqual(self.validator.toolchain_policy()['qtVersion'], QT_VERSION)
+
+    def test_release_kit_requires_concurrent_even_with_a_matching_stamp(self):
+        targets = self.prefix / 'lib/cmake/Qt6Core/Qt6CoreTargets.cmake'
+        targets.write_text(targets.read_text().replace(';concurrent', ''))
+        result = self.run_validator(success=False)
+        self.assertIn('concurrent=True', result.stderr)
 
     def test_stale_installed_version_cannot_be_hidden_by_a_current_stamp(self):
         for module in ('Qt6', 'Qt6Core'):
@@ -543,6 +549,8 @@ include([==[{(ROOT / 'cmake/SnowShotMiniMacOS.cmake').as_posix()}]==])
         for language in plist['CFBundleLocalizations']:
             strings = (resources / 'mini' / (language + '.lproj') / 'InfoPlist.strings').read_text(encoding='utf-8')
             self.assertIn('Snow Shot Mini', strings)
+            self.assertIn('"NSCameraUsageDescription" = "', strings)
+        self.assertTrue(plist['NSCameraUsageDescription'])
         instructions = (resources / 'dmg-mini-background.svg').read_text(encoding='utf-8')
         self.assertIn('Snow Shot Mini', instructions)
         self.assertIn('Snow Shot Mini.app', (resources / 'dmg-mini-layout.applescript').read_text(encoding='utf-8'))
@@ -583,8 +591,10 @@ include([==[{(ROOT / 'cmake/SnowShotMiniMacOS.cmake').as_posix()}]==])
         for language in plist['CFBundleLocalizations']:
             strings = (resources / (language + '.lproj') / 'InfoPlist.strings').read_text()
             for key in ('CFBundleName', 'CFBundleDisplayName', 'NSAppleEventsUsageDescription',
-                        'NSMicrophoneUsageDescription', 'NSAudioCaptureUsageDescription'):
+                        'NSCameraUsageDescription', 'NSMicrophoneUsageDescription',
+                        'NSAudioCaptureUsageDescription'):
                 self.assertIn('"' + key + '" = "', strings)
+        self.assertTrue(plist['NSCameraUsageDescription'])
         main = (ROOT / 'snow_shot/src/app/main.cpp').read_text()
         self.assertIn('setApplicationDisplayName(', main)
         self.assertIn('QString applicationName = snow_shot::app::edition::applicationName()', main)
@@ -823,6 +833,61 @@ endif()
                                   'PROPERTIES;LABELS;unit', lines)
                     self.assertIn('set_property:TARGET;snow-shot-diagnostics-crash-tests;'
                                   'PROPERTY;SNOW_RUST_BUNDLE_OVERRIDE;snow_diagnostics_test', lines)
+
+
+class MacOSMinizipExports(unittest.TestCase):
+    def test_system_dependencies_do_not_retain_the_package_builders_sdk(self):
+        managed_cmake = ROOT / '.tools/macos-dev/bin/cmake'
+        cmake = str(managed_cmake) if managed_cmake.is_file() else shutil.which('cmake')
+        self.assertIsNotNone(cmake)
+        port = ROOT / 'cmake/vcpkg-overlay-ports/minizip-ng/portfile.cmake'
+        sdks = ('/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk',
+                '/Applications/Xcode Beta.app/Contents/Developer/Platforms/'
+                'MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk')
+        for sdk in sdks:
+            for linkage in ('STATIC', 'SHARED'):
+                with self.subTest(sdk=sdk, linkage=linkage), \
+                        tempfile.TemporaryDirectory(prefix='snow minizip export ') as directory:
+                    root = Path(directory)
+                    package = root / 'package/share/minizip-ng'
+                    package.mkdir(parents=True)
+                    exported = package / 'minizip-ng.cmake'
+                    dependencies = [
+                        'compression', f'{sdk}/usr/lib/libbz2.tbd',
+                        f'{sdk}/System/Library/Frameworks/CoreFoundation.framework',
+                        f'{sdk}/System/Library/Frameworks/Security.framework',
+                        'ZLIB::ZLIB', '/vendor/Custom.framework',
+                    ]
+                    exported.write_text(f'''add_library(MINIZIP::minizip-ng {linkage} IMPORTED)
+set_target_properties(MINIZIP::minizip-ng PROPERTIES
+    INTERFACE_LINK_LIBRARIES "{';'.join(dependencies)}")
+''')
+                    mocks = ''.join(f'function({command})\nendfunction()\n' for command in
+                                    ('vcpkg_from_github', 'vcpkg_check_features',
+                                     'vcpkg_cmake_configure', 'vcpkg_cmake_install',
+                                     'vcpkg_fixup_pkgconfig', 'vcpkg_cmake_config_fixup',
+                                     'vcpkg_copy_pdbs', 'vcpkg_install_copyright'))
+                    (root / 'CMakeLists.txt').write_text(f'''
+cmake_minimum_required(VERSION 4.2)
+project(snow_minizip_export_contract LANGUAGES NONE)
+set(VCPKG_TARGET_IS_OSX TRUE)
+set(CURRENT_PACKAGES_DIR "${{CMAKE_CURRENT_SOURCE_DIR}}/package")
+{mocks}
+include([==[{port.as_posix()}]==])
+add_library(BZip2::BZip2 INTERFACE IMPORTED)
+add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+include("${{CURRENT_PACKAGES_DIR}}/share/minizip-ng/minizip-ng.cmake")
+get_target_property(dependencies MINIZIP::minizip-ng INTERFACE_LINK_LIBRARIES)
+file(WRITE "${{CMAKE_CURRENT_BINARY_DIR}}/dependencies.txt" "${{dependencies}}")
+''')
+                    result = subprocess.run([cmake, '-S', str(root), '-B', str(root / 'build')],
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    actual = (root / 'build/dependencies.txt').read_text().split(';')
+                    self.assertEqual(actual, [
+                        'compression', 'BZip2::BZip2', '-framework CoreFoundation',
+                        '-framework Security', 'ZLIB::ZLIB', '/vendor/Custom.framework',
+                    ])
 
 
 class MacOSFFmpegBuild(unittest.TestCase):
@@ -1308,6 +1373,7 @@ if name == 'openssl':
             with self.subTest(target=target, host=host):
                 calls = self.static_qt_configure_arguments(target, host)
                 configure = next(call for call in calls if call[0] == 'configure')
+                self.assertIn('-DQT_FEATURE_concurrent=ON', configure)
                 self.assertFalse(any(call[0] == 'arch' for call in calls))
                 self.assertNotIn('-DQT_NO_HANDLE_APPLE_SINGLE_ARCH_CROSS_COMPILING=ON',
                                  configure)
@@ -1490,7 +1556,8 @@ if name == 'openssl':
     def test_release_build_verifies_installed_qt_features_independently_of_stamp(self):
         targets = self.root / 'Qt kit/lib/cmake/Qt6Core/Qt6CoreTargets.cmake'
         original = targets.read_text()
-        for text in (original.replace('timezone;static', 'static'),
+        for text in (original.replace(';concurrent', ''),
+                     original.replace('timezone;static', 'static'),
                      original.replace('ltcg;system_zlib', 'ltcg;system_zlib;timezone_locale'),
                      original.replace('system_zlib', 'system_zlib_extra')):
             with self.subTest(targets=text):

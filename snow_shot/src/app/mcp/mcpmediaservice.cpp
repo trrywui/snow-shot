@@ -11,6 +11,7 @@
 #include "snow_shot/storage/pinnedwindowrepository.h"
 #include "mcppinnedstate_p.h"
 #include "mcppinnedworkflowowners_p.h"
+#include "mcpreplayregistry_p.h"
 #include <QApplication>
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -60,7 +61,8 @@ class McpMediaService::Impl {
   public:
     Impl(McpMediaService& owner, ScreenshotController& controller,
          presentation::PinnedWindowGroupManager& groups)
-        : q(owner), controller(controller), groups(groups) {}
+        : q(owner), controller(controller), groups(groups),
+          requests(owner, {8 * 1024 * 1024, false, 0}) {}
     McpMediaService& q;
     ScreenshotController& controller;
     presentation::PinnedWindowGroupManager& groups;
@@ -95,19 +97,82 @@ class McpMediaService::Impl {
     QHash<quint64, QList<std::shared_ptr<ScreenshotExportArtifact>>> exports;
     QHash<quint64, std::shared_ptr<ScreenshotClipboardCommitScope>> clipboardScopes;
     QHash<QString, std::function<void()>> cancellations;
-    struct Cached {
-        QByteArray fingerprint;
-        ScreenshotMcpResponse response;
-        qsizetype bytes = 0;
-    };
-    QHash<QString, Cached> replay;
-    struct InflightReplay {
-        QByteArray fingerprint;
-        QList<ScreenshotMcpServer::Completion> waiters;
-    };
-    QHash<QString, InflightReplay> inflightReplay;
-    QStringList replayOrder;
-    qsizetype replayBytes = 0;
+    McpReplayRegistry requests;
+
+    void releaseExport(quint64 owner, const std::shared_ptr<ScreenshotExportArtifact>& artifact) {
+        auto found = exports.find(owner);
+        if (found == exports.end())
+            return;
+        found->removeAll(artifact);
+        if (found->isEmpty())
+            exports.erase(found);
+    }
+
+    QList<std::function<void()>> retire(std::optional<quint64> owner) {
+        // Detach all owned work before invoking cancellation or controller callbacks.
+        QList<std::function<void()>> cleanup;
+        const QPointer<McpMediaService> guard(&q);
+        const QPointer<ScreenshotController> capture(&controller);
+        const auto prefix = owner ? QString::number(*owner) + u':' : QString();
+        for (auto it = cancellations.begin(); it != cancellations.end();) {
+            if (owner && !it.key().startsWith(prefix)) {
+                ++it;
+                continue;
+            }
+            cleanup.append([guard, cancel = std::move(*it)] {
+                if (guard)
+                    cancel();
+            });
+            it = cancellations.erase(it);
+        }
+        for (auto it = pending.begin(); it != pending.end();) {
+            if (owner && it->owner != *owner) {
+                ++it;
+                continue;
+            }
+            cleanup.append([capture, task = std::move(*it)] {
+                task.job.cancel();
+                if (capture && !task.pinId.isEmpty())
+                    capture->destroyPinnedRecords({task.pinId});
+            });
+            it = pending.erase(it);
+        }
+        for (const auto& window :
+             owner ? recognitionOwners.take(*owner) : recognitionOwners.takeAll())
+            cleanup.append([window] {
+                if (window)
+                    window->cancelAutomationRecognition();
+            });
+        for (auto it = exports.begin(); it != exports.end();) {
+            if (owner && it.key() != *owner) {
+                ++it;
+                continue;
+            }
+            for (const auto& artifact : *it)
+                cleanup.append([artifact] { artifact->cancel(); });
+            it = exports.erase(it);
+        }
+        for (auto it = clipboardScopes.begin(); it != clipboardScopes.end();) {
+            if (owner && it.key() != *owner) {
+                ++it;
+                continue;
+            }
+            cleanup.append([scope = std::move(*it)] { scope->cancelAll(); });
+            it = clipboardScopes.erase(it);
+        }
+        if ((!owner || recordingOwner == *owner) && recordingOwner) {
+            cleanup.append([recorder = recording] {
+                if (recorder)
+                    recorder->detachAutomation();
+            });
+            recordingOwner = 0;
+        }
+        if (owner ? recordingArtifacts.remove(*owner) : !recordingArtifacts.isEmpty())
+            ++recordingArtifactRevision;
+        if (!owner)
+            recordingArtifacts.clear();
+        return cleanup;
+    }
 
     ScreenshotClipboardCommitScope& clipboardScope(quint64 connection) {
         auto& scope = clipboardScopes[connection];
@@ -400,8 +465,8 @@ class McpMediaService::Impl {
         }
         pending.insert(token, {r.connectionId, std::move(job), {}});
         cancellations.insert(QString::number(r.connectionId) + u':' + r.requestId,
-                             [this, token, reply] {
-                                 if (!pending.contains(token))
+                             [this, guard, token, reply] {
+                                 if (!guard || !pending.contains(token))
                                      return;
                                  const auto task = pending.take(token);
                                  task.job.cancel();
@@ -432,52 +497,15 @@ void McpMediaService::setFileArtifactWriter(FileArtifactWriter writer) {
 void McpMediaService::request(const ScreenshotMcpRequest& r,
                               ScreenshotMcpServer::Completion completion) {
     auto& s = *m_impl;
-    const QString replayKey = QString::number(r.connectionId) + u':' + r.idempotencyKey;
-    const QByteArray fingerprint = QCryptographicHash::hash(
-        QJsonDocument(
-            QJsonObject{{QStringLiteral("method"), r.method},
-                        {QStringLiteral("params"), r.params},
-                        {QStringLiteral("revision"),
-                         r.expectedRevision ? QJsonValue(static_cast<qint64>(*r.expectedRevision))
-                                            : QJsonValue{}}})
-            .toJson(QJsonDocument::Compact),
-        QCryptographicHash::Sha256);
-    if (!r.idempotencyKey.isEmpty() && s.replay.contains(replayKey)) {
-        auto cached = s.replay.value(replayKey);
-        if (cached.fingerprint == fingerprint) {
-            cached.response.requestId = r.requestId;
-            completion(std::move(cached.response));
-            return;
-        }
-        ScreenshotMcpResponse response;
-        response.requestId = r.requestId;
-        response.errorCode = QStringLiteral("idempotency_conflict");
-        completion(std::move(response));
+    auto operation = s.requests.begin(r, std::move(completion));
+    if (!operation)
         return;
-    }
-    if (!r.idempotencyKey.isEmpty() && s.inflightReplay.contains(replayKey)) {
-        auto& pending = s.inflightReplay[replayKey];
-        if (pending.fingerprint == fingerprint) {
-            pending.waiters.append([completion = std::move(completion), requestId = r.requestId](
-                                       ScreenshotMcpResponse response) mutable {
-                response.requestId = requestId;
-                completion(std::move(response));
-            });
-        } else {
-            ScreenshotMcpResponse response;
-            response.requestId = r.requestId;
-            response.errorCode = QStringLiteral("idempotency_conflict");
-            completion(std::move(response));
-        }
-        return;
-    }
-    if (!r.idempotencyKey.isEmpty())
-        s.inflightReplay.insert(replayKey, {fingerprint, {}});
+    const auto currentRequest = operation.current;
     const QPointer<McpMediaService> guard(this);
     const auto finished = std::make_shared<bool>(false);
-    const auto reply = [guard, r, replayKey, fingerprint, finished,
-                        completion = std::move(completion)](QJsonObject value, QString error) {
-        if (!guard || *finished)
+    const auto reply = [guard, r, finished, operation = std::move(operation)](QJsonObject value,
+                                                                              QString error) {
+        if (!operation.current() || *finished)
             return;
         *finished = true;
         guard->m_impl->cancellations.remove(QString::number(r.connectionId) + u':' + r.requestId);
@@ -492,11 +520,12 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
                 static_cast<quint64>(response.result.value(QStringLiteral("revision")).toInteger());
         auto serialized = QJsonDocument(response.result).toJson(QJsonDocument::Compact);
         if (serialized.size() > 1024 * 1024) {
-            const auto artifact =
-                guard->m_impl->artifactWriter
-                    ? guard->m_impl->artifactWriter(r.connectionId, std::move(serialized),
-                                                    QStringLiteral("application/json"))
-                    : QJsonObject{};
+            const auto writer = guard->m_impl->artifactWriter;
+            const auto artifact = writer ? writer(r.connectionId, std::move(serialized),
+                                                  QStringLiteral("application/json"))
+                                         : QJsonObject{};
+            if (!guard)
+                return;
             response.result = {{QStringLiteral("artifact"), artifact}};
             if (response.revision)
                 response.result.insert(QStringLiteral("revision"),
@@ -506,26 +535,7 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
                 response.errorCode = QStringLiteral("resource_limit");
             }
         }
-        if (response.ok && !r.idempotencyKey.isEmpty()) {
-            auto& impl = *guard->m_impl;
-            const auto bytes = QJsonDocument(response.result).toJson(QJsonDocument::Compact).size();
-            constexpr qsizetype maximumReplayBytes = 8 * 1024 * 1024;
-            if (bytes <= maximumReplayBytes) {
-                if (impl.replay.contains(replayKey)) {
-                    impl.replayBytes -= impl.replay.value(replayKey).bytes;
-                    impl.replayOrder.removeAll(replayKey);
-                }
-                impl.replay.insert(replayKey, {fingerprint, response, bytes});
-                impl.replayBytes += bytes;
-                impl.replayOrder.append(replayKey);
-                while (impl.replayOrder.size() > 128 || impl.replayBytes > maximumReplayBytes)
-                    impl.replayBytes -= impl.replay.take(impl.replayOrder.takeFirst()).bytes;
-            }
-        }
-        const auto waiters = guard->m_impl->inflightReplay.take(replayKey).waiters;
-        for (const auto& waiter : waiters)
-            waiter(response);
-        completion(std::move(response));
+        operation.complete(std::move(response));
     };
     if (!editionRequestEnabled(r.method, r.params)) {
         reply({}, QStringLiteral("unsupported"));
@@ -831,21 +841,22 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
                                [guard, artifact, connection = r.connectionId, reply] {
                                    artifact->cancel();
                                    if (guard)
-                                       guard->m_impl->exports[connection].removeAll(artifact);
+                                       guard->m_impl->releaseExport(connection, artifact);
                                    reply({}, QStringLiteral("cancelled"));
                                });
         const auto complete = [guard, artifact, connection = r.connectionId,
                                reply](QJsonObject result, QString error) {
             if (!guard)
                 return;
-            guard->m_impl->exports[connection].removeAll(artifact);
+            guard->m_impl->releaseExport(connection, artifact);
             reply(std::move(result), std::move(error));
         };
         if (output == QStringLiteral("copy")) {
             if (!artifact->requestClipboard(
-                    this, [guard, complete, artifact, reply, requestId = r.requestId,
-                           connection = r.connectionId](ScreenshotExportClipboardResult result) {
-                        if (!guard)
+                    this,
+                    [guard, currentRequest, complete, artifact, reply, requestId = r.requestId,
+                     connection = r.connectionId](ScreenshotExportClipboardResult result) {
+                        if (!currentRequest())
                             return;
                         if (!result.succeeded()) {
                             complete({}, QStringLiteral("export_failed"));
@@ -870,7 +881,7 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
                                     artifact->cancel();
                                     commit.cancel();
                                     if (guard)
-                                        guard->m_impl->exports[connection].removeAll(artifact);
+                                        guard->m_impl->releaseExport(connection, artifact);
                                     reply({}, QStringLiteral("cancelled"));
                                 });
                         }
@@ -896,7 +907,10 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
                 QStringLiteral("image.") + ScreenshotImageFileService::extension(*format));
             if (!artifact->requestSaveToPath(
                     this, stagingPath, *format, {},
-                    [complete, staged, stagingPath, path](ScreenshotExportTaskResult result) {
+                    [currentRequest, complete, staged, stagingPath,
+                     path](ScreenshotExportTaskResult result) {
+                        if (!currentRequest())
+                            return;
                         // QFile::rename never overwrites an existing destination,
                         // including one created while the encoder was running.
                         const bool published =
@@ -912,6 +926,8 @@ void McpMediaService::request(const ScreenshotMcpRequest& r,
 }
 
 bool McpMediaService::cancelRequest(quint64 connection, const QString& requestId) {
+    if (m_impl->requests.cancelAlias(connection, requestId))
+        return true;
     auto cancel = m_impl->cancellations.take(QString::number(connection) + u':' + requestId);
     if (!cancel)
         return false;
@@ -920,62 +936,19 @@ bool McpMediaService::cancelRequest(quint64 connection, const QString& requestId
 }
 
 void McpMediaService::disconnected(quint64 connection) {
-    auto& s = *m_impl;
-    if (s.recordingArtifacts.remove(connection))
-        ++s.recordingArtifactRevision;
-    const auto requestPrefix = QString::number(connection) + u':';
-    for (const auto& key : s.cancellations.keys())
-        if (key.startsWith(requestPrefix))
-            cancelRequest(connection, key.mid(requestPrefix.size()));
-    for (auto it = s.pending.begin(); it != s.pending.end();) {
-        if (it->owner == connection) {
-            it->job.cancel();
-            if (!it->pinId.isEmpty())
-                s.controller.destroyPinnedRecords({it->pinId});
-            it = s.pending.erase(it);
-        } else
-            ++it;
-    }
-    s.recognitionOwners.cancel(connection);
-    for (const auto& artifact : s.exports.take(connection))
-        artifact->cancel();
-    s.clipboardScopes.remove(connection);
-    if (s.recordingOwner == connection && s.recording) {
-        s.recording->detachAutomation();
-        s.recordingOwner = 0;
-    }
-    const auto prefix = QString::number(connection) + u':';
-    for (auto it = s.replay.begin(); it != s.replay.end();) {
-        if (it.key().startsWith(prefix)) {
-            s.replayBytes -= it->bytes;
-            it = s.replay.erase(it);
-        } else
-            ++it;
-    }
-    s.replayOrder.removeIf([&](const QString& key) { return key.startsWith(prefix); });
+    m_impl->requests.disconnected(connection);
+    const auto cleanup = m_impl->retire(connection);
+    for (const auto& cancel : cleanup)
+        cancel();
 }
 void McpMediaService::shutdown() {
     if (!m_impl || m_impl->stopped)
         return;
     auto& s = *m_impl;
     s.stopped = true;
-    auto cancellations = std::move(s.cancellations);
-    s.cancellations.clear();
-    for (const auto& cancel : cancellations)
+    s.requests.shutdown();
+    const auto cleanup = s.retire({});
+    for (const auto& cancel : cleanup)
         cancel();
-    for (const auto& job : s.pending) {
-        job.job.cancel();
-        if (!job.pinId.isEmpty())
-            s.controller.destroyPinnedRecords({job.pinId});
-    }
-    s.pending.clear();
-    for (const auto& list : s.exports)
-        for (const auto& artifact : list)
-            artifact->cancel();
-    s.exports.clear();
-    s.clipboardScopes.clear();
-    s.recognitionOwners.cancelAll();
-    if (s.recordingOwner && s.recording)
-        s.recording->detachAutomation();
 }
 } // namespace snow_shot::app::mcp

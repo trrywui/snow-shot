@@ -5,6 +5,7 @@
 #include "snow_shot/storage/settingsadapters.h"
 
 #include <QApplication>
+#include <QJsonArray>
 #include <QTemporaryDir>
 
 #include <cstdlib>
@@ -19,6 +20,81 @@ void require(bool condition, const char* message) {
         std::cerr << message << '\n';
         std::exit(1);
     }
+}
+
+void automaticSelectionDefaultsPersistsAndResets(const QString& configurationPath) {
+    snow_shot::presentation::GlobalShortcutManager shortcuts;
+    settings::BuiltInSettingsBackend backend(shortcuts);
+    constexpr auto binding =
+        settings::SettingsSwitchBinding::DrawingAutomaticallySelectNewlyCreatedElements;
+    const QString key = QStringLiteral("drawing/automatically_select_newly_created_elements");
+    require(backend.switchEnabled(binding) && !backend.switchValue(binding) &&
+                !storage::DrawingSettings().automaticallySelectNewlyCreatedElements() &&
+                !storage::ConfigurationSchema::defaultValue(key).toBool(),
+            "automatic selection must default to disabled");
+    require(backend.applySwitchValue(binding, true) && backend.switchValue(binding) &&
+                storage::DrawingSettings().automaticallySelectNewlyCreatedElements(),
+            "the backend must apply and read the automatic selection preference");
+    require(storage::ApplicationStorage::instance().configuration().flushNow().success,
+            "the automatic selection preference must be flushable");
+    storage::ConfigurationStore reloaded(configurationPath, true, true, 60000);
+    require(reloaded.value(key).toBool(),
+            "the enabled automatic selection preference must survive reload");
+    require(backend.resetSection(settings::SettingsSectionReset::DrawingQuickSelection) &&
+                !backend.switchValue(binding) &&
+                !storage::DrawingSettings().automaticallySelectNewlyCreatedElements(),
+            "resetting annotation settings must disable automatic selection");
+}
+
+void automaticSelectionExclusionsPersistAndReset(const QString& configurationPath) {
+    snow_shot::presentation::GlobalShortcutManager shortcuts;
+    settings::BuiltInSettingsBackend backend(shortcuts);
+    constexpr auto binding =
+        settings::SettingsMultiSelectBinding::DrawingAutomaticSelectionExcludedTools;
+    const QString key = QStringLiteral("drawing/automatic_selection_excluded_tools");
+    const QVariantList defaults{QStringLiteral("free-draw"), QStringLiteral("pen-filter"),
+                                QStringLiteral("text"), QStringLiteral("speech-bubble")};
+    require(backend.multiSelectValue(binding) == defaults,
+            "Pen, Pen filter, Text, and Speech Bubble must be excluded by default");
+    require(
+        backend.applyMultiSelectValue(binding, {QStringLiteral("shape"), QStringLiteral("text")}) &&
+            storage::DrawingSettings().automaticSelectionExcludedTools() ==
+                QStringList{QStringLiteral("shape"), QStringLiteral("text")},
+        "the dropdown must update its independent tool list");
+    require(storage::ApplicationStorage::instance().configuration().flushNow().success,
+            "automatic selection exclusions must be flushable");
+    storage::ConfigurationStore reloaded(configurationPath, true, true, 60000);
+    require(reloaded.value(key).toArray() ==
+                QJsonArray{QStringLiteral("shape"), QStringLiteral("text")},
+            "automatic selection exclusions must survive reload");
+    require(backend.applyMultiSelectValue(binding, {}) &&
+                backend.multiSelectValue(binding).isEmpty(),
+            "the dropdown must allow clearing every exclusion");
+    require(backend.resetSection(settings::SettingsSectionReset::DrawingQuickSelection) &&
+                backend.multiSelectValue(binding) == defaults,
+            "Drawing reset must restore the default exclusions");
+}
+
+void deleteTextAfterCursorDefaultsPersistsAndResets(const QString& configurationPath) {
+    snow_shot::presentation::GlobalShortcutManager shortcuts;
+    settings::BuiltInSettingsBackend backend(shortcuts);
+    constexpr auto binding = settings::SettingsSwitchBinding::DrawingDeleteTextAfterCursor;
+    const QString key = QStringLiteral("drawing/delete_text_after_cursor");
+    require(backend.switchEnabled(binding) && backend.switchValue(binding) &&
+                storage::DrawingSettings().deleteTextAfterCursor() &&
+                storage::ConfigurationSchema::defaultValue(key).toBool(),
+            "Delete text after the cursor must default to enabled");
+    require(backend.applySwitchValue(binding, false) && !backend.switchValue(binding) &&
+                !storage::DrawingSettings().deleteTextAfterCursor(),
+            "the backend must apply and read the forward Delete preference");
+    require(storage::ApplicationStorage::instance().configuration().flushNow().success,
+            "the forward Delete preference must be flushable");
+    storage::ConfigurationStore reloaded(configurationPath, true, true, 60000);
+    require(!reloaded.value(key).toBool(),
+            "the disabled forward Delete preference must survive reload");
+    require(backend.resetSection(settings::SettingsSectionReset::DrawingQuickSelection) &&
+                backend.switchValue(binding) && storage::DrawingSettings().deleteTextAfterCursor(),
+            "resetting annotation settings must restore forward Delete");
 }
 
 void rememberLastUsedToolDefaultsPersistsAndResets(const QString& configurationPath) {
@@ -102,6 +178,12 @@ int main(int argc, char** argv) {
     static_cast<void>(
         applicationStorage.initialize({temporary.filePath(QStringLiteral("bin")),
                                        temporary.filePath(QStringLiteral("data")), 60000}));
+    automaticSelectionDefaultsPersistsAndResets(
+        temporary.filePath(QStringLiteral("data/config.json")));
+    automaticSelectionExclusionsPersistAndReset(
+        temporary.filePath(QStringLiteral("data/config.json")));
+    deleteTextAfterCursorDefaultsPersistsAndResets(
+        temporary.filePath(QStringLiteral("data/config.json")));
     rememberLastUsedToolDefaultsPersistsAndResets(
         temporary.filePath(QStringLiteral("data/config.json")));
     firstToolbarGroupButtonDefaultsPersistsAndResets(

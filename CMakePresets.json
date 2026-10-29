@@ -489,6 +489,17 @@
         "VCPKG_MANIFEST_FEATURES": "snow-shot",
         "SNOW_APPS_BUILD_IMAGE_VIEWER": "OFF"
       }
+    },
+    {
+      "name": "snow-shot-msvc-store-release",
+      "displayName": "Snow Shot Microsoft Store x64 Release",
+      "inherits": "snow-shot-msvc-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "SNOW_SHOT_DISTRIBUTION_CHANNEL": "store",
+        "SNOW_APPS_BUILD_SNOW_SHOT_MINI": "OFF",
+        "SNOW_APPS_PACKAGE_SNOW_SHOT": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -644,6 +655,14 @@
         "snow_shot"
       ],
       "jobs": 2
+    },
+    {
+      "name": "build-snow-shot-msvc-store-release",
+      "configurePreset": "snow-shot-msvc-store-release",
+      "configuration": "Release",
+      "targets": [
+        "snow_shot"
+      ]
     }
   ],
   "testPresets": [

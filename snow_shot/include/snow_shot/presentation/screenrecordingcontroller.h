@@ -31,6 +31,9 @@ class ScreenRecordingController final : public QObject {
     void startRecording();
     void stopRecordingAndCopy();
     void openRecordingFolder();
+    // Terminal session shutdown: preserve media without dialogs or an event loop.
+    void prepareForSessionEnd(int timeoutMs);
+    void offerRecordingRecovery();
     // The same recording lifecycle as the UI, with per-session options that do not
     // overwrite user preferences. Errors are reported in state instead of modal dialogs.
     [[nodiscard]] QJsonObject automationState() const;

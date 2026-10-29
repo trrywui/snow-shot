@@ -14,6 +14,11 @@
 class SnowCanvasReferenceScene final {
   public:
     ~SnowCanvasReferenceScene();
+    std::uint64_t viewportId() const;
+    // Synchronize the fixed source grid before scheduling damage or rendering.
+    bool sync(SnowRuntime runtime, const SnowCanvasFilterRenderReference& reference);
+    QRegion spotlightDamage(const QTransform& canvasToView) const;
+    QRegion backdropDamage(const QRegion& viewDamage, const QTransform& canvasToView) const;
     bool render(SnowRuntime runtime, const SnowCanvasFilterRenderReference& reference,
                 const snow_canvas_renderer::SceneRenderRequest& request,
                 const QTransform& canvasToView);
@@ -21,13 +26,18 @@ class SnowCanvasReferenceScene final {
     void reset();
 
   private:
+    QTransform sourceTransform() const;
+    QRegion mapSourceDamage(const QRegion& damage, const QTransform& canvasToView) const;
     SnowCanvasViewport m_viewport;
     SnowCanvasDisplayCache m_displayCache;
     snow_canvas_pen_mask::PenMaskAtlas m_penMasks;
     SnowCanvasFilterRenderReference m_reference;
+    QSize m_pixelSize;
     QImage m_image;
-    std::uint64_t m_sceneRevision = 0;
+    QRegion m_pendingDamage;
+    std::uint64_t m_spotlightFingerprint = 0;
     std::uint64_t m_backgroundRevision = 0;
+    SnowCanvasRenderContext::Purpose m_renderPurpose = SnowCanvasRenderContext::Purpose::Widget;
     SnowCanvasCustomRenderer* m_backgroundRenderer = nullptr;
     QFont m_font;
     QPainter::RenderHints m_renderHints;

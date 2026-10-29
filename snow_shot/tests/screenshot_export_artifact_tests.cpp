@@ -1,4 +1,5 @@
 #include "snow_shot/presentation/screenshotexportartifact.h"
+#include "snow_shot/presentation/screenshotselectionshadowrenderer.h"
 #include "snowimageqtcodec.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/settingsadapters.h"
@@ -8,13 +9,13 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QJsonDocument>
-#include <QMimeData>
 
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
 #include "../../test-support/virtualmemory.h"
 
 #include <QCoreApplication>
+#include <QEvent>
 #include <QEventLoop>
 #include <QImage>
 #include <QThread>
@@ -102,6 +103,8 @@ bool hasSamePixels(const QImage& actual, const QImage& expected) {
 }
 
 ScreenshotImageRowSource rowSourceFor(const QImage& source, std::function<bool()> cancellation) {
+    // Model a row-only producer with unknown opacity. Its PNG retains alpha; exact-byte
+    // references must use this same contract rather than an opacity-verified QImage source.
     const QImage image = source.convertToFormat(QImage::Format_RGBA8888);
     const qsizetype rowBytes = static_cast<qsizetype>(image.width()) * 4;
     ScreenshotImageRowSource rows;
@@ -210,8 +213,7 @@ void clipboardSharesPendingConfiguredEncoding() {
                 [&](ScreenshotExportClipboardResult result) {
                     require(result.succeeded() &&
                                 result.payload.pngBytes() ==
-                                    snow_shot::image_codec::encodePng(
-                                        snow_shot::image_codec::srgbRowSource(image), 9) &&
+                                    snow_shot::image_codec::encodePng(rowSourceFor(image, {}), 9) &&
                                 result.payload.pngBytes().constData() == canonical.constData(),
                             "clipboard did not share the configured PNG encoding");
                     copied = true;
@@ -249,6 +251,85 @@ void clipboardReusesConfiguredPng() {
                     }),
                 "clipboard reuse request rejected");
         processUntil([&] { return copied; });
+    }
+}
+
+void clipboardDependenciesRunAheadOfBackgroundExports() {
+    for (const bool joinQueuedPng : {false, true}) {
+        auto& coordinator = ScreenshotExportCoordinator::shared();
+        QObject receiver;
+        struct State {
+            QSemaphore blockers;
+            std::atomic_int entered{0};
+            std::atomic_int order{0};
+            std::atomic_int encodingOrder{0};
+            std::atomic_int backgroundOrder{0};
+        };
+        auto state = std::make_shared<State>();
+        ScreenshotExportArtifact::PngCachePolicy policy;
+        policy.encodingStarted = [state] { state->encodingOrder = ++state->order; };
+        ScreenshotExportArtifact artifact(ScreenshotExportSource::fromImage(testImage()),
+                                          ScreenshotCompressionLevel::Medium, policy);
+        bool rowsReady = false;
+        require(artifact.requestRowSource(&receiver,
+                                          [&](ScreenshotImageRowSource rows, QString error) {
+                                              require(rows.isValid() && error.isEmpty(),
+                                                      "prepare priority fixture rows");
+                                              rowsReady = true;
+                                          }),
+                "priority fixture row request");
+        processUntil([&] { return rowsReady && coordinator.pendingJobCount() == 0; });
+        const int workers = std::clamp(QThread::idealThreadCount(), 1, 2);
+        const auto unblock = qScopeGuard([state, workers] { state->blockers.release(workers); });
+        for (int i = 0; i < workers; ++i)
+            require(coordinator
+                        .submit(
+                            &receiver, ScreenshotExportCoordinator::Priority::Foreground,
+                            [state](const ScreenshotExportCancellation&) {
+                                ++state->entered;
+                                state->blockers.acquire();
+                                return ScreenshotExportTaskResult{};
+                            },
+                            [](ScreenshotExportTaskResult) {})
+                        .isValid(),
+                    "occupy export pool for deterministic ordering");
+        processUntil([&] { return state->entered.load() == workers; });
+        require(coordinator
+                    .submit(
+                        &receiver, ScreenshotExportCoordinator::Priority::Background,
+                        [state](const ScreenshotExportCancellation&) {
+                            state->backgroundOrder = ++state->order;
+                            return ScreenshotExportTaskResult{};
+                        },
+                        [](ScreenshotExportTaskResult) {})
+                    .isValid(),
+                "queue an older unrelated background export");
+        bool pngReady = !joinQueuedPng;
+        if (joinQueuedPng) {
+            require(artifact.requestCanonicalPng(&receiver,
+                                                 [&](ScreenshotExportEncodingResult result) {
+                                                     require(result.succeeded(),
+                                                             "shared PNG consumer still succeeds");
+                                                     pngReady = true;
+                                                 }),
+                    "queue shared background PNG");
+            processUntil([&] { return coordinator.pendingJobCount() == workers + 2; });
+        }
+        bool copied = false;
+        require(artifact.requestClipboard(&receiver,
+                                          [&](ScreenshotExportClipboardResult result) {
+                                              require(result.succeeded(),
+                                                      "prioritized clipboard payload succeeds");
+                                              copied = true;
+                                          }),
+                "clipboard joins or starts PNG work");
+        processUntil([&] { return coordinator.pendingJobCount() == workers + 2; });
+        state->blockers.release();
+        processUntil([&] { return copied && pngReady && state->backgroundOrder.load() != 0; });
+        require(state->encodingOrder.load() == 1 && state->backgroundOrder.load() == 2,
+                "new clipboard PNG and late clipboard subscribers both precede background exports");
+        state->blockers.release(workers);
+        processUntil([&] { return coordinator.pendingJobCount() == 0; });
     }
 }
 
@@ -575,8 +656,7 @@ void failedPngRequestsCanRetryWithoutInvalidatingOtherLevels() {
                 [&](ScreenshotExportEncodingResult result) {
                     require(result.succeeded() &&
                                 result.image.bytes() ==
-                                    snow_shot::image_codec::encodePng(
-                                        snow_shot::image_codec::srgbRowSource(image), 9),
+                                    snow_shot::image_codec::encodePng(rowSourceFor(image, {}), 9),
                             "a new PNG request could not retry a transient failure");
                     ++callbacks;
                 }),
@@ -683,8 +763,163 @@ void manualPngSavesUseTheirRequestedCompression() {
     }
 }
 
-void clipboardFilesUseTemporaryStorageAndKeepExportOptions() {
+void clipboardFilesShareOnePngAndRowPass() {
     const QImage image = testImage();
+    QObject receiver;
+    for (const qsizetype budget : {qsizetype{0}, qsizetype{64 * 1024 * 1024}}) {
+        for (const auto compression :
+             {ScreenshotCompressionLevel::Low, ScreenshotCompressionLevel::High}) {
+            std::atomic_int rowsRead = 0;
+            std::atomic_int pngEncodings = 0;
+            std::atomic_int fileEncodings = 0;
+            auto rows = rowSourceFor(image, {});
+            const auto read = rows.readRows;
+            rows.readRows = [&, read](int first, int count, qsizetype stride, uchar* pixels,
+                                      qsizetype capacity) {
+                rowsRead += count;
+                return read(first, count, stride, pixels, capacity);
+            };
+            ScreenshotExportArtifact::PngCachePolicy policy;
+            policy.maximumBytes = budget;
+            policy.encodingStarted = [&] { ++pngEncodings; };
+            policy.fileEncodingStarted = [&](ScreenshotImageFileFormat) { ++fileEncodings; };
+            ScreenshotExportArtifact artifact(
+                ScreenshotExportSource::fromProducer({},
+                                                     [rows](std::function<bool()> cancelled) {
+                                                         auto source = rows;
+                                                         source.cancellationRequested =
+                                                             std::move(cancelled);
+                                                         return source;
+                                                     }),
+                compression, policy);
+            std::vector<ScreenshotClipboardPayload> files;
+            const auto cleanup = qScopeGuard([&] {
+                for (const auto& file : files)
+                    static_cast<void>(QDir(QFileInfo(file.filePath()).path()).removeRecursively());
+            });
+            for (int index = 0; index < 2; ++index) {
+                require(artifact.requestClipboardFile(
+                            &receiver, ScreenshotImageFileFormat::Png,
+                            QStringLiteral("shared-clipboard"), {100, compression},
+                            [&](ScreenshotExportClipboardResult result) {
+                                require(result.succeeded(), "combined PNG export must succeed");
+                                files.push_back(std::move(result.payload));
+                            }),
+                        "combined PNG export must be accepted");
+            }
+            ScreenshotClipboardPayload imageOnly;
+            require(artifact.requestClipboard(
+                        &receiver,
+                        [&](ScreenshotExportClipboardResult result) {
+                            require(result.succeeded(), "concurrent image-only copy must succeed");
+                            imageOnly = std::move(result.payload);
+                        }),
+                    "concurrent image-only copy must be accepted");
+            processUntil([&] { return files.size() == 2 && imageOnly.isValid(); });
+            require(rowsRead == image.height() && pngEncodings == 1 && fileEncodings == 0,
+                    "matching image/file copies must share one PNG encoding and one row pass, "
+                    "even when the PNG cannot be cached");
+            require(files[0].filePath() != files[1].filePath(),
+                    "each combined copy must own a separate exported file");
+            for (const auto& file : files) {
+                QFile exported(file.filePath());
+                require(exported.open(QIODevice::ReadOnly) &&
+                            exported.readAll() == imageOnly.pngBytes() &&
+                            file.pngBytes().constData() == imageOnly.pngBytes().constData(),
+                        "file writers must consume the shared clipboard PNG bytes");
+            }
+            require(budget != 0 || !artifact.cachedPng(compression).isValid(),
+                    "sharing in-flight PNG bytes must not bypass the persistent cache budget");
+        }
+    }
+}
+
+void clipboardFileFailuresCompleteOnceAndReleaseConsumers() {
+    QObject receiver;
+    for (const auto format : {ScreenshotImageFileFormat::Png, ScreenshotImageFileFormat::Jpeg}) {
+        for (bool retire : {false, true}) {
+            auto rows = rowSourceFor(testImage(), {});
+            rows.readRows = [](int, int, qsizetype, uchar*, qsizetype) { return false; };
+            auto artifact = std::make_unique<ScreenshotExportArtifact>(
+                ScreenshotExportSource::fromProducer({},
+                                                     [rows](std::function<bool()> cancelled) {
+                                                         auto source = rows;
+                                                         source.cancellationRequested =
+                                                             std::move(cancelled);
+                                                         return source;
+                                                     }),
+                ScreenshotCompressionLevel::Low);
+            auto lease = std::make_shared<int>(0);
+            const std::weak_ptr<int> released = lease;
+            int callbacks = 0;
+            require(artifact->requestClipboardFile(
+                        &receiver, format, QStringLiteral("failed-copy"),
+                        {100, ScreenshotCompressionLevel::Low},
+                        [&, lease](ScreenshotExportClipboardResult result) {
+                            Q_UNUSED(lease);
+                            require(!result.payload.isValid() && !result.error.isEmpty(),
+                                    "failed preparation must report an error without a payload");
+                            ++callbacks;
+                            if (retire)
+                                artifact.reset();
+                        }),
+                    "failing combined preparation must be accepted");
+            lease.reset();
+            processUntil([&] {
+                return callbacks != 0 &&
+                       ScreenshotExportCoordinator::shared().pendingJobCount() == 0;
+            });
+            QCoreApplication::processEvents();
+            require(
+                callbacks == 1 && released.expired(),
+                "competing preparation failures must complete once and release consumer leases");
+        }
+    }
+}
+
+void clipboardFilesReleaseDestroyedReceivers() {
+    for (const auto format : {ScreenshotImageFileFormat::Png, ScreenshotImageFileFormat::Jpeg}) {
+        std::function<void(QImage)> loaded;
+        ScreenshotExportArtifact artifact(ScreenshotExportSource::fromImageLoader(
+                                              [&](QObject*, std::function<void(QImage)> callback) {
+                                                  loaded = std::move(callback);
+                                                  return true;
+                                              }),
+                                          ScreenshotCompressionLevel::Low);
+        auto receiver = std::make_unique<QObject>();
+        auto lease = std::make_shared<int>(0);
+        const std::weak_ptr<int> released = lease;
+        int callbacks = 0;
+        require(artifact.requestClipboardFile(receiver.get(), format,
+                                              QStringLiteral("retired-copy"),
+                                              {100, ScreenshotCompressionLevel::Low},
+                                              [&, lease](ScreenshotExportClipboardResult) {
+                                                  Q_UNUSED(lease);
+                                                  ++callbacks;
+                                              }),
+                "combined copy must accept a pending image load");
+        processUntil([&] { return bool(loaded); });
+        lease.reset();
+        receiver.reset();
+        auto completeLoad = std::move(loaded);
+        completeLoad(testImage());
+        completeLoad = {};
+        processUntil([&] {
+            return released.expired() &&
+                   ScreenshotExportCoordinator::shared().pendingJobCount() == 0;
+        });
+        QCoreApplication::processEvents();
+        require(callbacks == 0, "retired receivers must release callbacks without delivery");
+    }
+}
+
+void clipboardFilesUseTemporaryStorageAndKeepExportOptions() {
+    QImage image = testImage();
+    image.setPixelColor(0, 0, QColor(23, 117, 209, 127));
+    ScreenshotClipboardAppearance appearance;
+    appearance.rasterSize = image.size();
+    appearance.checkerboardEnabled = true;
+    appearance.showBorder = false;
     QObject receiver;
     QTemporaryDir output;
     require(output.isValid(), "clipboard file export fixture unavailable");
@@ -694,26 +929,38 @@ void clipboardFilesUseTemporaryStorageAndKeepExportOptions() {
         for (const auto format : {ScreenshotImageFileFormat::Png, ScreenshotImageFileFormat::Jpeg,
                                   ScreenshotImageFileFormat::Bmp, ScreenshotImageFileFormat::Pdf}) {
             auto artifact = std::make_unique<ScreenshotExportArtifact>(
-                ScreenshotExportSource::fromImage(image), ScreenshotCompressionLevel::Low,
-                pngCachePolicy(streaming ? 1 : 64 * 1024 * 1024));
+                ScreenshotExportSource::fromImage(image, {}, appearance),
+                ScreenshotCompressionLevel::Low, pngCachePolicy(streaming ? 1 : 64 * 1024 * 1024));
             const ScreenshotImageEncodingOptions encoding{35, ScreenshotCompressionLevel::High};
             const QString filename = QStringLiteral("clipboard_{yyyy}-{MM}-{dd}_{HH}-{mm}-{ss}");
-            std::unique_ptr<QMimeData> mime;
+            ScreenshotClipboardPayload payload;
             bool copied = false;
             require(artifact->requestClipboardFile(
                         &receiver, format, filename, encoding,
-                        [&](std::unique_ptr<QMimeData> result, QString error) {
-                            require(result && error.isEmpty(), "temporary clipboard file failed");
-                            mime = std::move(result);
+                        [&](ScreenshotExportClipboardResult result) {
+                            require(result.succeeded(), "temporary clipboard file failed");
+                            payload = std::move(result.payload);
+                            artifact.reset();
                             copied = true;
                         },
                         {}, requestedAt),
                     "temporary clipboard file request rejected");
             processUntil([&] { return copied; });
-            require(mime->urls().size() == 1 && mime->urls().front().isLocalFile() &&
-                        !mime->hasImage(),
-                    "file copy must publish one local URL without image data");
-            const QString path = mime->urls().front().toLocalFile();
+            require(payload.isValid() && !payload.filePath().isEmpty() &&
+                        hasSamePixels(snow_shot::image_codec::decode(payload.pngBytes(),
+                                                                     snow::image::Format::png,
+                                                                     "clipboard.png"),
+                                      image),
+                    "file copy must also preserve lossless image pixels and alpha for every export "
+                    "format");
+            const auto copiedAppearance =
+                decodeScreenshotClipboardAppearance(payload.appearanceBytes());
+            require(copiedAppearance && copiedAppearance->filePath.isEmpty() &&
+                        copiedAppearance->rasterSize == image.size() &&
+                        copiedAppearance->checkerboardEnabled &&
+                        copiedAppearance->showBorder == false,
+                    "combined clipboard metadata must belong to the canonical image");
+            const QString path = payload.filePath();
             require(QDir::fromNativeSeparators(path).startsWith(
                         QDir::fromNativeSeparators(QDir::tempPath()) + QLatin1Char('/')) &&
                         QFileInfo(path).fileName() ==
@@ -721,7 +968,6 @@ void clipboardFilesUseTemporaryStorageAndKeepExportOptions() {
                                 QLatin1Char('.') + ScreenshotImageFileService::extension(format) &&
                         QDir(output.path()).entryList(QDir::Files).isEmpty(),
                     "clipboard files must use temporary storage and the requested filename");
-            artifact.reset();
             QFile file(path);
             require(file.open(QIODevice::ReadOnly),
                     "clipboard files must outlive their source artifact");
@@ -743,7 +989,7 @@ void clipboardFilesUseTemporaryStorageAndKeepExportOptions() {
                 referenceFile.close();
                 require(QFile::remove(reference), "reference file cleanup failed");
             }
-            mime.reset();
+            payload = {};
             require(QFileInfo::exists(path),
                     "discarding a clipboard payload must preserve the exported file");
             require(QDir(QFileInfo(path).path()).removeRecursively(),
@@ -799,9 +1045,9 @@ void windowNamesSurviveAsynchronousFileExports() {
     bool copied = false;
     require(clipboard.requestClipboardFile(
                 &receiver, ScreenshotImageFileFormat::Png, QStringLiteral("{AN}_{WN}"), {},
-                [&](std::unique_ptr<QMimeData> mime, QString error) {
-                    require(mime && error.isEmpty(), "clipboard file export must succeed");
-                    const QString path = mime->urls().constFirst().toLocalFile();
+                [&](ScreenshotExportClipboardResult result) {
+                    require(result.succeeded(), "clipboard file export must succeed");
+                    const QString path = result.payload.filePath();
                     require(QFileInfo(path).fileName() == QStringLiteral("App_Window.png"),
                             "clipboard files must use the same naming context");
                     require(QDir(QFileInfo(path).path()).removeRecursively(),
@@ -809,6 +1055,7 @@ void windowNamesSurviveAsynchronousFileExports() {
                     copied = true;
                 }),
             "clipboard request must be accepted");
+    clipboard.setWindowNames({QStringLiteral("Changed"), QStringLiteral("Changed")});
     processUntil([&] { return copied; });
     ScreenshotExportArtifact later(ScreenshotExportSource::fromImage(testImage()));
     std::optional<ScreenshotExportTaskResult> result;
@@ -1117,7 +1364,9 @@ void clipboardAndSavesShareConfiguredEncoding(ScreenshotCompressionLevel saveCom
                                                                     {100, saveCompression})
                               .compression_level;
         require(clipboard == snow_shot::image_codec::encodePng(
-                                 snow_shot::image_codec::srgbRowSource(image), level),
+                                 rowBacked ? rowSourceFor(image, {})
+                                           : snow_shot::image_codec::srgbRowSource(image),
+                                 level),
                 "clipboard did not use the configured PNG encoding");
         require(canonical.constData() == clipboard.constData(),
                 "concurrent clipboard/save/history requests encoded the same PNG more than once");
@@ -2083,6 +2332,270 @@ void cancellationSuppressesPendingCallbacks() {
             "cancelled artifact delivered a pending callback");
 }
 
+void subscriberCallbacksMayRetireArtifact() {
+    for (const bool rows : {false, true}) {
+        for (const bool destroy : {false, true}) {
+            std::function<void(QImage)> finishLoad;
+            auto artifact = std::make_unique<ScreenshotExportArtifact>(
+                ScreenshotExportSource::fromImageLoader([&](QObject*, auto completion) {
+                    finishLoad = std::move(completion);
+                    return true;
+                }));
+            QObject receiver;
+            int callbacks = 0;
+            int retiredCallbacks = 0;
+            const auto retire = [&] {
+                ++callbacks;
+                if (destroy)
+                    artifact.reset();
+                else
+                    artifact->cancel();
+            };
+            if (rows) {
+                require(artifact->requestRowSource(&receiver,
+                                                   [&](auto source, auto error) {
+                                                       require(source.isValid() && error.isEmpty(),
+                                                               "first row subscriber succeeds");
+                                                       retire();
+                                                   }) &&
+                            artifact->requestRowSource(&receiver,
+                                                       [&](auto, auto) { ++retiredCallbacks; }),
+                        "row subscribers join the same deferred image");
+            } else {
+                require(artifact->requestImage(&receiver,
+                                               [&](auto result) {
+                                                   require(result.succeeded(),
+                                                           "first image subscriber succeeds");
+                                                   retire();
+                                               }) &&
+                            artifact->requestImage(&receiver, [&](auto) { ++retiredCallbacks; }),
+                        "image subscribers join the same deferred image");
+            }
+            finishLoad(testImage());
+            processUntil([&] { return callbacks == 1; });
+            require(retiredCallbacks == 0,
+                    "canceling or destroying an artifact suppresses the remaining subscribers");
+        }
+    }
+}
+
+void queuedSubscribersRespectArtifactRetirement() {
+    enum class Output { Image, Rows, Png };
+    for (const auto output : {Output::Image, Output::Rows, Output::Png}) {
+        for (const bool cached : {false, true}) {
+            for (const bool failed : {false, true}) {
+                if (cached && failed && output == Output::Png)
+                    continue; // Failed PNG encodings are intentionally not cached.
+                for (const bool destroy : {false, true}) {
+                    std::function<void(QImage)> finishLoad;
+                    auto artifact = std::make_unique<ScreenshotExportArtifact>(
+                        ScreenshotExportSource::fromImageLoader([&](QObject*, auto completion) {
+                            finishLoad = std::move(completion);
+                            return true;
+                        }));
+                    const auto request = [&](QObject* receiver, std::function<void(bool)> done) {
+                        switch (output) {
+                        case Output::Image:
+                            return artifact->requestImage(
+                                receiver, [done](auto result) { done(result.succeeded()); });
+                        case Output::Rows:
+                            return artifact->requestRowSource(
+                                receiver, [done](auto rows, auto error) {
+                                    done(rows.isValid() && error.isEmpty());
+                                });
+                        case Output::Png:
+                            return artifact->requestCanonicalPng(
+                                receiver, [done](auto result) { done(result.succeeded()); });
+                        }
+                        return false;
+                    };
+                    QObject owner;
+                    if (cached) {
+                        bool warmed = false;
+                        require(request(&owner,
+                                        [&](bool ok) {
+                                            require(ok == !failed,
+                                                    "warm the expected cached output outcome");
+                                            warmed = true;
+                                        }),
+                                "warm the output cache before queued subscriptions");
+                        finishLoad(failed ? QImage{} : testImage());
+                        processUntil([&] { return warmed; });
+                    }
+                    QThread thread;
+                    auto* receiver = new QObject;
+                    receiver->moveToThread(&thread);
+                    QObject::connect(&thread, &QThread::finished, receiver, &QObject::deleteLater);
+                    int callbacks = 0;
+                    bool validResult = true;
+                    const auto completed = [&](bool ok) {
+                        validResult = validResult && ok == !failed;
+                        if (++callbacks == 1)
+                            QMetaObject::invokeMethod(
+                                &owner,
+                                [&] {
+                                    if (destroy)
+                                        artifact.reset();
+                                    else
+                                        artifact->cancel();
+                                },
+                                Qt::BlockingQueuedConnection);
+                    };
+                    require(request(receiver, completed) && request(receiver, completed),
+                            "two queued subscribers share the same output");
+                    bool dispatched = false;
+                    require(request(&owner,
+                                    [&](bool ok) {
+                                        require(ok == !failed,
+                                                "owner observes the expected output outcome");
+                                        dispatched = true;
+                                    }),
+                            "observe completion after both worker deliveries are queued");
+                    if (!cached)
+                        finishLoad(failed ? QImage{} : testImage());
+                    processUntil([&] { return dispatched; });
+                    // The stopped receiver thread makes the scheduling/execution boundary exact.
+                    QMetaObject::invokeMethod(
+                        receiver, [&] { thread.quit(); }, Qt::QueuedConnection);
+                    thread.start();
+                    processUntil([&] { return thread.isFinished(); });
+                    thread.wait();
+                    require(
+                        validResult && callbacks == 1,
+                        "retiring an artifact in the first queued callback suppresses the rest");
+                }
+            }
+        }
+    }
+}
+
+void queuedOutputCallbacksRespectArtifactRetirement() {
+    // Pause a posted call before its functor executes, so retirement always happens
+    // after scheduling and before delivery, regardless of encoder timing.
+    class Receiver final : public QObject {
+      public:
+        Receiver(QSemaphore& entered, QSemaphore& resume) : m_entered(entered), m_resume(resume) {}
+
+      protected:
+        bool event(QEvent* event) override {
+            if (event->type() == QEvent::MetaCall && !m_paused) {
+                m_paused = true;
+                m_entered.release();
+                m_resume.acquire();
+            }
+            return QObject::event(event);
+        }
+
+      private:
+        QSemaphore& m_entered;
+        QSemaphore& m_resume;
+        bool m_paused = false;
+    };
+    QTemporaryDir directory;
+    auto& storage = snow_shot::storage::ApplicationStorage::instance();
+    require(directory.isValid() &&
+                storage.initialize({directory.path(), directory.path(), 60000}).success,
+            "isolated queued export settings");
+    const auto shutdown = qScopeGuard([&] { storage.shutdown(); });
+    require(snow_shot::storage::ScreenshotSettings().setImageSaveDirectory({}),
+            "quick save fixture has no configured directory");
+    enum class Output {
+        ColdClipboard,
+        CachedClipboard,
+        Save,
+        AutomaticSave,
+        ClipboardFile,
+        ClipboardJpegFile,
+        QuickSave
+    };
+    enum class Retirement { Keep, Cancel, Destroy };
+    for (const auto output :
+         {Output::ColdClipboard, Output::CachedClipboard, Output::Save, Output::AutomaticSave,
+          Output::ClipboardFile, Output::ClipboardJpegFile, Output::QuickSave}) {
+        for (const auto retirement : {Retirement::Keep, Retirement::Cancel, Retirement::Destroy}) {
+            auto artifact = std::make_unique<ScreenshotExportArtifact>(
+                ScreenshotExportSource::fromImage(testImage()));
+            if (output == Output::CachedClipboard) {
+                QObject owner;
+                bool warmed = false;
+                require(artifact->requestCanonicalPng(
+                            &owner,
+                            [&](auto result) {
+                                require(result.succeeded(),
+                                        "warm canonical PNG for separate clipboard preparation");
+                                warmed = true;
+                            }),
+                        "warm the clipboard encoding");
+                processUntil([&] { return warmed; });
+            }
+            QSemaphore entered;
+            QSemaphore resume;
+            QThread thread;
+            auto* receiver = new Receiver(entered, resume);
+            receiver->moveToThread(&thread);
+            QObject::connect(&thread, &QThread::finished, receiver, &QObject::deleteLater);
+            const auto stop = qScopeGuard([&] {
+                resume.release();
+                thread.quit();
+                thread.wait();
+            });
+            int callbacks = 0;
+            bool expectedResult = false;
+            const auto completed = [&](bool ok) {
+                ++callbacks;
+                expectedResult = ok == (output != Output::QuickSave);
+            };
+            bool accepted = false;
+            switch (output) {
+            case Output::ColdClipboard:
+            case Output::CachedClipboard:
+                accepted = artifact->requestClipboard(
+                    receiver, [completed](auto result) { completed(result.succeeded()); });
+                break;
+            case Output::Save:
+                accepted = artifact->requestSaveToPath(
+                    receiver, directory.filePath(QStringLiteral("queued.png")),
+                    ScreenshotImageFileFormat::Png, {},
+                    [completed](auto result) { completed(result.succeeded()); });
+                break;
+            case Output::AutomaticSave:
+                accepted = artifact->requestAutomaticSave(
+                    receiver, {directory.path()}, ScreenshotImageFileFormat::Png,
+                    QStringLiteral("queued-auto"), {},
+                    [completed](auto result) { completed(result.succeeded()); });
+                break;
+            case Output::ClipboardFile:
+            case Output::ClipboardJpegFile:
+                accepted = artifact->requestClipboardFile(
+                    receiver,
+                    output == Output::ClipboardFile ? ScreenshotImageFileFormat::Png
+                                                    : ScreenshotImageFileFormat::Jpeg,
+                    QStringLiteral("queued-file"), {},
+                    [completed](auto result) { completed(result.succeeded()); });
+                break;
+            case Output::QuickSave:
+                accepted = artifact->requestQuickSave(
+                    receiver, [completed](auto result) { completed(result.succeeded()); });
+                break;
+            }
+            require(accepted, "queue the requested output");
+            thread.start();
+            processUntil([&] { return entered.available() != 0; });
+            if (retirement == Retirement::Destroy)
+                artifact.reset();
+            else if (retirement == Retirement::Cancel)
+                artifact->cancel();
+            QMetaObject::invokeMethod(receiver, [&] { thread.quit(); }, Qt::QueuedConnection);
+            resume.release();
+            processUntil([&] { return thread.isFinished(); });
+            thread.wait();
+            require(retirement == Retirement::Keep ? callbacks == 1 && expectedResult
+                                                   : callbacks == 0,
+                    "all queued output paths respect artifact retirement at delivery time");
+        }
+    }
+}
+
 void cancelledEncodersRetainEveryConsumerLease() {
     QTemporaryDir directory;
     QObject receiver;
@@ -2158,6 +2671,107 @@ void pinnedViewportSourceRendersExpectedPixels() {
                 rendered.pixelColor(rendered.width() / 2, rendered.height() / 2) ==
                     QColor(12, 24, 36, 255),
             "pinned viewport artifact did not return the rendered pixels");
+}
+
+void pinnedRegionExportPreservesGapAnnotations() {
+    SnowCanvasRuntime runtime;
+    require(
+        !runtime
+             .applyAnnotationTransaction(
+                 R"({"version":1,"operations":[{"type":"rectangle","bounds":[80,-35,160,10],"style":{"fill":[230,30,70,128],"stroke":[0,0,0,0]}}]})")
+             .isEmpty(),
+        "create the pinned export gap annotation");
+    QImage background(120, 80, QImage::Format_ARGB32_Premultiplied);
+    background.fill(Qt::blue);
+    for (const auto type :
+         {ScreenshotSelectionBorderType::Border, ScreenshotSelectionBorderType::Shadow}) {
+        for (const qreal scale : {1.0, 1.5}) {
+            for (const qreal opacity : {1.0, 0.5}) {
+                ScreenshotResultStyle style;
+                style.borderType = type;
+                style.borderWidth = 4;
+                style.shadowWidth = 4;
+                style.region = QRegion(0, 0, 40, 80) + QRect(80, 0, 40, 80);
+                style = ScreenshotResultCompositor::scaledStyle(style, scale);
+                const QSize pixels(qRound(120 * scale), qRound(80 * scale));
+                ScreenshotExportArtifact artifact(
+                    ScreenshotExportSource::fromPinnedViewport({runtime.serializeDocumentSession(),
+                                                                background,
+                                                                QRectF(100, -70, 120, 80),
+                                                                pixels,
+                                                                style,
+                                                                {},
+                                                                opacity}));
+                QObject receiver;
+                QImage rendered;
+                require(artifact.requestImage(&receiver,
+                                              [&](ScreenshotExportImageResult result) {
+                                                  require(result.succeeded(),
+                                                          "render the shaped document pin export");
+                                                  rendered = std::move(result.image);
+                                              }),
+                        "schedule the shaped document pin export");
+                processUntil([&] { return !rendered.isNull(); });
+                const int padding = style.effectWidth();
+                const auto pixel = [&](int x, int y) {
+                    return rendered.pixelColor(padding + qRound(x * scale),
+                                               padding + qRound(y * scale));
+                };
+                const auto annotation = pixel(60, 40);
+                // Premultiplied 8-bit channels lose at most two levels when faded to alpha 64.
+                require(qAbs(annotation.alpha() - qRound(128 * opacity)) <= 1 &&
+                            qAbs(annotation.red() - 230) <= 2 &&
+                            qAbs(annotation.green() - 30) <= 2 && qAbs(annotation.blue() - 70) <= 2,
+                        "pinned exports preserve gap annotations and apply opacity once");
+                const auto capture = pixel(20, 50);
+                require(pixel(60, 28).alpha() == 0 && capture.blue() == 255 && capture.red() == 0 &&
+                            capture.green() == 0 &&
+                            qAbs(capture.alpha() - qRound(255 * opacity)) <= 1,
+                        "pinned exports scale selection masks and offset capture pixels");
+            }
+        }
+    }
+}
+
+void pinnedViewportRenderingReleasesCompositorCaches() {
+    struct Observation {
+        uchar* pixels = nullptr;
+        std::atomic_bool released = false;
+        std::atomic_bool cachesEmpty = false;
+    } observation;
+    observation.pixels = new uchar[64 * 48 * 4];
+    QImage background(
+        observation.pixels, 64, 48, 64 * 4, QImage::Format_ARGB32_Premultiplied,
+        [](void* data) {
+            auto& result = *static_cast<Observation*>(data);
+            const auto caches = ScreenshotSelectionShadowRenderer::diagnosticsForCurrentThread();
+            result.cachesEmpty = caches.retainedBytes == 0 &&
+                                 caches.regionCacheRetainedBytes == 0 &&
+                                 caches.regionPathCacheElements == 0;
+            delete[] result.pixels;
+            result.released = true;
+        },
+        &observation);
+    background.fill(Qt::green);
+    ScreenshotPinnedViewportExportSource source{
+        {}, std::move(background), QRectF(0, 0, 64, 48), QSize(64, 48), {}, {}, 1.0};
+    source.resultStyle = {
+        4, 3, Qt::black,
+        ScreenshotRegionGeometry(QRegion(0, 0, 20, 48).united(QRegion(44, 0, 20, 48)))};
+    ScreenshotExportArtifact artifact(
+        ScreenshotExportSource::fromPinnedViewport(std::move(source)));
+    QObject receiver;
+    bool completed = false;
+    require(artifact.requestImage(&receiver,
+                                  [&](ScreenshotExportImageResult result) {
+                                      require(result.succeeded(),
+                                              "pinned compositor fixture renders");
+                                      completed = true;
+                                  }),
+            "pinned compositor fixture is admitted");
+    processUntil([&] { return completed && observation.released.load(); });
+    require(observation.cachesEmpty,
+            "pinned rendering releases compositor caches before retiring its source snapshot");
 }
 
 void emptyPinnedSourceMatchesCanvasProjection() {
@@ -2499,35 +3113,40 @@ void clipboardPlacementIsAnImmutableArtifactProperty() {
                 }),
             "artifact clipboard request must schedule");
     processUntil([&] { return completed; });
-    QTemporaryDir directory;
-    bool saved = false;
-    require(artifact.requestSaveToPath(
-                &receiver, directory.filePath(QStringLiteral("saved.png")),
-                ScreenshotImageFileFormat::Png,
+    for (const auto format : {ScreenshotImageFileFormat::Png, ScreenshotImageFileFormat::Jpeg,
+                              ScreenshotImageFileFormat::Pdf}) {
+        bool saved = false;
+        require(
+            artifact.requestClipboardFile(
+                &receiver, format, QStringLiteral("metadata"),
                 ScreenshotImageEncodingOptions{100, ScreenshotCompressionLevel::Low},
-                [&](ScreenshotExportTaskResult result) {
-                    require(result.succeeded(), "metadata artifact file save must succeed");
-                    const QFileInfo info(result.savedPath);
-                    QMimeData mime;
-                    artifact.setClipboardFileMetadata(mime, result.savedPath);
-                    const auto metadata = readScreenshotClipboardPlacement(&mime);
-                    const auto fileAppearance = readScreenshotClipboardAppearance(&mime);
-                    require(
-                        metadata && metadata->windowRect == QRect(50, 60, 20, 10) &&
-                            metadata->matchesFile(result.savedPath, info.size(),
-                                                  info.lastModified().toUTC().toMSecsSinceEpoch()),
-                        "file-copy save loses the original artifact placement");
-                    require(fileAppearance &&
-                                fileAppearance->borderAppearance == appearance.borderAppearance &&
-                                fileAppearance->rasterSize == pixels.size() &&
-                                fileAppearance->matchesFile(
-                                    result.savedPath, info.size(),
-                                    info.lastModified().toUTC().toMSecsSinceEpoch()),
-                            "file-copy save loses the original artifact appearance");
+                [&](ScreenshotExportClipboardResult result) {
+                    require(result.succeeded() && QFileInfo::exists(result.payload.filePath()),
+                            "combined metadata export must include an existing file");
+                    const auto cleanup = qScopeGuard([&] {
+                        static_cast<void>(
+                            QDir(QFileInfo(result.payload.filePath()).path()).removeRecursively());
+                    });
+                    const auto metadata =
+                        decodeScreenshotClipboardPlacement(result.payload.placementBytes());
+                    const auto copiedAppearance =
+                        decodeScreenshotClipboardAppearance(result.payload.appearanceBytes());
+                    require(metadata && metadata->windowRect == QRect(50, 60, 20, 10) &&
+                                metadata->rasterSize == pixels.size() &&
+                                metadata->filePath.isEmpty(),
+                            "combined copy must bind immutable placement to its image");
+                    require(copiedAppearance &&
+                                copiedAppearance->borderAppearance == appearance.borderAppearance &&
+                                copiedAppearance->rasterSize == pixels.size() &&
+                                !copiedAppearance->checkerboardEnabled &&
+                                copiedAppearance->showBorder == false &&
+                                copiedAppearance->filePath.isEmpty(),
+                            "combined copy must bind immutable appearance to its image");
                     saved = true;
                 }),
-            "metadata artifact file save must schedule");
-    processUntil([&] { return saved; });
+            "combined metadata export must schedule");
+        processUntil([&] { return saved; });
+    }
     require(artifact.clipboardPlacement()->windowRect == QRect(50, 60, 20, 10),
             "file-save subscriber must share the same immutable placement");
     ScreenshotExportArtifact imported(ScreenshotExportSource::fromImage(pixels),
@@ -2553,6 +3172,18 @@ int main(int argc, char** argv) {
         require(diagnostics.initialize(logging), "export diagnostics must initialize");
         if (application.arguments().contains(QStringLiteral("--window-variables-only"))) {
             windowNamesSurviveAsynchronousFileExports();
+            diagnostics.shutdown();
+            return EXIT_SUCCESS;
+        }
+        if (application.arguments().contains(QStringLiteral("--compositor-cache-only"))) {
+            pinnedViewportRenderingReleasesCompositorCaches();
+            diagnostics.shutdown();
+            return EXIT_SUCCESS;
+        }
+        if (application.arguments().contains(QStringLiteral("--subscriber-lifecycle-only"))) {
+            subscriberCallbacksMayRetireArtifact();
+            queuedSubscribersRespectArtifactRetirement();
+            queuedOutputCallbacksRespectArtifactRetirement();
             diagnostics.shutdown();
             return EXIT_SUCCESS;
         }
@@ -2613,6 +3244,7 @@ int main(int argc, char** argv) {
         }
         diagnostics.shutdown();
         if (application.arguments().contains(QStringLiteral("--print-snapshots-only"))) {
+            pinnedRegionExportPreservesGapAnnotations();
             pinnedViewportSourceRendersExpectedPixels();
             emptyPinnedSourceMatchesCanvasProjection();
             pinnedViewportExportsReleaseImportedSnapshots();
@@ -2642,6 +3274,7 @@ int main(int argc, char** argv) {
             return EXIT_SUCCESS;
         }
         if (application.arguments().contains(QStringLiteral("--clipboard-fusion-only"))) {
+            clipboardDependenciesRunAheadOfBackgroundExports();
             clipboardPreparationFusesRowsAndClonesNativeOwnership();
             coldClipboardRequestsShareCanonicalRowsAndRetryFailures();
             cancelledColdClipboardRetainsConsumerLeaseUntilWorkerRetires();
@@ -2652,10 +3285,16 @@ int main(int argc, char** argv) {
             return EXIT_SUCCESS;
         }
         if (application.arguments().contains(QStringLiteral("--clipboard-files-only"))) {
+            clipboardFilesShareOnePngAndRowPass();
+            clipboardFileFailuresCompleteOnceAndReleaseConsumers();
+            clipboardFilesReleaseDestroyedReceivers();
             clipboardFilesUseTemporaryStorageAndKeepExportOptions();
             return EXIT_SUCCESS;
         }
         quickSaveUsesOnlyConfiguredOutput();
+        clipboardFilesShareOnePngAndRowPass();
+        clipboardFileFailuresCompleteOnceAndReleaseConsumers();
+        clipboardFilesReleaseDestroyedReceivers();
         clipboardFilesUseTemporaryStorageAndKeepExportOptions();
         automaticSavesUseRequestedEncoding();
         configuredAutomaticDirectoryResolvesInTheSaveWorker();
@@ -2665,6 +3304,7 @@ int main(int argc, char** argv) {
         clipboardSharesPendingConfiguredEncoding();
         clipboardReusesConfiguredPng();
         clipboardPreparationFusesRowsAndClonesNativeOwnership();
+        clipboardDependenciesRunAheadOfBackgroundExports();
         coldClipboardRequestsShareCanonicalRowsAndRetryFailures();
         cancelledColdClipboardRetainsConsumerLeaseUntilWorkerRetires();
         latePngSubscriberRetainsLeaseDuringFusedClipboardCancellation();
@@ -2699,6 +3339,7 @@ int main(int argc, char** argv) {
         cancellationSuppressesPendingCallbacks();
         cancelledEncodersRetainEveryConsumerLease();
         pinnedViewportSourceRendersExpectedPixels();
+        pinnedRegionExportPreservesGapAnnotations();
         emptyPinnedSourceMatchesCanvasProjection();
         pinnedViewportExportsReleaseImportedSnapshots();
     } catch (const std::exception& error) {

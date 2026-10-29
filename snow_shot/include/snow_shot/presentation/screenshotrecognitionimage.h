@@ -17,6 +17,7 @@ struct ScreenshotRecognitionImageSnapshot final {
     QVector<ScreenshotOcrLine> lines;
     QFont font;
     QColor textColor;
+    // Always in canvasRect units. Rendering owns the sole conversion to image pixels.
     ScreenshotResultStyle resultStyle;
     ScreenshotLayoutCompaction layoutCompaction = {};
     qreal outputOpacity = 1.0;

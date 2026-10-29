@@ -24,7 +24,7 @@ pub use stitcher::{StitchResult, Stitcher, stitch, stitch_files, stitch_iter};
 pub use tiled_canvas::{CANVAS_TILE_ROWS, CANVAS_TILE_SPAN, TiledCanvas, TiledCanvasSnapshot};
 pub use types::{
     CandidateDiagnostics, MotionDiagnostics, MotionEstimate, MotionEstimatorOptions, MotionOutcome,
-    MotionStage, ReferenceMode, RegionDiagnostics, StitchAxis, StitchBranch, StitchOptions,
+    MotionStage, ReferenceMode, StitchAxis, StitchBranch, StitchOptions,
 };
 
 #[cfg(all(test, target_arch = "aarch64"))]

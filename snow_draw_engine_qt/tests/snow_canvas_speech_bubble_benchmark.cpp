@@ -1,6 +1,10 @@
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "snow_draw_engine_qt/snow_canvas_widget.h"
 #include "snow_canvas_text.h"
+#include "snow_canvas_runtime_access.h"
+#include "snow_canvas_viewport.h"
+#include "snow_canvas_ffi_handles.h"
+#include "snow_canvas_commands.h"
 #include "snow_canvas_text_measurement.h"
 #include "snow_canvas_text_render.h"
 
@@ -105,8 +109,11 @@ struct Fixture {
     QJsonObject owner;
 };
 
-Fixture prepare(int count, int tails, const TextCase& textCase) {
+Fixture prepare(int count, int tails, const TextCase& textCase, bool thoughtBubble) {
     Fixture fixture{std::make_unique<SnowCanvasRuntime>(), {}};
+    require(fixture.runtime->setAutomaticallySelectNewlyCreatedElements(true) &&
+                fixture.runtime->setAutomaticSelectionExcludedTools({}),
+            "enable deterministic bubble selection");
     {
         SnowCanvasWidget canvas(*fixture.runtime);
         canvas.resize(1280, 720);
@@ -115,7 +122,8 @@ Fixture prepare(int count, int tails, const TextCase& textCase) {
         require(canvas.setViewportCamera(0, 0, 1), "set fixture camera");
         require(canvas.setCanvasTool(SnowCanvasTool::SpeechBubble), "activate Speech Bubble");
         SnowCanvasShapeStyle style;
-        style.shape = SnowCanvasRectangleShape::Rectangle;
+        style.shape = thoughtBubble ? SnowCanvasRectangleShape::ThoughtBubble
+                                    : SnowCanvasRectangleShape::Rectangle;
         style.cornerRadii = {0, 0, 0, 0};
         require(canvas.setCanvasShapeStylePatch(style,
                                                 SnowCanvasShapeStylePropertyShape |
@@ -150,19 +158,20 @@ Fixture prepare(int count, int tails, const TextCase& textCase) {
         const auto body = bubble.value(QStringLiteral("body")).toObject();
         const double radius = std::max(body.value(QStringLiteral("width")).toDouble(),
                                        body.value(QStringLiteral("height")).toDouble()) *
-                              0.65;
+                              (thoughtBubble ? 1.25 : 0.65);
         QJsonArray values;
         for (int tail = 0; tail < tails; ++tail) {
             const double angle = kPi / 3 + 2 * kPi * tail / tails;
-            values.append(
-                QJsonObject{{QStringLiteral("id"), tail + 1},
-                            {QStringLiteral("tip"),
-                             QJsonObject{{QStringLiteral("x"), std::cos(angle) * radius},
-                                         {QStringLiteral("y"), std::sin(angle) * radius}}},
-                            {QStringLiteral("base_width"),
-                             QLineF(contourPoint(bubble, angle - kFixtureTailHalfAngle),
-                                    contourPoint(bubble, angle + kFixtureTailHalfAngle))
-                                 .length()}});
+            values.append(QJsonObject{
+                {QStringLiteral("id"), tail + 1},
+                {QStringLiteral("tip"),
+                 QJsonObject{{QStringLiteral("x"), std::cos(angle) * radius},
+                             {QStringLiteral("y"), std::sin(angle) * radius}}},
+                {QStringLiteral("base_width"),
+                 thoughtBubble ? 32.0
+                               : QLineF(contourPoint(bubble, angle - kFixtureTailHalfAngle),
+                                        contourPoint(bubble, angle + kFixtureTailHalfAngle))
+                                     .length()}});
         }
         bubble.insert(QStringLiteral("tails"), values);
         data.insert(QStringLiteral("SpeechBubble"), bubble);
@@ -251,6 +260,39 @@ double percentile(std::vector<double> values, double fraction) {
     return values.at(std::min(index, values.size() - 1));
 }
 
+QPointF thoughtBaseHandle(SnowCanvasRuntime& runtime, const SnowCanvasWidget& canvas,
+                          const QJsonObject& owner) {
+    const auto engine = snow_canvas_runtime::Access::handle(runtime);
+    SnowCanvasViewport observer;
+    require(observer.create(engine, snow_canvas_viewport::defaultEngineConfig()),
+            "create control observer");
+    require(snow_viewport_set_surface_size(engine, observer.get(), 4096, 4096) == SNOW_OK &&
+                snow_viewport_set_camera(engine, observer.get(), 0, 0, 1) == SNOW_OK,
+            "configure control observer");
+    require(snow_canvas_commands::selectElement(
+                engine, observer.get(),
+                SnowElementId{
+                    static_cast<std::uint32_t>(owner.value(QStringLiteral("index")).toInt()),
+                    static_cast<std::uint32_t>(owner.value(QStringLiteral("generation")).toInt())})
+                .success,
+            "select fixture for control inspection");
+    ScopedPatchHandle patch;
+    require(snow_viewport_acquire_patch(engine, observer.get(), nullptr, patch.outParam()) ==
+                SNOW_OK,
+            "inspect real circle width controls");
+    const SnowOverlayDisplayItem* overlay = nullptr;
+    std::uint32_t count = 0;
+    require(snow_patch_get_overlay_items(patch.get(), &overlay, &count) == SNOW_OK,
+            "read circle width controls");
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (overlay[i].rect_kind == SNOW_OVERLAY_RECT_SPEECH_BUBBLE_TAIL_BASE_HANDLE)
+            return canvas.canvasToViewTransform().map(
+                QPointF(overlay[i].center_x, overlay[i].center_y));
+    }
+    require(false, "Thought Bubble has a width control");
+    return {};
+}
+
 void run(const Fixture& fixture, int count, int tails, const TextCase& textCase,
          Operation operation, int iterations, int repeat) {
     SnowCanvasRuntime runtime;
@@ -263,6 +305,8 @@ void run(const Fixture& fixture, int count, int tails, const TextCase& textCase,
     require(canvas.setCanvasTool(SnowCanvasTool::Select), "activate selection tool");
     const auto original = payload(runtime, fixture.owner, QStringLiteral("SpeechBubble"));
     const auto originalBody = original.value(QStringLiteral("body")).toObject();
+    const bool thoughtBubble =
+        originalBody.value(QStringLiteral("highlight_shape")) == QStringLiteral("ThoughtBubble");
     const auto textId = original.value(QStringLiteral("text_element_id")).toObject();
     const auto originalText = payload(runtime, textId, QStringLiteral("Text"));
     const QPointF selectPoint = localToView(
@@ -287,6 +331,8 @@ void run(const Fixture& fixture, int count, int tails, const TextCase& textCase,
                                  {originalBody.value(QStringLiteral("width")).toDouble() / 2, 0});
         else if (operation == Operation::TipDrag)
             handle = localToView(canvas, original, tip);
+        else if (thoughtBubble)
+            handle = thoughtBaseHandle(runtime, canvas, fixture.owner);
         else
             handle =
                 localToView(canvas, original, contourPoint(original, axis - kFixtureTailHalfAngle));
@@ -309,6 +355,9 @@ void run(const Fixture& fixture, int count, int tails, const TextCase& textCase,
                 finalPosition = handle + QPointF(20 + frame % 41, 0);
             else if (operation == Operation::TipDrag)
                 finalPosition = handle + QPointF(20 + frame % 31, 10 + frame % 29);
+            else if (thoughtBubble)
+                finalPosition =
+                    handle + QPointF(-std::sin(axis), std::cos(axis)) * (10 + frame % 17);
             else
                 finalPosition = localToView(
                     canvas, original, contourPoint(original, axis - (0.13 + 0.005 * (frame % 17))));
@@ -396,6 +445,7 @@ int main(int argc, char** argv) {
     const int iterations = argc > 1 ? std::max(20, std::atoi(argv[1])) : 100;
     const int repeats = argc > 2 ? std::max(1, std::atoi(argv[2])) : 3;
     const bool smoke = application.arguments().contains(QStringLiteral("--smoke"));
+    const bool thoughtBubble = application.arguments().contains(QStringLiteral("--thought-bubble"));
     const std::vector<int> counts = smoke ? std::vector<int>{1} : std::vector<int>{1, 100, 1000};
     const std::vector<int> tailCounts = smoke ? std::vector<int>{4} : std::vector<int>{1, 4, 16};
     const std::vector<TextCase> cases{
@@ -415,7 +465,7 @@ int main(int argc, char** argv) {
         checkBoundedMeasurementReuse(textCase.text);
         for (int count : counts) {
             for (int tails : tailCounts) {
-                const auto fixture = prepare(count, tails, textCase);
+                const auto fixture = prepare(count, tails, textCase, thoughtBubble);
                 for (int repeat = 0; repeat < repeats; ++repeat)
                     for (auto operation : {Operation::Typing, Operation::BodyResize,
                                            Operation::TipDrag, Operation::BaseDrag})

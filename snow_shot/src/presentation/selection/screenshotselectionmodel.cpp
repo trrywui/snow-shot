@@ -55,6 +55,8 @@ bool ScreenshotSelectionModel::hasSameSelectionState(const ScreenshotSelectionMo
            m_regionOperation == other.m_regionOperation && m_start == other.m_start &&
            m_end == other.m_end && m_cornerRadius == other.m_cornerRadius &&
            m_shadowWidth == other.m_shadowWidth && m_shadowColor == other.m_shadowColor &&
+           m_borderType == other.m_borderType && m_borderWidth == other.m_borderWidth &&
+           m_borderColor == other.m_borderColor &&
            m_aspectRatioLockEnabled == other.m_aspectRatioLockEnabled &&
            m_aspectRatioPreset == other.m_aspectRatioPreset &&
            m_selectionFromDrag == other.m_selectionFromDrag &&
@@ -93,6 +95,9 @@ ScreenshotSelectionModel::operator=(const ScreenshotSelectionModel& other) {
     m_backgroundOpacityPercent = other.m_backgroundOpacityPercent;
     m_componentGeometry.reset();
     m_cornerRadius = other.m_cornerRadius;
+    m_borderType = other.m_borderType;
+    m_borderWidth = other.m_borderWidth;
+    m_borderColor = other.m_borderColor;
     m_shadowWidth = other.m_shadowWidth;
     m_shadowColor = other.m_shadowColor;
     m_aspectRatioLockEnabled = other.m_aspectRatioLockEnabled;
@@ -137,6 +142,9 @@ void ScreenshotSelectionModel::reset() {
     m_backgroundOpacityPercent = 0;
     m_componentGeometry.reset();
     m_cornerRadius = 0;
+    m_borderType = ScreenshotSelectionBorderType::Shadow;
+    m_borderWidth = 0;
+    m_borderColor = QColor(Qt::white);
     m_shadowWidth = 0;
     m_shadowColor = QColor(0x33, 0x33, 0x33);
     m_aspectRatioLockEnabled = false;
@@ -482,6 +490,30 @@ bool ScreenshotSelectionModel::setCornerRadius(int radius) {
     return true;
 }
 
+bool ScreenshotSelectionModel::setBorderType(ScreenshotSelectionBorderType type) {
+    if (m_borderType == type)
+        return false;
+    m_borderType = type;
+    ++m_changeRevision;
+    return true;
+}
+bool ScreenshotSelectionModel::setBorderWidth(int width) {
+    width = std::clamp(width, 0, kScreenshotSelectionShadowWidthMax);
+    if (m_borderWidth == width)
+        return false;
+    m_borderWidth = width;
+    ++m_changeRevision;
+    return true;
+}
+void ScreenshotSelectionModel::setBorderColor(const QColor& color) {
+    QColor normalized = color.isValid() ? color : QColor(Qt::white);
+    normalized.setAlpha(255);
+    if (m_borderColor == normalized)
+        return;
+    m_borderColor = normalized;
+    ++m_changeRevision;
+}
+
 bool ScreenshotSelectionModel::setShadowWidth(int shadowWidth) {
     const int clampedShadowWidth = std::clamp(shadowWidth, 0, kScreenshotSelectionShadowWidthMax);
     if (m_shadowWidth == clampedShadowWidth) {
@@ -620,17 +652,24 @@ void ScreenshotSelectionModel::clearAspectRatioPresetForReplacement() {
 }
 
 ScreenshotSelectionParams ScreenshotSelectionModel::params(const QRect& bounds) const {
+    return clampScreenshotSelectionParams(currentParams(), bounds);
+}
+
+ScreenshotSelectionParams ScreenshotSelectionModel::currentParams() const {
     ScreenshotSelectionParams result;
     result.selection = pixelSelection();
     result.region = m_region;
     result.layoutCompaction = m_layoutCompaction;
     result.backgroundOpacityPercent = m_backgroundOpacityPercent;
     result.radius = m_cornerRadius;
+    result.borderType = m_borderType;
+    result.borderWidth = m_borderWidth;
+    result.borderColor = m_borderColor;
     result.shadowWidth = m_shadowWidth;
     result.shadowColor = m_shadowColor;
     result.lockAspectRatio = aspectRatioLocked();
     result.lockDragAspectRatio = aspectRatioLocked();
-    return clampScreenshotSelectionParams(result, bounds);
+    return result;
 }
 
 bool ScreenshotSelectionModel::applyParams(const ScreenshotSelectionParams& params,
@@ -654,6 +693,9 @@ bool ScreenshotSelectionModel::applyParams(const ScreenshotSelectionParams& para
     m_layoutCompaction = clamped.layoutCompaction;
     m_backgroundOpacityPercent = clamped.backgroundOpacityPercent;
     m_cornerRadius = clamped.radius;
+    m_borderType = clamped.borderType;
+    m_borderWidth = clamped.borderWidth;
+    m_borderColor = clamped.borderColor;
     m_shadowWidth = clamped.shadowWidth;
     setShadowColor(clamped.shadowColor);
     m_aspectRatioLockEnabled = clamped.lockDragAspectRatio;
@@ -937,12 +979,7 @@ void ScreenshotSelectionModel::setDraggedSelectionRect(const QRectF& rect,
 }
 
 ScreenshotResultStyle ScreenshotSelectionModel::resultStyle() const {
-    ScreenshotResultStyle style{m_cornerRadius, m_shadowWidth, m_shadowColor, {}, 1.0};
-    style.backgroundOpacityPercent = m_backgroundOpacityPercent;
-    if (m_region) {
-        style.region = m_region->translated(-pixelSelection().topLeft());
-    }
-    return style;
+    return currentParams().resultStyle();
 }
 
 void ScreenshotSelectionModel::setDraftRegion(const ScreenshotRegionGeometry& region,

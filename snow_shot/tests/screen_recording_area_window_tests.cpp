@@ -1,4 +1,6 @@
+#include "canvas_automatic_selection_test_support.h"
 #include "angle_wheel_host_test_support.h"
+#include "canvas_text_editing_preferences_test_support.h"
 #include "../../test-support/canvas_quick_selection_test_support.h"
 #include "physical_key_test_support.h"
 #include "snow_shot/presentation/screenrecordingareawindow.h"
@@ -11,6 +13,9 @@
 #include "../src/presentation/recording/recordingcountdownoverlay.h"
 #include "../src/presentation/recording/recordingregiondraghandle.h"
 #include "../src/presentation/recording/recordingregioninputrouter.h"
+#include "../src/presentation/recording/recordingwebcamcontrol.h"
+#include <QToolButton>
+#include <algorithm>
 #include "../src/presentation/recording/screenrecordinggeometry.h"
 
 #include <QApplication>
@@ -29,14 +34,17 @@
 #include <QScreen>
 #include <QTemporaryDir>
 #include <QTranslator>
+#include "theme/theme_manager.h"
 #include <QWheelEvent>
 #include <QTimer>
 #include <QWindow>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QThread>
+#include <QScopeGuard>
 #ifdef Q_OS_MACOS
 #include "macos_native_input.h"
+#include "safe_area_test_support.h"
 #include <stdexcept>
 #endif
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
@@ -121,6 +129,8 @@ struct RegionMouseInput {
     DWORD removingThread = 0;
     bool failInstall = false;
     bool native = false;
+    bool initialPositionOnly = false;
+    QPoint initialPosition{-80, 120};
 
     static HHOOK WINAPI install(int kind, HOOKPROC callback, HINSTANCE, DWORD) {
         instance->installingThread = GetCurrentThreadId();
@@ -135,6 +145,11 @@ struct RegionMouseInput {
             instance->observed.release();
             SetLastError(ERROR_ACCESS_DENIED);
             return nullptr;
+        }
+        if (instance->initialPositionOnly) {
+            QTimer::singleShot(0, QAbstractEventDispatcher::instance(),
+                               [] { instance->observed.release(); });
+            return reinterpret_cast<HHOOK>(static_cast<INT_PTR>(1));
         }
         QTimer::singleShot(0, QAbstractEventDispatcher::instance(), [callback] {
             require(callback(-1, WM_MOUSEMOVE, 0) == 17,
@@ -168,14 +183,42 @@ struct RegionMouseInput {
         return 17;
     }
 
+    static BOOL WINAPI cursorPosition(LPPOINT point) {
+        if (instance->native)
+            return GetCursorPos(point);
+        point->x = instance->initialPosition.x();
+        point->y = instance->initialPosition.y();
+        return TRUE;
+    }
+
     RecordingRegionMouseApi api() {
         instance = this;
-        return {install, remove, next, [] { return true; }};
+        return {install, remove, next, [] { return true; }, cursorPosition};
     }
 };
 
 void regionObservationNeverWaitsForTheGui() {
     const DWORD guiThread = GetCurrentThreadId();
+    for (const bool retireBeforeDelivery : {false, true}) {
+        RegionMouseInput input;
+        input.initialPositionOnly = true;
+        int deliveries = 0;
+        auto router = std::make_unique<RecordingRegionInputRouter>(
+            [&](const QPoint& point) {
+                require(GetCurrentThreadId() == guiThread && point == input.initialPosition,
+                        "observer startup must publish the current pointer on the GUI thread");
+                ++deliveries;
+            },
+            input.api());
+        require(input.observed.tryAcquire(1, 1000),
+                "observer startup must complete without awaiting movement");
+        require(deliveries == 0, "startup observation must not call widgets from the worker");
+        if (retireBeforeDelivery)
+            router.reset();
+        QCoreApplication::processEvents();
+        require(deliveries == (retireBeforeDelivery ? 0 : 1),
+                "initial routing must deliver once and retire with its observer");
+    }
     for (const bool retireBeforeDelivery : {false, true}) {
         RegionMouseInput input;
         int deliveries = 0;
@@ -319,8 +362,10 @@ bool imageHasVisiblePixel(const QImage& image) {
     return false;
 }
 
-QImage renderWidget(QWidget& widget) {
-    QImage image(widget.size(), QImage::Format_RGBA8888);
+QImage renderWidget(QWidget& widget, qreal scale = 1.0) {
+    QImage image(QSize(qCeil(widget.width() * scale), qCeil(widget.height() * scale)),
+                 QImage::Format_RGBA8888);
+    image.setDevicePixelRatio(scale);
     image.fill(Qt::transparent);
     QPainter painter(&image);
     widget.render(&painter);
@@ -533,6 +578,42 @@ void logicalRegionDragAndResize() {
 }
 #endif
 
+#ifdef Q_OS_MACOS
+void recordingSafeAreaChangesPreserveCaptureGeometry() {
+    const QRect display = QGuiApplication::primaryScreen()->geometry();
+    for (const QRect region :
+         {display, QRect(display.topLeft() - QPoint(20, 10), QSize(321, 181))}) {
+        for (const bool trimming : {false, true}) {
+            ScreenRecordingAreaWindow area;
+            area.setRecordingRegion(region);
+            area.setInputMode(ScreenRecordingAreaWindow::InputMode::Drawing);
+            area.show();
+            QCoreApplication::processEvents();
+            area.setTrimming(trimming);
+            const QRect geometry = area.geometry();
+            const QRect canvasGeometry = area.canvasGeometry();
+            const QTransform camera = area.canvas()->canvasToViewTransform();
+            const QRegion inputRegion = ScreenRecordingAreaWindowTestAccess::inputRegion(area);
+            int regionChanges = 0;
+            QObject::connect(&area, &ScreenRecordingAreaWindow::recordingRegionChanged, &area,
+                             [&](const QRect&) { ++regionChanges; });
+            safe_area_tests::exercise(*area.windowHandle(), [&](QMargins margins) {
+                require(area.windowHandle()->safeAreaMargins() == margins,
+                        "recording fixture must expose logical safe-area margins");
+                require(area.geometry() == geometry && area.canvasGeometry() == canvasGeometry &&
+                            area.canvas()->geometry() == canvasGeometry,
+                        "safe-area changes must retain recording canvas and border alignment");
+                require(area.recordingRegion() == region && regionChanges == 0,
+                        "safe-area changes must not crop or move the recording region");
+                require(area.canvas()->canvasToViewTransform() == camera &&
+                            ScreenRecordingAreaWindowTestAccess::inputRegion(area) == inputRegion,
+                        "safe-area changes must preserve annotation and input coordinates");
+            });
+        }
+    }
+}
+#endif
+
 void geometryAndTransparentCanvasFollowThePhysicalSelection() {
     ScreenRecordingAreaWindow area;
     const QRect physical = testRecordingRegion();
@@ -614,15 +695,15 @@ void drawingSurfaceFollowsEffectiveInputMode() {
                         "empty drawing pixels must receive layered-window hits only while drawing");
             }
         }
-#ifdef Q_OS_MACOS
-        // The point-based frame begins at the window origin. Sample its inner gap,
-        // not the visible outer border.
-        const QPoint padding(qFloor(area.selectionRect().left() - 0.5),
-                             qFloor(area.selectionRect().center().y()));
-#else
-        const QPoint padding(0, 0);
-#endif
-        require(image.pixelColor(padding).alpha() == 0,
+        // The window origin can lie on the visible border. Sample the physical
+        // pixel immediately outside the capture instead, inside its transparent gap.
+        const qreal scale = area.devicePixelRatioF();
+        const QImage physicalImage = renderWidget(area, scale);
+        const QPoint padding(qRound(area.selectionRect().left() * scale) - 1,
+                             qRound(area.selectionRect().center().y() * scale));
+        require(physicalImage.rect().contains(padding),
+                "the recording frame must reserve a pixel outside its capture");
+        require(physicalImage.pixelColor(padding).alpha() == 0,
                 "drawing input must not fill the padding outside the recording region");
     };
 
@@ -1342,35 +1423,246 @@ void moveNativeRegionPointer(QPoint point) {
             "native recording input must reach the requested physical point");
 }
 
+int nativeWebcamGestures() {
+    POINT saved{};
+    if (!GetCursorPos(&saved) || (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+        qWarning("Skipping native webcam test: the interactive pointer is unavailable or busy");
+        return 77;
+    }
+    const HWND foreground = GetForegroundWindow();
+    ScreenRecordingAreaWindow area;
+    const QRect region(
+        ScreenshotGeometryMapper::physicalRectForScreen(*QGuiApplication::primaryScreen())
+                .topLeft() +
+            QPoint(100, 100),
+        QSize(600, 400));
+    area.setRecordingRegion(region);
+    area.setInputMode(ScreenRecordingAreaWindow::InputMode::RegionEditing);
+    area.show();
+    QCoreApplication::processEvents();
+    const qreal scale = area.devicePixelRatioF();
+    int size = 150;
+    QPoint offset(48, 48);
+    int commits = 0;
+    const auto present = [&] {
+        area.setWebcamOverlay(
+            QRectF(area.selectionRect().topLeft() +
+                       QPointF(offset.x() / scale, (400 - offset.y() - size) / scale),
+                   QSizeF(size / scale, size / scale)),
+            QSize(600, 400), size, offset, offset, true);
+    };
+    QObject::connect(&area, &ScreenRecordingAreaWindow::webcamLayoutPreviewed, &area,
+                     [&](int next, const QPoint& position) {
+                         size = next;
+                         offset = position;
+                         present();
+                     });
+    QObject::connect(&area, &ScreenRecordingAreaWindow::webcamLayoutCommitted, &area,
+                     [&](int, const QPoint&) { ++commits; });
+    present();
+    auto* control = area.findChild<RecordingWebcamControl*>();
+    auto* button = area.findChild<QToolButton*>(QStringLiteral("screenRecordingWebcamResize"));
+    const HWND hwnd = reinterpret_cast<HWND>(area.winId());
+    const auto physicalPoint = [&](QWidget& widget) {
+        POINT origin{};
+        ClientToScreen(hwnd, &origin);
+        const QPointF local = widget.mapTo(&area, QPointF(widget.rect().center()));
+        return QPoint(origin.x + qRound(local.x() * scale), origin.y + qRound(local.y() * scale));
+    };
+    bool pressed = false;
+    const auto click = [&](DWORD flags) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = flags;
+        const bool sent = SendInput(1, &input, sizeof(input)) == 1;
+        if (sent)
+            pressed = flags == MOUSEEVENTF_LEFTDOWN;
+        return sent;
+    };
+    const auto cleanup = qScopeGuard([&] {
+        area.cancelWebcamInteraction();
+        area.hide();
+        if (pressed)
+            click(MOUSEEVENTF_LEFTUP);
+        SetCursorPos(saved.x, saved.y);
+        if (foreground && IsWindow(foreground))
+            SetForegroundWindow(foreground);
+    });
+    const auto pointerAt = [](QPoint point) {
+        POINT actual{};
+        const bool readable = GetCursorPos(&actual);
+        const bool matches = readable && QPoint(actual.x, actual.y) == point;
+        if (!matches)
+            qInfo() << "Native webcam pointer mismatch" << "expected" << point << "actual"
+                    << QPoint(actual.x, actual.y) << "readable" << readable;
+        return matches;
+    };
+    const auto position = [&](QPoint point) {
+        INPUT movement = nativeRegionMovement(point);
+        if (SendInput(1, &movement, sizeof(movement)) != 1)
+            return false;
+        const bool positioned = waitForNativeRegionInput([&] {
+            POINT actual{};
+            return GetCursorPos(&actual) && QPoint(actual.x, actual.y) == point;
+        });
+        if (!positioned)
+            static_cast<void>(pointerAt(point));
+        return positioned;
+    };
+    const auto unavailable = [] {
+        qWarning("Skipping native webcam test: pointer injection is unavailable or interrupted");
+        return 77;
+    };
+    const auto waitAt = [&](QPoint point, const auto& ready, const char* message) {
+        const bool completed =
+            waitForNativeRegionInput([&] { return !pointerAt(point) || ready(); });
+        if (!pointerAt(point))
+            return unavailable();
+        if (!completed) {
+            qWarning("%s", message);
+            POINT nativeOrigin{};
+            ClientToScreen(hwnd, &nativeOrigin);
+            const QPointF local =
+                QPointF(point - QPoint(nativeOrigin.x, nativeOrigin.y)) / area.devicePixelRatioF();
+            qInfo() << "Native webcam routing" << "point" << point << "local" << local
+                    << "initial DPR" << scale << "current DPR" << area.devicePixelRatioF()
+                    << "window" << area.geometry() << "region" << area.recordingRegion()
+                    << "selection" << area.selectionRect() << "control" << control->geometry()
+                    << "visible" << control->isVisible() << "input contains"
+                    << ScreenRecordingAreaWindowTestAccess::inputRegion(area).contains(
+                           local.toPoint())
+                    << "observer" << ScreenRecordingAreaWindowTestAccess::observing(area)
+                    << "transparent"
+                    << bool(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT);
+            return 1;
+        }
+        return 0;
+    };
+    for (bool resize : {false, true}) {
+        const QPoint origin = physicalPoint(resize ? static_cast<QWidget&>(*button) : *control);
+        if (!position(origin))
+            return unavailable();
+        int result = waitAt(
+            origin, [&] { return !(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT); },
+            "webcam hover must enable the native input surface");
+        if (result)
+            return result;
+        if (!click(MOUSEEVENTF_LEFTDOWN))
+            return unavailable();
+        result = waitAt(
+            origin, [&] { return control->interacting() && GetCapture() == hwnd; },
+            "native webcam press must capture the pointer");
+        if (result)
+            return result;
+        const QPoint destination = origin + QPoint(40, -40);
+        if (!position(destination))
+            return unavailable();
+        result = waitAt(
+            destination, [&] { return resize ? size == 190 : offset == QPoint(88, 88); },
+            "native webcam drag must preserve physical-pixel geometry");
+        if (result)
+            return result;
+        if (!click(MOUSEEVENTF_LEFTUP))
+            return unavailable();
+        result = waitAt(
+            destination, [&] { return !control->interacting(); },
+            "native release finishes webcam editing");
+        if (result)
+            return result;
+    }
+    if (commits != 2 || area.recordingRegion() != region) {
+        qWarning("Native webcam edits must commit without moving the recording region");
+        return 1;
+    }
+    return 0;
+}
+
 void nativeRecordingBordersCross() {
     POINT saved{};
-    GetCursorPos(&saved);
-    const auto setPointer = [](const QPoint& position) {
-        require(SetCursorPos(position.x(), position.y()) != FALSE,
-                "native recording input requires an accessible interactive desktop");
-        POINT actual{};
-        require(GetCursorPos(&actual) && QPoint(actual.x, actual.y) == position,
-                "native recording test could not position the physical pointer");
+    require(GetCursorPos(&saved) && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000),
+            "native recording input requires an available interactive pointer");
+    const HWND foreground = GetForegroundWindow();
+    ScreenRecordingAreaWindow* active = nullptr;
+    bool pressed = false;
+    const auto sendButton = [&](DWORD flags) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = flags;
+        const bool sent = SendInput(1, &input, sizeof(input)) == 1;
+        if (sent)
+            pressed = flags == MOUSEEVENTF_LEFTDOWN;
+        return sent;
+    };
+    const auto cleanup = [&] {
+        if (active) {
+            ScreenRecordingAreaWindowTestAccess::cancel(*active);
+            active->hide();
+        }
+        if (pressed)
+            sendButton(MOUSEEVENTF_LEFTUP);
+        SetCursorPos(saved.x, saved.y);
+        if (foreground && IsWindow(foreground))
+            SetForegroundWindow(foreground);
+    };
+    const auto cleanupOnExit = qScopeGuard(cleanup);
+    const auto check = [&](bool condition, const char* message) {
+        if (!condition)
+            cleanup();
+        require(condition, message);
+    };
+    const auto setPointer = [&](const QPoint& position) {
+        INPUT input = nativeRegionMovement(position);
+        check(SendInput(1, &input, sizeof(input)) == 1,
+              "native recording input must deliver a pointer move");
+        check(waitForNativeRegionInput([&] {
+                  POINT actual{};
+                  return GetCursorPos(&actual) && QPoint(actual.x, actual.y) == position;
+              }),
+              "native recording test could not position the physical pointer");
+    };
+    const auto matchesNativeRegion = [](ScreenRecordingAreaWindow& area, const QRect& expected) {
+        const HWND hwnd = reinterpret_cast<HWND>(area.winId());
+        RECT client{};
+        POINT origin{};
+        return GetClientRect(hwnd, &client) && ClientToScreen(hwnd, &origin) &&
+               area.recordingRegion() == expected &&
+               QRect(origin.x, origin.y, client.right - client.left, client.bottom - client.top)
+                       .marginsRemoved(ScreenRecordingAreaWindowTestAccess::insets(area)) ==
+                   expected;
     };
     for (QScreen* display : QGuiApplication::screens()) {
         ScreenRecordingAreaWindow area;
+        active = &area;
         const QRect bounds = ScreenshotGeometryMapper::physicalRectForScreen(*display);
         const QRect original(bounds.topLeft() + QPoint(250, 200), QSize(240, 120));
         area.setRecordingRegion(original);
         area.setInputMode(ScreenRecordingAreaWindow::InputMode::RegionEditing);
         area.show();
-        QCoreApplication::processEvents();
         const HWND hwnd = reinterpret_cast<HWND>(area.winId());
+        check(waitForNativeRegionInput(
+                  [&] { return IsWindowVisible(hwnd) && matchesNativeRegion(area, original); }),
+              "native recording fixture must publish its initial physical region");
         const QPoint start = original.topLeft() + QPoint(original.width(), original.height());
-        setPointer(start);
-        pressNativeRegionControl(area);
-        require(ScreenRecordingAreaWindowTestAccess::dragging(area) && GetCapture() == hwnd,
-                "native recording border must own mouse capture");
+        const auto pressBorder = [&] {
+            setPointer(start);
+            check(waitForNativeRegionInput([&] {
+                      return !(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT) &&
+                             WindowFromPoint(POINT{start.x(), start.y()}) == hwnd;
+                  }),
+                  "native recording border must receive the next pointer press");
+            check(sendButton(MOUSEEVENTF_LEFTDOWN),
+                  "native recording input must deliver a border press");
+            check(waitForNativeRegionInput([&] {
+                      return ScreenRecordingAreaWindowTestAccess::dragging(area) &&
+                             GetCapture() == hwnd;
+                  }),
+                  "native recording border must own mouse capture");
+        };
+        pressBorder();
         const QPoint crossed = original.topLeft() - QPoint(60, 30);
         setPointer(crossed);
-        QMouseEvent move(QEvent::MouseMove, QPointF(), QPointF(QCursor::pos()), Qt::NoButton,
-                         Qt::LeftButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(&area, &move);
+        const bool crossedExactly = waitForNativeRegionInput(
+            [&] { return matchesNativeRegion(area, QRect(crossed, QSize(60, 30))); });
         if (area.recordingRegion() != QRect(crossed, QSize(60, 30))) {
             POINT observed{};
             GetCursorPos(&observed);
@@ -1378,44 +1670,54 @@ void nativeRecordingBordersCross() {
                     << QPoint(observed.x, observed.y) << "actual" << area.recordingRegion()
                     << "active" << ScreenRecordingAreaWindowTestAccess::dragging(area);
         }
-        require(area.recordingRegion() == QRect(crossed, QSize(60, 30)),
-                "native recording crossing must preserve exact physical dimensions");
+        check(crossedExactly, "native recording crossing must preserve exact physical dimensions");
         for (QScreen* destination : QGuiApplication::screens()) {
             const QPoint end =
                 ScreenshotGeometryMapper::physicalRectForScreen(*destination).center();
+            const QRect before = area.recordingRegion();
             setPointer(end);
-            QCoreApplication::sendEvent(&area, &move);
-            require(area.recordingRegion().width() >= 10 && area.recordingRegion().height() >= 10 &&
-                        ScreenRecordingAreaWindowTestAccess::dragging(area),
-                    "cross-display recording resize must retain capture and its minimum");
+            check(waitForNativeRegionInput([&] {
+                      return area.recordingRegion() != before &&
+                             area.recordingRegion().width() >= 10 &&
+                             area.recordingRegion().height() >= 10 &&
+                             ScreenRecordingAreaWindowTestAccess::dragging(area) &&
+                             GetCapture() == hwnd &&
+                             matchesNativeRegion(area, area.recordingRegion());
+                  }),
+                  "cross-display recording resize must retain capture and its minimum");
         }
         SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
-        require(area.recordingRegion() == original &&
-                    !ScreenRecordingAreaWindowTestAccess::dragging(area),
-                "native recording cancellation must restore exact geometry");
+        check(sendButton(MOUSEEVENTF_LEFTUP),
+              "native recording input must release the cancelled drag");
+        check(waitForNativeRegionInput([&] {
+                  return matchesNativeRegion(area, original) &&
+                         !ScreenRecordingAreaWindowTestAccess::dragging(area) &&
+                         !(GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+              }),
+              "native recording cancellation must restore exact geometry");
         const QPoint end = original.topLeft() - QPoint(1, 1);
-        setPointer(start);
-        pressNativeRegionControl(area);
+        pressBorder();
         setPointer(end);
-        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(), QPointF(QCursor::pos()),
-                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(&area, &release);
-        QCoreApplication::processEvents();
+        check(sendButton(MOUSEEVENTF_LEFTUP),
+              "native recording input must deliver the final border release");
+        const bool releasedMinimum = waitForNativeRegionInput([&] {
+            return matchesNativeRegion(area,
+                                       QRect(original.topLeft() - QPoint(10, 10), QSize(10, 10))) &&
+                   !ScreenRecordingAreaWindowTestAccess::dragging(area);
+        });
         if (area.recordingRegion() != QRect(original.topLeft() - QPoint(10, 10), QSize(10, 10)))
             qInfo() << "Native minimum release" << "expected"
                     << QRect(original.topLeft() - QPoint(10, 10), QSize(10, 10)) << "actual"
                     << area.recordingRegion() << "pointer" << QCursor::pos() << "input mode"
                     << int(area.inputMode());
-        require(area.recordingRegion() ==
-                        QRect(original.topLeft() - QPoint(10, 10), QSize(10, 10)) &&
-                    !ScreenRecordingAreaWindowTestAccess::dragging(area),
-                "native release must commit the crossed minimum-sized region");
+        check(releasedMinimum, "native release must commit the crossed minimum-sized region");
         auto* button = area.findChild<QWidget*>(QStringLiteral("screenRecordingRegionDragHandle"));
-        require(button && button->isVisible() &&
-                    area.selectionRect().contains(QRectF(button->geometry())),
-                "minimum-sized regions must keep the child handle inside at the display scale");
+        check(button && button->isVisible() &&
+                  area.selectionRect().contains(QRectF(button->geometry())),
+              "minimum-sized regions must keep the child handle inside at the display scale");
+        area.hide();
+        active = nullptr;
     }
-    SetCursorPos(saved.x, saved.y);
 }
 
 void nativeWindowsGeometryAndInteraction() {
@@ -1705,6 +2007,279 @@ void recordingAngleWheel() {
     require(widthWheelRequests == 0, "recording angle wheel bypasses ordinary style adjustment");
 }
 
+void webcamOrientationToolbarGeometryAndAppearance() {
+    QWidget host;
+    host.setGeometry(100, 100, 400, 300);
+    host.show();
+    RecordingWebcamControl control(&host);
+    control.present(QRectF(100, 100, 150, 150), QSize(400, 300), 150, {}, {}, false);
+    control.show();
+    QApplication::processEvents();
+    auto* toolbar =
+        control.findChild<QWidget*>(QStringLiteral("screenRecordingWebcamOrientationToolbar"));
+    auto* action = toolbar->findChild<QAbstractButton*>(
+        QStringLiteral("screenRecordingWebcamRotateClockwise"));
+    const qreal aboveGap = control.mapToGlobal(QPointF()).y() - (toolbar->y() + toolbar->height());
+    require(aboveGap >= 6 && aboveGap < 7,
+            "orientation row preserves six DIP clearance when aligned to whole widget coordinates");
+    const QPoint initial = toolbar->pos();
+    host.move(host.pos() + QPoint(20, 10));
+    QApplication::processEvents();
+    require(toolbar->pos() == initial + QPoint(20, 10), "floating controls follow their owner");
+    int requests = 0;
+    QObject::connect(&control, &RecordingWebcamControl::orientationRequested, &control,
+                     [&](int) { ++requests; });
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+    QKeyEvent release(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier);
+    QCoreApplication::sendEvent(action, &press);
+    QCoreApplication::sendEvent(action, &release);
+    require(requests == 1, "keyboard activation invokes orientation once");
+    const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
+    host.move(available.topLeft());
+    control.present(QRectF(0, 0, 20, 20), QSize(20, 20), 150, {}, {}, true);
+    QApplication::processEvents();
+    const qreal belowGap = toolbar->y() - control.mapToGlobal(QPointF(0, 20)).y();
+    require(available.contains(toolbar->geometry()) && belowGap >= 6 && belowGap < 7,
+            "tiny top-edge webcams put a usable row below the image");
+    host.move(available.bottomRight() - QPoint(10, 10));
+    QApplication::processEvents();
+    require(available.contains(toolbar->geometry()), "bottom-right placement clamps to the screen");
+    for (const char* screenSignal : {"geometryChanged", "availableGeometryChanged"}) {
+        toolbar->move(available.bottomRight() + QPoint(100, 100));
+        require(QMetaObject::invokeMethod(QGuiApplication::primaryScreen(), screenSignal,
+                                          Qt::DirectConnection, Q_ARG(QRect, available)),
+                "notify a screen geometry change");
+        require(available.contains(toolbar->geometry()),
+                "display changes restore the floating row to its current screen bounds");
+    }
+
+    auto& themes = adqt::theme::ThemeManager::instance();
+    const auto originalConfig = themes.config();
+    const QString output = qEnvironmentVariable("SNOW_WEBCAM_ORIENTATION_PREVIEW_DIR");
+    if (!output.isEmpty())
+        require(QDir().mkpath(output), "create webcam preview output directory");
+    for (const bool dark : {false, true}) {
+        themes.setPreset(dark ? adqt::theme::ThemeScheme::Dark : adqt::theme::ThemeScheme::Light);
+        QApplication::processEvents();
+        for (const qreal dpr : {1.0, 1.25, 1.5, 2.0}) {
+            QImage image((toolbar->size() * dpr).expandedTo(QSize(1, 1)),
+                         QImage::Format_ARGB32_Premultiplied);
+            image.setDevicePixelRatio(dpr);
+            image.fill(Qt::transparent);
+            toolbar->render(&image);
+            require(imageHasVisiblePixel(image),
+                    "toolbar renders in both themes at fractional DPI");
+            if (!output.isEmpty())
+                require(image.save(QDir(output).filePath(
+                            QStringLiteral("webcam-%1-%2.png")
+                                .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"))
+                                .arg(dpr))),
+                        "save webcam orientation visual fixture");
+        }
+    }
+    themes.setConfig(originalConfig);
+    host.hide();
+    require(!toolbar->isVisible(), "hiding the owner retires its floating toolbar");
+}
+
+void webcamSetupGestures() {
+    for (qreal scale : {1.0, 1.25, 1.5, 2.0}) {
+        ScreenRecordingAreaWindow area;
+        area.setRecordingRegion(QRect(-200, 40, 800, 600));
+        area.setInputMode(ScreenRecordingAreaWindow::InputMode::RegionEditing);
+        area.show();
+        QApplication::processEvents();
+        const QRect region = area.recordingRegion();
+        int size = 150;
+        QPoint offset(48, 48);
+        int commits = 0;
+        const QSize physical(800, 600);
+        const auto present = [&] {
+            const int side = std::min({size, physical.width(), physical.height()});
+            const QPoint fitted(std::min(offset.x(), physical.width() - side),
+                                std::min(offset.y(), physical.height() - side));
+            area.setWebcamOverlay(QRectF(30 + fitted.x() / scale,
+                                         30 + (physical.height() - fitted.y() - side) / scale,
+                                         side / scale, side / scale),
+                                  physical, size, offset, fitted, false);
+        };
+        QObject::connect(&area, &ScreenRecordingAreaWindow::webcamLayoutPreviewed, &area,
+                         [&](int next, const QPoint& position) {
+                             size = next;
+                             offset = position;
+                             present();
+                         });
+        QObject::connect(&area, &ScreenRecordingAreaWindow::webcamLayoutCommitted, &area,
+                         [&](int, const QPoint&) { ++commits; });
+        present();
+        auto* control = area.findChild<RecordingWebcamControl*>();
+        auto* button = area.findChild<QToolButton*>(QStringLiteral("screenRecordingWebcamResize"));
+        auto* toolbar =
+            control->findChild<QWidget*>(QStringLiteral("screenRecordingWebcamOrientationToolbar"));
+        require(toolbar && toolbar->isWindow() && toolbar->isVisible(),
+                "orientation toolbar floats above the webcam without capture-region clipping");
+        const std::array<const char*, 4> actionNames{
+            "screenRecordingWebcamRotateClockwise", "screenRecordingWebcamRotateCounterclockwise",
+            "screenRecordingWebcamFlipHorizontal", "screenRecordingWebcamFlipVertical"};
+        const std::array<QString, 4> actionLabels{
+            QStringLiteral("Rotate clockwise"), QStringLiteral("Rotate counterclockwise"),
+            QStringLiteral("Flip horizontally"), QStringLiteral("Flip vertically")};
+        int orientationAction = -1;
+        QObject::connect(&area, &ScreenRecordingAreaWindow::webcamOrientationRequested, &area,
+                         [&](int action) { orientationAction = action; });
+        std::array<QAbstractButton*, 4> actions{};
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            actions[i] = toolbar->findChild<QAbstractButton*>(QString::fromLatin1(actionNames[i]));
+            require(actions[i] && actions[i]->toolTip() == actionLabels[i] &&
+                        actions[i]->accessibleName() == actionLabels[i] &&
+                        actions[i]->focusPolicy() == Qt::StrongFocus,
+                    "orientation actions have translated labels and keyboard focus");
+            actions[i]->click();
+            require(orientationAction == static_cast<int>(i), "each button dispatches its action");
+        }
+        require(QGuiApplication::primaryScreen()->availableGeometry().contains(toolbar->geometry()),
+                "orientation row fits on screen even when capture begins off screen");
+        class WebcamTranslator final : public QTranslator {
+          public:
+            QString translate(const char* context, const char* source, const char*,
+                              int) const override {
+                if (QByteArray(context) == "RecordingWebcamControl")
+                    return QStringLiteral("translated:") + QString::fromUtf8(source);
+                return {};
+            }
+        } translator;
+        QCoreApplication::installTranslator(&translator);
+        QEvent languageChange(QEvent::LanguageChange);
+        QCoreApplication::sendEvent(control, &languageChange);
+        require(actions[0]->toolTip() == QStringLiteral("translated:Rotate clockwise") &&
+                    actions[3]->accessibleName() == QStringLiteral("translated:Flip vertically"),
+                "visible orientation actions retranslate without recreating the camera");
+        QCoreApplication::removeTranslator(&translator);
+        QCoreApplication::sendEvent(control, &languageChange);
+        require(control && control->isVisible() && button && button->width() == 32 &&
+                    control->rect().contains(button->geometry()),
+                "webcam resize button fits its top-right corner");
+        require(ScreenRecordingAreaWindowTestAccess::inputRegion(area).contains(
+                    control->geometry().center()),
+                "webcam body must own native input");
+        const auto send = [](QWidget& target, QEvent::Type type, QPointF global,
+                             Qt::MouseButton changed, Qt::MouseButtons held) {
+            const QPointF local = target.mapFromGlobal(global);
+            QMouseEvent event(type, local, local, global, changed, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(&target, &event);
+        };
+        QPointF origin = control->mapToGlobal(QPointF(control->rect().center()));
+        send(*control, QEvent::MouseButtonPress, origin, Qt::LeftButton, Qt::LeftButton);
+        require(control->interacting() && QWidget::mouseGrabber() == control,
+                "webcam dragging retains mouse capture");
+        require(!toolbar->isEnabled(), "orientation actions are disabled during webcam gestures");
+        send(*control, QEvent::MouseMove, origin + QPointF(40 / scale, -20 / scale), Qt::NoButton,
+             Qt::LeftButton);
+        require(
+            offset == QPoint(88, 68) && size == 150 && area.recordingRegion() == region,
+            "dragging changes bottom-left offsets in physical pixels without moving the region");
+        send(*control, QEvent::MouseButtonRelease, origin + QPointF(40 / scale, -20 / scale),
+             Qt::LeftButton, Qt::NoButton);
+        require(commits == 1 && !control->interacting(), "release commits one webcam layout");
+        require(toolbar->isEnabled(), "orientation actions resume after a gesture");
+        origin = button->mapToGlobal(QPointF(button->rect().center()));
+        send(*button, QEvent::MouseButtonPress, origin, Qt::LeftButton, Qt::LeftButton);
+        send(*control, QEvent::MouseMove, origin + QPointF(80 / scale, -40 / scale), Qt::NoButton,
+             Qt::LeftButton);
+        require(size == 210 && offset == QPoint(88, 68) && control->width() == control->height(),
+                "diagonal projection resizes proportionally around the bottom-left anchor");
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(&area, &escape);
+        require(size == 150 && commits == 1 && !control->interacting() && area.isVisible(),
+                "Escape rolls back the webcam gesture without closing recording setup");
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(&area, &release);
+        offset = QPoint(750, 550);
+        present();
+        origin = button->mapToGlobal(QPointF(button->rect().center()));
+        send(*button, QEvent::MouseButtonPress, origin, Qt::LeftButton, Qt::LeftButton);
+        send(*control, QEvent::MouseMove, origin + QPointF(40 / scale, 40 / scale), Qt::NoButton,
+             Qt::LeftButton);
+        require(size == 150 && offset == QPoint(750, 550),
+                "movement perpendicular to the resize diagonal preserves fitted preferences");
+        send(*control, QEvent::MouseMove, origin + QPointF(-50 / scale, 50 / scale), Qt::NoButton,
+             Qt::LeftButton);
+        require(size == 100 && offset == QPoint(650, 450),
+                "shrinking a fitted webcam keeps its visible bottom-left anchor fixed");
+        send(*control, QEvent::MouseMove, origin + QPointF(-10000, 10000), Qt::NoButton,
+             Qt::LeftButton);
+        require(size == 50, "resizing preserves the minimum preferred webcam size");
+        send(*control, QEvent::MouseMove, origin + QPointF(10000, -10000), Qt::NoButton,
+             Qt::LeftButton);
+        require(size == 500, "resizing preserves the maximum preferred webcam size");
+        area.cancelWebcamInteraction();
+        require(size == 150 && offset == QPoint(750, 550) && commits == 1,
+                "cancelling a fitted resize restores the original preferences");
+        offset = QPoint(88, 68);
+        present();
+        for (int interruption = 0; interruption < 5; ++interruption) {
+            origin = control->mapToGlobal(QPointF(control->rect().center()));
+            send(*control, QEvent::MouseButtonPress, origin, Qt::LeftButton, Qt::LeftButton);
+            send(*control, QEvent::MouseMove, origin + QPointF(-10000, 10000), Qt::NoButton,
+                 Qt::LeftButton);
+            require(offset == QPoint(0, 0), "webcam drag must clamp at the bottom-left corner");
+            send(*control, QEvent::MouseMove, origin + QPointF(10000, -10000), Qt::NoButton,
+                 Qt::LeftButton);
+            require(offset == QPoint(650, 450), "webcam drag must clamp to the region");
+            if (interruption == 0)
+                area.setDrawingBlocked(true);
+            if (interruption == 1)
+                area.startCountdown(3);
+            if (interruption == 2) {
+                QEvent lost(QEvent::UngrabMouse);
+                QCoreApplication::sendEvent(control, &lost);
+            }
+            if (interruption == 3) {
+                QEvent blocked(QEvent::WindowBlocked);
+                QCoreApplication::sendEvent(&area, &blocked);
+            }
+            if (interruption == 4)
+                area.hide();
+            require(offset == QPoint(88, 68) && commits == 1 && !control->interacting(),
+                    "interruption restores the original layout without saving");
+            area.setDrawingBlocked(false);
+            area.clearCountdown();
+            QEvent unblocked(QEvent::WindowUnblocked);
+            QCoreApplication::sendEvent(&area, &unblocked);
+            area.show();
+            present();
+        }
+        area.setRecordingState(ScreenshotToolPalette::RecordingState::Recording);
+        require(!control->isVisible(), "recording hides webcam editing controls");
+        require(!toolbar->isVisible(), "recording hides the floating orientation row");
+        orientationAction = -1;
+        QMetaObject::invokeMethod(actions[0], "clicked", Qt::DirectConnection, Q_ARG(bool, false));
+        require(orientationAction == -1, "a delayed click cannot escape setup eligibility");
+        area.setRecordingState(ScreenshotToolPalette::RecordingState::Paused);
+        require(!control->isVisible(), "paused recordings keep webcam editing locked");
+        area.setRecordingState(ScreenshotToolPalette::RecordingState::Idle);
+        area.setTrimming(true);
+        require(!control->isVisible(), "playback hides webcam editing controls");
+        area.setTrimming(false);
+        area.setWebcamOverlay(QRectF(50, 50, 20, 20), QSize(20, 20), 150, QPoint(48, 48), {}, true);
+        require(button->width() == 20 && control->rect().contains(button->geometry()),
+                "tiny circular previews keep the resize control inside their bounds");
+        // Clicking a fitted preview must not overwrite the larger preferred layout.
+        origin = control->mapToGlobal(QPointF(10, 15));
+        send(*control, QEvent::MouseButtonPress, origin, Qt::LeftButton, Qt::LeftButton);
+        send(*control, QEvent::MouseButtonRelease, origin, Qt::LeftButton, Qt::NoButton);
+        require(commits == 1, "a click without movement must not persist fitted geometry");
+        area.setRecordingRegion(QRect(-200, -100, 20, 20));
+        area.setWebcamOverlay(area.selectionRect(), QSize(20, 20), 150, QPoint(48, 48), {}, true);
+        area.setInputMode(ScreenRecordingAreaWindow::InputMode::RegionEditing);
+        require(area.childAt(button->mapTo(&area, button->rect().center())) == button,
+                "the resize button takes input priority over region controls in tiny regions");
+        area.setWebcamOverlay({});
+        require(!control->isVisible(), "disabled webcam releases its input surface");
+        require(!toolbar->isVisible(), "camera disable also hides its floating controls");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1729,6 +2304,12 @@ int main(int argc, char** argv) {
         snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
+    if (application.arguments().contains(QStringLiteral("--webcam-only"))) {
+        webcamOrientationToolbarGeometryAndAppearance();
+        webcamSetupGestures();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--angle-wheel-only"))) {
         recordingAngleWheel();
         snow_shot::storage::ApplicationStorage::instance().shutdown();
@@ -1739,12 +2320,35 @@ int main(int argc, char** argv) {
         snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
+    if (application.arguments().contains(QStringLiteral("--automatic-selection-only"))) {
+        canvas_automatic_selection_test::exercise([](auto verify) {
+            ScreenRecordingAreaWindow area;
+            area.setInputMode(ScreenRecordingAreaWindow::InputMode::Drawing);
+            verify(*area.canvas());
+        });
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--delete-text-after-cursor-only"))) {
+        canvas_text_editing_preferences_test::exercise([](auto verify) {
+            ScreenRecordingAreaWindow area;
+            area.setInputMode(ScreenRecordingAreaWindow::InputMode::Drawing);
+            verify(*area.canvas());
+        });
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--trim-only"))) {
         trimmingFreezesSizeAndMakesThePreviewDraggable();
         snow_shot::storage::ApplicationStorage::instance().shutdown();
         return 0;
     }
 #if defined(Q_OS_WIN) || defined(_WIN32)
+    if (application.arguments().contains(QStringLiteral("--webcam-native-only"))) {
+        const int result = nativeWebcamGestures();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return result;
+    }
     if (application.arguments().contains(QStringLiteral("--native-geometry-only"))) {
         nativeRegionObservationNeverWaitsForTheGui();
         modalsSuspendRecordingInputAndRestoreTheRequestedMode();
@@ -1755,6 +2359,11 @@ int main(int argc, char** argv) {
     }
 #endif
 #ifdef Q_OS_MACOS
+    if (application.arguments().contains(QStringLiteral("--safe-area-only"))) {
+        recordingSafeAreaChangesPreserveCaptureGeometry();
+        snow_shot::storage::ApplicationStorage::instance().shutdown();
+        return 0;
+    }
     if (application.arguments().contains(QStringLiteral("--native-border-input-only"))) {
         int result = 0;
         if (!macCanPostMouseEvents()) {

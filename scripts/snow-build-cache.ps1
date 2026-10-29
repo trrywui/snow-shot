@@ -166,6 +166,11 @@ function Get-SnowCacheCompatibility {
     & $check 'VCPKG_HOST_TRIPLET' $target.HostTriplet `
         -AllowMissing:($target.Architecture -eq 'x64' -and $target.HostArchitecture -eq 'x64')
     & $check 'VCPKG_TARGET_TRIPLET' $target.Triplet
+    & $check 'SNOW_SHOT_DISTRIBUTION_CHANNEL' $target.DistributionChannel `
+        -AllowMissing:($target.DistributionChannel -eq 'standalone')
+    if ($target.DistributionChannel -eq 'store') {
+        & $check 'SNOW_APPS_BUILD_SNOW_SHOT_MINI' 'OFF'
+    }
     & $check 'VCPKG_INSTALLED_DIR' $target.InstalledRoot -Path
     & $check 'CMAKE_HOME_DIRECTORY' $script:SnowRepoRoot -Path
     $powerShell = [string]$cache['Z_VCPKG_POWERSHELL_PATH']

@@ -147,7 +147,14 @@ class Atlas {
     std::list<Key> unionOrder;
 };
 
-thread_local Atlas atlas;
+Atlas& atlasForCurrentThread() {
+    // Namespace-scope TLS initializers can run under the Windows loader before
+    // the executable's CRT heap is initialized. The STL containers allocate
+    // even when empty, so construct the rendering cache only when it is used.
+    thread_local Atlas atlas;
+    return atlas;
+}
+
 thread_local Diagnostics totals;
 
 void accumulate(Diagnostics& destination, const Diagnostics& source) {
@@ -162,6 +169,7 @@ void accumulate(Diagnostics& destination, const Diagnostics& source) {
     destination.unionCopyBytes += source.unionCopyBytes;
     destination.drawnTiles += source.drawnTiles;
     destination.evictions += source.evictions;
+    const auto& atlas = atlasForCurrentThread();
     destination.retainedBytes = atlas.bytes;
     destination.entries = atlas.entries.size();
 }
@@ -266,6 +274,7 @@ void draw(QPainter& canvasPainter, const SnowCanvasSceneItem& item, const QColor
         canvasToDevice.mapRect(item.pressureCanvasBounds()).adjusted(-1, -1, 1, 1).toAlignedRect();
     if (clip.isEmpty())
         return;
+    auto& atlas = atlasForCurrentThread();
     Diagnostics diagnostics;
     Key base;
     base.owner =
@@ -375,11 +384,12 @@ void draw(QPainter& canvasPainter, const SnowCanvasSceneItem& item, const QColor
 }
 
 void clearCacheForCurrentThread() {
-    atlas.clear();
+    atlasForCurrentThread().clear();
     totals = {};
 }
 
 void setCacheByteBudgetForCurrentThread(std::size_t byteBudget) {
+    auto& atlas = atlasForCurrentThread();
     atlas.budget = byteBudget;
     atlas.trim(totals);
     totals.retainedBytes = atlas.bytes;
@@ -387,6 +397,7 @@ void setCacheByteBudgetForCurrentThread(std::size_t byteBudget) {
 }
 
 Diagnostics diagnosticsForCurrentThread() {
+    const auto& atlas = atlasForCurrentThread();
     auto result = totals;
     result.retainedBytes = atlas.bytes;
     result.entries = atlas.entries.size();

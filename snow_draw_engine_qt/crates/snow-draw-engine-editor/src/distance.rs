@@ -396,3 +396,80 @@ impl Editor {
         }
     }
 }
+
+impl Editor {
+    pub fn distance_value_target(
+        &self,
+        document: &DocumentModel,
+        owner: ElementId,
+    ) -> Result<ElementId, ErrorCode> {
+        let element = document.element(owner)?;
+        let arrow = document.arrow(owner)?;
+        if !arrow.is_distance() || element.meta.locked || !element.meta.visible {
+            return Err(ErrorCode::InvalidState);
+        }
+        arrow.text_element_id.ok_or(ErrorCode::InvalidState)
+    }
+
+    /// Publishes temporary display text, including unaccepted IME composition.
+    /// Numeric validation belongs to text acceptance and calibration commit.
+    pub fn set_distance_value_draft(
+        &mut self,
+        document: &DocumentModel,
+        owner: ElementId,
+        display_text: String,
+        layout: snow_draw_engine_document::TextLayoutSize,
+    ) -> Result<bool, ErrorCode> {
+        let id = self.distance_value_target(document, owner)?;
+        let layout = snow_draw_engine_document::validate_text_layout_size(layout)?;
+        let arrow = document.arrow(owner)?;
+        let mut label = snow_draw_engine_document::distance_label(arrow, Some(layout))
+            .ok_or(ErrorCode::InvalidState)?;
+        label.text = format!("{} {}", display_text, arrow.distance.unwrap().unit.suffix());
+        snow_draw_engine_document::validate_text(&label)?;
+        let revision = self
+            .state
+            .active_text_draft
+            .as_ref()
+            .map_or(1, |d| d.revision.wrapping_add(1));
+        self.state.active_distance_value_owner = Some(owner);
+        self.state.active_text_draft = Some(crate::ActiveTextDraftPresentation {
+            target: crate::ActiveTextDraftTarget::Existing(id),
+            text: label,
+            revision,
+        });
+        self.bump_scene_state_revision();
+        self.bump_overlay_state_revision();
+        Ok(true)
+    }
+
+    pub fn commit_distance_value(
+        &mut self,
+        document: &DocumentModel,
+        owner: ElementId,
+        value: f64,
+    ) -> Result<Option<EditorCommand>, ErrorCode> {
+        self.distance_value_target(document, owner)?;
+        let arrow = document.arrow(owner)?;
+        let distance = arrow.distance.ok_or(ErrorCode::InvalidState)?;
+        let length = snow_draw_engine_document::distance_value(arrow)
+            .ok_or(ErrorCode::InvalidState)?
+            / distance.factor;
+        if !value.is_finite() || value < 0.0 || !length.is_finite() || length <= 0.0 {
+            return Err(ErrorCode::InvalidArgument);
+        }
+        let mut updated = arrow.clone();
+        updated.distance.as_mut().unwrap().factor = (value / length).clamp(0.01, 1000.0);
+        snow_draw_engine_document::validate_arrow(&updated)?;
+        let snapshot = self.capture_document_sync_snapshot(document);
+        self.clear_active_text_draft_presentation();
+        if &updated == arrow {
+            return Ok(None);
+        }
+        let mut transaction = Transaction::new("edit distance value");
+        transaction.update_arrow(owner, updated);
+        Ok(Some(EditorCommand::ApplyTransaction(
+            ApplyTransactionCommand::with_history_undo_snapshot(transaction, snapshot),
+        )))
+    }
+}

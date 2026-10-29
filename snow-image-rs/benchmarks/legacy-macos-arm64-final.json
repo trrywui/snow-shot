@@ -1,0 +1,333 @@
+{
+  "schema": 1,
+  "platform": "arm64-Darwin",
+  "recorded_utc": "2026-10-23T16:41:19.491181+00:00",
+  "iterations": 7,
+  "settings": "v2; generated-ui v1; retained RGBA8 source; native RasterSource encode to file; PNG6 adaptive RGBA opaque+alpha+tall; JPEG95/444/sequential; exact fit2048 n/8 reduced JPEG decode then linear premultiplied Lanczos3 max8threads; reduced-only preview separately; tall256x131072 streams a precomputed1800-row tile; four shared-input GIF sessions reset then32 advances+owned snapshots; one warmup; PSNR includes RGBA; no worker isolation",
+  "build_directory": "/Users/chao/workspaces/snow-apps/build/snow-shot-macos-arm64-performance",
+  "records": [
+    {
+      "name": "png-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 19.08425,
+      "output_bytes": 34098,
+      "psnr_db": null,
+      "samples_ms": [
+        23.251792,
+        20.359375,
+        18.980084,
+        18.662209,
+        18.801625,
+        19.08425,
+        19.171208
+      ]
+    },
+    {
+      "name": "png-alpha-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 25.5395,
+      "output_bytes": 73241,
+      "psnr_db": null,
+      "samples_ms": [
+        25.792917,
+        25.5395,
+        25.490834,
+        25.527125,
+        25.200792,
+        25.885292,
+        25.782417
+      ]
+    },
+    {
+      "name": "jpeg-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 9.107458,
+      "output_bytes": 1570998,
+      "psnr_db": 42.019671,
+      "samples_ms": [
+        9.107458,
+        8.870375,
+        9.011292,
+        8.870917,
+        9.1985,
+        9.232291,
+        9.113417
+      ]
+    },
+    {
+      "name": "preview-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 8.0155,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        8.145625,
+        8.072542,
+        8.0155,
+        8.032583,
+        7.969375,
+        7.973583,
+        7.963
+      ]
+    },
+    {
+      "name": "preview-reduced-only-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 8.072084,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        8.154417,
+        8.072084,
+        8.001917,
+        8.000708,
+        8.128667,
+        8.129708,
+        7.977584
+      ]
+    },
+    {
+      "name": "png-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 3840,
+      "output_height": 2160,
+      "median_ms": 75.763958,
+      "output_bytes": 115940,
+      "psnr_db": null,
+      "samples_ms": [
+        75.763958,
+        77.482208,
+        85.173541,
+        114.376041,
+        75.369875,
+        75.054416,
+        75.655667
+      ]
+    },
+    {
+      "name": "png-alpha-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 3840,
+      "output_height": 2160,
+      "median_ms": 101.369333,
+      "output_bytes": 271246,
+      "psnr_db": null,
+      "samples_ms": [
+        99.98975,
+        100.558959,
+        101.886708,
+        102.853083,
+        102.46475,
+        100.815416,
+        101.369333
+      ]
+    },
+    {
+      "name": "jpeg-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 3840,
+      "output_height": 2160,
+      "median_ms": 36.163125,
+      "output_bytes": 6279534,
+      "psnr_db": 42.013578,
+      "samples_ms": [
+        36.530833,
+        36.292542,
+        36.0745,
+        35.992209,
+        36.163125,
+        36.511,
+        36.06325
+      ]
+    },
+    {
+      "name": "preview-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 2048,
+      "output_height": 1152,
+      "median_ms": 53.076041,
+      "output_bytes": 9437184,
+      "psnr_db": null,
+      "samples_ms": [
+        52.242166,
+        52.284625,
+        54.1485,
+        53.076041,
+        54.625208,
+        57.171083,
+        53.027417
+      ]
+    },
+    {
+      "name": "preview-reduced-only-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 30.02725,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        30.805625,
+        30.25775,
+        30.02725,
+        30.052084,
+        30.024416,
+        29.894542,
+        29.914291
+      ]
+    },
+    {
+      "name": "png-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 7680,
+      "output_height": 4320,
+      "median_ms": 296.588833,
+      "output_bytes": 417317,
+      "psnr_db": null,
+      "samples_ms": [
+        307.984333,
+        301.513709,
+        293.011708,
+        294.336625,
+        295.872459,
+        296.588833,
+        306.2515
+      ]
+    },
+    {
+      "name": "png-alpha-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 7680,
+      "output_height": 4320,
+      "median_ms": 402.660666,
+      "output_bytes": 1029388,
+      "psnr_db": null,
+      "samples_ms": [
+        402.660666,
+        401.083791,
+        398.797959,
+        419.974875,
+        403.352541,
+        402.967625,
+        400.762791
+      ]
+    },
+    {
+      "name": "jpeg-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 7680,
+      "output_height": 4320,
+      "median_ms": 142.605458,
+      "output_bytes": 25153744,
+      "psnr_db": 42.01566,
+      "samples_ms": [
+        141.93825,
+        141.664875,
+        141.305042,
+        142.605458,
+        143.265917,
+        155.192792,
+        143.830333
+      ]
+    },
+    {
+      "name": "preview-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 2048,
+      "output_height": 1152,
+      "median_ms": 139.549333,
+      "output_bytes": 9437184,
+      "psnr_db": null,
+      "samples_ms": [
+        137.846209,
+        137.410042,
+        139.549333,
+        141.508125,
+        143.009125,
+        140.799,
+        139.451291
+      ]
+    },
+    {
+      "name": "preview-reduced-only-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "output_width": 1920,
+      "output_height": 1080,
+      "median_ms": 111.787333,
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "samples_ms": [
+        113.330166,
+        113.120375,
+        112.399375,
+        111.768541,
+        111.787333,
+        110.334708,
+        105.529167
+      ]
+    },
+    {
+      "name": "tall-png-256x131072",
+      "width": 256,
+      "height": 131072,
+      "output_width": 256,
+      "output_height": 131072,
+      "median_ms": 426.483958,
+      "output_bytes": 1496157,
+      "psnr_db": null,
+      "samples_ms": [
+        426.483958,
+        426.590791,
+        424.3985,
+        425.7625,
+        424.848209,
+        428.306709,
+        431.260542
+      ]
+    },
+    {
+      "name": "four-animations-32-frames",
+      "width": 320,
+      "height": 180,
+      "output_width": 320,
+      "output_height": 180,
+      "median_ms": 6.226834,
+      "output_bytes": 0,
+      "psnr_db": null,
+      "samples_ms": [
+        6.26925,
+        6.232167,
+        6.226834,
+        6.289791,
+        6.169958,
+        6.140792,
+        6.221041
+      ]
+    }
+  ]
+}

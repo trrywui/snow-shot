@@ -67,6 +67,8 @@ class ScreenshotOcrAssets final : public QObject {
         // macOS ships executable code with the app. Empty selects offlineRoot/../..
         // (the executable directory containing assets/ocr).
         QString bundledRuntimeRoot = {};
+        // Executable code must come from the immutable application payload.
+        bool requireBundledRuntime = false;
     };
 
     explicit ScreenshotOcrAssets(Options options, QObject* parent = nullptr);

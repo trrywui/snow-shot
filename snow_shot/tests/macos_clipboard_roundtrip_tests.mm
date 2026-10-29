@@ -12,6 +12,8 @@
 #include <QPointer>
 #include <QProcess>
 #include <QTextDocument>
+#include <QTemporaryDir>
+#include <QUrl>
 
 #import <AppKit/AppKit.h>
 #include <ImageIO/ImageIO.h>
@@ -280,11 +282,19 @@ void promisedImageSurvivesPublisherExit() {
 void nativeImageFormatsRoundTrip() {
     const QImage source = imageFixture();
     QObject receiver;
+    QTemporaryDir directory;
+    require(directory.isValid(), "clipboard file fixture must be available");
+    const QString path = directory.filePath(QStringLiteral("Snow Shot \u56fe\u50cf.png"));
+    require(source.save(path, "PNG"), "clipboard file fixture must be saved");
     for (int cycle = 0; cycle < 24; ++cycle) {
         QEventLoop loop;
         bool completed = false;
+        const bool includeFile = cycle % 2 == 0;
+        auto payload = ScreenshotClipboardService::prepareImage(source);
+        if (includeFile)
+            payload = ScreenshotClipboardService::withFile(std::move(payload), path);
         const auto handle = ScreenshotClipboardService::commit(
-            QApplication::clipboard(), &receiver, ScreenshotClipboardService::prepareImage(source),
+            QApplication::clipboard(), &receiver, std::move(payload),
             [&](ScreenshotClipboardCommitResult result) {
                 require(result.succeeded(), "native image publication must succeed");
                 completed = true;
@@ -298,6 +308,15 @@ void nativeImageFormatsRoundTrip() {
         require([board.types containsObject:NSPasteboardTypePNG] &&
                     [board.types containsObject:NSPasteboardTypeTIFF],
                 "native clipboard must retain both PNG and TIFF compatibility");
+        require(bool([board.types containsObject:NSPasteboardTypeFileURL]) == includeFile,
+                "native file references must accompany images only when requested");
+        if (includeFile) {
+            const auto url = QUrl::fromLocalFile(path);
+            require(QUrl(QString::fromNSString([board stringForType:NSPasteboardTypeFileURL])) ==
+                            url &&
+                        QApplication::clipboard()->mimeData()->urls() == QList<QUrl>{url},
+                    "native and Qt readers must preserve the same Unicode file URL");
+        }
         const NSData* png = [board dataForType:NSPasteboardTypePNG];
         require(QImage::fromData(static_cast<const uchar*>(png.bytes), static_cast<int>(png.length),
                                  "PNG")

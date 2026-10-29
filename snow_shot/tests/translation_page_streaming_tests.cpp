@@ -6,6 +6,7 @@
 #include "snow_shot/storage/applicationstorage.h"
 #include "widgets/input_text_edit.h"
 #include "widgets/scroll_area.h"
+#include "widgets/button.h"
 
 #include <QApplication>
 #include <QAction>
@@ -126,6 +127,8 @@ void pendingOutputLifecycle() {
     auto* controller = page.findChild<TranslationPageController*>();
     auto* result =
         page.findChild<adqt::widgets::AdTextEdit*>(QStringLiteral("translationResultText"));
+    auto* copy = page.findChild<adqt::widgets::AdButton*>(QStringLiteral("translationResultCopy"));
+    require(copy != nullptr, "the streaming page owns its persistent result-copy control");
     page.setSourceText(QStringLiteral("first request"));
     waitUntil([&] { return server.streams.size() == 1; }, "start lifecycle stream");
 
@@ -134,9 +137,8 @@ void pendingOutputLifecycle() {
     auto connection =
         QObject::connect(controller, &TranslationPageController::resultChanged, &page, [&] {
             require(result->toPlainText().isEmpty(), "tokens are buffered before rendering");
-            require(page.findChild<QAction*>(QStringLiteral("translationCopy"))->isEnabled(),
-                    "the first buffered token immediately enables copy");
-            page.findChild<QAction*>(QStringLiteral("translationCopy"))->trigger();
+            require(copy->isEnabled(), "the first buffered token immediately enables copy");
+            copy->click();
             require(QApplication::clipboard()->text() == controller->resultText(),
                     "copy includes received tokens before the next visual update");
             checkedPending = true;

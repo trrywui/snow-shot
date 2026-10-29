@@ -33,6 +33,8 @@ pub struct RecordedEffects {
     last_frame: Option<u64>,
     playback: PlaybackRenderer,
     tiles: TileSurface,
+    webcam: crate::webcam::WebcamOverlay,
+    observation_revision: u64,
 }
 
 impl RecordedEffects {
@@ -79,7 +81,10 @@ impl RecordedEffects {
         }
         let output = (config.output_width, config.output_height);
         let playback = PlaybackRenderer::new(config.playback_overlay, output, playback_rasterizer)?;
-        let mut keyboard = if config.effects.show_keyboard || config.effects.record_mouse_clicks {
+        let mut keyboard = if config.effects.show_keyboard
+            || config.effects.record_mouse_clicks
+            || config.effects.record_mouse_scrolling
+        {
             let style = config
                 .effects
                 .keyboard
@@ -89,7 +94,11 @@ impl RecordedEffects {
                 Some(value) => value,
                 None => crate::keyboard_rasterizer::create(style)?,
             };
-            Some(KeyboardOverlay::new(output, rasterizer).with_keycap_size(style.keycap_size))
+            Some(
+                KeyboardOverlay::new(output, rasterizer)
+                    .with_keycap_size(style.keycap_size)
+                    .with_icon_color(style.text_rgba),
+            )
         } else {
             None
         };
@@ -116,12 +125,44 @@ impl RecordedEffects {
             last_frame: None,
             playback,
             tiles: TileSurface::new(output),
+            webcam: crate::webcam::WebcamOverlay::default(),
+            observation_revision: 0,
         })
     }
 
     pub fn with_timeline(mut self, timeline: FinalizedTimeline) -> Self {
         self.timeline = Some(timeline);
         self
+    }
+
+    pub fn set_webcam_frame(
+        &mut self,
+        frame: Option<&snow_webcam::Frame>,
+        style: snow_recording_model::WebcamStyle,
+    ) {
+        if self.webcam.prepare(
+            frame,
+            style,
+            (self.config.output_width, self.config.output_height),
+        ) {
+            self.observation_revision = self.observation_revision.wrapping_add(1);
+        }
+    }
+
+    /// Changes outside the clocked keycap model, admitted through `observe` and
+    /// `set_webcam_frame`. Keycap invalidation follows the source clock in
+    /// `needs_frame`; direct `input_effects` mutations are not tracked here.
+    pub fn observation_revision(&self) -> u64 {
+        self.observation_revision
+    }
+
+    /// Clock-driven invalidation, including pointer observations admitted ahead
+    /// of their source timestamp. Observation revisions are checked separately.
+    pub fn needs_frame(&mut self, now: u64) -> bool {
+        self.input_effects
+            .has_active_animation(&self.config.effects, now)
+            || (self.config.effects.mouse_trail_rgba[3] != 0
+                && self.pointer.has_due_observation(now))
     }
 
     /// Input observations stay on the source clock; the playback badge uses clip time.
@@ -139,21 +180,59 @@ impl RecordedEffects {
             return Err("effect input admission order is not monotonic".into());
         }
         self.last_admission = Some((event.timestamp_ms, event.sequence));
-        match &event.event {
-            RecordedInput::CursorShape(shape) => self.store_shape(shape),
-            RecordedInput::Cursor(cursor) => {
-                self.cursor = Some(cursor.clone());
+        let effects = &self.config.effects;
+        let changes_pixels = match &event.event {
+            RecordedInput::CursorShape(_) => effects.show_cursor,
+            // Capture may sample a stationary cursor on every slot. Its timestamp
+            // does not affect rendering; only its visual state invalidates pixels.
+            RecordedInput::Cursor(next) => {
+                effects.show_cursor
+                    && self.cursor.as_ref().is_none_or(|previous| {
+                        (previous.x, previous.y, previous.visible, previous.shape_id)
+                            != (next.x, next.y, next.visible, next.shape_id)
+                    })
             }
             RecordedInput::Pointer {
                 position,
                 continuity,
                 at_ms,
             } => {
-                if self.continuity != *continuity {
+                let broken = self.continuity != *continuity;
+                if broken {
                     self.pointer.break_path();
                 }
                 self.continuity = *continuity;
-                self.pointer.observe(*position, *at_ms);
+                let moved = self.pointer.observe(*position, *at_ms);
+                effects.mouse_trail_rgba[3] != 0 && (moved || broken)
+            }
+            RecordedInput::Click(click) => {
+                effects.mouse_click_rgba[3] != 0
+                    && click.down
+                    && observed_button(click.button).has_ring()
+            }
+            // Keycap invalidation follows the source clock after the whole input
+            // batch is queued. Admission alone cannot relabel a visible scroll row.
+            RecordedInput::Key(_) | RecordedInput::Scroll(_) => false,
+            RecordedInput::KeyboardReset => {
+                effects.show_keyboard
+                    || effects.record_mouse_clicks
+                    || effects.record_mouse_scrolling
+            }
+            RecordedInput::Reset => true,
+        };
+        if changes_pixels {
+            self.observation_revision = self.observation_revision.wrapping_add(1);
+        }
+        match &event.event {
+            RecordedInput::CursorShape(shape) => self.store_shape(shape),
+            RecordedInput::Cursor(cursor) => {
+                self.cursor = Some(cursor.clone());
+            }
+            RecordedInput::Pointer { .. } => {}
+            RecordedInput::Scroll(key) => {
+                if effects.record_mouse_scrolling {
+                    self.input_effects.queue_key(key.clone());
+                }
             }
             RecordedInput::Click(click) => {
                 let button = observed_button(click.button);
@@ -262,6 +341,7 @@ impl RecordedEffects {
             return Err("effect rendering cannot move backwards on the timeline".into());
         }
         self.last_frame = Some(frame.timestamp_ms);
+        self.webcam.draw_to(surface);
         let now = frame.timestamp_ms;
         if self.config.effects.mouse_trail_rgba[3] != 0 {
             self.pointer.advance(
@@ -440,6 +520,301 @@ mod tests {
         [20, 40, 60, 255].repeat(120 * 100)
     }
     #[test]
+    fn stationary_cursor_samples_do_not_invalidate_visible_pixels() {
+        let mut effects =
+            RecordedEffects::new(config(PlaybackOverlay::None), (120, 100), None).unwrap();
+        let cursor = CursorFrameRecord {
+            timestamp_ms: 0,
+            x: 10,
+            y: 20,
+            visible: true,
+            shape_id: Some(1),
+        };
+        effects
+            .observe(&input(0, 0, RecordedInput::Cursor(cursor.clone())))
+            .unwrap();
+        let revision = effects.observation_revision();
+        effects
+            .observe(&input(
+                1,
+                33,
+                RecordedInput::Cursor(CursorFrameRecord {
+                    timestamp_ms: 33,
+                    ..cursor.clone()
+                }),
+            ))
+            .unwrap();
+        assert_eq!(effects.observation_revision(), revision);
+        for (i, cursor) in [
+            CursorFrameRecord {
+                x: 11,
+                ..cursor.clone()
+            },
+            CursorFrameRecord {
+                visible: false,
+                ..cursor.clone()
+            },
+            CursorFrameRecord {
+                shape_id: Some(2),
+                ..cursor
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let revision = effects.observation_revision();
+            effects
+                .observe(&input(i as u64 + 2, 34, RecordedInput::Cursor(cursor)))
+                .unwrap();
+            assert_ne!(effects.observation_revision(), revision);
+        }
+    }
+    #[test]
+    fn stationary_pointer_observations_keep_settled_frames_reusable() {
+        let mut policy = config(PlaybackOverlay::None);
+        policy.effects.show_cursor = false;
+        policy.effects.mouse_trail_rgba = [255; 4];
+        let mut effects = RecordedEffects::new(policy, (120, 100), None).unwrap();
+        let mut sequence = 0;
+        for position in [Some((30, 40)), None] {
+            effects
+                .observe(&input(
+                    sequence,
+                    sequence * 10,
+                    RecordedInput::Pointer {
+                        position,
+                        continuity: 0,
+                        at_ms: sequence * 10,
+                    },
+                ))
+                .unwrap();
+            effects
+                .apply_rgba(&mut pixels(), frame(sequence, sequence * 10, 0.0))
+                .unwrap();
+            let revision = effects.observation_revision();
+            for _ in 0..100 {
+                sequence += 1;
+                let at = sequence * 10;
+                effects
+                    .observe(&input(
+                        sequence,
+                        at,
+                        RecordedInput::Pointer {
+                            position,
+                            continuity: 0,
+                            at_ms: at,
+                        },
+                    ))
+                    .unwrap();
+                assert_eq!(effects.observation_revision(), revision);
+                assert!(
+                    !effects.needs_frame(at),
+                    "stationary input cannot animate a settled trail"
+                );
+            }
+            sequence += 1;
+        }
+    }
+
+    #[test]
+    fn held_pointer_composition_matches_redraw_across_breaks_future_input_and_expiry() {
+        let mut policy = config(PlaybackOverlay::None);
+        policy.effects.show_cursor = false;
+        policy.effects.mouse_trail_rgba = [255, 40, 60, 180];
+        let mut held = RecordedEffects::new(policy.clone(), (120, 100), None).unwrap();
+        let mut reference = RecordedEffects::new(policy, (120, 100), None).unwrap();
+        let mut previous = None;
+        let mut previous_idle = false;
+        let mut retained = pixels();
+        let mut skipped = 0;
+        let mut sequence = 0;
+        for index in 0..400 {
+            let at = index * 10;
+            let position = match index {
+                0..20 => Some((20, 40)),
+                20..40 => Some((20 + index as i32, 40)),
+                40..100 => Some((60, 40)),
+                100..110 => None,
+                110..120 => Some((70, 40)),
+                120..140 => Some((70, 40 + (index - 120) as i32)),
+                _ => Some((70, 60)),
+            };
+            // An exit followed by re-entry in the same output slot must break the path.
+            if index == 125 {
+                let event = input(
+                    sequence,
+                    at,
+                    RecordedInput::Pointer {
+                        position: None,
+                        continuity: 0,
+                        at_ms: at,
+                    },
+                );
+                held.observe(&event).unwrap();
+                reference.observe(&event).unwrap();
+                sequence += 1;
+            }
+            let event = input(
+                sequence,
+                at,
+                RecordedInput::Pointer {
+                    position,
+                    continuity: u64::from(index >= 130),
+                    at_ms: if index == 20 { at + 30 } else { at },
+                },
+            );
+            held.observe(&event).unwrap();
+            reference.observe(&event).unwrap();
+            sequence += 1;
+            let revision = held.observation_revision();
+            if previous == Some(revision) && previous_idle && !held.needs_frame(at) {
+                skipped += 1;
+            } else {
+                retained = pixels();
+                held.apply_rgba(&mut retained, frame(index, at, 0.0))
+                    .unwrap();
+            }
+            let mut expected = pixels();
+            reference
+                .apply_rgba(&mut expected, frame(index, at, 0.0))
+                .unwrap();
+            assert_eq!(retained, expected, "pointer output at {at} ms");
+            previous = Some(revision);
+            previous_idle = !held.needs_frame(at);
+        }
+        assert!(
+            skipped > 200,
+            "settled observations should retain their composition"
+        );
+    }
+
+    #[test]
+    fn future_pointer_observation_wakes_idle_replay_on_its_source_clock() {
+        let mut policy = config(PlaybackOverlay::None);
+        policy.effects.show_cursor = false;
+        policy.effects.mouse_trail_rgba = [255; 4];
+        let mut effects = RecordedEffects::new(policy, (120, 100), None).unwrap();
+        effects
+            .observe(&input(
+                0,
+                0,
+                RecordedInput::Pointer {
+                    position: Some((30, 40)),
+                    continuity: 0,
+                    at_ms: 100,
+                },
+            ))
+            .unwrap();
+        effects.apply_rgba(&mut pixels(), frame(0, 0, 0.0)).unwrap();
+        assert!(!effects.needs_frame(99));
+        assert!(effects.needs_frame(100));
+        effects
+            .apply_rgba(&mut pixels(), frame(3, 100, 0.0))
+            .unwrap();
+        assert!(!effects.pointer.has_due_observation(100));
+    }
+    #[test]
+    fn observation_revision_tracks_visible_inputs_and_webcam_replacement() {
+        let mut policy = config(PlaybackOverlay::None);
+        policy.effects.show_cursor = false;
+        let mut effects = RecordedEffects::new(policy.clone(), (120, 100), None).unwrap();
+        effects
+            .observe(&input(
+                0,
+                0,
+                RecordedInput::Pointer {
+                    position: Some((10, 10)),
+                    continuity: 0,
+                    at_ms: 0,
+                },
+            ))
+            .unwrap();
+        effects
+            .observe(&input(
+                1,
+                0,
+                RecordedInput::Key(KeyEvent {
+                    at_ms: 0,
+                    key: 65,
+                    down: true,
+                    label: "A".into(),
+                    modifiers: Vec::new(),
+                }),
+            ))
+            .unwrap();
+        assert_eq!(
+            effects.observation_revision(),
+            0,
+            "disabled effects cannot change output"
+        );
+        let camera = snow_webcam::Frame {
+            revision: 1,
+            at: std::time::Instant::now(),
+            size: 1,
+            rgba: Arc::new(vec![255; 4]),
+        };
+        let style = snow_recording_model::WebcamStyle::default();
+        effects.set_webcam_frame(Some(&camera), style);
+        let revision = effects.observation_revision();
+        effects.set_webcam_frame(Some(&camera), style);
+        assert_eq!(effects.observation_revision(), revision);
+        effects.set_webcam_frame(None, style);
+        assert_ne!(
+            effects.observation_revision(),
+            revision,
+            "hiding a webcam changes pixels"
+        );
+
+        policy.effects.show_cursor = true;
+        policy.effects.mouse_trail_rgba = [255; 4];
+        policy.effects.mouse_click_rgba = [255; 4];
+        let mut effects = RecordedEffects::new(policy, (120, 100), None).unwrap();
+        for (sequence, event) in [
+            RecordedInput::CursorShape(CursorShapeRecord {
+                shape_id: 1,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                width: 1,
+                height: 1,
+                mode: CursorShapeCompositionMode::AlphaBlend,
+                shape_rgba: vec![255; 4],
+            }),
+            RecordedInput::Cursor(CursorFrameRecord {
+                timestamp_ms: 0,
+                x: 10,
+                y: 10,
+                visible: true,
+                shape_id: Some(1),
+            }),
+            RecordedInput::Pointer {
+                position: Some((10, 10)),
+                continuity: 0,
+                at_ms: 0,
+            },
+            RecordedInput::Click(RecordedMouseClick {
+                x: 10,
+                y: 10,
+                button: InputMouseButton::Left,
+                down: true,
+                key: KeyEvent {
+                    at_ms: 0,
+                    key: 0x200,
+                    down: true,
+                    label: "Left click".into(),
+                    modifiers: Vec::new(),
+                },
+            }),
+            RecordedInput::Reset,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let revision = effects.observation_revision();
+            effects.observe(&input(sequence as u64, 0, event)).unwrap();
+            assert_ne!(effects.observation_revision(), revision);
+        }
+    }
+    #[test]
     fn recorded_highlight_uses_configured_output_pixel_radius() {
         let mut policy = config(PlaybackOverlay::None);
         policy.effects.mouse_highlight_rgba = [255, 255, 0, 255];
@@ -487,6 +862,83 @@ mod tests {
             })
         }
     }
+
+    #[test]
+    fn held_keycap_frames_match_redraw_across_bursts_future_reversal_and_reset() {
+        let size = (320, 240);
+        let mut policy = config(PlaybackOverlay::None);
+        policy.output_width = size.0;
+        policy.output_height = size.1;
+        policy.effects.show_cursor = false;
+        policy.effects.show_keyboard = true;
+        policy.effects.record_mouse_scrolling = true;
+        policy.effects.keyboard = Some(KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 64,
+            background_rgba: [0; 4],
+            text_rgba: [255; 4],
+            border_rgba: [0; 4],
+            labels: Default::default(),
+        });
+        let mut held = RecordedEffects::new(policy.clone(), size, Some(Box::new(Glyph))).unwrap();
+        let mut reference = RecordedEffects::new(policy, size, Some(Box::new(Glyph))).unwrap();
+        let pristine = || [20, 40, 60, 255].repeat((size.0 * size.1) as usize);
+        let mut retained = pristine();
+        let mut previous = None;
+        let mut previous_idle = false;
+        let mut sequence = 0;
+        let mut skipped = 0;
+        for index in 0..400 {
+            let now = index * 10;
+            let event = match index {
+                0 | 230 => Some(RecordedInput::Key(KeyEvent {
+                    at_ms: now,
+                    key: 65,
+                    down: true,
+                    label: "A".into(),
+                    modifiers: vec![],
+                })),
+                1..=60 | 210 => Some(RecordedInput::Scroll(KeyEvent {
+                    at_ms: if index == 210 { 2200 } else { now },
+                    key: if index <= 30 || index == 210 {
+                        0x205
+                    } else {
+                        0x206
+                    },
+                    down: true,
+                    label: "Scroll".into(),
+                    modifiers: vec![],
+                })),
+                211 => Some(RecordedInput::KeyboardReset),
+                _ => None,
+            };
+            if let Some(event) = event {
+                let event = input(sequence, now, event);
+                held.observe(&event).unwrap();
+                reference.observe(&event).unwrap();
+                sequence += 1;
+            }
+            let revision = held.observation_revision();
+            if previous == Some(revision) && previous_idle && !held.needs_frame(now) {
+                skipped += 1;
+            } else {
+                retained = pristine();
+                held.apply_rgba(&mut retained, frame(index, now, 0.0))
+                    .unwrap();
+            }
+            let mut expected = pristine();
+            reference
+                .apply_rgba(&mut expected, frame(index, now, 0.0))
+                .unwrap();
+            assert_eq!(retained, expected, "held keycaps at {now} ms");
+            previous = Some(revision);
+            previous_idle = !held.needs_frame(now);
+        }
+        assert!(
+            skipped > 250,
+            "unchanged scroll observations must keep settled pixels reusable"
+        );
+    }
     #[test]
     fn actual_live_preview_and_replay_match_clocked_inputs_resets_and_expiry() {
         use crate::preview::{EffectsPreview, PreviewConfig};
@@ -511,6 +963,7 @@ mod tests {
         };
         let mut live = EffectsPreview::new(
             PreviewConfig {
+                webcam: None,
                 region: (0, 0, size.0, size.1),
                 canvas: size,
                 output: size,
@@ -520,6 +973,7 @@ mod tests {
                 highlight_radius: snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
                 highlight: [0; 4],
                 record_mouse_clicks: false,
+                record_mouse_scrolling: false,
                 show_keyboard: true,
                 keyboard: Some(style),
                 generation: 0,
@@ -858,9 +1312,12 @@ mod tests {
                 }),
             ))
             .unwrap();
+        assert_eq!(effects.observation_revision(), 0);
+        assert!(!effects.needs_frame(99));
         let mut before = pixels();
         effects.apply_rgba(&mut before, frame(0, 99, 0.0)).unwrap();
         assert_eq!(before, pixels());
+        assert!(effects.needs_frame(100));
         let mut after = pixels();
         effects.apply_rgba(&mut after, frame(1, 100, 0.0)).unwrap();
         assert_ne!(after, pixels());

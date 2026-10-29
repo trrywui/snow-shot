@@ -1,4 +1,5 @@
 use super::*;
+use snow_draw_engine_display::{OverlayDisplayItem, UiShapeKind};
 use snow_draw_engine_document::{
     ElementMeta, HighlightShape, RectangleData, TextLayoutSize, Transaction,
 };
@@ -15,6 +16,7 @@ fn commit(engine: &mut Engine, viewport: ViewportId, transaction: Transaction) {
             ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -115,6 +117,193 @@ fn begin(engine: &mut Engine, viewport: ViewportId) -> Point<f64> {
     let handle = presentation(engine, viewport).shape_text_handle.unwrap();
     pointer(engine, viewport, PointerEventType::Down, handle);
     handle
+}
+
+fn displayed_handle(engine: &Engine, viewport: ViewportId) -> Option<Point<f64>> {
+    displayed_control(engine, viewport, UiShapeKind::ShapeTextHandle)
+}
+
+fn displayed_control(
+    engine: &Engine,
+    viewport: ViewportId,
+    kind: UiShapeKind,
+) -> Option<Point<f64>> {
+    engine
+        .acquire_patch(viewport, None)
+        .unwrap()
+        .overlay
+        .ops
+        .iter()
+        .flat_map(|op| &op.insert_items)
+        .find_map(|item| match item {
+            OverlayDisplayItem::Rectangle(rect) if rect.kind == kind => {
+                Some(Point::new(rect.center_x, rect.center_y))
+            }
+            _ => None,
+        })
+}
+
+#[test]
+fn shape_text_handle_appears_immediately_after_pointer_selection() {
+    for tool in [ActiveTool::Select, ActiveTool::Shape] {
+        for button in [PointerButton::Primary, PointerButton::Secondary] {
+            for shape in [
+                HighlightShape::Rectangle,
+                HighlightShape::Ellipse,
+                HighlightShape::Diamond,
+            ] {
+                let (mut engine, viewport, owner) = setup(shape, 0.0, 1.0);
+                engine.set_viewport_active_tool(viewport, tool).unwrap();
+                let empty = Point::new(-300.0, -200.0);
+                pointer(&mut engine, viewport, PointerEventType::Down, empty);
+                pointer(&mut engine, viewport, PointerEventType::Up, empty);
+                let original = *engine.model.rectangle(owner).unwrap();
+                let point =
+                    Point::new(original.center.x, original.center.y - original.height / 2.0);
+                assert_eq!(displayed_handle(&engine, viewport), None);
+
+                for _ in 0..2 {
+                    send(
+                        &mut engine,
+                        viewport,
+                        PointerEventType::Down,
+                        point,
+                        1,
+                        button,
+                    );
+                    assert_eq!(engine.selected_ids(), &[owner]);
+                    let handle = presentation(&engine, viewport).shape_text_handle.unwrap();
+                    assert_eq!(displayed_handle(&engine, viewport), Some(handle));
+                    send(
+                        &mut engine,
+                        viewport,
+                        PointerEventType::Up,
+                        point,
+                        1,
+                        button,
+                    );
+
+                    let handle = presentation(&engine, viewport).shape_text_handle.unwrap();
+                    assert_eq!(
+                        displayed_handle(&engine, viewport),
+                        Some(handle),
+                        "{tool:?} {button:?} {shape:?}: selection controls must stay visible"
+                    );
+                }
+                let handle = displayed_handle(&engine, viewport).unwrap();
+                assert_eq!(*engine.model.rectangle(owner).unwrap(), original);
+                pointer(&mut engine, viewport, PointerEventType::Down, handle);
+                pointer(&mut engine, viewport, PointerEventType::Up, handle);
+                let text = engine.model.bound_text_id_for_shape(owner).unwrap();
+                assert_eq!(engine.take_text_edit_request(viewport).unwrap(), Some(text));
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_text_handle_follows_selection_previews_without_starting_competing_gestures() {
+    for shape in [
+        HighlightShape::Rectangle,
+        HighlightShape::Ellipse,
+        HighlightShape::Diamond,
+    ] {
+        for zoom in [0.5, 2.0] {
+            for control in [
+                UiShapeKind::SelectionFrame,
+                UiShapeKind::SelectionResizeHandle,
+                UiShapeKind::SelectionRotationHandle,
+            ] {
+                for cancel in [false, true] {
+                    let (mut engine, viewport, owner) = setup(shape, 0.65, zoom);
+                    let original = *engine.model.rectangle(owner).unwrap();
+                    let history = engine.history_state();
+                    let start = match control {
+                        UiShapeKind::SelectionFrame => Point::new(
+                            original.center.x + original.rotation.sin() * original.height / 2.0,
+                            original.center.y - original.rotation.cos() * original.height / 2.0,
+                        ),
+                        _ => displayed_control(&engine, viewport, control).unwrap(),
+                    };
+                    pointer(&mut engine, viewport, PointerEventType::Down, start);
+                    let handle = displayed_handle(&engine, viewport).unwrap();
+                    // A visible control must not steal an existing selection gesture.
+                    send(
+                        &mut engine,
+                        viewport,
+                        PointerEventType::Down,
+                        handle,
+                        2,
+                        PointerButton::Primary,
+                    );
+                    assert!(
+                        presentation(&engine, viewport)
+                            .shape_bound_text_preview
+                            .is_none()
+                    );
+
+                    let end = Point::new(start.x + 40.0, start.y + 30.0);
+                    pointer(&mut engine, viewport, PointerEventType::Move, end);
+                    let state = presentation(&engine, viewport);
+                    let preview = state.selected_single_rect.unwrap();
+                    assert_ne!(
+                        preview, original,
+                        "selection gesture must update the preview"
+                    );
+                    assert_eq!(*engine.model.rectangle(owner).unwrap(), original);
+                    let offset = preview.height / 2.0 + 24.0 / zoom;
+                    let expected = Point::new(
+                        preview.center.x - preview.rotation.sin() * offset,
+                        preview.center.y + preview.rotation.cos() * offset,
+                    );
+                    let handle = displayed_handle(&engine, viewport).unwrap();
+                    assert!((handle.x - expected.x).hypot(handle.y - expected.y) < 1e-9);
+                    assert_eq!(state.shape_text_handle, Some(handle));
+                    send(
+                        &mut engine,
+                        viewport,
+                        PointerEventType::Down,
+                        handle,
+                        2,
+                        PointerButton::Primary,
+                    );
+                    assert!(
+                        presentation(&engine, viewport)
+                            .shape_bound_text_preview
+                            .is_none()
+                    );
+                    assert_eq!(engine.take_text_edit_request(viewport).unwrap(), None);
+
+                    pointer(
+                        &mut engine,
+                        viewport,
+                        if cancel {
+                            PointerEventType::Cancel
+                        } else {
+                            PointerEventType::Up
+                        },
+                        end,
+                    );
+                    if cancel {
+                        assert_eq!(*engine.model.rectangle(owner).unwrap(), original);
+                        assert_eq!(engine.history_state(), history);
+                    } else {
+                        assert_eq!(*engine.model.rectangle(owner).unwrap(), preview);
+                        assert_eq!(displayed_handle(&engine, viewport), Some(handle));
+                    }
+                    assert_eq!(engine.model.paint_order(), &[owner]);
+                    let handle = displayed_handle(&engine, viewport).unwrap();
+                    pointer(&mut engine, viewport, PointerEventType::Down, handle);
+                    pointer(&mut engine, viewport, PointerEventType::Up, handle);
+                    let text_id = engine.model.bound_text_id_for_shape(owner).unwrap();
+                    assert_eq!(
+                        engine.take_text_edit_request(viewport).unwrap(),
+                        Some(text_id)
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

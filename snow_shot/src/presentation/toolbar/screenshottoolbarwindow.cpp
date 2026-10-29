@@ -48,6 +48,7 @@ ScreenshotToolPalette::Options screenshotToolbarOptions() {
     options.showScreenRecordButton = true;
     options.showScrollingScreenshotTool = true;
     options.showSaveButton = true;
+    options.showAirDropButton = true;
     options.separatorBeforeShape = true;
     options.actions = ScreenshotToolPalette::PinAction | ScreenshotToolPalette::CancelAction |
                       ScreenshotToolPalette::CopyAction;
@@ -314,6 +315,8 @@ void ScreenshotToolbarWindow::connectToolCommands(ScreenshotToolPalette& toolPal
 #if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
     connect(&toolPalette, &ScreenshotToolPalette::tableResetRequested, this,
             [this]() { m_commands.resetTable(); });
+    connect(&toolPalette, &ScreenshotToolPalette::openSpreadsheetFileRequested, this,
+            [this]() { m_commands.openSpreadsheetFile(); });
 #endif
 }
 
@@ -334,6 +337,8 @@ void ScreenshotToolbarWindow::connectActionCommands(ScreenshotToolPalette& toolP
             [this]() { m_commands.pinSelectionToScreen(); });
     connect(&toolPalette, &ScreenshotToolPalette::quickSaveRequested, this,
             [this]() { m_commands.quickSaveSelection(); });
+    connect(&toolPalette, &ScreenshotToolPalette::airDropRequested, this,
+            [this]() { m_commands.airDropSelection(); });
     connect(&toolPalette, &ScreenshotToolPalette::printRequested, this,
             [this]() { m_commands.printSelection(); });
     connect(&toolPalette, &ScreenshotToolPalette::cloudUploadRequested, this,
@@ -515,6 +520,8 @@ void ScreenshotToolbarWindow::connectScrollingScreenshotCommands(
             [this]() { m_commands.restartScrollingScreenshot(); });
     connect(&toolPalette, &ScreenshotToolPalette::scrollingImageSplittingRequested, this,
             [this]() { m_commands.splitScrollingScreenshot(); });
+    connect(&toolPalette, &ScreenshotToolPalette::scrollingImageEditingRequested, this,
+            [this]() { m_commands.editScrollingScreenshot(); });
     connect(&toolPalette, &ScreenshotToolPalette::scrollingSelectionMoveStarted, this,
             [this](ScreenshotScrollingRecognitionMode axis, QPoint position) {
                 m_commands.beginScrollingSelectionMove(axis, position);

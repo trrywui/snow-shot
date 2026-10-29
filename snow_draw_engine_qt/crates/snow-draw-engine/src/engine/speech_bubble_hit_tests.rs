@@ -32,6 +32,7 @@ fn passive_growth(
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -243,6 +244,7 @@ fn speech_bubble_passive_growth_text_target_respects_visible_occluders() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();

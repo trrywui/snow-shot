@@ -3,6 +3,8 @@
 
 #include "snow_shot/image/screenshotlayoutcompaction.h"
 
+#include "snow_shot/image/screenshotselectionbordertype.h"
+
 #include <QColor>
 #include <QDataStream>
 #include <QImage>
@@ -18,13 +20,27 @@
 class QPainter;
 
 struct ScreenshotResultStyle {
+    // Lengths use the destination coordinate system: canvas units for a live
+    // surface, output pixels after scaledStyle(). UI limits belong to the
+    // selection model and persisted input, never to rendering normalization.
     int cornerRadius = 0;
     int shadowWidth = 0;
     QColor shadowColor = QColor(0x33, 0x33, 0x33);
-    // Immutable geometry snapshot, relative to the content origin, in canvas units.
+    // Immutable source geometry, relative to the content origin. regionScale
+    // maps that geometry into the same destination units as the effect lengths.
     std::optional<ScreenshotRegionGeometry> region = std::nullopt;
     qreal regionScale = 1.0;
     int backgroundOpacityPercent = 0;
+    ScreenshotSelectionBorderType borderType = ScreenshotSelectionBorderType::Shadow;
+    int borderWidth = 0;
+    QColor borderColor = QColor(Qt::white);
+
+    [[nodiscard]] int effectWidth() const {
+        return borderType == ScreenshotSelectionBorderType::Border ? borderWidth : shadowWidth;
+    }
+    [[nodiscard]] QColor effectColor() const {
+        return borderType == ScreenshotSelectionBorderType::Border ? borderColor : shadowColor;
+    }
 };
 
 inline QByteArray encodeScreenshotResultStyle(const ScreenshotResultStyle& style) {
@@ -34,12 +50,19 @@ inline QByteArray encodeScreenshotResultStyle(const ScreenshotResultStyle& style
     // existing records when upgrading Qt.
     stream.setVersion(QDataStream::Qt_6_11);
     stream << style.cornerRadius << style.shadowWidth << style.shadowColor;
-    stream << quint32(0x53535247) << quint8(style.backgroundOpacityPercent == 0 ? 1 : 2)
+    const bool hasBorderSettings = style.borderType != ScreenshotSelectionBorderType::Shadow ||
+                                   style.borderWidth != 0 || style.borderColor != QColor(Qt::white);
+    stream << quint32(0x53535247)
+           << quint8(hasBorderSettings                     ? 3
+                     : style.backgroundOpacityPercent == 0 ? 1
+                                                           : 2)
            << style.regionScale
            << (style.region ? QJsonDocument(style.region->toJson()).toJson(QJsonDocument::Compact)
                             : QByteArray());
-    if (style.backgroundOpacityPercent != 0)
+    if (hasBorderSettings || style.backgroundOpacityPercent != 0)
         stream << style.backgroundOpacityPercent;
+    if (hasBorderSettings)
+        stream << quint8(style.borderType) << style.borderWidth << style.borderColor;
     return bytes;
 }
 
@@ -51,7 +74,8 @@ inline std::optional<ScreenshotResultStyle> decodeScreenshotResultStyle(const QB
     QDataStream stream(bytes);
     stream.setVersion(QDataStream::Qt_6_11);
     stream >> style.cornerRadius >> style.shadowWidth >> style.shadowColor;
-    if (stream.status() != QDataStream::Ok)
+    if (stream.status() != QDataStream::Ok || style.cornerRadius < 0 || style.cornerRadius > 256 ||
+        style.shadowWidth < 0 || style.shadowWidth > 64 || !style.shadowColor.isValid())
         return std::nullopt;
     if (stream.atEnd())
         return style;
@@ -59,10 +83,19 @@ inline std::optional<ScreenshotResultStyle> decodeScreenshotResultStyle(const QB
     quint8 version = 0;
     QByteArray geometry;
     stream >> marker >> version >> style.regionScale >> geometry;
-    if (version == 2)
+    if (version >= 2)
         stream >> style.backgroundOpacityPercent;
+    if (version == 3) {
+        quint8 type = 0;
+        stream >> type >> style.borderWidth >> style.borderColor;
+        if (type > 1 || style.borderWidth < 0 || style.borderWidth > 64 ||
+            !style.borderColor.isValid())
+            return std::nullopt;
+        style.borderType = static_cast<ScreenshotSelectionBorderType>(type);
+        style.borderColor.setAlpha(255);
+    }
     if (stream.status() != QDataStream::Ok || !stream.atEnd() || marker != 0x53535247 ||
-        (version != 1 && version != 2) || style.backgroundOpacityPercent < 0 ||
+        (version != 1 && version != 2 && version != 3) || style.backgroundOpacityPercent < 0 ||
         style.backgroundOpacityPercent > 100 || !std::isfinite(style.regionScale) ||
         style.regionScale <= 0 || style.regionScale > 256)
         return std::nullopt;
@@ -90,9 +123,26 @@ struct ScreenshotResultLayout {
 [[nodiscard]] QPainterPath screenshotRegionPath(const ScreenshotRegionGeometry& region,
                                                 qreal radius = 0.0);
 
+// Bounds and radius are in destination units; region geometry is relative to the
+// content origin and is mapped by regionScale. Shared by masking and decoration.
+[[nodiscard]] QPainterPath
+screenshotSelectionPath(const QRectF& contentBounds,
+                        const std::optional<ScreenshotRegionGeometry>& region, qreal cornerRadius,
+                        qreal regionScale = 1.0);
+
 class ScreenshotResultCompositor final {
   public:
+    // Normalize rendering values without applying canvas-unit editor limits.
     [[nodiscard]] static ScreenshotResultStyle normalizedStyle(const ScreenshotResultStyle& style);
+    // Convert all lengths and geometry once. Callers supply a positive finite
+    // scale from their validated source/output geometry.
+    [[nodiscard]] static ScreenshotResultStyle scaledStyle(const ScreenshotResultStyle& style,
+                                                           qreal scale);
+    // Resolve the active effect once here so every output reserves the same
+    // spacing between components, regardless of inactive shadow/border settings.
+    [[nodiscard]] static std::shared_ptr<const ScreenshotLayoutCompactionPlan>
+    layoutCompactionForContent(const QSize& contentPixelSize, const ScreenshotResultStyle& style,
+                               ScreenshotLayoutCompaction options, qreal scale = 1.0);
     [[nodiscard]] static ScreenshotResultLayout layoutForContent(const QSize& contentPixelSize,
                                                                  const ScreenshotResultStyle& style,
                                                                  qreal devicePixelRatio = 1.0);
@@ -108,6 +158,16 @@ class ScreenshotResultCompositor final {
     [[nodiscard]] static QImage compose(const QImage& content, const ScreenshotResultStyle& style,
                                         qreal devicePixelRatio = 1.0, qreal outputOpacity = 1.0,
                                         const QImage& background = {});
+
+    // Paint color over the viewport outside the selection, preserving its fill rule
+    // and curves. Honors the caller's transform, clip and opacity and restores state.
+    // Winding coverage uses bounded physical-pixel tiles; parity paths need no raster buffer.
+    static void fillOutsideSelection(QPainter& painter, const QRectF& viewportBounds,
+                                     const QPainterPath& selectionPath, const QColor& color);
+
+    // Erase capture pixels outside the selection before painting document annotations.
+    static void maskLiveSurface(QPainter& painter, const QRectF& viewportBounds,
+                                const QPainterPath& selectionPath);
 
     // Clear the part of the viewport outside the result shape, then place the
     // shadow behind the content. Content may cross the viewport boundary:
@@ -126,11 +186,8 @@ compactedScreenshotResultStyle(const ScreenshotResultStyle& style,
         return style;
     auto result = ScreenshotResultCompositor::normalizedStyle(style);
     const qreal scale = result.regionScale;
-    const auto mask =
-        QTransform::fromScale(scale, scale)
-            .map(result.region->custom()
-                     ? result.region->path(scale)
-                     : screenshotRegionPath(*result.region, result.cornerRadius / scale));
+    const auto mask = screenshotSelectionPath(QRectF(QPointF(), plan.sourceSize), result.region,
+                                              result.cornerRadius, scale);
     result.region =
         ScreenshotRegionGeometry::fromPath(plan.mapPath(mask), ScreenshotRegionType::Curve);
     result.regionScale = 1.0;

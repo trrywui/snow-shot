@@ -47,6 +47,7 @@ pub struct InputEvent {
     pub timestamp_ns: u64,
     pub key_code: u16,
     pub mouse_button: u16,
+    pub scroll_delta_y: f64,
     pub keyboard_type: u32,
     pub modifiers: u64,
     pub repeat: bool,
@@ -119,6 +120,11 @@ unsafe extern "C-unwind" fn receive(
         kind: kind.0,
         mouse_button: CGEvent::integer_value_field(event_ref, CGEventField::MouseEventButtonNumber)
             as u16,
+        scroll_delta_y: if kind == CGEventType::ScrollWheel {
+            CGEvent::double_value_field(event_ref, CGEventField::ScrollWheelEventFixedPtDeltaAxis1)
+        } else {
+            0.0
+        },
         x: location.x,
         y: location.y,
         timestamp_ns: CGEvent::timestamp(event_ref),
@@ -230,6 +236,7 @@ fn run(
             CGEventType::LeftMouseDragged,
             CGEventType::RightMouseDragged,
             CGEventType::OtherMouseDragged,
+            CGEventType::ScrollWheel,
         ] {
             mask |= 1 << kind.0;
         }
@@ -307,6 +314,7 @@ mod tests {
             timestamp_ns: 0,
             key_code: 0,
             mouse_button: 0,
+            scroll_delta_y: 0.0,
             keyboard_type: 0,
             modifiers: 0,
             repeat: false,

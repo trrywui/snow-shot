@@ -722,38 +722,70 @@ impl DesktopSession {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| geometry("timeout overflow"))?;
-        let mut changed = false;
-        for (index, stream) in self.streams.iter().enumerate() {
-            match stream.next_frame(deadline.saturating_duration_since(Instant::now())) {
-                Ok(frame) => {
-                    if self.latest[index]
-                        .as_ref()
-                        .is_none_or(|f| f.timestamp != frame.timestamp)
-                    {
-                        self.latest[index] = Some(frame);
-                        changed = true;
+        // A failed composition leaves the latest sources newer than the last
+        // delivered frame. Retry them even if no further callback arrives.
+        let mut changed = self.sources_changed();
+        loop {
+            // Drain every display before waiting. An idle first display must
+            // not delay an already available frame from another display.
+            for (index, stream) in self.streams.iter().enumerate() {
+                match stream.next_frame(Duration::ZERO) {
+                    Ok(frame) => {
+                        if self.latest[index]
+                            .as_ref()
+                            .is_none_or(|f| f.timestamp != frame.timestamp)
+                        {
+                            self.latest[index] = Some(frame);
+                            changed = true;
+                        }
+                    }
+                    Err(MacError::Timeout) => {}
+                    Err(error) => {
+                        self.previous = None;
+                        self.latest.fill(None);
+                        return Err(error);
                     }
                 }
-                Err(MacError::Timeout) if self.latest[index].is_some() => {}
-                Err(error) => {
-                    self.previous = None;
-                    self.latest.fill(None);
-                    return Err(error);
-                }
             }
+            let complete = self.latest.iter().all(Option::is_some);
+            if changed && complete {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                if !complete {
+                    return Err(MacError::Timeout);
+                }
+                break;
+            }
+            VideoStream::wait_for_any(&self.streams, remaining);
         }
         if topology()? != self.topology {
             return Err(MacError::Inactive);
         }
-        if !changed && let Some(previous) = &self.previous {
-            return Ok(DesktopEvent::Frame(DesktopFrame {
+        self.frame_from_latest().map(DesktopEvent::Frame)
+    }
+    fn sources_changed(&self) -> bool {
+        self.previous.as_ref().is_none_or(|previous| {
+            !self
+                .latest
+                .iter()
+                .map(|frame| frame.as_ref().map(|frame| frame.timestamp))
+                .eq(previous.source_times.iter().copied().map(Some))
+        })
+    }
+    fn frame_from_latest(&mut self) -> MacResult<DesktopFrame> {
+        if !self.sources_changed()
+            && let Some(previous) = &self.previous
+        {
+            return Ok(DesktopFrame {
                 duplicate: true,
                 ..previous.clone()
-            }));
+            });
         }
         let frame = self.compose()?;
         self.previous = Some(frame.clone());
-        Ok(DesktopEvent::Frame(frame))
+        Ok(frame)
     }
     pub fn snapshot(&mut self) -> MacResult<DesktopFrame> {
         if self.config.cancellation.is_canceled() {
@@ -928,11 +960,8 @@ mod tests {
             primary: id == 1,
         }
     }
-    #[test]
-    fn stream_rate_is_retained_for_initial_start_and_restart() {
-        let display = display(1, 0.0, 100.0, 1.0);
-        let plan = region_plan(display.bounds, &[display], None).unwrap();
-        let mut session = DesktopSession {
+    fn session_for_plan(plan: Plan) -> DesktopSession {
+        DesktopSession {
             config: DesktopConfig::new(DesktopTarget::PrimaryDisplay),
             latest: vec![None; plan.sources.len()],
             plan,
@@ -949,7 +978,50 @@ mod tests {
             exclusion_control: None,
             exclusion_flight: None,
             required_excluded_windows: Vec::new(),
+        }
+    }
+    #[test]
+    fn final_source_update_retries_after_compositor_backpressure() {
+        let display = display(1, 0.0, 100.0, 1.0);
+        let mut plan = region_plan(display.bounds, &[display], None).unwrap();
+        // Opaque windows require composition rather than the display lease shortcut.
+        plan.sources[0].target = Target::Window(123);
+        let size = plan.transform.output;
+        let mut session = session_for_plan(plan);
+        session.config.opaque = true;
+        session.compositor = Some(Compositor::new(size, PixelFormat::Bgra8, 2).unwrap());
+        let mut producer = Compositor::new(size, PixelFormat::Bgra8, 2).unwrap();
+        let image = producer.compose(&[], true).unwrap();
+        let timestamp = |value| MediaTime {
+            value,
+            timescale: 1000,
+            domain: snow_media::time::ClockDomain::MacHostTime,
+            epoch: 0,
         };
+        session.latest[0] = Some(NativeFrame::test_frame(image.clone(), timestamp(1)));
+        let held = session.frame_from_latest().unwrap();
+        session.latest[0] = Some(NativeFrame::test_frame(image.clone(), timestamp(2)));
+        session.frame_from_latest().unwrap();
+        session.latest[0] = Some(NativeFrame::test_frame(image, timestamp(3)));
+        assert!(matches!(
+            session.frame_from_latest(),
+            Err(MacError::Timeout)
+        ));
+        assert!(session.sources_changed());
+        drop(held);
+        let final_frame = session.frame_from_latest().unwrap();
+        assert!(!final_frame.duplicate);
+        assert_eq!(final_frame.source_times, vec![timestamp(3)]);
+        assert!(!session.sources_changed());
+        let duplicate = session.frame_from_latest().unwrap();
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.source_times, final_frame.source_times);
+    }
+    #[test]
+    fn stream_rate_is_retained_for_initial_start_and_restart() {
+        let display = display(1, 0.0, 100.0, 1.0);
+        let plan = region_plan(display.bounds, &[display], None).unwrap();
+        let mut session = session_for_plan(plan);
         session.set_fps(30).unwrap();
         assert_eq!(
             session

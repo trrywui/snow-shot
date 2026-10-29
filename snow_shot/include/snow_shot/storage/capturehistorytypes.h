@@ -6,6 +6,8 @@
 #include "snow_shot/storage/preparedpngimage.h"
 
 #include <QByteArray>
+#include "snow_shot/image/screenshotselectionbordertype.h"
+
 #include <QColor>
 #include <QDateTime>
 #include <QImage>
@@ -37,6 +39,16 @@ struct PersistedSelection {
     std::optional<ScreenshotRegionGeometry> region;
     ScreenshotLayoutCompaction layoutCompaction = {};
     int backgroundOpacityPercent = 0;
+    ScreenshotSelectionBorderType borderType = ScreenshotSelectionBorderType::Shadow;
+    int borderWidth = 0;
+    QColor borderColor = QColor(Qt::white);
+
+    [[nodiscard]] int effectWidth() const {
+        return borderType == ScreenshotSelectionBorderType::Border ? borderWidth : shadowWidth;
+    }
+    [[nodiscard]] QColor effectColor() const {
+        return borderType == ScreenshotSelectionBorderType::Border ? borderColor : shadowColor;
+    }
 
     friend bool operator==(const PersistedSelection& first, const PersistedSelection& second) {
         return first.rectangle == second.rectangle && first.cornerRadius == second.cornerRadius &&
@@ -44,7 +56,9 @@ struct PersistedSelection {
                first.lockAspectRatio == second.lockAspectRatio &&
                first.lockDragAspectRatio == second.lockDragAspectRatio &&
                first.region == second.region && first.layoutCompaction == second.layoutCompaction &&
-               first.backgroundOpacityPercent == second.backgroundOpacityPercent;
+               first.backgroundOpacityPercent == second.backgroundOpacityPercent &&
+               first.borderType == second.borderType && first.borderWidth == second.borderWidth &&
+               first.borderColor == second.borderColor;
     }
 };
 

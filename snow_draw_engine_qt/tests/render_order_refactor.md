@@ -1,6 +1,6 @@
 # Render order: architecture and verification
 
-The logical scene establishes filter source boundaries before spatial culling. Ordinary drawables, including transparent shapes and Smart Erase, terminate a source pass. Hidden/non-emitted elements do not participate; spotlight and watermark are separate decorations. Within a pass, consecutive compatible filters form an ordered effect run. All runs read the same immutable entering backdrop, then write in declared order. Thus invert -> grayscale -> invert has three runs, even if the middle effect is culled.
+The logical scene establishes filter source boundaries before spatial culling. Ordinary drawables, including transparent shapes and Smart Erase, terminate a source pass. Hidden/non-emitted elements do not participate; Spotlight is composited over the background before all scene items; watermark remains a final decoration. Within a pass, consecutive compatible filters form an ordered effect run. All runs read the same immutable entering backdrop, then write in declared order. Thus invert -> grayscale -> invert has three runs, even if the middle effect is culled.
 
 ## Ownership and transport
 
@@ -11,15 +11,21 @@ The logical scene establishes filter source boundaries before spatial culling. O
 
 ## Execution and invalidation
 
-Qt retains an execution plan by scene revision and DPR. Filter paths, bounds, physical parameters and spatial groups are resolved once. Filter-only storage is compact; ordinary items use integer lookups. Tiles and exposed regions select operations without regrouping their order. Direct fixtures construct metadata from complete uncropped arrays; their helper can recognize adjacent effects that resolve to equal physical parameters because no intervening item is missing.
+Qt retains an execution plan by scene revision and DPR. Spotlight does not alter pass membership or effect batching; its backdrop fingerprint invalidates retained filter sources and reference images when its style, cutouts, or render area change. Filter paths, bounds, physical parameters and spatial groups are resolved once. Filter-only storage is compact; ordinary items use integer lookups. Tiles and exposed regions select operations without regrouping their order. Direct fixtures construct metadata from complete uncropped arrays; their helper can recognize adjacent effects that resolve to equal physical parameters because no intervening item is missing.
+
+Qt distinguishes Spotlight source damage from watermark-only decoration updates. Source changes, local style previews, and render-area edits pass through the same ordered damage propagation used for original-image and magnifier changes. Each filter pass reads immutable entering damage; its outputs become input only to later passes. Damage uses the renderer's actual sampling support and remains regional. Subpixel render-area changes include boundary coverage even when rounded rectangles are unchanged.
+
+Reference scenes propagate damage on their fixed source grid and then map it to the live viewport with a one-source-pixel resampling halo. A widget observes both its live and reference viewport so culled cutout edits still notify the renderer that samples them. Spotlight render areas remain in canvas coordinates, preserving reference reuse during pan, zoom, and resize. The reference image replaces its interior using Source composition; the shared Spotlight backdrop renderer covers exposed pixels outside that image without double compositing transparent content.
 
 Source-region expansion, replay, snapshot lookup and Rust dirty propagation use explicit membership. Each source pass captures one immutable backdrop per working region. Spatial subdivision remains inside an effect run. Source-cache keys use stable pass identities. Dependency fingerprints for all pass boundaries in one region use a single prefix traversal, reused for lookup and store. Regional invalidation and the existing 64 MiB cache bound remain intact.
 
-Topology invalidation compares old/new ordered pass membership rather than item offsets, dirties changed filter outputs, and propagates through downstream passes. Geometry-only damage remains spatial. Widget and export share spotlight-then-watermark decoration rendering; editor overlays and custom after-canvas hooks retain their positions.
+Topology invalidation compares old/new ordered pass membership rather than item offsets, dirties changed filter outputs, and propagates through downstream passes. Geometry-only damage remains spatial. Widget and export share the Spotlight backdrop in scene rendering, followed by watermark decoration rendering; editor overlays and custom after-canvas hooks retain their positions.
 
 ## Verification
 
 Only affected crate tests and filtered Qt tests were run. Coverage includes pre-culling boundaries, offscreen effect changes, generation-aware identities, plan-only/empty/reset/no-op patches, malformed descriptors, ABI storage/lifetimes/null output checks, label ownership, shared serial text/rebinding, reorder/history, duplicate caching, geometry-only reuse, Smart Erase and automatic filters. Pixel regressions cover mixed effects, mixed strengths, partial opacity and pen masks; full/tiled and cold/retained comparisons at DPR 1, 1.25 and 2; partial repaint and viewport crop invariance; and actual runtime export cropping, including fractional selections. Retained-plan tests cover unchanged/decoration/overlay reuse and DPR changes.
+
+Spotlight regressions also observe actual paint-event regions and compare partial repaint results after cutout edits, undo/redo, style previews/commits, and render-area changes. They cover dependent filter passes, source-only viewport notifications, transparent outer coverage, and reference reuse. Unscaled comparisons are exact; scaled reference presentation allows one channel level for Qt's clipped bilinear span rounding, independently reproduced with plain QPainter image scaling.
 
 ## Release measurements
 

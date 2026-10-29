@@ -1,4 +1,5 @@
 #include "snow_draw_engine_qt/snow_canvas_smart_erase.h"
+#include "snow_draw_engine_qt/snow_canvas_image_source_types.h"
 #ifndef SNOW_SHOT_PRESENTATION_SCREENSHOTEXPORTARTIFACT_H
 #define SNOW_SHOT_PRESENTATION_SCREENSHOTEXPORTARTIFACT_H
 
@@ -30,6 +31,8 @@ struct ScreenshotPinnedViewportExportSource final {
     qreal outputOpacity = 1.0;
     std::optional<ScreenshotClipboardPlacement> clipboardPlacement = std::nullopt;
     std::optional<ScreenshotClipboardAppearance> clipboardAppearance = std::nullopt;
+    // Original sampling context may extend beyond the visible background image.
+    QList<SnowCanvasBaseImageSource> samplingSources = {};
 };
 
 struct ScreenshotExportImageResult final {
@@ -112,7 +115,6 @@ class ScreenshotExportArtifact final : public QObject {
     using ImageCallback = std::function<void(ScreenshotExportImageResult)>;
     using EncodingCallback = std::function<void(ScreenshotExportEncodingResult)>;
     using ClipboardCallback = std::function<void(ScreenshotExportClipboardResult)>;
-    using ClipboardFileCallback = std::function<void(std::unique_ptr<QMimeData>, QString)>;
 
     explicit ScreenshotExportArtifact(ScreenshotExportSource source, QObject* parent = nullptr);
     ScreenshotExportArtifact(ScreenshotExportSource source,
@@ -142,16 +144,15 @@ class ScreenshotExportArtifact final : public QObject {
     [[nodiscard]] bool requestPng(QObject* receiver, ScreenshotCompressionLevel compression,
                                   EncodingCallback callback);
     [[nodiscard]] bool requestClipboard(QObject* receiver, ClipboardCallback callback);
+    // Prepare image data and a temporary exported file for one clipboard publication.
     [[nodiscard]] bool requestClipboardFile(QObject* receiver, ScreenshotImageFileFormat format,
                                             QString filenameFormat,
                                             ScreenshotImageEncodingOptions encoding,
-                                            ClipboardFileCallback callback,
+                                            ClipboardCallback callback,
                                             ScreenshotPdfOptions pdf = {},
                                             QDateTime requestedAt = {});
     [[nodiscard]] std::optional<ScreenshotClipboardPlacement> clipboardPlacement() const;
     [[nodiscard]] std::optional<ScreenshotClipboardAppearance> clipboardAppearance() const;
-    // Used by file-URL clipboard publications after the export has completed.
-    void setClipboardFileMetadata(QMimeData& mime, const QString& path) const;
     // Retain temporary output ownership until asynchronous writers finish after cancellation.
     [[nodiscard]] bool requestSaveToPath(QObject* receiver, QString path,
                                          ScreenshotImageFileFormat format,
@@ -176,6 +177,8 @@ class ScreenshotExportArtifact final : public QObject {
     [[nodiscard]] bool requestQuickSave(QObject* receiver,
                                         ScreenshotExportCoordinator::Completion callback,
                                         QDateTime requestedAt = {});
+    // Retire pending and queued deliveries on every receiver thread. Callbacks that
+    // have already started may finish; cancellation never waits for consumer code.
     void cancel();
 
     [[nodiscard]] bool isValid() const;
@@ -198,6 +201,12 @@ class ScreenshotExportArtifact final : public QObject {
                                        ScreenshotExportCoordinator::Completion callback,
                                        ScreenshotPdfOptions pdf, QDateTime requestedAt,
                                        ScreenshotExportCoordinator::Priority priority);
+    // Freeze naming context before asynchronous preparation; all sources use the same writer.
+    [[nodiscard]] FileSourceCallback
+    makeFileSaveCallback(QObject* receiver, FileSaveDestination destination,
+                         ScreenshotImageFileFormat format, QString filenameFormat,
+                         ScreenshotExportCoordinator::Completion callback, ScreenshotPdfOptions pdf,
+                         QDateTime requestedAt, ScreenshotExportCoordinator::Priority priority);
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 

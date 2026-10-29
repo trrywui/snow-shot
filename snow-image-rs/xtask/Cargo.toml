@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+gif.workspace = true
+png.workspace = true
+snow-image-core = { path = "../crates/snow-image-core" }
+snow-image-rs = { path = "../crates/snow-image-rs" }
+
+[lints]
+workspace = true

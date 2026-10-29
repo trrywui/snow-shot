@@ -651,6 +651,7 @@ fn magnifier_mixed_corner_patch_remembers_corners_and_preserves_unedited_factors
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -754,6 +755,7 @@ fn magnifier_mixed_arrow_ratio_patch_preserves_other_properties_and_history() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -931,6 +933,7 @@ fn magnifier_lens_cancel_does_not_commit_and_z_order_remains_intact() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1047,6 +1050,7 @@ fn magnifier_mixed_connections_and_outlines_resolve_one_property_at_a_time() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1335,6 +1339,7 @@ fn magnifier_mixed_selection_resizes_and_rotates_both_region_centers_coherently(
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1478,6 +1483,7 @@ fn magnifier_resize_fixture(
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -1758,6 +1764,7 @@ fn magnifier_centered_reflection_commits_when_group_proxies_are_unchanged() {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();
@@ -2156,6 +2163,7 @@ fn magnifier_alignment_history_restores_compound_bounds_and_single_source_editin
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();

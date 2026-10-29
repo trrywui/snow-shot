@@ -4,6 +4,7 @@
 #include "snow_shot/presentation/screenshotintelligentselectionmodel.h"
 #include "snow_shot/presentation/screenshotocrcontroller.h"
 #include "snow_shot/presentation/screenshotocrpresentation.h"
+#include "snow_shot/presentation/screenshotrecognitionsessioncontroller.h"
 #include "snow_shot/presentation/screenshotoverlaycoordinator.h"
 #include "snow_shot/presentation/screenshotoverlayeventsink.h"
 #include "snow_shot/presentation/screenshotoverlayinputhandler.h"
@@ -96,7 +97,7 @@ class ToolbarCommands final : public ScreenshotToolbarCommandSink,
     void adjustSelectionFromToolbar(int, int, int, int) override {}
     void adjustSelectionEffectsFromWheel(int, int) override {}
     void setSelectionCornerRadiusFromToolbar(int) override {}
-    void setSelectionShadowWidthFromToolbar(int) override {}
+    void setSelectionEffectWidthFromToolbar(int) override {}
     void setSelectionToolbarHovered(bool) override {}
 };
 
@@ -219,6 +220,28 @@ void copyAfterRecognitionOwnsCompletion() {
             require(ended == (copied ? 1 : 0) &&
                         QApplication::clipboard()->text() == QStringLiteral("Next capture"),
                     "copy recognition must not leak into later screenshot activations");
+            if (scenario == Scenario::Cached && followUp == QStringLiteral("no_action")) {
+                auto* session = controller.findChild<ScreenshotRecognitionSessionController*>();
+                require(session, "screenshot controller owns a recognition session");
+                auto results = controller.recognitionResultsSnapshot();
+                results.key += QStringLiteral("-image-copy-failure");
+                results.translatedText =
+                    std::make_shared<ScreenshotOcrPresentation>(*results.text->presentation);
+                results.translatedText->lines[0].text = QStringLiteral("Translated result");
+                QImage image(80, 60, QImage::Format_ARGB32_Premultiplied);
+                image.fill(Qt::white);
+                session->setTarget({results.key, image, QRectF(10, 10, 80, 60)});
+                session->seedRecognitionResults(std::move(results));
+                session->activate(ScreenshotRecognitionSessionController::Mode::Text);
+                require(session->activateCachedTextTranslation(), "restore screenshot translation");
+                const snow_shot::storage::ScreenshotTranslationSettings settings;
+                require(settings.setCopyTranslationResultsAsImage(true), "enable image copying");
+                const int previousEnded = ended;
+                require(!controller.copyRecognitionToClipboard(true) && ended == previousEnded &&
+                            QApplication::clipboard()->text() == QStringLiteral("Next capture"),
+                        "failed translation image generation retains the clipboard and capture");
+                require(settings.setCopyTranslationResultsAsImage(false), "restore copy default");
+            }
         }
     }
 }

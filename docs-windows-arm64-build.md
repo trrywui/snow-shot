@@ -11,6 +11,19 @@ Windows SDK ARM64 libraries, and Rust 1.97.1 or newer. Install the Visual Studio
 build-tools component, including `armasm64.exe`. A native ARM64 host uses
 `HostARM64/arm64`; an x64 host uses `Hostx64/arm64`.
 
+The OCR worker enables the `gpu` Cargo feature on both Windows architectures.
+Its host-side shaderc build requires Python, CMake, and the host C++ compiler;
+the resulting SPIR-V shaders are embedded. Deployment needs no Vulkan SDK or
+shader compiler. Hardware acceleration defaults off and requires a physical GPU
+with the Vulkan 1.3 features accepted by `simd-paddle-ocr-rs`. Missing loaders or
+unsupported devices fall back to CPU without blocking recognition on discovery.
+
+Keep the checkout and build directories short: shaderc's bundled SPIRV-Tools has
+long object filenames that can exceed MSVC's 260-character path limit even when
+Windows long paths are enabled. For runtime-only builds in a deep checkout, use
+`scripts/prepare-snow-shot-ocr-runtime.ps1 -Architecture arm64 -BuildDirectory build/ocr-arm64`.
+For application builds, use a short checkout root or configure CMake with a shorter `-B` path.
+
 Rust bindgen loads libclang into the Rust host process. Native ARM64 Rust requires
 an ARM64 `libclang.dll`; place it under `.tools/llvm-arm64/bin`, select a native
 Visual Studio LLVM installation, or set `LIBCLANG_PATH` to its directory. An x64
@@ -113,6 +126,22 @@ For development, install `Dynamic` dependencies and select a matching Debug Qt
 kit. `build-static-qt.ps1 -Architecture arm64 -Configuration Debug` builds a
 development kit with Qt Test and Concurrent. Performance builds also require
 those modules; pass `-DevelopmentModules` when preparing a Release kit for them.
+
+The Windows Qt source policy includes `qtbase-graphicsview-exposed-rect.patch`.
+MSVC 19.51 ARM64 can miscompile Qt 6.12's integer rectangle adjustment followed
+by conversion to `QRectF`: a negative paint boundary such as `-1` becomes
+`4294967295`. The scene index then culls visible OCR text on full viewport
+repaints; interior repaints after interaction can appear to repair it. The patch
+converts the exposed rectangle to floating-point coordinates before expanding
+it, retaining the scene index and OCR glyph caches. Rebuild Qt and relink Snow
+Shot; changing application code alone does not replace a statically linked Qt.
+The source-patch fingerprint rejects kits built without this correction.
+
+The focused `snow-shot-qt-graphicsview-rendering-tests` target checks full and
+partial damage, first-frame text, negative scene coordinates, transformed views,
+and fractional device pixel ratios. It is also available without building the
+app through `test-support/qt-graphicsview`. Validate an optimized ARM64 build on
+Windows ARM64, since an x64 or Debug pass does not cover this compiler failure.
 
 ## Build and prepare OCR
 

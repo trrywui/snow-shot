@@ -46,6 +46,7 @@ pub struct EffectsConfig {
     pub keyboard: Option<KeyboardOverlayConfig>,
     pub show_keyboard: bool,
     pub record_mouse_clicks: bool,
+    pub record_mouse_scrolling: bool,
     pub mouse_trail_rgba: [u8; 4],
     pub mouse_trail_duration_ms: u64,
     pub mouse_click_rgba: [u8; 4],
@@ -60,6 +61,7 @@ impl Default for EffectsConfig {
             keyboard: None,
             show_keyboard: false,
             record_mouse_clicks: false,
+            record_mouse_scrolling: false,
             mouse_trail_rgba: [0; 4],
             mouse_trail_duration_ms: 500,
             mouse_click_rgba: [0; 4],
@@ -238,7 +240,8 @@ impl RenderMetadata {
 }
 
 const LEGACY_RENDER_METADATA_MAGIC: &[u8] = b"SNOWRENDER\0\x01";
-const RENDER_METADATA_MAGIC: &[u8] = b"SNOWRENDER\0\x02";
+const V2_RENDER_METADATA_MAGIC: &[u8] = b"SNOWRENDER\0\x02";
+const RENDER_METADATA_MAGIC: &[u8] = b"SNOWRENDER\0\x03";
 const MAX_RENDER_METADATA_BYTES: u64 = 4 * 1024 * 1024;
 
 // Bincode encodes fields positionally. Keep the version-1 layout explicit so adding
@@ -286,6 +289,7 @@ impl From<LegacyRenderMetadata> for RenderMetadata {
                     keyboard: effects.keyboard,
                     show_keyboard: effects.show_keyboard,
                     record_mouse_clicks: effects.record_mouse_clicks,
+                    record_mouse_scrolling: false,
                     mouse_trail_rgba: effects.mouse_trail_rgba,
                     mouse_trail_duration_ms: effects.mouse_trail_duration_ms,
                     mouse_click_rgba: effects.mouse_click_rgba,
@@ -296,6 +300,62 @@ impl From<LegacyRenderMetadata> for RenderMetadata {
             timeline: legacy.timeline,
             coded_width: legacy.coded_width,
             coded_height: legacy.coded_height,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct V2EffectsConfig {
+    show_cursor: bool,
+    keyboard: Option<KeyboardOverlayConfig>,
+    show_keyboard: bool,
+    record_mouse_clicks: bool,
+    mouse_trail_rgba: [u8; 4],
+    mouse_trail_duration_ms: u64,
+    mouse_click_rgba: [u8; 4],
+    mouse_highlight_rgba: [u8; 4],
+    mouse_highlight_radius: u32,
+}
+#[derive(Serialize, Deserialize)]
+struct V2RenderConfig {
+    output_width: u32,
+    output_height: u32,
+    output_fps: u32,
+    effects: V2EffectsConfig,
+    playback_overlay: PlaybackOverlay,
+}
+#[derive(Serialize, Deserialize)]
+struct V2RenderMetadata {
+    render: V2RenderConfig,
+    timeline: FinalizedTimeline,
+    coded_width: u32,
+    coded_height: u32,
+}
+impl From<V2RenderMetadata> for RenderMetadata {
+    fn from(old: V2RenderMetadata) -> Self {
+        let e = old.render.effects;
+        Self {
+            render: RenderConfig {
+                output_width: old.render.output_width,
+                output_height: old.render.output_height,
+                output_fps: old.render.output_fps,
+                playback_overlay: old.render.playback_overlay,
+                effects: EffectsConfig {
+                    show_cursor: e.show_cursor,
+                    keyboard: e.keyboard,
+                    show_keyboard: e.show_keyboard,
+                    record_mouse_clicks: e.record_mouse_clicks,
+                    record_mouse_scrolling: false,
+                    mouse_trail_rgba: e.mouse_trail_rgba,
+                    mouse_trail_duration_ms: e.mouse_trail_duration_ms,
+                    mouse_click_rgba: e.mouse_click_rgba,
+                    mouse_highlight_rgba: e.mouse_highlight_rgba,
+                    mouse_highlight_radius: e.mouse_highlight_radius,
+                },
+            },
+            timeline: old.timeline,
+            coded_width: old.coded_width,
+            coded_height: old.coded_height,
         }
     }
 }
@@ -344,7 +404,10 @@ fn decode_render_metadata(input: impl std::io::Read) -> crate::Result<RenderMeta
     let mut input = std::io::BufReader::new(input);
     let mut magic = [0u8; 12];
     input.read_exact(&mut magic)?;
-    if magic != RENDER_METADATA_MAGIC && magic != LEGACY_RENDER_METADATA_MAGIC {
+    if magic != RENDER_METADATA_MAGIC
+        && magic != LEGACY_RENDER_METADATA_MAGIC
+        && magic != V2_RENDER_METADATA_MAGIC
+    {
         return Err(crate::RecordingModelError::Decode(
             "unsupported render metadata format".into(),
         ));
@@ -355,6 +418,10 @@ fn decode_render_metadata(input: impl std::io::Read) -> crate::Result<RenderMeta
     let metadata: RenderMetadata = if magic == LEGACY_RENDER_METADATA_MAGIC {
         options
             .deserialize_from::<_, LegacyRenderMetadata>(&mut input)
+            .map(RenderMetadata::from)
+    } else if magic == V2_RENDER_METADATA_MAGIC {
+        options
+            .deserialize_from::<_, V2RenderMetadata>(&mut input)
             .map(RenderMetadata::from)
     } else {
         options.deserialize_from(&mut input)
@@ -395,6 +462,41 @@ impl Iterator for TimelineFrames {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_two_metadata_disables_scrolling_and_v3_preserves_it() {
+        let old = V2RenderMetadata {
+            render: V2RenderConfig {
+                output_width: 640,
+                output_height: 480,
+                output_fps: 30,
+                playback_overlay: PlaybackOverlay::None,
+                effects: V2EffectsConfig {
+                    show_cursor: true,
+                    keyboard: None,
+                    show_keyboard: false,
+                    record_mouse_clicks: false,
+                    mouse_trail_rgba: [0; 4],
+                    mouse_trail_duration_ms: 500,
+                    mouse_click_rgba: [0; 4],
+                    mouse_highlight_rgba: [0; 4],
+                    mouse_highlight_radius: 96,
+                },
+            },
+            timeline: FinalizedTimeline::new(1000, 30).unwrap(),
+            coded_width: 640,
+            coded_height: 480,
+        };
+        let mut bytes = V2_RENDER_METADATA_MAGIC.to_vec();
+        bincode::serialize_into(&mut bytes, &old).unwrap();
+        let mut metadata = decode_render_metadata(bytes.as_slice()).unwrap();
+        assert!(!metadata.render.effects.record_mouse_scrolling);
+        assert_eq!(metadata.render.effects.mouse_highlight_radius, 96);
+        metadata.render.effects.record_mouse_scrolling = true;
+        let mut bytes = RENDER_METADATA_MAGIC.to_vec();
+        bincode::serialize_into(&mut bytes, &metadata).unwrap();
+        assert_eq!(decode_render_metadata(bytes.as_slice()).unwrap(), metadata);
+    }
     #[test]
     fn rational_timeline_is_compact_and_has_exact_endpoints() {
         for fps in [1, 24, 30, 60, 144, 1000] {

@@ -1,5 +1,6 @@
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "snow_draw_engine_qt/snow_canvas_custom_renderer.h"
+#include "snow_draw_engine_qt/snow_canvas_region_filter.h"
 #include "snow_draw_engine_qt/snow_canvas_widget.h"
 
 #include <QApplication>
@@ -753,7 +754,16 @@ void siblingFiltersKeepTheirSharedEnteringDamage() {
     prepareDamageCanvas(canvas, renderer);
     addSeparatedLens(canvas, QRectF(20, 80, 30, 30), QPointF(95, 0));
     addBlur(canvas, QRectF(140, 75, 80, 40));
-    addBlur(canvas, QRectF(250, 75, 30, 40));
+    SnowCanvasRegionFilterParameters parameters;
+    parameters.logicalSigma = 36.5; // Full-strength Gaussian, as configured by addBlur.
+    parameters.devicePixelRatio = canvas.devicePixelRatioF();
+    const int support =
+        qCeil(snowCanvasRegionFilterSupportPixels(parameters) / parameters.devicePixelRatio);
+    // The sibling must lie outside the original lens's sampling support, but
+    // inside the first filter's expanded output. Reduced blur reconstruction
+    // has wider support than three sigma, even where this image rounds to blue.
+    const QRect sibling(170 + support, 75, 30, 40);
+    addBlur(canvas, sibling);
     const QImage before = fullRender(canvas);
     QApplication::processEvents();
     canvas.painted = {};
@@ -768,8 +778,7 @@ void siblingFiltersKeepTheirSharedEnteringDamage() {
     const QImage after = fullRender(canvas);
     require(changedPixels(before, after, QRect(170, 80, 40, 30)) > 0,
             "the first sibling filter must respond to changed lens pixels");
-    require(changedPixels(before, after, QRect(250, 75, 30, 40)) == 0 &&
-                !painted.contains(QPoint(265, 95)),
+    require(changedPixels(before, after, sibling) == 0 && !painted.contains(sibling.center()),
             "sibling filters cannot consume or propagate each other's changed output");
     requireChangedPixelsRepainted(before, after, painted);
     canvas.setCustomRenderer(nullptr);

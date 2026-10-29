@@ -11,7 +11,7 @@ use crate::{
     read_recording_bundle_footer,
 };
 
-const INPUT_MAGIC: &[u8; 11] = b"SNOWINPUT\0\x01";
+const INPUT_MAGIC: &[u8; 11] = b"SNOWINPUT\0\x02";
 pub const MAX_INPUT_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,6 +21,43 @@ pub struct KeyEventRecord {
     pub down: bool,
     pub label: String,
     pub modifiers: Vec<(u16, String)>,
+}
+
+/// Vertical wheel direction, independent of device-specific delta units.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+}
+impl ScrollDirection {
+    pub fn from_delta(delta: f64) -> Option<Self> {
+        if !delta.is_finite() || delta == 0.0 {
+            None
+        } else if delta > 0.0 {
+            Some(Self::Up)
+        } else {
+            Some(Self::Down)
+        }
+    }
+    pub fn key(self) -> u16 {
+        match self {
+            Self::Up => 0x205,
+            Self::Down => 0x206,
+        }
+    }
+    pub fn from_key(key: u16) -> Option<Self> {
+        match key {
+            0x205 => Some(Self::Up),
+            0x206 => Some(Self::Down),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Up => "Scroll up",
+            Self::Down => "Scroll down",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +96,8 @@ pub enum RecordedInput {
     },
     /// Release keys after input-observer overflow/interruption while existing mouse effects fade.
     KeyboardReset,
+    /// Vertical wheel observation; key carries direction, localized label and original time.
+    Scroll(KeyEventRecord),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,6 +125,15 @@ impl RecordedInputEvent {
                 }
             }
             RecordedInput::Key(key) => validate_key(key)?,
+            RecordedInput::Scroll(key) => {
+                validate_key(key)?;
+                if ScrollDirection::from_key(key.key).is_none()
+                    || !key.down
+                    || !key.modifiers.is_empty()
+                {
+                    return Err(invalid("invalid scroll observation"));
+                }
+            }
             RecordedInput::Click(click) => {
                 validate_key(&click.key)?;
                 if click.down != click.key.down {
@@ -197,7 +245,7 @@ impl InputStoreReader {
         let mut input = BufReader::with_capacity(64 * 1024, file.take(len));
         let mut magic = [0u8; INPUT_MAGIC.len()];
         input.read_exact(&mut magic)?;
-        if &magic != INPUT_MAGIC {
+        if &magic != INPUT_MAGIC && &magic != b"SNOWINPUT\0\x01" {
             return Err(invalid("unsupported input store format"));
         }
         Ok(Self {
@@ -262,6 +310,56 @@ impl InputStoreReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_records_roundtrip_and_legacy_input_remains_readable() {
+        let path = path();
+        let scroll = RecordedInputEvent {
+            timestamp_ms: 20,
+            sequence: 0,
+            event: RecordedInput::Scroll(KeyEventRecord {
+                at_ms: 17,
+                key: ScrollDirection::Down.key(),
+                down: true,
+                label: "Localized down".into(),
+                modifiers: vec![],
+            }),
+        };
+        let mut writer = InputStoreWriter::new(&path).unwrap();
+        writer.push(&scroll).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(
+            InputStoreReader::open(&path).unwrap().next_event().unwrap(),
+            Some(scroll)
+        );
+        std::fs::remove_file(&path).unwrap();
+        let event = RecordedInputEvent {
+            timestamp_ms: 0,
+            sequence: 0,
+            event: RecordedInput::Reset,
+        };
+        let mut writer = InputStoreWriter::new(&path).unwrap();
+        writer.push(&event).unwrap();
+        writer.finish().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[10] = 1;
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            InputStoreReader::open(&path).unwrap().next_event().unwrap(),
+            Some(event)
+        );
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            ScrollDirection::from_delta(0.001),
+            Some(ScrollDirection::Up)
+        );
+        assert_eq!(
+            ScrollDirection::from_delta(-0.001),
+            Some(ScrollDirection::Down)
+        );
+        assert_eq!(ScrollDirection::from_delta(0.0), None);
+        assert_eq!(ScrollDirection::from_delta(f64::NAN), None);
+    }
     fn path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("snow-input-{}", uuid::Uuid::new_v4()))
     }

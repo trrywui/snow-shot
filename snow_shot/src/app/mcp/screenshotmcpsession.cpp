@@ -136,19 +136,24 @@ void ScreenshotMcpSession::startPending(const ScreenshotMcpRequest& r,
             return;
         const bool capture =
             m_pending->request.method == QStringLiteral("snow_shot_screenshot_begin");
-        cancelPending(QStringLiteral("timeout"));
-        if (capture)
-            release(true);
+        cancelPending(QStringLiteral("timeout"), capture);
     });
 }
 bool ScreenshotMcpSession::current(quint64 generation) const {
     return m_pending && m_pending->generation == generation;
 }
-void ScreenshotMcpSession::complete(ScreenshotMcpResponse response) {
+void ScreenshotMcpSession::complete(ScreenshotMcpResponse response,
+                                    std::optional<bool> releaseSession) {
     if (!m_pending)
         return;
     auto pending = std::move(*m_pending);
     m_pending.reset();
+    const QPointer<ScreenshotMcpSession> guard(this);
+    if (releaseSession) {
+        release(*releaseSession);
+        if (!guard)
+            return;
+    }
     ++m_revision;
     response.requestId = pending.request.requestId;
     response.sessionId = m_session;
@@ -166,33 +171,44 @@ void ScreenshotMcpSession::complete(ScreenshotMcpResponse response) {
         response.errorDetails.insert(QStringLiteral("state"), state());
     response.result.insert(QStringLiteral("pending_operation"), QString());
     cache(pending.request, response);
-    pending.completion(std::move(response));
     const auto now = m_ports.state();
     if (now != m_artifactState)
         m_artifact.reset();
     m_observed = now;
+    // The callback may destroy this session or immediately start another request.
+    pending.completion(std::move(response));
 }
-void ScreenshotMcpSession::failPending(const QString& code, const QString& field) {
+void ScreenshotMcpSession::failPending(const QString& code, const QString& field,
+                                       std::optional<bool> releaseSession) {
     if (m_pending) {
         const bool direct =
             m_pending->request.method == QStringLiteral("snow_shot_screenshot_direct_capture");
-        complete(failure(m_pending->request, code, field));
-        if (direct)
-            release(false);
+        if (direct && !releaseSession)
+            releaseSession = false;
+        complete(failure(m_pending->request, code, field), releaseSession);
     }
 }
-void ScreenshotMcpSession::cancelPending(const QString& code) {
-    if (!m_pending)
+void ScreenshotMcpSession::cancelPending(const QString& code, bool releaseSession) {
+    if (!m_pending) {
+        if (releaseSession)
+            release(true);
         return;
+    }
     // Retire callbacks before stopping work: controller cancellation may complete synchronously.
     m_pending->generation = ++m_generation;
-    if (m_artifact)
-        m_artifact->cancel();
-    m_clipboard.cancel();
-    m_metadataJob.cancel();
-    if (m_ports.cancelCommand)
-        m_ports.cancelCommand();
-    failPending(code);
+    const QPointer<ScreenshotMcpSession> guard(this);
+    const auto artifact = std::move(m_artifact);
+    const auto clipboard = std::exchange(m_clipboard, {});
+    const auto metadata = std::exchange(m_metadataJob, {});
+    const auto cancelCommand = m_ports.cancelCommand;
+    if (artifact)
+        artifact->cancel();
+    clipboard.cancel();
+    metadata.cancel();
+    if (guard && cancelCommand)
+        cancelCommand();
+    if (guard)
+        failPending(code, {}, releaseSession ? std::optional<bool>(true) : std::nullopt);
 }
 void ScreenshotMcpSession::cache(const ScreenshotMcpRequest& request,
                                  const ScreenshotMcpResponse& response) {
@@ -233,26 +249,28 @@ void ScreenshotMcpSession::capturePresented() {
 void ScreenshotMcpSession::captureTerminated() {
     if (m_session.isEmpty() || m_releasing)
         return;
-    failPending(m_ready ? QStringLiteral("canceled") : QStringLiteral("capture_unavailable"));
-    release(false);
+    if (m_pending)
+        failPending(m_ready ? QStringLiteral("canceled") : QStringLiteral("capture_unavailable"),
+                    {}, false);
+    else
+        release(false);
 }
 void ScreenshotMcpSession::release(bool cancel) {
-    cancelOperation();
-    if (m_ports.cancelCommand)
-        m_ports.cancelCommand();
-    if (m_ports.detached)
-        m_ports.detached();
+    if (m_releasing)
+        return;
+    m_releasing = true;
+    const QPointer<ScreenshotMcpSession> guard(this);
+    const auto cancelCommand = m_ports.cancelCommand;
+    const auto detached = m_ports.detached;
+    const auto cancelCapture =
+        cancel && !m_session.isEmpty() ? m_ports.cancel : std::function<void()>{};
+    const auto artifact = std::move(m_artifact);
+    const auto clipboard = std::exchange(m_clipboard, {});
+    const auto metadata = std::exchange(m_metadataJob, {});
+    ++m_operationGeneration;
+    m_activeOperation.clear();
     m_operations.clear();
     m_operationOrder.clear();
-    if (m_artifact)
-        m_artifact->cancel();
-    m_artifact.reset();
-    m_clipboard.cancel();
-    m_metadataJob.cancel();
-    m_releasing = true;
-    if (cancel && !m_session.isEmpty())
-        m_ports.cancel();
-    m_releasing = false;
     ++m_revision;
     m_owner = 0;
     m_session.clear();
@@ -262,6 +280,18 @@ void ScreenshotMcpSession::release(bool cancel) {
     m_artifactState = {};
     m_captureMetadata = {};
     m_pngMetadata = {};
+    if (artifact)
+        artifact->cancel();
+    clipboard.cancel();
+    metadata.cancel();
+    if (guard && cancelCommand)
+        cancelCommand();
+    if (guard && detached)
+        detached();
+    if (guard && cancelCapture)
+        cancelCapture();
+    if (guard)
+        m_releasing = false;
 }
 void ScreenshotMcpSession::disconnected(quint64 connection) {
     const QString prefix = QString::number(connection) + u':';
@@ -274,12 +304,22 @@ void ScreenshotMcpSession::disconnected(quint64 connection) {
     }
     if (connection != m_owner)
         return;
-    failPending(QStringLiteral("canceled"));
-    release(m_silent);
+    if (m_pending)
+        failPending(QStringLiteral("canceled"), {}, m_silent);
+    else
+        release(m_silent);
 }
 void ScreenshotMcpSession::shutdown() {
-    failPending(QStringLiteral("disabled"));
-    release(m_silent);
+    if (m_stopping)
+        return;
+    m_stopping = true;
+    const QPointer<ScreenshotMcpSession> guard(this);
+    if (m_pending)
+        failPending(QStringLiteral("disabled"), {}, m_silent);
+    else
+        release(m_silent);
+    if (!guard)
+        return;
     m_cache.clear();
     m_cacheOrder.clear();
     m_cacheBytes = 0;
@@ -289,14 +329,17 @@ bool ScreenshotMcpSession::cancelRequest(quint64 connectionId, const QString& re
         return false;
     const bool beginning =
         m_pending->request.method == QStringLiteral("snow_shot_screenshot_begin");
-    cancelPending(QStringLiteral("canceled"));
-    if (beginning)
-        release(true);
+    cancelPending(QStringLiteral("canceled"), beginning);
     return true;
 }
 void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
                                    ScreenshotMcpServer::Completion done) {
     Q_ASSERT(QThread::currentThread() == thread());
+    const QPointer<ScreenshotMcpSession> lifetime(this);
+    if (m_stopping || m_releasing) {
+        done(failure(r, m_stopping ? QStringLiteral("disabled") : QStringLiteral("busy")));
+        return;
+    }
     observe();
     const auto reject = [&](const QString& code, const QString& field = QString()) {
         done(failure(r, code, field));
@@ -363,6 +406,8 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
             }
             if (operationId == m_activeOperation)
                 cancelOperation();
+            if (!lifetime)
+                return;
             ScreenshotMcpResponse response;
             response.ok = true;
             response.sessionId = m_session;
@@ -378,10 +423,10 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
         }
         const bool capture =
             m_pending && m_pending->request.method == QStringLiteral("snow_shot_screenshot_begin");
-        cancelPending(QStringLiteral("canceled"));
-        m_artifact.reset();
-        if (requestId.isEmpty() || capture)
-            release(true);
+        const QPointer<ScreenshotMcpSession> guard(this);
+        cancelPending(QStringLiteral("canceled"), requestId.isEmpty() || capture);
+        if (!guard)
+            return;
         ScreenshotMcpResponse response;
         response.ok = true;
         response.result = state();
@@ -408,25 +453,28 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
         startPending(r, std::move(done));
         if (r.method == QStringLiteral("snow_shot_screenshot_begin")) {
             QString error;
-            if (!m_ports.begin(r.params, &error)) {
+            const auto begin = m_ports.begin;
+            const bool accepted = begin(r.params, &error);
+            if (!lifetime)
+                return;
+            if (!accepted) {
                 const auto code = (error == QStringLiteral("busy") ||
                                    error == QStringLiteral("permission_required") ||
                                    error == QStringLiteral("capture_unavailable"))
                                       ? error
                                       : QStringLiteral("invalid_parameters");
-                failPending(code, error);
-                release(false);
+                failPending(code, error, false);
             }
         } else {
             const auto generation = m_generation;
             QPointer<ScreenshotMcpSession> guard(this);
-            if (!m_ports.direct(r.params, [this, guard, generation,
-                                           r](QImage image, QJsonObject metadata, QString error) {
+            const auto direct = m_ports.direct;
+            if (!direct(r.params, [this, guard, generation, r](QImage image, QJsonObject metadata,
+                                                               QString error) {
                     if (!guard || !current(generation))
                         return;
                     if (image.isNull() || !error.isEmpty()) {
                         failPending(QStringLiteral("capture_unavailable"));
-                        release(false);
                         return;
                     }
                     m_artifact = std::make_shared<ScreenshotExportArtifact>(
@@ -437,8 +485,8 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
                     m_ready = true;
                     output(r, true);
                 })) {
-                failPending(QStringLiteral("busy"));
-                release(false);
+                if (guard && current(generation))
+                    failPending(QStringLiteral("busy"));
             }
         }
         return;
@@ -491,6 +539,8 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
     }
     if (invalidates) {
         cancelOperation();
+        if (!lifetime)
+            return;
         m_operations.clear();
         m_operationOrder.clear();
     }
@@ -529,29 +579,32 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
                      {QStringLiteral("method"), r.method},
                      {QStringLiteral("source_revision"), static_cast<qint64>(sourceRevision)}});
             ++m_revision;
-            m_ports.command(r.method, r.params,
-                            [this, guard, generation, id](QJsonObject result, QString error) {
-                                if (!guard || generation != m_operationGeneration ||
-                                    m_activeOperation != id)
-                                    return;
-                                m_activeOperation.clear();
-                                auto& operation = m_operations[id];
-                                if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() >
-                                    32 * 1024 * 1024) {
-                                    result = {};
-                                    error = QStringLiteral("output_too_large");
-                                }
-                                operation.insert(QStringLiteral("status"),
-                                                 error.isEmpty() ? QStringLiteral("completed")
-                                                                 : QStringLiteral("failed"));
-                                operation.insert(QStringLiteral("result"), result);
-                                if (!error.isEmpty())
-                                    operation.insert(QStringLiteral("error"),
-                                                     QJsonObject{{QStringLiteral("code"), error}});
-                                observe();
-                                ++m_revision;
-                                trimOperations();
-                            });
+            const auto command = m_ports.command;
+            command(r.method, r.params,
+                    [this, guard, generation, id](QJsonObject result, QString error) {
+                        if (!guard || generation != m_operationGeneration ||
+                            m_activeOperation != id)
+                            return;
+                        m_activeOperation.clear();
+                        auto& operation = m_operations[id];
+                        if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() >
+                            32 * 1024 * 1024) {
+                            result = {};
+                            error = QStringLiteral("output_too_large");
+                        }
+                        operation.insert(QStringLiteral("status"), error.isEmpty()
+                                                                       ? QStringLiteral("completed")
+                                                                       : QStringLiteral("failed"));
+                        operation.insert(QStringLiteral("result"), result);
+                        if (!error.isEmpty())
+                            operation.insert(QStringLiteral("error"),
+                                             QJsonObject{{QStringLiteral("code"), error}});
+                        observe();
+                        ++m_revision;
+                        trimOperations();
+                    });
+            if (!guard)
+                return;
             ScreenshotMcpResponse response;
             response.ok = true;
             response.sessionId = m_session;
@@ -562,20 +615,21 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
         } else {
             startPending(r, std::move(done));
             const auto generation = m_generation;
-            m_ports.command(r.method, r.params,
-                            [this, guard, generation](QJsonObject result, QString error) {
-                                if (!guard || !current(generation))
-                                    return;
-                                ScreenshotMcpResponse response;
-                                if (error.isEmpty()) {
-                                    response.ok = true;
-                                    response.result = state();
-                                    for (auto it = result.begin(); it != result.end(); ++it)
-                                        response.result.insert(it.key(), it.value());
-                                } else
-                                    response = failure(m_pending->request, error);
-                                complete(std::move(response));
-                            });
+            const auto command = m_ports.command;
+            command(r.method, r.params,
+                    [this, guard, generation](QJsonObject result, QString error) {
+                        if (!guard || !current(generation))
+                            return;
+                        ScreenshotMcpResponse response;
+                        if (error.isEmpty()) {
+                            response.ok = true;
+                            response.result = state();
+                            for (auto it = result.begin(); it != result.end(); ++it)
+                                response.result.insert(it.key(), it.value());
+                        } else
+                            response = failure(m_pending->request, error);
+                        complete(std::move(response));
+                    });
         }
         return;
     }
@@ -613,6 +667,8 @@ void ScreenshotMcpSession::request(const ScreenshotMcpRequest& r,
         release(true);
         ok = true;
     }
+    if (!lifetime)
+        return;
     if (!ok) {
         reject(QStringLiteral("invalid_parameters"), error);
         return;
@@ -634,10 +690,11 @@ void ScreenshotMcpSession::cancelOperation() {
         return;
     m_operations[m_activeOperation].insert(QStringLiteral("status"), QStringLiteral("canceled"));
     m_activeOperation.clear();
-    if (m_ports.cancelCommand)
-        m_ports.cancelCommand();
     ++m_revision;
     trimOperations();
+    const auto cancelCommand = m_ports.cancelCommand;
+    if (cancelCommand)
+        cancelCommand();
 }
 void ScreenshotMcpSession::trimOperations() {
     qsizetype bytes = 0;
@@ -811,11 +868,11 @@ void ScreenshotMcpSession::publishOutput(const ScreenshotMcpRequest& r, bool fin
             response.result.insert(QStringLiteral("capture"), m_captureMetadata);
         if (finish && successful) {
             const auto finishedSession = m_session;
-            release(true);
             response.result.insert(QStringLiteral("finished_session_id"), finishedSession);
             response.result.insert(QStringLiteral("finished"), true);
         }
-        complete(std::move(response));
+        complete(std::move(response),
+                 finish && successful ? std::optional<bool>(true) : std::nullopt);
     };
     if (action == QStringLiteral("snow_shot_screenshot_render")) {
         if (!artifact->requestCanonicalPng(this, [this, generation, metadata, finishResponse](

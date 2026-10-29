@@ -32,9 +32,19 @@ impl CoalescedPointer {
         self.path_broken = true;
     }
 
-    pub fn observe(&mut self, position: Option<(i32, i32)>, at_ms: u64) {
+    /// Returns whether the latest admitted position changed. Stationary samples
+    /// still update admission time, but do not renew the trail or its pixels.
+    pub fn observe(&mut self, position: Option<(i32, i32)>, at_ms: u64) -> bool {
+        let changed = self.pending.map_or(self.position, |(pending, _)| pending) != position;
         self.path_broken |= position.is_none();
         self.pending = Some((position, at_ms));
+        changed
+    }
+
+    pub(crate) fn has_due_observation(&self, now: u64) -> bool {
+        self.pending.is_some_and(|(position, at_ms)| {
+            at_ms <= now && (position != self.position || (self.path_broken && position.is_some()))
+        })
     }
 
     pub fn advance(
@@ -131,6 +141,27 @@ impl InputEffectsState {
         }
     }
 
+    /// Commit one admission batch before deciding whether its keycaps need pixels.
+    /// All input sources share this boundary, including scroll observations that
+    /// only extend a visible indicator's lifetime without invalidating its image.
+    pub fn keyboard_needs_frame(&mut self, now: u64) -> bool {
+        self.advance_keys(now);
+        self.keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.model.needs_frame(now))
+    }
+
+    pub fn next_key_frame_at(&mut self, now: u64) -> Option<u64> {
+        self.advance_keys(now);
+        let keyboard = self.keyboard.as_ref()?;
+        keyboard
+            .model
+            .next_frame_at(now)
+            .into_iter()
+            .chain(self.pending_keys.front().map(|event| event.at_ms))
+            .min()
+    }
+
     pub fn draw_mouse_to(
         &mut self,
         surface: &mut impl Surface,
@@ -172,18 +203,15 @@ impl InputEffectsState {
         Ok(())
     }
 
-    pub fn has_active_animation(&self, config: &EffectsConfig, now: u64) -> bool {
-        (config.mouse_trail_rgba[3] != 0 && self.trail.has_active_animation(now))
+    pub fn has_active_animation(&mut self, config: &EffectsConfig, now: u64) -> bool {
+        let keyboard = self.keyboard_needs_frame(now);
+        keyboard
+            || (config.mouse_trail_rgba[3] != 0 && self.trail.has_active_animation(now))
             || (config.mouse_click_rgba[3] != 0
                 && self.clicks.iter().any(|click| {
                     now.checked_sub(click.timestamp_ms)
                         .is_some_and(|age| age <= CLICK_ANIMATION_MS)
                 }))
-            || self
-                .keyboard
-                .as_ref()
-                .is_some_and(|keyboard| keyboard.model.needs_frame(now))
-            || (self.keyboard.is_some() && self.pending_keys.iter().any(|event| event.at_ms <= now))
     }
 }
 
@@ -192,6 +220,113 @@ mod tests {
     use super::*;
     use crate::preview::{EffectsPreview, PreviewConfig};
     use crate::surface::TileSurface;
+
+    struct Solid;
+    impl crate::keyboard_overlay::KeycapRasterizer for Solid {
+        fn rasterize(
+            &mut self,
+            _: &str,
+            _: f32,
+        ) -> Result<crate::keyboard_overlay::Keycap, String> {
+            Ok(crate::keyboard_overlay::Keycap {
+                width: 120,
+                height: 64,
+                pixels: [160, 0, 0, 200].repeat(120 * 64),
+            })
+        }
+    }
+
+    #[test]
+    fn keycap_queue_preserves_equal_time_admission_order_and_reset_discards_future_input() {
+        let mut effects = InputEffectsState {
+            keyboard: Some(KeyboardOverlay::new((320, 240), Box::new(Solid))),
+            ..Default::default()
+        };
+        let key = |at_ms, down| KeyEvent {
+            at_ms,
+            key: 65,
+            down,
+            label: "A".into(),
+            modifiers: vec![],
+        };
+        let events = [key(20, true), key(10, true), key(10, false)];
+        for event in &events {
+            effects.queue_key(event.clone());
+        }
+        let mut reference = KeyboardOverlay::new((320, 240), Box::new(Solid));
+        for event in [&events[1], &events[2], &events[0]] {
+            reference.model.event(event.clone());
+        }
+        let mut expected = TileSurface::new((320, 240));
+        reference.draw_to(&mut expected, 200).unwrap();
+        let mut actual = TileSurface::new((320, 240));
+        effects.draw_keyboard_to(&mut actual, 200).unwrap();
+        let expected = expected.snapshot();
+        let actual = actual.snapshot();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(actual.pixels, expected.pixels);
+        }
+
+        effects.queue_key(key(1000, true));
+        effects.reset_keyboard(210);
+        effects
+            .draw_keyboard_to(&mut TileSurface::new((320, 240)), 2000)
+            .unwrap();
+        assert_eq!(effects.next_key_frame_at(2000), None);
+        assert!(!effects.keyboard_needs_frame(2000));
+        effects.queue_key(key(2010, true));
+        assert!(
+            effects.keyboard_needs_frame(2010),
+            "reset must release held keys"
+        );
+    }
+
+    #[test]
+    fn scroll_deadlines_coalesce_before_invalidation_and_future_reversals_wait() {
+        use crate::keyboard_overlay::{FADE_MS, HOLD_MS, SCROLL_GAP_MS};
+        let mut effects = InputEffectsState {
+            keyboard: Some(KeyboardOverlay::new((320, 240), Box::new(Solid))),
+            ..Default::default()
+        };
+        let scroll = |at_ms, key| KeyEvent {
+            at_ms,
+            key,
+            down: true,
+            label: "Scroll".into(),
+            modifiers: vec![],
+        };
+        let config = EffectsConfig::default();
+        effects.queue_key(scroll(100, 0x205));
+        assert_eq!(effects.next_key_frame_at(0), Some(100));
+        assert!(!effects.has_active_animation(&config, 99));
+        assert!(effects.has_active_animation(&config, 100));
+        effects
+            .draw_keyboard_to(&mut TileSurface::new((320, 240)), 280)
+            .unwrap();
+        for at in [300, 500, 1000] {
+            effects.queue_key(scroll(at, 0x205));
+            assert!(!effects.has_active_animation(&config, at));
+            assert_eq!(
+                effects.next_key_frame_at(at),
+                Some(at + SCROLL_GAP_MS + HOLD_MS)
+            );
+        }
+        effects.queue_key(scroll(1200, 0x206));
+        assert_eq!(effects.next_key_frame_at(1100), Some(1200));
+        assert!(!effects.has_active_animation(&config, 1199));
+        assert!(effects.has_active_animation(&config, 1200));
+        effects
+            .draw_keyboard_to(&mut TileSurface::new((320, 240)), 1200)
+            .unwrap();
+        let fade = 1200 + SCROLL_GAP_MS + HOLD_MS;
+        assert!(!effects.has_active_animation(&config, fade - 1));
+        assert!(effects.has_active_animation(&config, fade));
+        effects
+            .draw_keyboard_to(&mut TileSurface::new((320, 240)), fade + FADE_MS)
+            .unwrap();
+        assert_eq!(effects.next_key_frame_at(fade + FADE_MS), None);
+    }
 
     #[test]
     fn queued_keys_wake_composition_only_at_their_observation_time() {
@@ -235,6 +370,7 @@ mod tests {
                 let mut effects = InputEffectsState::new(lifetime);
                 let mut preview = EffectsPreview::new(
                     PreviewConfig {
+                        webcam: None,
                         region: (0, 0, SIZE.0, SIZE.1),
                         canvas: SIZE,
                         output: SIZE,
@@ -245,6 +381,7 @@ mod tests {
                             snow_recording_model::render::DEFAULT_MOUSE_HIGHLIGHT_RADIUS,
                         highlight: [0; 4],
                         record_mouse_clicks: false,
+                        record_mouse_scrolling: false,
                         show_keyboard: false,
                         keyboard: None,
                         generation: 0,

@@ -231,7 +231,51 @@ void wakeNotificationsFollowAttachedPlatforms() {
     require(firstChanges == 0, "destroyed native platforms must leave the shared wake fanout");
 }
 
+void nativeInteractionFollowsSurfaceOwnership() {
+    QWidget widget(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    static_cast<void>(widget.winId());
+    auto platform = createPinnedWindowPlatform(&widget);
+    require(platform->attach(), "native pin lifecycle setup must attach");
+    widget.show();
+    require(platform->setInputTransparent(true), "native pin must enter click-through");
+    const auto identity = widget.internalWinId();
+    QWindow* handle = widget.windowHandle();
+    auto verify = [&] {
+        NSWindow* window = reinterpret_cast<NSView*>(identity).window;
+        require(window && !(window.styleMask & NSWindowStyleMaskResizable) && !window.movable &&
+                    !window.hasShadow && window.ignoresMouseEvents && !window.hidesOnDeactivate &&
+                    (window.collectionBehavior & NSWindowCollectionBehaviorCanJoinAllSpaces) &&
+                    (window.collectionBehavior & NSWindowCollectionBehaviorFullScreenAuxiliary),
+                "pins must retain geometry and click-through ownership across native updates");
+    };
+    handle->setFlag(Qt::WindowDoesNotAcceptFocus, true);
+    verify();
+    for (const bool topmost : {false, true}) {
+        require(platform->setStaysOnTop(topmost),
+                "topmost transitions must transfer native level ownership");
+        handle->setFlag(Qt::WindowDoesNotAcceptFocus, !topmost);
+        verify();
+        NSWindow* window = reinterpret_cast<NSView*>(identity).window;
+        require(window.level == (topmost ? snow_shot::platform::detail::pinnedWindowLevel()
+                                         : NSNormalWindowLevel),
+                "Qt flag updates must preserve the pin's selected stacking band");
+    }
+    NSWindow* previous = [reinterpret_cast<NSView*>(identity).window retain];
+    handle->hide();
+    handle->setFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    handle->show();
+    require(widget.internalWinId() == identity && widget.windowHandle() == handle &&
+                reinterpret_cast<NSView*>(identity).window != previous,
+            "pin fixture must replace only its native NSWindow");
+    verify();
+    require(platform->setInputTransparent(false) &&
+                !reinterpret_cast<NSView*>(identity).window.ignoresMouseEvents,
+            "leaving click-through must update the replacement native window");
+    [previous release];
+}
+
 void nativePolicies(bool focus) {
+    nativeInteractionFollowsSurfaceOwnership();
     wakeNotificationsFollowAttachedPlatforms();
     auxiliaryOwnershipRequiresARealOwner();
     hiddenPlacementCommitsBeforeShow();

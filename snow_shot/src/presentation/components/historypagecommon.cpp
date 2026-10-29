@@ -5,16 +5,37 @@
 #include "widgets/pagination.h"
 #include "widgets/popconfirm.h"
 #include "widgets/select.h"
+#include "widgets/message.h"
 
 #include <QBoxLayout>
+#include <QCoreApplication>
 #include <QFont>
 #include <QLabel>
 #include <QPalette>
 #include <QWidget>
 
 #include <algorithm>
+#include <utility>
 
 namespace snow_shot::presentation::components::history_page {
+
+QString revealActionText() {
+#ifdef Q_OS_WIN
+    return QCoreApplication::translate("HistoryFileLocation", "Open in Explorer");
+#elif defined(Q_OS_MACOS)
+    return QCoreApplication::translate("HistoryFileLocation", "Reveal in Finder");
+#else
+    return QCoreApplication::translate("HistoryFileLocation", "Open Containing Folder");
+#endif
+}
+
+void showRevealFailure(QWidget* parent) {
+    adqt::widgets::AdMessage::Request request;
+    request.key = QStringLiteral("historyRevealFailure");
+    request.content = QCoreApplication::translate("HistoryFileLocation",
+                                                  "Unable to open this entry's file location.");
+    adqt::widgets::AdMessageService::error(std::move(request), parent->window());
+}
 
 void configureSourceFilter(adqt::widgets::AdSelect* filter) {
     filter->setMode(adqt::widgets::AdSelect::Mode::Multiple);
@@ -30,8 +51,8 @@ void configureDateFilter(adqt::widgets::AdDateRangePicker* filter) {
     filter->setMaximumWidth(260);
 }
 
-void configurePagination(adqt::widgets::AdPagination* pagination) {
-    pagination->setPageSize(10);
+void configurePagination(adqt::widgets::AdPagination* pagination, int pageSize) {
+    pagination->setPageSize(pageSize);
     pagination->setPageSizeOptions({10, 20, 50});
     pagination->setSizeChangerMode(adqt::widgets::AdPagination::SizeChangerMode::Always);
     pagination->setAlignment(adqt::widgets::AdPagination::Alignment::End);
@@ -71,6 +92,14 @@ void applyTextTheme(const TextControls& controls, const styles::ThemeColorScheme
     setColor(controls.emptyTitle, scheme.map.colorText);
     setFont(controls.emptyTitle, scheme.metricAlias.fontSizeLG, QFont::DemiBold);
     setColor(controls.emptyDescription, scheme.map.colorTextSecondary);
+}
+
+void applyEntryDescriptionFont(QLabel* label, const styles::ThemeColorScheme& scheme) {
+    // Keep entry descriptions compact instead of inheriting the application body font.
+    QFont font = label->font();
+    font.setPixelSize(scheme.metricAlias.fontSizeSM);
+    font.setWeight(QFont::Normal);
+    label->setFont(font);
 }
 
 bool RecordFilter::matches(const QVariant& source, const QDateTime& timestamp) const {

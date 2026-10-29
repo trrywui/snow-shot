@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "sources": {
+    "jpeg": {
+      "version": "3.2.0",
+      "url": "https://codeload.github.com/libjpeg-turbo/libjpeg-turbo/tar.gz/refs/tags/3.2.0",
+      "archive": "jpeg-3.2.0.tar.gz",
+      "sha256": "980dd81f425082aa6d7c9e47fef27554ce7a9ffc8e2f6e863b97d263c5c50858"
+    },
+    "webp": {
+      "version": "1.6.0",
+      "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "archive": "webp-1.6.0.tar.gz",
+      "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564"
+    },
+    "jxl": {
+      "version": "0.12.0",
+      "url": "https://codeload.github.com/libjxl/libjxl/tar.gz/refs/tags/v0.12.0",
+      "archive": "jxl-0.12.0.tar.gz",
+      "sha256": "03e9be69a30be4011f559da75328b6d7cea8ad921fabfbd551ce10bf45cdc992"
+    },
+    "avif": {
+      "version": "1.4.2",
+      "url": "https://codeload.github.com/AOMediaCodec/libavif/tar.gz/refs/tags/v1.4.2",
+      "archive": "avif-1.4.2.tar.gz",
+      "sha256": "2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d"
+    },
+    "dav1d": {
+      "version": "1.5.3",
+      "url": "https://downloads.videolan.org/pub/videolan/dav1d/1.5.3/dav1d-1.5.3.tar.xz",
+      "archive": "dav1d-1.5.3.tar.xz",
+      "sha256": "732010aa5ef461fa93355ed2c6c5fedb48ddc4b74e697eaabe8907eaeb943011"
+    },
+    "aom": {
+      "version": "3.14.1",
+      "url": "https://storage.googleapis.com/aom-releases/libaom-3.14.1.tar.gz",
+      "archive": "aom-3.14.1.tar.gz",
+      "sha256": "44bf90dbd23e734d50e70a8c41c285193922938bd0d3bc2ee56764d181d55ef5"
+    },
+    "lcms": {
+      "version": "2.17",
+      "url": "https://codeload.github.com/mm2/Little-CMS/tar.gz/refs/tags/lcms2.17",
+      "archive": "lcms-2.17.tar.gz",
+      "sha256": "6e6f6411db50e85ae8ff7777f01b2da0614aac13b7b9fcbea66dc56a1bc71418"
+    },
+    "zimg": {
+      "version": "3.0.6",
+      "url": "https://codeload.github.com/sekrit-twc/zimg/tar.gz/refs/tags/release-3.0.6",
+      "archive": "zimg-3.0.6.tar.gz",
+      "sha256": "be89390f13a5c9b2388ce0f44a5e89364a20c1c57ce46d382b1fcc3967057577"
+    },
+    "highway": {
+      "version": "1.2.0",
+      "url": "https://codeload.github.com/google/highway/tar.gz/refs/tags/1.2.0",
+      "archive": "highway-1.2.0.tar.gz",
+      "sha256": "7e0be78b8318e8bdbf6fa545d2ecb4c90f947df03f7aadc42c1967f019e63343"
+    },
+    "brotli": {
+      "version": "1.1.0",
+      "url": "https://codeload.github.com/google/brotli/tar.gz/refs/tags/v1.1.0",
+      "archive": "brotli-1.1.0.tar.gz",
+      "sha256": "e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff"
+    }
+  }
+}

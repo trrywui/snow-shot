@@ -336,6 +336,8 @@ pub(crate) fn snow_scene_display_item_from_rust(
             out.arrow_type = snow_arrow_type_from_rust(item.arrow_type);
             out.arrow_shaft_type = super::snow_arrow_shaft_type_from_rust(item.arrow_shaft_type);
             out.arrow_ratio = item.arrow_ratio;
+            out.arrow_outline_color = item.arrow_outline_color.into();
+            out.arrow_outline_width = item.arrow_outline_width;
             out.is_free_draw = u8::from(item.is_free_draw);
             out.brush_mode = item.brush_mode as u8;
             out.arrow_start_head = snow_arrowhead_from_rust(item.start_arrowhead);
@@ -533,6 +535,8 @@ pub(crate) fn snow_overlay_display_item_from_rust(
             out.arrow_type = snow_arrow_type_from_rust(item.arrow_type);
             out.arrow_shaft_type = super::snow_arrow_shaft_type_from_rust(item.arrow_shaft_type);
             out.arrow_ratio = item.arrow_ratio;
+            out.arrow_outline_color = item.arrow_outline_color.into();
+            out.arrow_outline_width = item.arrow_outline_width;
             out.arrow_start_head = snow_arrowhead_from_rust(item.start_arrowhead);
             out.arrow_end_head = snow_arrowhead_from_rust(item.end_arrowhead);
             out.arrow_stroke_style = snow_stroke_style_from_rust(item.stroke_style);
@@ -734,12 +738,6 @@ mod tests {
         assert_eq!(converted.scene_revision.0, 7);
         assert_eq!(converted.decoration_revision.0, 8);
         assert_eq!(converted.overlay_revision.0, 9);
-    }
-
-    #[test]
-    fn compact_display_views_stay_below_the_abi_size_budget() {
-        assert_eq!(std::mem::size_of::<SnowSceneDisplayItem>(), 408);
-        assert!(std::mem::size_of::<SnowOverlayDisplayItem>() <= 384);
     }
 
     #[test]

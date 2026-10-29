@@ -8,4 +8,5 @@ license.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+snow-webcam = { path = "../snow-webcam" }
 snow-recording-effects = { path = "../snow-recording-effects" }

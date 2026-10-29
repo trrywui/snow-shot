@@ -46,19 +46,39 @@ ScreenRecordingShortcutController::ScreenRecordingShortcutController(
     const auto recordingShortcuts =
         snow_shot::storage::ScreenRecordingShortcutSettings().allShortcuts();
     for (auto action = recordingShortcuts.cbegin(); action != recordingShortcuts.cend(); ++action) {
+        const bool areaHistory = action.key() == QStringLiteral("previous_recording_area") ||
+                                 action.key() == QStringLiteral("next_recording_area");
         ShortcutManager::Binding binding;
         binding.id = QStringLiteral("recording.control.") + action.key();
         if (action.key() == QStringLiteral("end_recording")) {
             binding.activationTrigger = ShortcutManager::Binding::ActivationTrigger::Release;
         }
         binding.priority = ShortcutManager::StandardPriority::WindowCommand;
-        binding.canActivate = [this, actionId = action.key()](const auto& context) {
-            return canActivate(context) &&
-                   m_toolbar->palette()->canActivateRecordingShortcut(actionId);
+        binding.canActivate = [this, actionId = action.key(), areaHistory](const auto& context) {
+            if (!canActivate(context))
+                return false;
+            if (areaHistory) {
+                return m_area->canRestoreRecordingRegion() &&
+                       m_toolbar->palette()->recordingExportSettingsVisible() &&
+                       m_canNavigateAreaHistory && m_canNavigateAreaHistory();
+            }
+            return m_toolbar->palette()->canActivateRecordingShortcut(actionId);
         };
-        binding.activate = [this, actionId = action.key()](const auto&) {
+        binding.activate = [this, actionId = action.key(), areaHistory](const auto&) {
+            if (areaHistory) {
+                if (m_navigateAreaHistory)
+                    m_navigateAreaHistory(actionId == QStringLiteral("previous_recording_area"));
+                // Empty history and endpoints still consume this command, rather than
+                // falling through to a drawing tool that shares the configured key.
+                return true;
+            }
             return m_toolbar->palette()->activateRecordingShortcut(actionId);
         };
+        auto tapBinding = binding;
+        tapBinding.id += QStringLiteral(".tap");
+        tapBinding.activationTrigger = ShortcutManager::Binding::ActivationTrigger::Tap;
+        m_recordingTapBindings.insert(action.key(),
+                                      m_shortcutManager.addBinding(this, std::move(tapBinding)));
         m_recordingBindings.insert(action.key(),
                                    m_shortcutManager.addBinding(this, std::move(binding)));
     }
@@ -71,6 +91,12 @@ ScreenRecordingShortcutController::ScreenRecordingShortcutController(
                     reloadConfiguredShortcuts();
                 }
             });
+}
+
+void ScreenRecordingShortcutController::setAreaHistoryActions(std::function<bool()> canNavigate,
+                                                              std::function<void(bool)> navigate) {
+    m_canNavigateAreaHistory = std::move(canNavigate);
+    m_navigateAreaHistory = std::move(navigate);
 }
 
 bool ScreenRecordingShortcutController::canActivate(
@@ -125,8 +151,14 @@ void ScreenRecordingShortcutController::reloadConfiguredShortcuts() {
     const snow_shot::storage::ScreenRecordingShortcutSettings recording;
     for (auto binding = m_recordingBindings.cbegin(); binding != m_recordingBindings.cend();
          ++binding) {
+        snow_shot::shortcuts::ShortcutBindingList presses;
+        snow_shot::shortcuts::ShortcutBindingList taps;
+        for (const auto& shortcut : recording.shortcuts(binding.key())) {
+            (shortcut.portableText == QStringLiteral("Shift") ? taps : presses).append(shortcut);
+        }
+        static_cast<void>(m_shortcutManager.setShortcuts(binding.value(), presses));
         static_cast<void>(
-            m_shortcutManager.setShortcuts(binding.value(), recording.shortcuts(binding.key())));
+            m_shortcutManager.setShortcuts(m_recordingTapBindings.value(binding.key()), taps));
     }
     const snow_shot::storage::DrawingShortcutSettings drawing;
     for (auto binding = m_drawingBindings.cbegin(); binding != m_drawingBindings.cend();

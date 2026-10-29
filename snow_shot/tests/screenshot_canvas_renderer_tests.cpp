@@ -1,5 +1,7 @@
 #include "../../test-support/canvas_quick_selection_test_support.h"
 #include "angle_wheel_host_test_support.h"
+#include "canvas_text_editing_preferences_test_support.h"
+#include "../src/presentation/overlay/screenshotoverlaycanvaswidget.h"
 #include "snow_shot/presentation/screenshotoverlayinputhandler.h"
 #include "snow_shot/presentation/screenshotcapturestate.h"
 #include "snow_shot/presentation/screenshotintelligentselectionmodel.h"
@@ -42,6 +44,7 @@
 #include "widgets/tooltip.h"
 
 #include <QApplication>
+#include <QScopeGuard>
 #include <QBackingStore>
 #include <QColor>
 #include <QCursor>
@@ -1359,6 +1362,136 @@ void pinnedFiltersUseTheSourceResolution() {
     canvas.setCustomRenderer(nullptr);
 }
 
+void pinnedRegionKeepsCaptureAndAnnotationMasksSeparate() {
+    for (const auto type :
+         {ScreenshotSelectionBorderType::Border, ScreenshotSelectionBorderType::Shadow}) {
+        for (const bool curved : {false, true}) {
+            for (const qreal dpr : {1.0, 1.25, 2.0}) {
+                SnowCanvasRuntime runtime;
+                SnowCanvasWidget canvas(runtime);
+                canvas.resize(128, 88);
+                canvas.setClearBackgroundEnabled(false);
+                const QRect content(100, -70, 120, 80);
+                require(canvas.setViewportCamera(content.center().x() + 0.5,
+                                                 content.center().y() + 0.5, 1),
+                        "position the document pin away from the canvas origin");
+                ScreenshotCanvasRenderer renderer(canvas);
+                canvas.setCustomRenderer(&renderer);
+                QImage background(content.size(), QImage::Format_ARGB32_Premultiplied);
+                background.fill(Qt::blue);
+                renderer.setImage(background, content);
+                ScreenshotResultStyle style;
+                style.borderType = type;
+                style.borderWidth = 4;
+                style.shadowWidth = 4;
+                style.borderColor = Qt::white;
+                if (curved) {
+                    QPainterPath ring;
+                    ring.addEllipse(QRectF(0, 0, 120, 80));
+                    QPainterPath hole;
+                    hole.addEllipse(QRectF(40, 20, 40, 40));
+                    style.region = ScreenshotRegionGeometry::fromPath(ring.subtracted(hole),
+                                                                      ScreenshotRegionType::Curve);
+                } else {
+                    style.region = QRegion(0, 0, 40, 80) + QRect(80, 0, 40, 80);
+                }
+                ScreenshotSelectionParams params;
+                params.selection = content;
+                params.region = style.region->translated(content.topLeft());
+                params.borderType = type;
+                params.borderWidth = style.borderWidth;
+                params.shadowWidth = style.shadowWidth;
+                style = params.resultStyle();
+                renderer.setPinnedResultSurface(content, content.adjusted(-4, -4, 4, 4), style);
+                const auto reference = renderCanvas(canvas, dpr);
+                require(
+                    !runtime
+                         .applyAnnotationTransaction(
+                             R"({"version":1,"operations":[{"type":"rectangle","bounds":[80,-35,160,10],"style":{"fill":[230,30,70,128],"stroke":[0,0,0,0]}}]})")
+                         .isEmpty(),
+                    "create a translucent annotation across the selection gap and margins");
+                canvas.setInteractionEnabled(false);
+                const auto actual = renderCanvas(canvas, dpr);
+                const auto pixel = [&](const QImage& image, const QPointF& local) {
+                    const auto point =
+                        canvas.canvasToViewTransform().map(content.topLeft() + local);
+                    return image.pixelColor(qFloor(point.x() * dpr), qFloor(point.y() * dpr));
+                };
+                const auto annotation = pixel(actual, {60, 40});
+                require(annotation.alpha() == 128 && qAbs(annotation.red() - 230) <= 1 &&
+                            qAbs(annotation.green() - 30) <= 1 && qAbs(annotation.blue() - 70) <= 1,
+                        "document pin must retain translucent annotations inside capture gaps");
+                require(pixel(actual, {60, 28}).alpha() == 0,
+                        "document pin must mask excluded capture pixels before annotations");
+                require(pixel(actual, {20, 50}) == QColor(Qt::blue),
+                        "offset document pins must retain selected capture pixels");
+                require(pixel(actual, {-2, 40}) == pixel(reference, {-2, 40}),
+                        "annotations must not extend into the added effect margin");
+                canvas.setCustomRenderer(nullptr);
+            }
+        }
+    }
+}
+
+void customFillRulesAgreeAcrossOverlayAndPin() {
+    for (const auto rule : {Qt::OddEvenFill, Qt::WindingFill}) {
+        for (const bool hole : {false, true}) {
+            QPainterPath path;
+            path.addEllipse(QRectF(20, 20, 160, 120));
+            QPainterPath inner;
+            inner.addEllipse(QRectF(60, 50, 80, 60));
+            path.addPath(hole ? inner.toReversed() : inner);
+            // A third contour also exercises the large-path raster cache.
+            path.addEllipse(QRectF(30, 70, 8, 8));
+            path.setFillRule(rule);
+            const auto region =
+                ScreenshotRegionGeometry::fromPath(path, ScreenshotRegionType::Curve);
+            for (const qreal dpr : {1.0, 1.25, 2.0}) {
+                SnowCanvasWidget canvas;
+                canvas.resize(200, 160);
+                canvas.setClearBackgroundEnabled(false);
+                require(canvas.setViewportCamera(100, 80, 1), "fill rule fixture camera");
+                ScreenshotCanvasRenderer renderer(canvas);
+                canvas.setCustomRenderer(&renderer);
+                QImage background(canvas.size(), QImage::Format_ARGB32_Premultiplied);
+                background.fill(Qt::blue);
+                renderer.setImage(background, background.rect());
+                renderer.setMaskVisible(true);
+                renderer.setMaskColor(QColor(0, 0, 0, 128));
+                ScreenshotSelectionVisualState state;
+                state.present = true;
+                state.bounds = path.boundingRect();
+                state.region = region;
+                state.borderVisible = false;
+                state.handlesVisible = false;
+                renderer.applySelectionState(state);
+                const auto direct = renderCanvas(canvas, dpr);
+                state.confirmedRegion = region;
+                renderer.applySelectionState(state);
+                const auto cached = renderCanvas(canvas, dpr);
+                require(direct == cached,
+                        "cached and direct exterior masks must preserve the same fill rule");
+                const QPoint center(qRound(100 * dpr), qRound(80 * dpr));
+                const bool selected = path.contains(QPointF(100, 80));
+                require(direct.pixelColor(center) ==
+                            (selected ? QColor(Qt::blue) : QColor(0, 0, 127)),
+                        "overlay must dim only pixels excluded by the original fill rule");
+                for (const auto type : {ScreenshotSelectionBorderType::Shadow,
+                                        ScreenshotSelectionBorderType::Border}) {
+                    ScreenshotResultStyle style;
+                    style.region = region;
+                    style.borderType = type;
+                    renderer.setPinnedResultSurface(background.rect(), background.rect(), style);
+                    const auto pinned = renderCanvas(canvas, dpr);
+                    require(pinned.pixelColor(center).alpha() == (selected ? 255 : 0),
+                            "pin capture masking must retain winding interiors and true holes");
+                }
+                canvas.setCustomRenderer(nullptr);
+            }
+        }
+    }
+}
+
 void pinnedResultUpscaleUsesLinearFiltering() {
     const QImage checker = checkerboardFixture(QSize(16, 16));
     for (const bool ocrFiltered : {false, true}) {
@@ -1857,11 +1990,17 @@ void requireChangedPixelsCoveredByDirtyRegion(const QImage& previous, const QIma
     require(previous.size() == next.size(), "rendered frames should have equal sizes");
     require(qFuzzyCompare(previous.devicePixelRatio(), next.devicePixelRatio()),
             "rendered frames should have equal device pixel ratios");
+    require(previous.format() == next.format() &&
+                (previous.format() == QImage::Format_RGBA8888 ||
+                 previous.format() == QImage::Format_ARGB32_Premultiplied),
+            "damage comparisons require matching 32-bit rendered frame formats");
 
     const qreal devicePixelRatio = previous.devicePixelRatio();
     for (int y = 0; y < previous.height(); ++y) {
+        const auto* previousRow = reinterpret_cast<const QRgb*>(previous.constScanLine(y));
+        const auto* nextRow = reinterpret_cast<const QRgb*>(next.constScanLine(y));
         for (int x = 0; x < previous.width(); ++x) {
-            if (previous.pixel(x, y) == next.pixel(x, y)) {
+            if (previousRow[x] == nextRow[x]) {
                 continue;
             }
 
@@ -1922,31 +2061,34 @@ void screenshotUiPreferencesNormalizeAndApplyPickerVisibilityPolicies() {
     state.manualSelecting = true;
     state.hasSelection = true;
     state.pointInsideSelection = false;
-    require(screenshotColorPickerOpacity(ScreenshotColorPickerDisplayMode::HideOutsideSelection,
-                                         state) == 0.0,
+    require(!screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::HideOutsideSelection,
+                                          state),
             "hide-outside-selection mode must hide the picker outside the selection");
-    require(screenshotColorPickerOpacity(ScreenshotColorPickerDisplayMode::AlwaysShow, state) ==
-                1.0,
+    require(screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::AlwaysShow, state),
             "always-show mode must keep the picker visible outside the selection");
 
     state.manualSelecting = false;
     state.intelligentSelecting = true;
-    require(screenshotColorPickerOpacity(ScreenshotColorPickerDisplayMode::HideOutsideSelection,
-                                         state) == 1.0,
-            "intelligent box selection must keep the magnifier visible outside the live box");
-    require(screenshotColorPickerOpacity(ScreenshotColorPickerDisplayMode::AlwaysHide, state) ==
-                0.0,
+    require(
+        screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::HideOutsideSelection, state),
+        "intelligent box selection must keep the magnifier visible outside the live box");
+    require(!screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::AlwaysHide, state),
             "always-hide mode must keep the magnifier hidden during intelligent selection");
     state.intelligentSelecting = false;
-    state.movingSelection = true;
-    require(screenshotColorPickerOpacity(ScreenshotColorPickerDisplayMode::HideOutsideSelection,
-                                         state) == 0.0,
+    require(!screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::HideOutsideSelection,
+                                          state),
             "confirmed selections must still hide the magnifier outside their bounds");
 
     state.dragging = true;
-    state.selectionDrag = true;
-    require(screenshotColorPickerOpacity(ScreenshotColorPickerDisplayMode::AlwaysHide, state) ==
-                0.0,
+    state.manualSelecting = true;
+    require(
+        screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::HideOutsideSelection, state),
+        "active selection drags must keep the picker visible outside the current selection");
+    state.hasSelection = false;
+    require(
+        screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::HideOutsideSelection, state),
+        "starting a marquee must keep the picker visible before a selection exists");
+    require(!screenshotColorPickerVisible(ScreenshotColorPickerDisplayMode::AlwaysHide, state),
             "always-hide mode must override selection-drag picker visibility without changing "
             "the underlying color-sampling feature");
 }
@@ -3320,6 +3462,62 @@ void bgraScreenshotImagesRenderWithCorrectColors() {
 #endif
 }
 
+void borderPreviewUsesSolidExteriorAndInvalidatesTypeChanges() {
+    SnowCanvasWidget canvas;
+    canvas.resize(80, 80);
+    canvas.setClearBackgroundEnabled(false);
+    require(canvas.setViewportCamera(40, 40, 1), "border preview camera");
+    ScreenshotCanvasRenderer renderer(canvas);
+    canvas.setCustomRenderer(&renderer);
+    QImage capture(80, 80, QImage::Format_ARGB32_Premultiplied);
+    capture.fill(QColor(0, 80, 240));
+    renderer.setImage(capture, capture.rect());
+    renderer.setMaskVisible(true);
+    for (qreal dpr : {1.0, 1.25, 2.0}) {
+        ScreenshotSelectionVisualState state;
+        state.present = true;
+        state.bounds = QRect(20, 20, 40, 40);
+        state.toolbarHovered = true;
+        state.effectWidth = 4;
+        state.effectColor = Qt::red;
+        renderer.applySelectionState(state);
+        const auto shadow = renderCanvas(canvas, dpr);
+        const auto previous = state;
+        state.borderType = ScreenshotSelectionBorderType::Border;
+        renderer.applySelectionState(state);
+        const auto border = renderCanvas(canvas, dpr);
+        require(border.pixelColor(qRound(17 * dpr), qRound(40 * dpr)) == QColor(Qt::red) &&
+                    border.pixelColor(qRound(21 * dpr), qRound(40 * dpr)) == QColor(0, 80, 240),
+                "border preview is solid outside and preserves selected pixels at every DPR");
+        const auto damage = planScreenshotSelectionDamage(previous, state, canvas.rect(),
+                                                          canvas.canvasToViewTransform(), true);
+        requireChangedPixelsCoveredByDirtyRegion(
+            shadow, border, damage, "changing only effect type must invalidate its entire rim");
+        if (dpr == 1) {
+            ScreenshotResultStyle style;
+            style.borderType = ScreenshotSelectionBorderType::Border;
+            style.borderWidth = 4;
+            style.borderColor = Qt::red;
+            const auto exported =
+                ScreenshotResultCompositor::compose(capture.copy(20, 20, 40, 40), style);
+            // Round exterior joins leave transparent corner pixels. Preview shows
+            // those pixels over the same checkerboard as any other transparent result.
+            QImage expected(canvas.size(), exported.format());
+            expected.fill(Qt::transparent);
+            {
+                QPainter painter(&expected);
+                painter.drawImage(QPoint(16, 16), exported);
+                painter.setCompositionMode(QPainter::CompositionMode_DestinationOver);
+                painter.fillRect(canvas.rect(), adqt::widgets::themedCheckerboardBrush(&canvas));
+            }
+            require(border.copy(16, 16, 48, 48).convertToFormat(expected.format()) ==
+                        expected.copy(16, 16, 48, 48),
+                    "selection preview must match the exported border over its transparency grid");
+        }
+    }
+    canvas.setCustomRenderer(nullptr);
+}
+
 void hoveredSelectionToolbarHidesBorderAndRendersShadowPreview() {
     SnowCanvasWidget canvas;
     canvas.resize(80, 80);
@@ -3342,7 +3540,7 @@ void hoveredSelectionToolbarHidesBorderAndRendersShadowPreview() {
     renderer.setSelectionToolbarHovered(true);
     require(renderer.selectionToolbarHovered(),
             "toolbar hover state should be retained by the renderer");
-    require(renderer.selectionShadowWidth() == 4,
+    require(renderer.selectionEffectWidth() == 4,
             "selection shadow width should be retained by the renderer");
 
     const QImage preview = renderCanvas(canvas);
@@ -3419,7 +3617,7 @@ void roundedSelectionPreviewKeepsTheSameContentBoundsWithAndWithoutShadow() {
     before.cornerRadius = 18;
     before.toolbarHovered = true;
     ScreenshotSelectionVisualState after = before;
-    after.shadowWidth = 10;
+    after.effectWidth = 10;
     requireChangedPixelsCoveredByDirtyRegion(
         withoutShadow, withShadow,
         planScreenshotSelectionDamage(before, after, canvas.rect(), canvas.canvasToViewTransform(),
@@ -3429,7 +3627,7 @@ void roundedSelectionPreviewKeepsTheSameContentBoundsWithAndWithoutShadow() {
     renderer.setSelection(selection, false, 18, 10, changedShadowColor);
     const QImage recoloredShadow = renderCanvas(canvas);
     ScreenshotSelectionVisualState recolored = after;
-    recolored.shadowColor = changedShadowColor;
+    recolored.effectColor = changedShadowColor;
     requireChangedPixelsCoveredByDirtyRegion(
         withShadow, recoloredShadow,
         planScreenshotSelectionDamage(after, recolored, canvas.rect(),
@@ -7191,6 +7389,7 @@ void horizontalScrollingThumbnailUsesColumnTilesAndHorizontalInteraction() {
     ScreenshotScrollingThumbnailWidget thumbnail(parent);
     thumbnail.setRecognitionMode(ScreenshotScrollingRecognitionMode::Horizontal);
     thumbnail.setMaximumPreviewExtent(220);
+    thumbnail.setCaptureViewportSize(QSize(220, 128));
 
     QImage initial(300, 128, QImage::Format_RGBA8888);
     initial.fill(QColor(20, 40, 60));
@@ -8256,6 +8455,46 @@ void overlaySelectionCursorUpdatesAreIdempotentWhileSelecting() {
             "leaving the selection stage should transition the cursor exactly once");
 }
 
+void initialNativeSelectionCursorBelongsToThePointerOverlay() {
+#ifdef Q_OS_WIN
+    if (QGuiApplication::platformName() != QStringLiteral("windows"))
+        return;
+
+    NoopOverlayEventSink eventSink;
+    ScreenshotOverlayWindow owner(eventSink, new SnowCanvasWidget);
+    ScreenshotOverlayWindow other(eventSink, new SnowCanvasWidget);
+    const QPoint pointer = QCursor::pos();
+    owner.setScreen(QGuiApplication::screenAt(pointer));
+    owner.setCaptureGeometry(QRect(pointer - QPoint(50, 50), QSize(100, 100)));
+    other.setCaptureGeometry(QRect(pointer + QPoint(200, 200), QSize(100, 100)));
+
+    const HCURSOR previous = GetCursor();
+    const HCURSOR marker = LoadCursorW(nullptr, IDC_WAIT);
+    SetCursor(marker);
+    other.commitInitialSelectionCursor();
+    const bool untouched = GetCursor() == marker;
+    owner.commitInitialSelectionCursor();
+    const HCURSOR crosshair = GetCursor();
+    ICONINFO info{};
+    const bool inspected = crosshair != marker && GetIconInfo(crosshair, &info);
+    BITMAP bitmap{};
+    const bool sized = inspected && GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap);
+    other.commitInitialSelectionCursor();
+    const bool preserved = GetCursor() == crosshair;
+    SetCursor(previous);
+    if (info.hbmColor)
+        DeleteObject(info.hbmColor);
+    if (info.hbmMask)
+        DeleteObject(info.hbmMask);
+
+    const int size = 2 * qRound(16 * owner.canvas()->devicePixelRatioF());
+    require(untouched && preserved,
+            "another overlay's reveal or delayed focus must never replace the native cursor");
+    require(sized && bitmap.bmWidth == size && bitmap.bmHeight == size,
+            "the pointer overlay must install its crosshair at the correct display scale");
+#endif
+}
+
 void overlayPresenterRespectsSelectionHandleVisibility() {
     NoopOverlayEventSink eventSink;
     auto* canvas = new SnowCanvasWidget;
@@ -8862,9 +9101,9 @@ void compoundBackgroundPreviewDamageCoversTransitions() {
                     auto next = state;
                     next.effectPreviewVisible = true;
                     change(next, "entering opacity preview must repaint transparent gaps");
-                    next.shadowWidth = 10;
+                    next.effectWidth = 10;
                     change(next, "opacity preview shadow growth must repaint the expanded matte");
-                    next.shadowWidth = 0;
+                    next.effectWidth = 0;
                     change(next, "opacity preview shadow shrink must erase the old matte");
                     next.effectPreviewVisible = false;
                     change(next, "leaving opacity preview must restore transparent gaps");
@@ -8898,7 +9137,7 @@ void tiledBackgroundMatchesExportAtFractionalDpi() {
     state.handlesVisible = false;
     state.toolbarHovered = true;
     state.cornerRadius = 20;
-    state.shadowWidth = 20;
+    state.effectWidth = 20;
     state.backgroundOpacityPercent = 50;
     renderer.applySelectionState(state);
     static_cast<void>(renderCanvas(canvas));
@@ -8928,7 +9167,7 @@ void tiledBackgroundMatchesExportAtFractionalDpi() {
         sourcePainter.drawImage(QPoint(), capture);
         sourcePainter.end();
         source.setDevicePixelRatio(1);
-        ScreenshotResultStyle style{20, 20, state.shadowColor};
+        ScreenshotResultStyle style{20, 20, state.effectColor};
         style.backgroundOpacityPercent = 50;
         auto result = ScreenshotResultCompositor::compose(source.copy(selected), style, dpr, 1,
                                                           source.copy(output));
@@ -8973,7 +9212,7 @@ void largeOpacityPreviewRetainsExposedTiles() {
     state.handlesVisible = false;
     state.toolbarHovered = true;
     state.cornerRadius = 18;
-    state.shadowWidth = 16;
+    state.effectWidth = 16;
     state.backgroundOpacityPercent = 50;
     auto next = state;
     next.backgroundOpacityPercent = 51;
@@ -9181,7 +9420,7 @@ void effectPreviewCachesPreservePixelsAcrossStyleChanges() {
         state.handlesVisible = false;
         state.toolbarHovered = true;
         state.cornerRadius = 20;
-        state.shadowWidth = 8;
+        state.effectWidth = 8;
         state.backgroundOpacityPercent = 50;
         renderer.applySelectionState(state);
         auto before = renderCanvas(canvas, dpr);
@@ -9189,11 +9428,11 @@ void effectPreviewCachesPreservePixelsAcrossStyleChanges() {
             const auto previous = state;
             resetSelectionRenderDiagnosticsForCurrentThread();
             if (change == 0)
-                state.shadowWidth = 12;
+                state.effectWidth = 12;
             else if (change == 1)
                 state.backgroundOpacityPercent = 37;
             else if (change == 2)
-                state.shadowColor = Qt::red;
+                state.effectColor = Qt::red;
             else
                 state.cornerRadius = 28;
             renderer.applySelectionState(state);
@@ -9281,7 +9520,7 @@ void selectionBackgroundPreviewMatchesComposition() {
             if (compound)
                 state.region = QRegion(QRect(20, 20, 40, 100)) + QRect(100, 20, 40, 100);
             for (int shadow : {0, 6}) {
-                state.shadowWidth = shadow;
+                state.effectWidth = shadow;
                 QImage previous;
                 auto before = state;
                 for (int percent : {0, 1, 50, 100}) {
@@ -9292,7 +9531,7 @@ void selectionBackgroundPreviewMatchesComposition() {
                     QPainter sourcePainter(&original);
                     sourcePainter.drawImage(QPoint(76, 66), cursor);
                     sourcePainter.end();
-                    ScreenshotResultStyle style{state.cornerRadius, shadow, state.shadowColor};
+                    ScreenshotResultStyle style{state.cornerRadius, shadow, state.effectColor};
                     style.backgroundOpacityPercent = percent;
                     if (state.region)
                         style.region = state.region->translated(-state.bounds.topLeft().toPoint());
@@ -9378,7 +9617,7 @@ void compoundSelectionPreviewPreservesGapAnnotations() {
         state.confirmedRegion = *state.region;
         state.present = true;
         state.handlesVisible = false;
-        state.shadowWidth = 4;
+        state.effectWidth = 4;
         for (int opacity : {0, 50, 100}) {
             state.backgroundOpacityPercent = opacity;
             for (bool hovered : {true, false, true}) {
@@ -9435,7 +9674,7 @@ void hoveredCompoundSelectionShowsCheckerboardInTransparentGaps() {
             hovered.region = region;
             hovered.confirmedRegion = region;
             hovered.handlesVisible = false;
-            hovered.shadowWidth = shadowWidth;
+            hovered.effectWidth = shadowWidth;
             auto unhovered = hovered;
             hovered.toolbarHovered = true;
 
@@ -9477,7 +9716,7 @@ void compoundSelectionDamageCoversChangedPixels() {
     before.bounds = donut.boundingRect();
     before.present = true;
     before.handlesVisible = false;
-    before.shadowWidth = 8;
+    before.effectWidth = 8;
     ScreenshotSelectionVisualState after = before;
     after.region = donut.translated(1, 0);
     after.confirmedRegion = *after.region;
@@ -9542,7 +9781,7 @@ void compoundSelectionDamageCoversChangedPixels() {
     previewBefore.region = confirmed.united(QRect(350, 170, 24, 24));
     previewBefore.bounds = QRectF(previewBefore.region->boundingRect());
     previewBefore.present = true;
-    previewBefore.shadowWidth = 8;
+    previewBefore.effectWidth = 8;
     ScreenshotSelectionVisualState previewAfter = previewBefore;
     previewAfter.marquee = QRectF(380, 170, 24, 24);
     previewAfter.region = confirmed.united(QRect(380, 170, 24, 24));
@@ -9792,6 +10031,15 @@ void runScreenshotOcrHighlightingBenchmark();
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+    QTemporaryDir storageDirectory;
+    require(storageDirectory.isValid(), "canvas tests require isolated application storage");
+    auto& applicationStorage = snow_shot::storage::ApplicationStorage::instance();
+    const auto storageLifetime = qScopeGuard([&] { applicationStorage.shutdown(); });
+    require(applicationStorage
+                .initialize({storageDirectory.filePath(QStringLiteral("bin")),
+                             storageDirectory.filePath(QStringLiteral("data")), 60000})
+                .success,
+            "initialize isolated canvas application storage");
     if (application.arguments().contains(QStringLiteral("--background-opacity-only"))) {
         compoundSelectionPreviewPreservesGapAnnotations();
         tiledBackgroundMatchesExportAtFractionalDpi();
@@ -9894,6 +10142,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--selection-effect-preview-only"))) {
+        borderPreviewUsesSolidExteriorAndInvalidatesTypeChanges();
         hoveredSelectionToolbarHidesBorderAndRendersShadowPreview();
         roundedSelectionPreviewKeepsTheSameContentBoundsWithAndWithoutShadow();
         changingRoundedSelectionShadowRepaintsCornerPixels();
@@ -9905,6 +10154,7 @@ int main(int argc, char** argv) {
         runScreenshotCursorTests();
         canvasCursorLayersKeepToolCursorAfterScreenshotSelection();
         overlaySelectionCursorUpdatesAreIdempotentWhileSelecting();
+        initialNativeSelectionCursorBelongsToThePointerOverlay();
         return 0;
     }
 #if defined(SNOW_SHOT_CURSOR_BENCHMARK)
@@ -9914,15 +10164,7 @@ int main(int argc, char** argv) {
     }
 #endif
     if (application.arguments().contains(QStringLiteral("--window-shadow-only"))) {
-        QTemporaryDir directory;
-        auto& storage = snow_shot::storage::ApplicationStorage::instance();
-        require(storage
-                    .initialize({directory.filePath(QStringLiteral("bin")),
-                                 directory.filePath(QStringLiteral("data")), 60000})
-                    .success,
-                "initialize temporary storage for window shadow tests");
         overlayWindowHasNoNativeShadow();
-        storage.shutdown();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--pinned-filter-reference-only"))) {
@@ -9984,6 +10226,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--pinned-result-scaling"))) {
+        customFillRulesAgreeAcrossOverlayAndPin();
+        pinnedRegionKeepsCaptureAndAnnotationMasksSeparate();
         pinnedResultDownscaleUsesLinearFiltering();
         pinnedResultUpscaleUsesLinearFiltering();
         return 0;
@@ -10006,6 +10250,15 @@ int main(int argc, char** argv) {
 
     if (application.arguments().contains(QStringLiteral("--right-quick-selection-only"))) {
         overlayRightQuickSelection();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--delete-text-after-cursor-only"))) {
+        canvas_text_editing_preferences_test::exercise([](auto verify) {
+            SnowCanvasRuntime runtime;
+            NoopOverlayEventSink sink;
+            ScreenshotOverlayWindow overlay(sink, new ScreenshotOverlayCanvasWidget(runtime));
+            verify(*overlay.canvas());
+        });
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--session-input-cleanup-only"))) {
@@ -10087,6 +10340,7 @@ int main(int argc, char** argv) {
     if (application.arguments().contains(QStringLiteral("--cursor-layer-priority"))) {
         canvasCursorLayersKeepToolCursorAfterScreenshotSelection();
         overlaySelectionCursorUpdatesAreIdempotentWhileSelecting();
+        initialNativeSelectionCursorBelongsToThePointerOverlay();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--screenshot-ui-preferences"))) {

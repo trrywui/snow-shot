@@ -25,8 +25,8 @@ struct ScreenshotSelectionEditWorkflowContext {
     ScreenshotInteractionState& interaction;
     ScreenshotSelectionModel& selection;
     ScreenshotSelectionEditUiActions ui;
-    std::function<void(int cornerRadius, int shadowWidth, const QColor& shadowColor)>
-        persistSelectionEffects = [](int, int, const QColor&) {};
+    std::function<void(const ScreenshotSelectionParams&)> persistSelectionEffects =
+        [](const ScreenshotSelectionParams&) {};
     std::function<void(ScreenshotSelectionAspectRatioPreset preset, bool locked)>
         persistSelectionAspectRatioPreference = [](ScreenshotSelectionAspectRatioPreset, bool) {};
 };
@@ -37,8 +37,8 @@ class ScreenshotSelectionEditWorkflow final {
 
     void adjustSelectionFromToolbar(int minDx, int minDy, int maxDx, int maxDy);
     void setSelectionCornerRadiusFromToolbar(int radius);
-    void setSelectionShadowWidthFromToolbar(int shadowWidth);
-    void adjustSelectionEffectsFromWheel(int radiusDelta, int shadowDelta);
+    void setSelectionEffectWidthFromToolbar(int effectWidth);
+    void adjustSelectionEffectsFromWheel(int radiusDelta, int effectDelta);
     void previewSelectionEffect(ScreenshotSelectionEffectHandle handle, int value);
     void commitSelectionEffects();
     void toggleSelectionAspectRatioLockFromToolbar();

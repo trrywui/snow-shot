@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -62,18 +63,20 @@ class HomebrewTests(unittest.TestCase):
         self.assertIn('depends_on macos: :sequoia', cask)
         self.assertIn('app "Snow Shot.app"', cask)
         self.assertIn('staged_path.join("prepare-snow-shot-homebrew.sh")', cask)
-        self.assertIn('preflight do', cask)
-        for forbidden in ('/main/', '/latest/', 'sha256 :no_check', 'zap ', 'sudo', '/Applications/'):
+        self.assertIn('installer script:', cask)
+        self.assertIn('uninstall script:', cask)
+        self.assertIn('["-rf", "--", "#{staged_path}/Snow Shot.app"]', cask)
+        for forbidden in ('/main/', '/latest/', 'sha256 :no_check', 'zap ', 'preflight', '/Applications/'):
             self.assertNotIn(forbidden, cask)
         self.package()
         self.assertEqual(first, archive.read_bytes())
         if shutil.which('ruby'):
             subprocess.run(['ruby', '-c', str(self.output / 'Casks/snow-shot.rb')], check=True, capture_output=True)
 
-    @unittest.skipUnless(shutil.which('ruby'), 'Requires Ruby for preflight execution')
-    def test_preflight_passes_versioned_local_paths_and_propagates_errors(self):
+    @unittest.skipUnless(shutil.which('ruby'), 'Requires Ruby for installer metadata')
+    def test_installer_passes_versioned_local_paths_and_requires_success(self):
         self.package()
-        runner = self.root / 'preflight.rb'
+        runner = self.root / 'installer.rb'
         runner.write_text('''require "json"
 require "pathname"
 class Fixture
@@ -83,9 +86,8 @@ class Fixture
   end
   def method_missing(*); end
   def staged_path; Pathname(ARGV[1]); end
-  def preflight(&block); instance_eval(&block); end
-  def system_command(executable, **options)
-    puts JSON.generate([executable, options])
+  def installer(script:)
+    puts JSON.generate([script.delete(:executable), script])
   end
 end
 def cask(_name, &block)
@@ -101,7 +103,7 @@ load ARGV[0]
             str(self.output / 'prepare-snow-shot-homebrew.sh'),
             str(self.output / self.name), str(self.output / 'Snow Shot.app')])
         self.assertTrue(options['must_succeed'])
-        self.assertNotIn('sudo', options)
+        self.assertFalse(options['sudo'])
 
     def test_invalid_releases(self):
         for change in (dict(draft=True), dict(prerelease=True), dict(tag_name='v1.2.3-rc.1_snow-shot'),
@@ -206,6 +208,61 @@ load ARGV[0]
         self.current.write_text(generated)
         self.assertEqual(self.package(), (archive, generated))
 
+    def legacy_cask(self, edition='full', architecture='dual', beta=False):
+        fixture = Path(__file__).resolve().parent.parent / 'homebrew/test-support/legacy-snow-shot.rb'
+        text = fixture.read_text(encoding='utf-8')
+        if architecture != 'dual':
+            text = text.replace('  arch arm: "arm64", intel: "x86_64"\n\n', '')
+            text = re.sub(r'  sha256 arm:.*\n         intel:.*', '  sha256 "' + '0' * 64 + '"', text)
+            text = text.replace('#{arch}', architecture)
+            text = text.replace('  depends_on macos:', f'  depends_on arch: :{architecture}\n  depends_on macos:')
+        if edition == 'mini':
+            text = text.replace('/snow-shot-', '/snow-shot-mini-').replace('"snow-shot-', '"snow-shot-mini-')
+            text = text.replace('cask "snow-shot"', 'cask "snow-shot-mini"')
+            text = text.replace('Snow Shot', 'Snow Shot Mini')
+            text = text.replace('staged_path.join("Snow Shot Mini.app")]',
+                                'staged_path.join("Snow Shot Mini.app"),\n                                  "mini"]')
+        if beta:
+            slug = brew.PRODUCTS[edition][0]
+            text = text.replace('1.3.4', '1.3.4-beta.2')
+            text = text.replace(f'cask "{slug}"', f'cask "{slug}@beta"')
+            text = text.replace('  depends_on ', f'  conflicts_with cask: "{slug}"\n  depends_on ', 1)
+        return text
+
+    def test_legacy_migration_preserves_published_metadata_for_every_variant(self):
+        for edition, architecture in (('full', 'dual'), ('full', 'arm64'),
+                                       ('full', 'x86_64'), ('mini', 'arm64')):
+            for beta in (False, True):
+                with self.subTest(edition=edition, architecture=architecture, beta=beta):
+                    version = '1.3.4-beta.2' if beta else '1.3.4'
+                    token = brew.cask_name(version, edition)
+                    path = self.tap / f'Casks/{token}.rb'
+                    path.parent.mkdir(exist_ok=True, parents=True)
+                    path.write_text(self.legacy_cask(edition, architecture, beta))
+                    checksums = {'arm64': '0' * 64, 'x64': '1' * 64} if architecture == 'dual' else '0' * 64
+                    native_arch = 'x64' if architecture == 'x86_64' else 'arm64'
+                    expected = brew.cask(version, checksums, edition=edition, architecture=native_arch)
+                    with patch.object(brew, 'run') as run:
+                        self.assertEqual(brew.migrate_casks(self.tap), 1)
+                        self.assertEqual(path.read_text(), expected)
+                        self.assertEqual(brew.migrate_casks(self.tap), 0)
+                        run.assert_not_called()
+                    path.unlink()
+
+    def test_migration_validates_all_casks_before_changing_any(self):
+        self.current.parent.mkdir(parents=True)
+        original = self.legacy_cask()
+        self.current.write_text(original)
+        beta = self.current.with_name('snow-shot@beta.rb')
+        for invalid in (self.legacy_cask(beta=True).replace('"/bin/bash"', '"/bin/false"'),
+                        self.legacy_cask(beta=True).replace('\n  caveats', '\n  uninstall delete: "/unexpected"\n  caveats'),
+                        self.legacy_cask(beta=True).replace('cask "snow-shot@beta"', 'cask "unexpected"')):
+            beta.write_text(invalid)
+            with self.assertRaises(ValueError):
+                brew.migrate_casks(self.tap)
+            self.assertEqual(self.current.read_text(), original)
+            self.assertEqual(beta.read_text(), invalid)
+
     def test_existing_asset_reused_only_if_identical(self):
         archive, _ = self.package()
         self.release['assets'].append(dict(name=archive.name))
@@ -283,11 +340,11 @@ load ARGV[0]
                                           self.output, self.current), (archives, generated))
         self.assertEqual(first, [archive.read_bytes() for archive in archives])
 
-    @unittest.skipUnless(shutil.which('ruby'), 'Requires Ruby for preflight execution')
-    def test_dual_cask_preflight_selects_the_local_architecture(self):
+    @unittest.skipUnless(shutil.which('ruby'), 'Requires Ruby for installer metadata')
+    def test_dual_cask_installer_selects_the_local_architecture(self):
         self.add_intel()
         brew.package_all(self.release, self.source, self.assets, self.output, self.current)
-        runner = self.root / 'dual-preflight.rb'
+        runner = self.root / 'dual-installer.rb'
         runner.write_text('''require "json"
 require "pathname"
 class Fixture
@@ -301,9 +358,8 @@ class Fixture
   end
   def method_missing(*); end
   def staged_path; Pathname(ARGV[1]); end
-  def preflight(&block); instance_eval(&block); end
-  def system_command(executable, **options)
-    puts JSON.generate([executable, options])
+  def installer(script:)
+    puts JSON.generate([script.delete(:executable), script])
   end
 end
 def cask(_name, &block)

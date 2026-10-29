@@ -49,13 +49,9 @@ inline QImage renderScreenshotSelectionBackground(
         sourcePixelSize.isEmpty() || (plan && !plan->isValid()))
         return {};
     const QSize contentSize = plan ? plan->outputSize : sourcePixelSize;
-    const int effect = ScreenshotResultCompositor::normalizedStyle(outputStyle).shadowWidth;
-    const qint64 width = qint64(contentSize.width()) + 2 * effect;
-    const qint64 height = qint64(contentSize.height()) + 2 * effect;
-    if (width <= 0 || height <= 0 || width > 100000000 / height || !std::isfinite(selection.x()) ||
-        !std::isfinite(selection.y()) || !std::isfinite(selection.width()) ||
-        !std::isfinite(selection.height()) || (plan && plan->sourceSize != sourcePixelSize) ||
-        (cancelled && cancelled()))
+    if (!std::isfinite(selection.x()) || !std::isfinite(selection.y()) ||
+        !std::isfinite(selection.width()) || !std::isfinite(selection.height()) ||
+        (plan && plan->sourceSize != sourcePixelSize) || (cancelled && cancelled()))
         return {};
     const auto layout = ScreenshotResultCompositor::layoutForContent(contentSize, outputStyle);
     if (!layout.isValid() ||

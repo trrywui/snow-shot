@@ -1,5 +1,6 @@
 #include "snow_shot/app/edition.h"
 #include "snow_shot/update/updateservice.h"
+#include "snow_shot/app/distribution.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -268,14 +269,14 @@ struct UpdateService::Impl {
     }
 
     void armStartupCheck() {
-        if (started && automaticEnabled()) {
+        if (!storeManaged && started && automaticEnabled()) {
             automaticCheckDue = false;
             scheduleTimer.start(options.startupCheckDelay);
         }
     }
 
     void armAutomaticInterval() {
-        if (started && automaticEnabled()) {
+        if (!storeManaged && started && automaticEnabled()) {
             automaticCheckDue = false;
             scheduleTimer.start(options.automaticCheckInterval);
         }
@@ -290,6 +291,10 @@ struct UpdateService::Impl {
 
     void request(Operation operation, Trigger trigger) {
         if (operation == Operation::None) {
+            return;
+        }
+        if (storeManaged) {
+            emit q.operationFinished(operationName(operation), QStringLiteral("unsupported"));
             return;
         }
         if (process.state() != QProcess::NotRunning || lifecycle != Lifecycle::Stopped) {
@@ -696,6 +701,7 @@ struct UpdateService::Impl {
 
     UpdateService& q;
     Options options;
+    const bool storeManaged = options.storeManaged.value_or(app::distribution::isStoreManaged());
     QProcess process;
     QTimer handshakeTimeout;
     QTimer scheduleTimer;
@@ -759,6 +765,9 @@ bool UpdateService::event(QEvent* event) {
 const UpdateStatus& UpdateService::status() const {
     return m_impl->status;
 }
+bool UpdateService::managedByStore() const {
+    return m_impl->storeManaged;
+}
 bool UpdateService::busy() const {
     return m_impl->process.state() != QProcess::NotRunning ||
            m_impl->lifecycle != Lifecycle::Stopped || m_impl->pendingOperation != Operation::None;
@@ -769,7 +778,7 @@ bool UpdateService::handoffPending() const {
 }
 
 void UpdateService::start() {
-    if (m_impl->started) {
+    if (m_impl->started || managedByStore()) {
         return;
     }
     m_impl->started = true;
@@ -778,6 +787,9 @@ void UpdateService::start() {
 }
 
 void UpdateService::setMode(const QString& mode) {
+    if (managedByStore()) {
+        return;
+    }
     if (mode != u"manual" && mode != u"check" && mode != u"download" && mode != u"next_launch") {
         return;
     }
@@ -876,6 +888,9 @@ void UpdateService::cancel() {
 }
 
 void UpdateService::requestRestart() {
+    if (managedByStore()) {
+        return;
+    }
     emit restartRequested();
 }
 

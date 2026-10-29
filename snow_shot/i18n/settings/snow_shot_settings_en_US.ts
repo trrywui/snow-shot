@@ -20,6 +20,10 @@
             <translation>Administrator launch is only supported on Windows.</translation>
         </message>
         <message>
+            <source>Administrator launch is unavailable in the Microsoft Store version.</source>
+            <translation>Administrator launch is unavailable in the Microsoft Store version.</translation>
+        </message>
+        <message>
             <source>An interrupted startup change needs administrator authorization. Reapply your startup setting.</source>
             <translation>An interrupted startup change needs administrator authorization. Reapply your startup setting.</translation>
         </message>
@@ -129,6 +133,21 @@
         <message>
             <source>Screen &amp; System Audio Recording</source>
             <translation>Screen &amp; System Audio Recording</translation>
+        </message>
+    </context>
+    <context>
+        <name>AutoStartRegistration</name>
+        <message>
+            <source>Enable Snow Shot in Windows Settings &gt; Apps &gt; Startup.</source>
+            <translation>Enable Snow Shot in Windows Settings &gt; Apps &gt; Startup.</translation>
+        </message>
+        <message>
+            <source>Startup is managed by your organization.</source>
+            <translation>Startup is managed by your organization.</translation>
+        </message>
+        <message>
+            <source>Windows startup settings are unavailable.</source>
+            <translation>Windows startup settings are unavailable.</translation>
         </message>
     </context>
     <context>
@@ -337,6 +356,10 @@
             <translation>Copy</translation>
         </message>
         <message>
+            <source>DeepSeek</source>
+            <translation>DeepSeek</translation>
+        </message>
+        <message>
             <source>Delete</source>
             <translation>Delete</translation>
         </message>
@@ -347,6 +370,10 @@
         <message>
             <source>Delete model "%1"? If selected, another available model will be used.</source>
             <translation>Delete model "%1"? If selected, another available model will be used.</translation>
+        </message>
+        <message>
+            <source>Doubao</source>
+            <translation>Doubao</translation>
         </message>
         <message>
             <source>Edit</source>
@@ -397,6 +424,10 @@
             <translation>No custom models configured</translation>
         </message>
         <message>
+            <source>OpenAI</source>
+            <translation>OpenAI</translation>
+        </message>
+        <message>
             <source>OpenAI-compatible Chat Completions. /chat/completions is appended to this base URL.</source>
             <translation>OpenAI-compatible Chat Completions. /chat/completions is appended to this base URL.</translation>
         </message>
@@ -405,12 +436,28 @@
             <translation>Optional for servers that do not require authentication.</translation>
         </message>
         <message>
+            <source>Provider Type</source>
+            <translation>Provider Type</translation>
+        </message>
+        <message>
+            <source>Qwen</source>
+            <translation>Qwen</translation>
+        </message>
+        <message>
             <source>Reasoning Support</source>
             <translation>Reasoning Support</translation>
         </message>
         <message>
+            <source>Reasoning is controlled by the model for the OpenAI provider.</source>
+            <translation>Reasoning is controlled by the model for the OpenAI provider.</translation>
+        </message>
+        <message>
             <source>Save</source>
             <translation>Save</translation>
+        </message>
+        <message>
+            <source>Select the provider whose reasoning controls this API uses.</source>
+            <translation>Select the provider whose reasoning controls this API uses.</translation>
         </message>
         <message>
             <source>The API key must not contain line breaks.</source>
@@ -951,6 +998,10 @@
     <context>
         <name>ScreenshotToolbarEditorSettingsWidget</name>
         <message>
+            <source>AirDrop</source>
+            <translation>AirDrop</translation>
+        </message>
+        <message>
             <source>Barcode recognition</source>
             <translation>Barcode recognition</translation>
         </message>
@@ -1169,8 +1220,8 @@
             <translation>Active window</translation>
         </message>
         <message>
-            <source>Add Edit with Snow Shot to the classic Windows context menu to pin a supported image or document file to the screen.</source>
-            <translation>Add Edit with Snow Shot to the classic Windows context menu to pin a supported image or document file to the screen.</translation>
+            <source>Add Edit with Snow Shot to the Windows context menu to pin a supported image or document file to the screen.</source>
+            <translation>Add Edit with Snow Shot to the Windows context menu to pin a supported image or document file to the screen.</translation>
         </message>
         <message>
             <source>Add a mask to highlight text recognition results</source>
@@ -1389,12 +1440,20 @@
             <translation>Automatic text recognition</translation>
         </message>
         <message>
+            <source>Automatically adapt the icon color to the menu bar background. Uses the image's transparency as its shape and ignores its original colors.</source>
+            <translation>Automatically adapt the icon color to the menu bar background. Uses the image's transparency as its shape and ignores its original colors.</translation>
+        </message>
+        <message>
             <source>Automatically disable when a focused fullscreen window exists</source>
             <translation>Automatically disable when a focused fullscreen window exists</translation>
         </message>
         <message>
             <source>Automatically exit screen recording after the recording is saved.</source>
             <translation>Automatically exit screen recording after the recording is saved.</translation>
+        </message>
+        <message>
+            <source>Automatically select newly created elements</source>
+            <translation>Automatically select newly created elements</translation>
         </message>
         <message>
             <source>Autostart</source>
@@ -1589,6 +1648,10 @@
             <translation>Choose how updates are downloaded and installed</translation>
         </message>
         <message>
+            <source>Choose the MP4 video encoder. Hardware encoding falls back to software with the same codec if unavailable. H.265 can produce smaller files but requires a compatible player.</source>
+            <translation>Choose the MP4 video encoder. Hardware encoding falls back to software with the same codec if unavailable. H.265 can produce smaller files but requires a compatible player.</translation>
+        </message>
+        <message>
             <source>Choose the OCR model version and size to balance recognition speed and accuracy</source>
             <translation>Choose the OCR model version and size to balance recognition speed and accuracy</translation>
         </message>
@@ -1699,10 +1762,6 @@
         <message>
             <source>Choose the translation service or AI model</source>
             <translation>Choose the translation service or AI model</translation>
-        </message>
-        <message>
-            <source>Choose the video encoder</source>
-            <translation>Choose the video encoder</translation>
         </message>
         <message>
             <source>Choose what happens automatically when text recognition completes</source>
@@ -1821,12 +1880,12 @@
             <translation>Compression level</translation>
         </message>
         <message>
-            <source>Configuration exported to the clipboard.</source>
-            <translation>Configuration exported to the clipboard.</translation>
+            <source>Configuration exported to the clipboard</source>
+            <translation>Configuration exported to the clipboard</translation>
         </message>
         <message>
-            <source>Configuration imported.</source>
-            <translation>Configuration imported.</translation>
+            <source>Configuration imported</source>
+            <translation>Configuration imported</translation>
         </message>
         <message>
             <source>Configure S3-compatible upload destinations</source>
@@ -1877,12 +1936,20 @@
             <translation>Control when the screenshot color picker is visible</translation>
         </message>
         <message>
+            <source>Copy Translation Results as an Image</source>
+            <translation>Copy Translation Results as an Image</translation>
+        </message>
+        <message>
             <source>Copy after text recognition</source>
             <translation>Copy after text recognition</translation>
         </message>
         <message>
             <source>Copy application settings as a zip archive to the clipboard</source>
             <translation>Copy application settings as a zip archive to the clipboard</translation>
+        </message>
+        <message>
+            <source>Copy both the image and its exported file to the clipboard</source>
+            <translation>Copy both the image and its exported file to the clipboard</translation>
         </message>
         <message>
             <source>Copy color</source>
@@ -1941,6 +2008,10 @@
             <translation>Copy the confirmed screenshot selection to the clipboard</translation>
         </message>
         <message>
+            <source>Copy the full translation result as an image when no text is selected</source>
+            <translation>Copy the full translation result as an image when no text is selected</translation>
+        </message>
+        <message>
             <source>Copy to Clipboard</source>
             <translation>Copy to Clipboard</translation>
         </message>
@@ -1965,8 +2036,8 @@
             <translation>Custom AI models</translation>
         </message>
         <message>
-            <source>Custom DeepL, Baidu, and Youdao-compatible services</source>
-            <translation>Custom DeepL, Baidu, and Youdao-compatible services</translation>
+            <source>Custom DeepL, DeepLX, Baidu, and Youdao-compatible services</source>
+            <translation>Custom DeepL, DeepLX, Baidu, and Youdao-compatible services</translation>
         </message>
         <message>
             <source>Custom Models</source>
@@ -2133,6 +2204,10 @@
             <translation>Delete temporary recording files?</translation>
         </message>
         <message>
+            <source>Delete text after the cursor</source>
+            <translation>Delete text after the cursor</translation>
+        </message>
+        <message>
             <source>Delete the current recording files when closing an active recording. Stopping recording still saves the output.</source>
             <translation>Delete the current recording files when closing an active recording. Stopping recording still saves the output.</translation>
         </message>
@@ -2179,6 +2254,10 @@
         <message>
             <source>Distance annotation</source>
             <translation>Distance annotation</translation>
+        </message>
+        <message>
+            <source>Do not automatically select elements created with these tools.</source>
+            <translation>Do not automatically select elements created with these tools.</translation>
         </message>
         <message>
             <source>Double-click Action</source>
@@ -2457,6 +2536,10 @@
             <translation>GIF, APNG and WebP resolution, frame rate and looping</translation>
         </message>
         <message>
+            <source>GPU</source>
+            <translation>GPU</translation>
+        </message>
+        <message>
             <source>General</source>
             <translation>General</translation>
         </message>
@@ -2503,6 +2586,14 @@
         <message>
             <source>H.265</source>
             <translation>H.265</translation>
+        </message>
+        <message>
+            <source>H.265 (Hardware)</source>
+            <translation>H.265 (Hardware)</translation>
+        </message>
+        <message>
+            <source>Hardware acceleration</source>
+            <translation>Hardware acceleration</translation>
         </message>
         <message>
             <source>Hidden tools</source>
@@ -2677,6 +2768,10 @@
             <translation>Keep selection width and height consistent</translation>
         </message>
         <message>
+            <source>Keep the Snow Shot save dialog open after saving to show the result</source>
+            <translation>Keep the Snow Shot save dialog open after saving to show the result</translation>
+        </message>
+        <message>
             <source>Keep the first button of each toolbar group visible instead of the last used button</source>
             <translation>Keep the first button of each toolbar group visible instead of the last used button</translation>
         </message>
@@ -2731,6 +2826,10 @@
         <message>
             <source>Leftover working files from finished or interrupted recordings will be removed</source>
             <translation>Leftover working files from finished or interrupted recordings will be removed</translation>
+        </message>
+        <message>
+            <source>Let macOS control tray icon color</source>
+            <translation>Let macOS control tray icon color</translation>
         </message>
         <message>
             <source>Light</source>
@@ -2955,6 +3054,10 @@
         <message>
             <source>Next frame</source>
             <translation>Next frame</translation>
+        </message>
+        <message>
+            <source>Next recording area</source>
+            <translation>Next recording area</translation>
         </message>
         <message>
             <source>Next screenshot history</source>
@@ -3267,6 +3370,10 @@
         <message>
             <source>Previous frame</source>
             <translation>Previous frame</translation>
+        </message>
+        <message>
+            <source>Previous recording area</source>
+            <translation>Previous recording area</translation>
         </message>
         <message>
             <source>Previous screenshot history</source>
@@ -3729,6 +3836,10 @@
             <translation>Select dark theme tray icon</translation>
         </message>
         <message>
+            <source>Select each newly created element while keeping the current drawing tool active.</source>
+            <translation>Select each newly created element while keeping the current drawing tool active.</translation>
+        </message>
+        <message>
             <source>Select image save directory</source>
             <translation>Select image save directory</translation>
         </message>
@@ -3981,6 +4092,14 @@
             <translation>Show original image preview</translation>
         </message>
         <message>
+            <source>Show recording status prompts</source>
+            <translation>Show recording status prompts</translation>
+        </message>
+        <message>
+            <source>Show save result</source>
+            <translation>Show save result</translation>
+        </message>
+        <message>
             <source>Show screenshot guides when a capture starts</source>
             <translation>Show screenshot guides when a capture starts</translation>
         </message>
@@ -4027,6 +4146,10 @@
         <message>
             <source>Show the sub-toolbar for the Edit Selection tool</source>
             <translation>Show the sub-toolbar for the Edit Selection tool</translation>
+        </message>
+        <message>
+            <source>Show the video format and microphone and speaker status in the center of the motion preview area.</source>
+            <translation>Show the video format and microphone and speaker status in the center of the motion preview area.</translation>
         </message>
         <message>
             <source>Show toolbar</source>
@@ -4369,6 +4492,10 @@
             <translation>Toolbar size</translation>
         </message>
         <message>
+            <source>Tools excluded from automatic selection</source>
+            <translation>Tools excluded from automatic selection</translation>
+        </message>
+        <message>
             <source>Tools that forbid quick selection of same-type elements</source>
             <translation>Tools that forbid quick selection of same-type elements</translation>
         </message>
@@ -4493,6 +4620,10 @@
             <translation>Upload to Cloud</translation>
         </message>
         <message>
+            <source>Use GPU acceleration when available. Recognition uses the CPU while acceleration is unavailable.</source>
+            <translation>Use GPU acceleration when available. Recognition uses the CPU while acceleration is unavailable.</translation>
+        </message>
+        <message>
             <source>Use global mouse gestures, select individual window elements, and translate selected text.</source>
             <translation>Use global mouse gestures, select individual window elements, and translate selected text.</translation>
         </message>
@@ -4593,6 +4724,10 @@
             <translation>When pinning duplicate content</translation>
         </message>
         <message>
+            <source>While editing text, press Delete to remove selected text or the character after the cursor.</source>
+            <translation>While editing text, press Delete to remove selected text or the character after the cursor.</translation>
+        </message>
+        <message>
             <source>Window Element API</source>
             <translation>Window Element API</translation>
         </message>
@@ -4611,10 +4746,6 @@
         <message>
             <source>Windows context menu</source>
             <translation>Windows context menu</translation>
-        </message>
-        <message>
-            <source>Write the image to a file and copy that file to the clipboard</source>
-            <translation>Write the image to a file and copy that file to the clipboard</translation>
         </message>
         <message>
             <source>Zip archives (*.zip);;All files (*.*)</source>
@@ -4904,6 +5035,10 @@ Unavailable: %2</translation>
             <translation>The storage directory is not writable.</translation>
         </message>
         <message>
+            <source>The storage directory path is empty</source>
+            <translation>The storage directory path is empty</translation>
+        </message>
+        <message>
             <source>Verification failed for %1.</source>
             <translation>Verification failed for %1.</translation>
         </message>
@@ -4999,8 +5134,8 @@ Unavailable: %2</translation>
             <translation>Latest storage error</translation>
         </message>
         <message>
-            <source>Log file copied.</source>
-            <translation>Log file copied.</translation>
+            <source>Log file copied</source>
+            <translation>Log file copied</translation>
         </message>
         <message>
             <source>Log location</source>
@@ -5131,8 +5266,8 @@ Unavailable: %2</translation>
             <translation>Storage location</translation>
         </message>
         <message>
-            <source>Storage migration complete.</source>
-            <translation>Storage migration complete.</translation>
+            <source>Storage migration complete</source>
+            <translation>Storage migration complete</translation>
         </message>
         <message>
             <source>Storage mode</source>
@@ -5230,6 +5365,10 @@ Unavailable: %2</translation>
             <translation>DeepL</translation>
         </message>
         <message>
+            <source>DeepLX</source>
+            <translation>DeepLX</translation>
+        </message>
+        <message>
             <source>Delete</source>
             <translation>Delete</translation>
         </message>
@@ -5264,6 +5403,10 @@ Unavailable: %2</translation>
         <message>
             <source>No translation configurations added</source>
             <translation>No translation configurations added</translation>
+        </message>
+        <message>
+            <source>Optional access token sent as a Bearer token.</source>
+            <translation>Optional access token sent as a Bearer token.</translation>
         </message>
         <message>
             <source>Optional for servers that do not require authentication.</source>

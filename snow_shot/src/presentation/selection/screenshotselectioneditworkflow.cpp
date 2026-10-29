@@ -53,9 +53,9 @@ void ScreenshotSelectionEditWorkflow::setSelectionCornerRadiusFromToolbar(int ra
     }
 }
 
-void ScreenshotSelectionEditWorkflow::setSelectionShadowWidthFromToolbar(int shadowWidth) {
+void ScreenshotSelectionEditWorkflow::setSelectionEffectWidthFromToolbar(int effectWidth) {
     const bool cancelled = m_context.interaction.cancelEffectDrag();
-    const bool changed = m_context.selection.setShadowWidth(shadowWidth);
+    const bool changed = m_context.selection.setEffectWidth(effectWidth);
     if (!changed && !cancelled) {
         return;
     }
@@ -81,7 +81,7 @@ void ScreenshotSelectionEditWorkflow::toggleSelectionAspectRatioLockFromToolbar(
 }
 
 void ScreenshotSelectionEditWorkflow::adjustSelectionEffectsFromWheel(int radiusDelta,
-                                                                      int shadowDelta) {
+                                                                      int effectDelta) {
     using namespace snow_shot::presentation;
     const bool cancelled = m_context.interaction.cancelEffectDrag();
     const bool radiusChanged = radiusDelta != 0 && m_context.selection.cornerRadiusApplicable() &&
@@ -89,14 +89,14 @@ void ScreenshotSelectionEditWorkflow::adjustSelectionEffectsFromWheel(int radius
                                    m_context.selection.cornerRadius() +
                                    std::clamp(radiusDelta, -kScreenshotSelectionCornerRadiusMax,
                                               kScreenshotSelectionCornerRadiusMax));
-    const bool shadowChanged =
-        shadowDelta != 0 && m_context.selection.setShadowWidth(
-                                m_context.selection.shadowWidth() +
-                                std::clamp(shadowDelta, -kScreenshotSelectionShadowWidthMax,
+    const bool effectChanged =
+        effectDelta != 0 && m_context.selection.setEffectWidth(
+                                m_context.selection.effectWidth() +
+                                std::clamp(effectDelta, -kScreenshotSelectionShadowWidthMax,
                                            kScreenshotSelectionShadowWidthMax));
-    if (!radiusChanged && !shadowChanged && !cancelled)
+    if (!radiusChanged && !effectChanged && !cancelled)
         return;
-    if (radiusChanged || shadowChanged)
+    if (radiusChanged || effectChanged)
         commitSelectionEffects();
     if (!cancelled && m_context.ui.requestSelectionEffectPresentation)
         m_context.ui.requestSelectionEffectPresentation();
@@ -107,17 +107,15 @@ void ScreenshotSelectionEditWorkflow::adjustSelectionEffectsFromWheel(int radius
 void ScreenshotSelectionEditWorkflow::previewSelectionEffect(ScreenshotSelectionEffectHandle handle,
                                                              int value) {
     const bool changed =
-        handle == ScreenshotSelectionEffectHandle::Shadow
-            ? m_context.selection.setShadowWidth(value)
+        handle == ScreenshotSelectionEffectHandle::Width
+            ? m_context.selection.setEffectWidth(value)
             : screenshotSelectionRadiusHandle(handle) && m_context.selection.setCornerRadius(value);
     if (changed && m_context.ui.updateOverlayState)
         m_context.ui.updateOverlayState();
 }
 
 void ScreenshotSelectionEditWorkflow::commitSelectionEffects() {
-    m_context.persistSelectionEffects(m_context.selection.cornerRadius(),
-                                      m_context.selection.shadowWidth(),
-                                      m_context.selection.shadowColor());
+    m_context.persistSelectionEffects(currentSelectionParams());
 }
 
 void ScreenshotSelectionEditWorkflow::setSelectionAspectRatioPresetFromToolbar(

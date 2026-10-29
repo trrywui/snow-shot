@@ -166,6 +166,81 @@ void translationRetries(Call&& call, translation::TranslationService& translatio
 }
 } // namespace
 
+void runMcpApplicationReplayTests() {
+    auto& storage = storage::ApplicationStorage::instance();
+    presentation::GlobalShortcutManager shortcuts;
+    const auto suspended = shortcuts.suspendRegistrations();
+    Q_UNUSED(suspended);
+    const auto registry = settings::buildBuiltInSettingsRegistry();
+    settings::BuiltInSettingsBackend backend(shortcuts);
+    settings::SettingsRuntimeSession settingsSession(registry, backend);
+    McpJobRegistry jobs;
+    McpApplicationService::Ports ports;
+    ports.storage = &storage;
+    ports.settings = &settingsSession;
+    ports.jobs = &jobs;
+    QTemporaryDir directory;
+    require(directory.isValid(), "isolated application replay output");
+    ScreenshotMcpRequest original;
+    original.connectionId = 71;
+    original.requestId = QStringLiteral("application-original");
+    original.idempotencyKey = QStringLiteral("application-export");
+    original.method = QStringLiteral("snow_shot_configuration_export");
+    original.params = {
+        {QStringLiteral("path"), directory.filePath(QStringLiteral("settings.json"))}};
+    auto service = std::make_unique<McpApplicationService>(ports);
+    std::optional<ScreenshotMcpResponse> exported;
+    service->request(original, [&](auto response) { exported = std::move(response); });
+    require(!exported, "background export remains pending until its response is delivered");
+    for (int index = 0; index < 12; ++index) {
+        auto alias = original;
+        alias.requestId = QStringLiteral("application-alias-%1").arg(index);
+        int completions = 0;
+        service->request(alias, [&](auto response) {
+            require(response.errorCode == QStringLiteral("canceled") &&
+                        response.requestId == alias.requestId,
+                    "application alias cancellation has its own response");
+            ++completions;
+        });
+        require(service->cancelRequest(71, alias.requestId) && completions == 1 && !exported,
+                "canceling an application alias releases its slot and preserves shared work");
+    }
+    translation_tests::waitUntil([&] { return exported.has_value(); }, "original export completes");
+    require(exported->ok && QFileInfo::exists(directory.filePath(QStringLiteral("settings.json"))),
+            "shared application export succeeds after its aliases are canceled");
+
+    original.requestId = original.idempotencyKey = QStringLiteral("application-disconnect");
+    int disconnectedCompletions = 0;
+    service->request(original, [&](auto) { ++disconnectedCompletions; });
+    service->disconnected(71);
+    service->shutdown();
+    translation_tests::flushEvents();
+    require(disconnectedCompletions == 0,
+            "retired application requests cannot publish late replies");
+    service.reset();
+
+    service = std::make_unique<McpApplicationService>(ports);
+    original.requestId = original.idempotencyKey = QStringLiteral("application-lifetime");
+    int completionsAfterDestruction = 0;
+    int settled = 0;
+    service->request(original, [&](auto response) {
+        require(response.ok, "application lifetime fixture completes");
+        ++settled;
+    });
+    auto alias = original;
+    alias.requestId = QStringLiteral("application-destroying-alias");
+    service->request(alias, [&](auto) {
+        ++settled;
+        service.reset();
+    });
+    alias.requestId = QStringLiteral("application-retired-alias");
+    service->request(alias, [&](auto) { ++completionsAfterDestruction; });
+    translation_tests::waitUntil([&] { return !service; },
+                                 "application callback destroys its service");
+    require(settled == 2 && completionsAfterDestruction == 0,
+            "application destruction suppresses the remaining shared callbacks");
+}
+
 void runMcpApplicationTests() {
     auto& storage = storage::ApplicationStorage::instance();
     auto& configuration = storage.configuration();
@@ -181,6 +256,9 @@ void runMcpApplicationTests() {
     updateOptions.applicationDirectory = updateDirectory.filePath(QStringLiteral("missing-helper"));
     updateOptions.root = updateDirectory.path();
     updateOptions.cacheDirectory = updateDirectory.filePath(QStringLiteral("cache"));
+    updateOptions.githubApiUrl = QUrl(QStringLiteral("http://127.0.0.1/releases"));
+    updateOptions.giteeApiUrl = QUrl(QStringLiteral("http://127.0.0.1/releases"));
+    updateOptions.storeManaged = false;
     // macOS rejects non-HTTPS before network access; Windows lacks its packaged helper here.
     update::UpdateService updates(std::move(updateOptions));
     translation_tests::Server provider;
@@ -215,6 +293,39 @@ void runMcpApplicationTests() {
         return true;
     };
     McpApplicationService service(ports);
+#ifdef Q_OS_WIN
+    {
+        update::UpdateService::Options storeOptions;
+        storeOptions.storeManaged = true;
+        update::UpdateService storeUpdates(std::move(storeOptions));
+        McpJobRegistry storeJobs;
+        auto storePorts = ports;
+        storePorts.updates = &storeUpdates;
+        storePorts.jobs = &storeJobs;
+        McpApplicationService storeService(storePorts);
+        ScreenshotMcpRequest request;
+        request.connectionId = 71;
+        request.requestId = QStringLiteral("store-status");
+        request.method = QStringLiteral("snow_shot_updates_status");
+        std::optional<ScreenshotMcpResponse> response;
+        storeService.request(request, [&](auto result) { response = std::move(result); });
+        require(response && response->ok &&
+                    response->result.value(QStringLiteral("installation")) ==
+                        QStringLiteral("microsoft_store"),
+                "Store update discovery identifies the Store provider");
+        request.method = QStringLiteral("snow_shot_updates_action");
+        for (const auto* action : {"check", "download", "apply", "cancel"}) {
+            request.requestId = QStringLiteral("store-") + QString::fromLatin1(action);
+            request.params = {{QStringLiteral("action"), QString::fromLatin1(action)}};
+            response.reset();
+            storeService.request(request, [&](auto result) { response = std::move(result); });
+            require(response && response->errorCode == QStringLiteral("unsupported") &&
+                        !response->result.contains(QStringLiteral("job_id")) &&
+                        !storeJobs.hasRunningJobs() && !storeUpdates.busy(),
+                    "Store native update actions are rejected before creating work");
+        }
+    }
+#endif
     quint64 sequence = 0;
     const auto call = [&](const QString& method, QJsonObject params = {},
                           std::optional<quint64> revision = {}, QString key = {},
@@ -553,17 +664,39 @@ void runMcpApplicationTests() {
     model.baseUrl = QStringLiteral("https://example.invalid/v1");
     model.model = QStringLiteral("test-model");
     model.apiKey = QStringLiteral("test-secret-never-returned");
+    model.provider = QStringLiteral("deepseek");
     require(session.applyCustomAiModels({model}), "prepare existing model");
     const auto models = call(QStringLiteral("models_list"));
     require(models.ok && !QJsonDocument(models.result).toJson().contains(model.apiKey.toUtf8()),
             "model discovery redacts secrets");
+    require(models.result.value(QStringLiteral("models"))
+                    .toArray()
+                    .first()
+                    .toObject()
+                    .value(QStringLiteral("provider")) == model.provider,
+            "model discovery includes the provider type");
     auto publicModel = publicModels({model}).first().toObject();
     publicModel.insert(QStringLiteral("name"), QStringLiteral("Renamed"));
+    publicModel.insert(QStringLiteral("provider"), QStringLiteral("doubao"));
     require(call(QStringLiteral("models_update"),
                  {{QStringLiteral("models"), QJsonArray{publicModel}}}, configuration.revision())
                     .ok &&
-                session.customAiModels().first().apiKey == model.apiKey,
+                session.customAiModels().first().apiKey == model.apiKey &&
+                session.customAiModels().first().provider == QStringLiteral("doubao"),
             "omitted credential preserved for same provider endpoint");
+    publicModel.insert(QStringLiteral("provider"), QStringLiteral("unknown"));
+    require(!call(QStringLiteral("models_update"),
+                  {{QStringLiteral("models"), QJsonArray{publicModel}}}, configuration.revision())
+                    .ok &&
+                session.customAiModels().first().provider == QStringLiteral("doubao"),
+            "invalid provider updates preserve the previous model");
+    publicModel.remove(QStringLiteral("provider"));
+    require(call(QStringLiteral("models_update"),
+                 {{QStringLiteral("models"), QJsonArray{publicModel}}}, configuration.revision())
+                    .ok &&
+                session.customAiModels().first().provider == QStringLiteral("qwen"),
+            "legacy MCP model updates retain Qwen request behavior");
+    publicModel.insert(QStringLiteral("provider"), QStringLiteral("doubao"));
     publicModel.insert(QStringLiteral("base_url"), QStringLiteral("https://different.invalid/v1"));
     require(call(QStringLiteral("models_update"),
                  {{QStringLiteral("models"), QJsonArray{publicModel}}}, configuration.revision())
@@ -738,7 +871,7 @@ void runMcpApplicationTests() {
             return jobs.get(71, updateJob)->value(QStringLiteral("status")) ==
                    QStringLiteral("failed");
         },
-        "missing updater helper reports terminal job failure");
+        "unavailable update transport reports terminal job failure");
     require(!jobs.get(72, updateJob), "update job status remains private to its requester");
     // Responses are synchronous callback boundaries: their consumer may retire the service.
     for (int variant = 0; variant < 5; ++variant) {

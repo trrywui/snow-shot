@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <!-- The same crop geometry rotated a quarter turn to indicate a removed column band. -->
+  <g stroke="currentColor" stroke-width="72" stroke-linecap="round" data-adqt-slot="primary">
+    <path d="M348 164H172a36 36 0 0 0-36 36v624a36 36 0 0 0 36 36h176M676 164h176a36 36 0 0 1 36 36v624a36 36 0 0 1-36 36H676"/>
+    <path d="M512 128v128m0 192v128m0 192v128"/>
+  </g>
+</svg>

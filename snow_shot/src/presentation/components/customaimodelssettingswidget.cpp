@@ -27,6 +27,7 @@
 #include <QGridLayout>
 #include <QPainter>
 #include <QTimer>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -490,6 +491,14 @@ void CustomAiModelsSettingsWidget::openEditor(const QString& id) {
     m_formFields[6] = concurrencyField.field;
     m_fields[6] = concurrencyField.item();
     concurrencyField.field->syncValue(value.concurrency);
+    options.popupInModal = true;
+    const auto providerField = fields::comboBox({QStringLiteral("providerType")}, {}, options);
+    m_provider = providerField.editor;
+    m_formFields[7] = providerField.field;
+    m_fields[7] = providerField.item();
+    translateModal();
+    providerField.field->syncValue(value.provider);
+    connect(m_provider, &AdComboBox::currentValueChanged, this, [this] { translateModal(); });
     for (size_t i = 0; i < m_formFields.size(); ++i) {
         auto* view = m_formFields[i]->viewWidget();
         form->layout()->removeWidget(view);
@@ -535,7 +544,7 @@ void CustomAiModelsSettingsWidget::submitEditor(bool saveChanges) {
     auto value = normalizeCustomAiModel(
         {m_editId, m_inputs[0]->text(), m_inputs[1]->text(), m_inputs[2]->text(),
          m_modelSelect->currentValue().toString(), m_vision->isChecked(), m_reasoning->isChecked(),
-         static_cast<int>(m_concurrency->value())});
+         static_cast<int>(m_concurrency->value()), m_provider->currentValue().toString()});
     auto models = m_session.customAiModels();
     std::array<QString, 4> errors;
     if (value.name.isEmpty()) {
@@ -617,7 +626,8 @@ void CustomAiModelsSettingsWidget::translateModal() {
             QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget", "API Model"),
             QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget", "Vision Support"),
             QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget", "Reasoning Support"),
-            QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget", "Concurrency")};
+            QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget", "Concurrency"),
+            QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget", "Provider Type")};
         const char* descriptions[] = {
             QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
                               "The model name displayed in Snow Shot."),
@@ -631,11 +641,22 @@ void CustomAiModelsSettingsWidget::translateModal() {
                               "API URL."),
             QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
                               "Allow this model to convert images to Markdown and HTML."),
-            QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
-                              "Explicitly enable or disable reasoning in model requests."),
+            m_provider->currentValue() == QStringLiteral("openai")
+                ? QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
+                                    "Reasoning is controlled by the model for the OpenAI provider.")
+                : QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
+                                    "Explicitly enable or disable reasoning in model requests."),
             QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
                               "Maximum simultaneous translation and image conversion requests "
-                              "for this model (1-16).")};
+                              "for this model (1-16)."),
+            QT_TRANSLATE_NOOP("CustomAiModelsSettingsWidget",
+                              "Select the provider whose reasoning controls this API uses.")};
+        m_formFields[5]->setFieldEnabled(m_provider->currentValue() != QStringLiteral("openai"));
+        const QSignalBlocker providerBlocker(m_provider);
+        m_formFields[7]->setChoices({{QStringLiteral("openai"), {}, tr("OpenAI")},
+                                     {QStringLiteral("qwen"), {}, tr("Qwen")},
+                                     {QStringLiteral("deepseek"), {}, tr("DeepSeek")},
+                                     {QStringLiteral("doubao"), {}, tr("Doubao")}});
         for (size_t i = 0; i < m_fields.size(); ++i) {
             auto metadata = m_formFields[i]->metadata();
             metadata.label = {"CustomAiModelsSettingsWidget", labels[i]};

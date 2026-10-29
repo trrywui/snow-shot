@@ -13,16 +13,14 @@ pub enum Stage {
     DescriptorMatching,
     CandidateScoring,
     Refinement,
-    RegionUpdate,
     CanvasComposition,
     ReferenceSynthesis,
     PreviewScaling,
     PushTotal,
     Initialization,
-    Reserved,
 }
 
-pub const STAGE_COUNT: usize = 16;
+pub const STAGE_COUNT: usize = Stage::Initialization as usize + 1;
 
 #[cfg(feature = "perf-instrumentation")]
 mod enabled {

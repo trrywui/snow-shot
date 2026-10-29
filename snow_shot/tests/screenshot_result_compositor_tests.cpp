@@ -49,6 +49,206 @@ void persistedStylePreservesQt611Format() {
             "writing a restored style must preserve the existing Qt 6.11 bytes");
     require(!decodeScreenshotResultStyle(extended.left(extended.size() - 1)),
             "truncated persisted geometry must remain rejected after a Qt upgrade");
+    for (const auto [radius, width] :
+         {std::pair{-1, 6}, std::pair{257, 6}, std::pair{12, -1}, std::pair{12, 65}}) {
+        const ScreenshotResultStyle invalid{radius, width, Qt::black};
+        require(!decodeScreenshotResultStyle(encodeScreenshotResultStyle(invalid)),
+                "persisted styles enforce canvas-unit limits before rendering");
+        QByteArray invalidLegacy;
+        QDataStream stream(&invalidLegacy, QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_6_11);
+        stream << invalid.cornerRadius << invalid.shadowWidth << invalid.shadowColor;
+        require(!decodeScreenshotResultStyle(invalidLegacy),
+                "legacy persisted styles enforce the same canvas-unit limits");
+    }
+}
+
+void borderCompositionAndStylePersistence() {
+    QImage content(QSize(80, 48), QImage::Format_ARGB32_Premultiplied);
+    content.fill(QColor(30, 100, 210, 110));
+    ScreenshotResultStyle style;
+    style.shadowWidth = 13;
+    style.borderType = ScreenshotSelectionBorderType::Border;
+    style.borderWidth = 4;
+    style.borderColor = QColor(Qt::white);
+    const QImage output = ScreenshotResultCompositor::compose(content, style);
+    require(output.size() == QSize(88, 56), "border dimensions use active width only");
+    require(output.pixelColor(0, 20) == QColor(Qt::white) &&
+                output.pixelColor(3, 20) == QColor(Qt::white),
+            "border is opaque and has no shadow falloff");
+    require(output.copy(4, 4, 80, 48) == content,
+            "border must not fill translucent selected pixels");
+    const auto restored = decodeScreenshotResultStyle(encodeScreenshotResultStyle(style));
+    require(restored && restored->borderType == style.borderType && restored->borderWidth == 4 &&
+                restored->borderColor == style.borderColor && restored->shadowWidth == 13,
+            "result style retains inactive shadow and active border");
+    require(!decodeScreenshotResultStyle(encodeScreenshotResultStyle(style).chopped(1)),
+            "truncated border style is rejected");
+    auto invalid = style;
+    invalid.borderWidth = 65;
+    require(!decodeScreenshotResultStyle(encodeScreenshotResultStyle(invalid)),
+            "invalid saved border width is rejected");
+    style.borderWidth = 0;
+    require(ScreenshotResultCompositor::compose(content, style) == content,
+            "zero border does not activate the stored shadow");
+    style.borderWidth = 4;
+    style.cornerRadius = 10;
+    const QImage rounded = ScreenshotResultCompositor::compose(content, style);
+    require(rounded.pixelColor(0, 0).alpha() == 0 && rounded.pixelColor(44, 1) == QColor(Qt::white),
+            "border follows rounded corners");
+    const auto layout = ScreenshotResultCompositor::layoutForContent(content.size(), style, 1.25);
+    require(layout.effectInsets == QMargins(5, 5, 5, 5), "border width follows fractional DPR");
+    QImage live(output.size(), QImage::Format_ARGB32_Premultiplied);
+    live.fill(Qt::transparent);
+    style.cornerRadius = 0;
+    {
+        QPainter painter(&live);
+        painter.drawImage(QPoint(4, 4), content);
+        ScreenshotResultCompositor::finishLiveSurface(painter, live.rect(), QRectF(4, 4, 80, 48),
+                                                      style, 1);
+    }
+    require(live == output, "live border and exported border must match");
+    QRegion region(QRect(0, 0, 80, 48));
+    region -= QRect(20, 10, 40, 28);
+    style.region = region;
+    const auto ring = ScreenshotResultCompositor::compose(content, style);
+    require(ring.pixelColor(25, 20) == QColor(Qt::white) && ring.pixelColor(44, 28).alpha() == 0,
+            "border follows inner hole edges without filling the hole");
+    QImage background(output.size(), QImage::Format_ARGB32_Premultiplied);
+    background.fill(Qt::green);
+    style.backgroundOpacityPercent = 50;
+    const auto backed = ScreenshotResultCompositor::compose(content, style, 1, 1, background);
+    // QPainter quantizes 50% opacity to 127 or 128 depending on the raster path.
+    require(qAbs(backed.pixelColor(44, 28).alpha() - 128) <= 1 &&
+                backed.pixelColor(25, 20) == QColor(Qt::white) &&
+                backed.pixelColor(10, 20) == content.pixelColor(6, 16),
+            "background opacity fills holes beneath borders without altering selected pixels");
+    style.backgroundOpacityPercent = 0;
+    QPainterPath ellipse;
+    ellipse.addEllipse(QRectF(0, 0, 80, 48));
+    style.region = ScreenshotRegionGeometry::fromPath(ellipse, ScreenshotRegionType::Curve);
+    const auto curved = ScreenshotResultCompositor::compose(content, style);
+    require(curved.pixelColor(44, 1).alpha() > 240 &&
+                curved.pixelColor(44, 28) == content.pixelColor(40, 24),
+            "custom curves have an exterior border and preserve their interior");
+}
+
+void scaledEffectsKeepTheirOutputPixelWidths() {
+    ScreenshotResultStyle overflowing;
+    overflowing.borderType = ScreenshotSelectionBorderType::Border;
+    overflowing.borderWidth = std::numeric_limits<int>::max();
+    require(!ScreenshotResultCompositor::layoutForContent(QSize(80, 48), overflowing).isValid(),
+            "unrepresentable output extents fail before padding arithmetic overflows");
+    require(!ScreenshotResultCompositor::layoutForContent(QSize(80, 48), {},
+                                                          std::numeric_limits<qreal>::infinity())
+                 .isValid(),
+            "non-finite output scaling cannot produce a raster layout");
+    for (const auto type :
+         {ScreenshotSelectionBorderType::Shadow, ScreenshotSelectionBorderType::Border}) {
+        for (const int width : {6, 48, 64}) {
+            for (const qreal scale : {0.5, 1.0, 1.25, 2.0, 3.0}) {
+                for (const bool shaped : {false, true}) {
+                    ScreenshotResultStyle style{16, width, Qt::black};
+                    style.borderType = type;
+                    style.borderWidth = width;
+                    style.borderColor = Qt::red;
+                    if (shaped)
+                        style.region = QRegion(0, 0, 120, 80).subtracted(QRect(40, 20, 40, 40));
+                    const QSize size(qRound(120 * scale), qRound(80 * scale));
+                    auto content = solidContent(size);
+                    content.setDevicePixelRatio(1);
+                    const auto outputStyle = ScreenshotResultCompositor::scaledStyle(style, scale);
+                    const auto output = ScreenshotResultCompositor::compose(content, outputStyle);
+                    const int padding = qRound(width * scale);
+                    require(output.size() == size + QSize(2 * padding, 2 * padding),
+                            "scaled effect padding must not be capped by canvas-unit UI limits");
+                    auto referenceStyle = style;
+                    referenceStyle.regionScale = scale;
+                    // DPR represents physical scaling only at 1x and above.
+                    if (scale >= 1)
+                        require(
+                            output ==
+                                ScreenshotResultCompositor::compose(content, referenceStyle, scale),
+                            "scaled-style export and DPR composition must have identical pixels");
+                }
+            }
+        }
+    }
+    ScreenshotResultStyle rounded{200, 0, Qt::black};
+    auto content = solidContent(QSize(1200, 1000));
+    content.setDevicePixelRatio(1);
+    require(ScreenshotResultCompositor::compose(
+                content, ScreenshotResultCompositor::scaledStyle(rounded, 2)) ==
+                ScreenshotResultCompositor::compose(content, rounded, 2),
+            "scaled corner radii must not be capped by the canvas-unit radius limit");
+}
+
+void polygonBordersFitTheirDeclaredInsets() {
+    for (qreal scale : {1.0, 1.25, 2.0}) {
+        for (bool concave : {false, true}) {
+            QPainterPath polygon;
+            polygon.moveTo(50, 0);
+            polygon.lineTo(100, 100);
+            if (concave)
+                polygon.lineTo(50, 70);
+            polygon.lineTo(0, 100);
+            polygon.closeSubpath();
+            const int width = qRound(6 * scale);
+            const int side = qRound(100 * scale);
+            const int margin = 40;
+            const QRect contentBounds(margin, margin, side, side);
+            const QRect declaredBounds = contentBounds.adjusted(-width, -width, width, width);
+            QTransform transform;
+            transform.translate(margin, margin);
+            transform.scale(scale, scale);
+            QImage reference(side + 2 * margin, side + 2 * margin,
+                             QImage::Format_ARGB32_Premultiplied);
+            reference.fill(Qt::transparent);
+            {
+                QPainter painter(&reference);
+                ScreenshotSelectionShadowRenderer::renderBorder(painter, transform.map(polygon),
+                                                                width, Qt::red);
+            }
+            for (int y = 0; y < reference.height(); ++y)
+                for (int x = 0; x < reference.width(); ++x)
+                    require(declaredBounds.contains(x, y) ||
+                                reference.pixelColor(x, y).alpha() == 0,
+                            "polygon border must fit the same fixed insets as preview and export");
+
+            ScreenshotResultStyle style;
+            style.borderType = ScreenshotSelectionBorderType::Border;
+            style.borderWidth = 6;
+            style.borderColor = Qt::red;
+            style.region = ScreenshotRegionGeometry::fromPath(polygon, ScreenshotRegionType::Curve);
+            style.regionScale = scale;
+            QImage content(side, side, QImage::Format_ARGB32_Premultiplied);
+            content.fill(Qt::blue);
+            const auto output = ScreenshotResultCompositor::compose(content, style, scale);
+            require(output.size() == declaredBounds.size(), "polygon export uses declared insets");
+            QImage live(output.size(), output.format());
+            live.fill(Qt::transparent);
+            {
+                QPainter painter(&live);
+                painter.drawImage(QPoint(width, width), content);
+                auto physicalStyle = style;
+                physicalStyle.borderWidth = width;
+                ScreenshotResultCompositor::finishLiveSurface(
+                    painter, live.rect(), QRectF(width, width, side, side), physicalStyle, 1);
+            }
+            int maximumDifference = 0;
+            for (int y = 0; y < live.height(); ++y)
+                for (int x = 0; x < live.width(); ++x) {
+                    const auto a = live.pixel(x, y), b = output.pixel(x, y);
+                    maximumDifference = std::max(
+                        {maximumDifference, qAbs(qAlpha(a) - qAlpha(b)), qAbs(qRed(a) - qRed(b)),
+                         qAbs(qGreen(a) - qGreen(b)), qAbs(qBlue(a) - qBlue(b))});
+                }
+            // Export multiplies by an Alpha8 mask; live painting subtracts the
+            // inverse path. Qt quantizes those equivalent coverages one level apart.
+            require(maximumDifference <= 1,
+                    "live and exported polygon borders retain the same coverage and color");
+        }
+    }
 }
 
 void squareResultPreservesPhysicalPixels() {
@@ -374,6 +574,171 @@ void liveSurfacePreservesTranslatedFractionalContent() {
     require(surface == expected, "camera roundoff must not erase translated content");
 }
 
+void liveMaskPreservesSelectionFillRules() {
+    for (const auto rule : {Qt::OddEvenFill, Qt::WindingFill}) {
+        for (const bool curved : {false, true}) {
+            for (const bool hole : {false, true}) {
+                QPainterPath path;
+                QPainterPath inner;
+                if (curved) {
+                    path.addEllipse(QRectF(10, 10, 580, 420));
+                    inner.addEllipse(QRectF(150, 100, 300, 220));
+                } else {
+                    path.addRect(QRectF(10, 10, 580, 420));
+                    inner.addRect(QRectF(150, 100, 300, 220));
+                }
+                path.addPath(hole ? inner.toReversed() : inner);
+                path.setFillRule(rule);
+                const auto region =
+                    ScreenshotRegionGeometry::fromPath(path, ScreenshotRegionType::Curve);
+                const auto restored = ScreenshotRegionGeometry::fromJson(region.toJson());
+                require(restored && restored->path() == path,
+                        "persisted regions retain their fill rule");
+                for (const qreal dpr : {1.0, 1.25, 1.75, 2.0}) {
+                    for (const QPointF phase : {QPointF(), QPointF(0.3, -0.2)}) {
+                        const QSize size(qRound(620 * dpr), qRound(460 * dpr));
+                        const QColor color(30, 100, 210, 128);
+                        QImage expected(size, QImage::Format_ARGB32_Premultiplied);
+                        expected.setDevicePixelRatio(dpr);
+                        expected.fill(Qt::transparent);
+                        {
+                            QPainter painter(&expected);
+                            painter.setRenderHint(QPainter::Antialiasing);
+                            painter.translate(phase);
+                            painter.fillPath(path, color);
+                        }
+                        QImage actual(size, expected.format());
+                        actual.setDevicePixelRatio(dpr);
+                        actual.fill(color);
+                        ScreenshotSelectionShadowRenderer::resetDiagnosticsForCurrentThread();
+                        {
+                            QPainter painter(&actual);
+                            painter.translate(phase);
+                            ScreenshotResultCompositor::maskLiveSurface(
+                                painter, QRectF(-10, -10, 640, 480), restored->path());
+                        }
+                        const auto diagnostics =
+                            ScreenshotSelectionShadowRenderer::diagnosticsForCurrentThread();
+                        require(diagnostics.regionScratchPeakBytes <= 256 * 256 * 4 &&
+                                    diagnostics.selectionSizedTransientAllocations == 0,
+                                "live mask scratch storage must stay bounded independently of "
+                                "viewport size");
+                        if (rule == Qt::OddEvenFill)
+                            require(diagnostics.regionMaskBuilds == 0,
+                                    "parity masks must retain their allocation-free path");
+                        int difference = 0;
+                        for (int y = 0; y < size.height(); ++y)
+                            for (int x = 0; x < size.width(); ++x) {
+                                const auto a = actual.pixel(x, y), b = expected.pixel(x, y);
+                                difference =
+                                    std::max({difference, qAbs(qAlpha(a) - qAlpha(b)),
+                                              qAbs(qRed(a) - qRed(b)), qAbs(qGreen(a) - qGreen(b)),
+                                              qAbs(qBlue(a) - qBlue(b))});
+                            }
+                        require(difference <= 1, "live masks must preserve winding, holes, curves "
+                                                 "and fractional coverage");
+                    }
+                }
+            }
+        }
+    }
+}
+
+void exteriorPaintingPreservesClippingAndPainterState() {
+    for (const qreal dpr : {1.0, 1.25, 2.0}) {
+        for (const int shape : {0, 1, 2, 3}) {
+            QPainterPath path;
+            path.setFillRule(Qt::WindingFill);
+            if (shape != 0) {
+                path.addEllipse(QRectF(-40, -20, 600, 430));
+                path.addRect(QRectF(130, 110, 220, 160));
+                if (shape >= 2) {
+                    // Intersecting contours and both winding signs use the same coverage contract.
+                    path.addEllipse(QRectF(180, 180, 400, 240));
+                    if (shape == 3) {
+                        path = path.toReversed();
+                        // Qt's reversed path defaults to parity fill; this fixture
+                        // intentionally exercises negative winding counts.
+                        path.setFillRule(Qt::WindingFill);
+                    }
+                }
+            }
+            QTransform transform;
+            transform.translate(50.3, 12.7);
+            transform.rotate(7);
+            transform.scale(0.9, 1.05);
+            const QSize size(qRound(640 * dpr), qRound(480 * dpr));
+            const QColor color(43, 103, 173, 137);
+            QImage exterior(size, QImage::Format_ARGB32_Premultiplied);
+            exterior.setDevicePixelRatio(dpr);
+            exterior.fill(color);
+            {
+                QPainter painter(&exterior);
+                painter.setTransform(transform);
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                painter.fillPath(path, Qt::black);
+            }
+            QImage expected(size, exterior.format());
+            expected.setDevicePixelRatio(dpr);
+            expected.fill(QColor(170, 80, 50, 120));
+            QImage actual = expected.copy();
+            const QRectF viewport(15, 25, 520, 380);
+            const QRegion clip = QRegion(0, 0, 270, 480) + QRect(310, 100, 250, 320);
+            for (const bool reference : {true, false}) {
+                QPainter painter(reference ? &expected : &actual);
+                painter.setTransform(transform);
+                painter.setClipRegion(clip);
+                painter.setOpacity(0.65);
+                painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+                if (reference) {
+                    painter.setClipRect(viewport, Qt::IntersectClip);
+                    painter.resetTransform();
+                    painter.drawImage(QPointF(), exterior);
+                } else {
+                    const auto hints = painter.renderHints();
+                    ScreenshotResultCompositor::fillOutsideSelection(painter, viewport, path,
+                                                                     color);
+                    require(painter.worldTransform() == transform && painter.clipRegion() == clip &&
+                                painter.opacity() == 0.65 && painter.renderHints() == hints &&
+                                painter.compositionMode() == QPainter::CompositionMode_SourceOver,
+                            "exterior painting must restore all caller painter state");
+                }
+            }
+            require(
+                actual == expected,
+                "tiled exterior coverage must match full rasterization under transforms and clips");
+        }
+    }
+}
+
+void windingLiveResultMatchesExport() {
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    path.addRect(QRectF(0, 0, 80, 80));
+    path.addRect(QRectF(20, 20, 40, 40));
+    ScreenshotResultStyle style;
+    style.borderType = ScreenshotSelectionBorderType::Border;
+    style.borderWidth = 4;
+    style.region = ScreenshotRegionGeometry::fromPath(path, ScreenshotRegionType::Curve);
+    const auto restored = decodeScreenshotResultStyle(encodeScreenshotResultStyle(style));
+    require(restored && restored->region->path().fillRule() == Qt::WindingFill,
+            "result style round trips preserve winding selection coverage");
+    QImage content(80, 80, QImage::Format_ARGB32_Premultiplied);
+    content.fill(Qt::blue);
+    const auto exported = ScreenshotResultCompositor::compose(content, *restored);
+    QImage live(exported.size(), exported.format());
+    live.fill(Qt::transparent);
+    {
+        QPainter painter(&live);
+        painter.drawImage(QPoint(4, 4), content);
+        ScreenshotResultCompositor::finishLiveSurface(painter, live.rect(), QRectF(4, 4, 80, 80),
+                                                      *restored, 1);
+    }
+    require(live == exported && live.pixelColor(44, 44) == QColor(Qt::blue),
+            "persisted winding selections must have identical bordered live and exported pixels");
+}
+
 void sharedMetadataAndOpacityKeepMappedOwnership() {
     QImage source = snowCanvasAllocateImage(QSize(1025, 513), QImage::Format_ARGB32_Premultiplied);
     require(!source.isNull(), "large composition fixture must allocate");
@@ -397,6 +762,9 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     try {
         persistedStylePreservesQt611Format();
+        borderCompositionAndStylePersistence();
+        scaledEffectsKeepTheirOutputPixelWidths();
+        polygonBordersFitTheirDeclaredInsets();
         squareResultPreservesPhysicalPixels();
         sharedMetadataAndOpacityKeepMappedOwnership();
         roundedAndShadowedResultHasRealTransparency();
@@ -411,6 +779,9 @@ int main(int argc, char** argv) {
         liveSurfacePreservesContentBeyondRoundedWidgetBounds();
         liveSurfaceSubtractsIntersectingContent();
         liveSurfacePreservesTranslatedFractionalContent();
+        liveMaskPreservesSelectionFillRules();
+        exteriorPaintingPreservesClippingAndPainterState();
+        windingLiveResultMatchesExport();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return EXIT_FAILURE;

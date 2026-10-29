@@ -17,7 +17,7 @@ struct TextTranslationConfiguration {
     QString endpoint;
     QString apiKey;
     QString applicationId;
-    int concurrency = 4;
+    int concurrency = 8;
 
     QString selectionId() const {
         return QStringLiteral("translation:") + id;
@@ -61,7 +61,7 @@ inline TextTranslationConfigurations textTranslationConfigurationsFromJson(const
         for (const auto* key : {"id", "name", "provider", "endpoint", "api_key", "application_id"})
             typesValid = typesValid && object.value(QLatin1StringView(key)).isString();
         const auto limit = object.value(QStringLiteral("concurrency"));
-        const int concurrency = limit.isUndefined() ? 4 : limit.toInt(-1);
+        const int concurrency = limit.isUndefined() ? 8 : limit.toInt(-1);
         typesValid = typesValid &&
                      (limit.isUndefined() || (limit.isDouble() && limit.toDouble() == concurrency));
         TextTranslationConfiguration value{
@@ -73,6 +73,7 @@ inline TextTranslationConfigurations textTranslationConfigurationsFromJson(const
             object.value(QStringLiteral("application_id")).toString().trimmed(),
             concurrency};
         const bool providerValid = value.provider == QStringLiteral("deepl") ||
+                                   value.provider == QStringLiteral("deeplx") ||
                                    value.provider == QStringLiteral("baidu") ||
                                    value.provider == QStringLiteral("youdao");
         if (!typesValid || !providerValid || QUuid(value.id).isNull() ||

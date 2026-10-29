@@ -18,6 +18,8 @@ pub struct HistoryEntry {
     pub redo: Transaction,
     pub undo_snapshot: DocumentSyncSnapshot,
     pub redo_snapshot: DocumentSyncSnapshot,
+    #[serde(skip)]
+    pub host_transition: Option<(u64, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -30,8 +32,12 @@ pub struct HistoryApplyResult {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryStore {
+    #[serde(serialize_with = "serialize_annotation_entries")]
     undo_stack: Vec<HistoryEntry>,
+    #[serde(serialize_with = "serialize_annotation_entries")]
     redo_stack: Vec<HistoryEntry>,
+    #[serde(skip)]
+    host_state: u64,
     #[serde(skip)]
     last_watermark_text_commit: Option<Instant>,
     #[serde(skip)]
@@ -44,10 +50,26 @@ pub struct HistoryStore {
     mutation_generation: u64,
 }
 
+fn serialize_annotation_entries<S: serde::Serializer>(
+    entries: &[HistoryEntry],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut sequence = serializer.serialize_seq(None)?;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.host_transition.is_none())
+    {
+        sequence.serialize_element(entry)?;
+    }
+    sequence.end()
+}
+
 impl PartialEq for HistoryStore {
     fn eq(&self, other: &Self) -> bool {
         self.undo_stack == other.undo_stack
             && self.redo_stack == other.redo_stack
+            && self.host_state == other.host_state
             && self.last_watermark_text_commit == other.last_watermark_text_commit
             && self.last_spotlight_commit == other.last_spotlight_commit
             && self.last_filter_commit == other.last_filter_commit
@@ -57,6 +79,40 @@ impl PartialEq for HistoryStore {
 }
 
 impl HistoryStore {
+    pub(crate) fn host_state(&self) -> u64 {
+        self.host_state
+    }
+
+    pub(crate) fn next_host_state(&self, redo: bool) -> u64 {
+        let entry = if redo {
+            self.redo_stack.last()
+        } else {
+            self.undo_stack.last()
+        };
+        entry
+            .and_then(|entry| entry.host_transition)
+            .map_or(
+                self.host_state,
+                |(before, after)| if redo { after } else { before },
+            )
+    }
+
+    pub(crate) fn push_host_state(&mut self, state: u64, snapshot: DocumentSyncSnapshot) {
+        let before = self.host_state;
+        self.push_committed(
+            "host image edit",
+            Transaction::new("host image edit"),
+            Transaction::new("host image edit"),
+            snapshot.clone(),
+            snapshot,
+        );
+        self.undo_stack
+            .last_mut()
+            .expect("new host entry")
+            .host_transition = Some((before, state));
+        self.host_state = state;
+    }
+
     pub(crate) fn mutation_generation(&self) -> u64 {
         self.mutation_generation
     }
@@ -389,6 +445,7 @@ impl HistoryStore {
             redo,
             undo_snapshot,
             redo_snapshot,
+            host_transition: None,
         });
         self.redo_stack.clear();
     }
@@ -413,7 +470,15 @@ impl HistoryStore {
         self.last_filter_commit = None;
         self.last_angle_commit = None;
 
-        let apply_result = match model.apply_history_transaction(&entry.undo) {
+        let apply_result = match if entry.host_transition.is_some() {
+            Ok(ApplyResult {
+                document_revision: model.document().document_revision(),
+                inverse: Transaction::default(),
+                changes: Default::default(),
+            })
+        } else {
+            model.apply_history_transaction(&entry.undo)
+        } {
             Ok(result) => result,
             Err(error) => {
                 self.undo_stack.push(entry);
@@ -423,6 +488,9 @@ impl HistoryStore {
 
         let restore_selection = entry.label == "duplicate selection";
         let snapshot = entry.undo_snapshot.clone();
+        if let Some((before, _)) = entry.host_transition {
+            self.host_state = before;
+        }
         self.redo_stack.push(entry);
         self.mutation_generation = self.mutation_generation.wrapping_add(1);
         Ok(Some(HistoryApplyResult {
@@ -444,7 +512,15 @@ impl HistoryStore {
         self.last_filter_commit = None;
         self.last_angle_commit = None;
 
-        let apply_result = match model.apply_history_transaction(&entry.redo) {
+        let apply_result = match if entry.host_transition.is_some() {
+            Ok(ApplyResult {
+                document_revision: model.document().document_revision(),
+                inverse: Transaction::default(),
+                changes: Default::default(),
+            })
+        } else {
+            model.apply_history_transaction(&entry.redo)
+        } {
             Ok(result) => result,
             Err(error) => {
                 self.redo_stack.push(entry);
@@ -454,6 +530,9 @@ impl HistoryStore {
 
         let restore_selection = entry.label == "duplicate selection";
         let snapshot = entry.redo_snapshot.clone();
+        if let Some((_, after)) = entry.host_transition {
+            self.host_state = after;
+        }
         self.undo_stack.push(entry);
         self.mutation_generation = self.mutation_generation.wrapping_add(1);
         Ok(Some(HistoryApplyResult {
@@ -1043,5 +1122,60 @@ mod tests {
 
         assert_eq!(history.undo_stack.len(), 2);
         assert!(history.redo_stack.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod host_history_tests {
+    use super::*;
+
+    #[test]
+    fn host_history_is_ordered_reversible_and_runtime_only() {
+        let mut history = HistoryStore::default();
+        let mut model = DocumentModel::default();
+        let snapshot =
+            snow_draw_engine_editor::Editor::new(snow_draw_engine_core::EngineConfig::default())
+                .unwrap()
+                .capture_document_sync_snapshot(&model);
+        history.push_host_state(1, snapshot.clone());
+        let mut drawing = Transaction::new("drawing");
+        drawing.update_watermark(WatermarkConfig {
+            text: "test".into(),
+            ..Default::default()
+        });
+        let inverse = model.apply_transaction(drawing.clone()).unwrap().inverse;
+        history.push_committed(
+            "drawing",
+            drawing,
+            inverse,
+            snapshot.clone(),
+            snapshot.clone(),
+        );
+        history.push_host_state(2, snapshot.clone());
+        assert_eq!(history.next_host_state(false), 1);
+        history.undo(&mut model).unwrap();
+        assert_eq!(history.host_state(), 1);
+        assert_eq!(history.next_host_state(false), 1);
+        history.undo(&mut model).unwrap();
+        assert_eq!(history.host_state(), 1);
+        history.undo(&mut model).unwrap();
+        assert_eq!(history.host_state(), 0);
+        assert_eq!(history.next_host_state(true), 1);
+        history.redo(&mut model).unwrap();
+        history.redo(&mut model).unwrap();
+        history.redo(&mut model).unwrap();
+        assert_eq!(history.host_state(), 2);
+        let json = serde_json::to_value(&history).unwrap();
+        assert_eq!(json["undoStack"].as_array().unwrap().len(), 1);
+        assert!(json.get("hostState").is_none());
+        let restored: HistoryStore = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.host_state(), 0);
+        assert_eq!(restored.undo_stack.len(), 1);
+        history.undo(&mut model).unwrap();
+        history.push_host_state(3, snapshot);
+        assert!(!history.can_redo());
+        assert_eq!(history.next_host_state(false), 1);
+        assert!(history.last_filter_commit.is_none());
+        assert!(history.last_angle_commit.is_none());
     }
 }

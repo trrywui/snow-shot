@@ -2,6 +2,9 @@
 #include "snow_shot/presentation/screenshotrecognitionimage.h"
 
 #include "snow_shot/presentation/screenshotdefaultstyles.h"
+#include "snow_shot/presentation/screenshotselectionshadowrenderer.h"
+#include "snow_shot/presentation/screenshotselectioncomposition.h"
+#include "snow_shot/image/screenshotlayoutcompaction.h"
 
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "snow_draw_engine_qt/snow_canvas_image.h"
@@ -11,6 +14,7 @@
 #include <QPainter>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QScopeGuard>
 
 #include <utility>
 
@@ -25,6 +29,12 @@ struct PinnedPixels final {
 
 QImage renderPinnedViewport(const ScreenshotPinnedViewportExportSource& source,
                             const ScreenshotExportCancellation& cancellation) {
+    const auto releaseCaches = qScopeGuard([&] {
+        ScreenshotSelectionShadowRenderer::resetCacheForCurrentThread();
+        resetScreenshotLayoutCompactionCache();
+        if (source.resultStyle.region)
+            source.resultStyle.region->clearDerivedCache();
+    });
     if (source.backgroundImage.isNull() || !source.backgroundCanvasRect.isValid() ||
         source.backgroundCanvasRect.isEmpty() || !source.contentPixelSize.isValid() ||
         source.contentPixelSize.isEmpty()) {
@@ -51,13 +61,45 @@ QImage renderPinnedViewport(const ScreenshotPinnedViewportExportSource& source,
         if (!runtime.isValid() || !runtime.restoreDocumentSession(source.documentSession) ||
             cancellation.isCancellationRequested())
             return {};
-        runtime.restoreSmartEraseSnapshot(source.smartErase);
+        QList<SnowCanvasBaseImageSource> samplingSources = source.samplingSources;
+        if (samplingSources.isEmpty())
+            samplingSources.append({source.backgroundImage, source.backgroundCanvasRect});
+        if (!runtime.prepareSmartEraseForExport(
+                source.smartErase, samplingSources, source.backgroundCanvasRect,
+                [&cancellation] { return cancellation.isCancellationRequested(); }))
+            return {};
+        QList<CanvasExportSource> sources;
+        sources.reserve(samplingSources.size());
+        for (const auto& sampling : samplingSources)
+            sources.append({sampling.image, sampling.canvasRect, sampling.coverage});
+        QImage background = source.backgroundImage;
+        if (background.size() != source.contentPixelSize) {
+            background = snowCanvasAllocateImage(source.contentPixelSize,
+                                                 QImage::Format_ARGB32_Premultiplied);
+            if (background.isNull() || cancellation.isCancellationRequested())
+                return {};
+            background.fill(Qt::transparent);
+            QPainter painter(&background);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform);
+            painter.drawImage(QRectF(QPointF(), QSizeF(source.contentPixelSize)),
+                              source.backgroundImage);
+        }
         if (cancellation.isCancellationRequested())
             return {};
-        const QList<CanvasExportSource> sources{
-            CanvasExportSource{source.backgroundImage, source.backgroundCanvasRect}};
-        content =
-            runtime.renderToImage(source.backgroundCanvasRect, source.contentPixelSize, sources);
+        if (source.resultStyle.region) {
+            auto result = ScreenshotResultCompositor::compose(background, source.resultStyle);
+            const auto layout = ScreenshotResultCompositor::layoutForContent(
+                source.contentPixelSize, source.resultStyle);
+            result = renderScreenshotSelectionAnnotations(runtime, source.backgroundCanvasRect,
+                                                          source.contentPixelSize, sources,
+                                                          std::move(result), layout);
+            return cancellation.isCancellationRequested()
+                       ? QImage{}
+                       : ScreenshotResultCompositor::compose(result, {}, 1.0, source.outputOpacity);
+        }
+        content = runtime.renderToImage(source.backgroundCanvasRect, source.contentPixelSize,
+                                        sources, background);
     }
     if (cancellation.isCancellationRequested())
         return {};

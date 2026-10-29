@@ -791,19 +791,17 @@ impl Editor {
         if existing_id.is_none() && text_is_empty {
             let history_undo_snapshot = self.capture_document_sync_snapshot(document);
             let mut transaction = Transaction::new("resize speech bubble");
-            if let Some(owner) = bubble_id {
-                if let Some((_, value)) = self
+            if let Some(owner) = bubble_id
+                && let Some((_, value)) = self
                     .speech_bubble_draft_geometry
                     .as_ref()
                     .filter(|(id, _)| *id == owner)
-                {
-                    let mut value = value.clone();
-                    value.text_element_id = None;
-                    if *document.speech_bubble(owner)? != value {
-                        transaction.update_speech_bubble(owner, value);
-                    }
+            {
+                let mut value = value.clone();
+                value.text_element_id = None;
+                if *document.speech_bubble(owner)? != value {
+                    transaction.update_speech_bubble(owner, value);
                 }
-                self.set_selection_state_with_document(Some(document), vec![owner], Some(owner));
             }
             self.clear_active_text_draft_presentation();
             if transaction.is_empty() {
@@ -892,17 +890,22 @@ impl Editor {
             self.state.default_text =
                 text_with_style_attributes(&self.state.default_text, &draft.style);
         }
-        if let Some(id) = arrow_id.or(bubble_id) {
-            self.set_selection_state_with_document(Some(document), vec![id], Some(id));
-        } else {
+        // Bound text edits preserve their owner's selection. Creating a label is
+        // not a new drawing gesture and must not override the creation policy.
+        let serial_bound =
+            existing_id.is_some_and(|id| document.is_text_bound_to_serial_number(id));
+        if arrow_id.or(bubble_id).is_none() && !serial_bound {
             self.clear_selection();
         }
         if transaction.is_empty() {
             return Ok(None);
         }
-        Ok(Some(EditorCommand::ApplyTransaction(
-            ApplyTransactionCommand::with_history_undo_snapshot(transaction, history_undo_snapshot),
-        )))
+        let mut command =
+            ApplyTransactionCommand::with_history_undo_snapshot(transaction, history_undo_snapshot);
+        if draft.target == crate::TextCommitTarget::New {
+            command = command.selecting_created(document.peek_next_element_id());
+        }
+        Ok(Some(EditorCommand::ApplyTransaction(command)))
     }
 
     pub fn delete_selected(

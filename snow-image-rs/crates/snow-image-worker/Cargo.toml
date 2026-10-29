@@ -1,0 +1,30 @@
+[package]
+name = "snow-image-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["native-backends"]
+native-backends = ["snow-image-codecs/native-backends"]
+
+[dependencies]
+snow-image-core = { path = "../snow-image-core" }
+snow-image-codecs = { path = "../snow-image-codecs", default-features = false }
+snow-image-protocol = { path = "../snow-image-protocol" }
+serde_json.workspace = true
+tempfile.workspace = true
+memmap2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+snow-image-transport.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints]
+workspace = true

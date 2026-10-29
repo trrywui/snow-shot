@@ -1,4 +1,5 @@
 #include "snow_shot/app/singleinstancecoordinator.h"
+#include "snow_shot/app/distribution.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -27,9 +28,11 @@ constexpr int kLegacyProtocolVersion = 1;
 constexpr int kReceiptProtocolVersion = 2;
 
 QString instanceIdentity() {
-    const QByteArray identity = (QDir::homePath() + u'|' + QCoreApplication::organizationName() +
-                                 u'|' + QCoreApplication::applicationName())
-                                    .toUtf8();
+    QString identityText = QDir::homePath() + u'|' + QCoreApplication::organizationName() + u'|' +
+                           QCoreApplication::applicationName();
+    if (distribution::isStoreManaged())
+        identityText += u'|' + distribution::installationIdentity();
+    const QByteArray identity = identityText.toUtf8();
     return QString::fromLatin1(
         QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex().left(24));
 }

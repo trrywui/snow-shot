@@ -46,6 +46,7 @@ class ConfigurationSchema final {
     [[nodiscard]] static const QVector<ConfigurationSchemaEntry>& entries();
     [[nodiscard]] static const ConfigurationSchemaEntry* entry(const QString& key);
     [[nodiscard]] static bool contains(const QString& key);
+    [[nodiscard]] static bool allowsModifierOnlyShift(const QString& key);
     [[nodiscard]] static QJsonValue defaultValue(const QString& key);
     [[nodiscard]] static ConfigurationNormalization normalize(const QString& key,
                                                               const QJsonValue& value);

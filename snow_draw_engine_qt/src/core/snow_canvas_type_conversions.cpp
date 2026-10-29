@@ -55,7 +55,7 @@ bool validShapeStyleEnums(const SnowCanvasShapeStyle& style) {
            enumInRange(style.highlightShape, SnowCanvasHighlightShape::Rectangle,
                        SnowCanvasHighlightShape::Ellipse) &&
            enumInRange(style.shape, SnowCanvasRectangleShape::Rectangle,
-                       SnowCanvasRectangleShape::Diamond) &&
+                       SnowCanvasRectangleShape::ThoughtBubble) &&
            enumInRange(style.brushMode, SnowCanvasBrushMode::Regular,
                        SnowCanvasBrushMode::PressureSensitive);
 }
@@ -520,13 +520,16 @@ SnowCanvasShapeStyle toCanvasShapeStyle(const SnowShapeStyle& style) {
         style.opacity,
         style.highlight_shape == SNOW_HIGHLIGHT_SHAPE_ELLIPSE ? SnowCanvasHighlightShape::Ellipse
                                                               : SnowCanvasHighlightShape::Rectangle,
-        style.shape == SNOW_RECTANGLE_SHAPE_ELLIPSE   ? SnowCanvasRectangleShape::Ellipse
-        : style.shape == SNOW_RECTANGLE_SHAPE_DIAMOND ? SnowCanvasRectangleShape::Diamond
-                                                      : SnowCanvasRectangleShape::Rectangle,
+        style.shape == SNOW_RECTANGLE_SHAPE_THOUGHT_BUBBLE ? SnowCanvasRectangleShape::ThoughtBubble
+        : style.shape == SNOW_RECTANGLE_SHAPE_ELLIPSE      ? SnowCanvasRectangleShape::Ellipse
+        : style.shape == SNOW_RECTANGLE_SHAPE_DIAMOND      ? SnowCanvasRectangleShape::Diamond
+                                                           : SnowCanvasRectangleShape::Rectangle,
         style.brush_mode == SNOW_BRUSH_MODE_PRESSURE_SENSITIVE
             ? SnowCanvasBrushMode::PressureSensitive
             : SnowCanvasBrushMode::Regular,
         toCanvasStrokeRenderingStyle(style.stroke_rendering_style),
+        toQColor(style.arrow_outline_color),
+        style.arrow_outline_width,
     };
 }
 
@@ -544,14 +547,19 @@ SnowShapeStyle toEngineShapeStyle(const SnowCanvasShapeStyle& style) {
     engineStyle.arrow_type = toEngineArrowType(style.arrowType);
     engineStyle.arrow_shaft_type = static_cast<SnowArrowShaftType>(style.arrowShaftType);
     engineStyle.arrow_ratio = snowCanvasNormalizeArrowRatio(style.arrowRatio);
+    engineStyle.arrow_outline_color = toEngineColor(style.arrowOutlineColor);
+    engineStyle.arrow_outline_width = std::isfinite(style.arrowOutlineWidth)
+                                          ? std::clamp(style.arrowOutlineWidth, 0.0, 72.0)
+                                          : 0.0;
     engineStyle.opacity = style.opacity;
     engineStyle.highlight_shape = style.highlightShape == SnowCanvasHighlightShape::Ellipse
                                       ? SNOW_HIGHLIGHT_SHAPE_ELLIPSE
                                       : SNOW_HIGHLIGHT_SHAPE_RECTANGLE;
     engineStyle.shape =
-        style.shape == SnowCanvasRectangleShape::Ellipse   ? SNOW_RECTANGLE_SHAPE_ELLIPSE
-        : style.shape == SnowCanvasRectangleShape::Diamond ? SNOW_RECTANGLE_SHAPE_DIAMOND
-                                                           : SNOW_RECTANGLE_SHAPE_RECTANGLE;
+        style.shape == SnowCanvasRectangleShape::ThoughtBubble ? SNOW_RECTANGLE_SHAPE_THOUGHT_BUBBLE
+        : style.shape == SnowCanvasRectangleShape::Ellipse     ? SNOW_RECTANGLE_SHAPE_ELLIPSE
+        : style.shape == SnowCanvasRectangleShape::Diamond     ? SNOW_RECTANGLE_SHAPE_DIAMOND
+                                                               : SNOW_RECTANGLE_SHAPE_RECTANGLE;
     engineStyle.brush_mode = style.brushMode == SnowCanvasBrushMode::PressureSensitive
                                  ? SNOW_BRUSH_MODE_PRESSURE_SENSITIVE
                                  : SNOW_BRUSH_MODE_REGULAR;
@@ -895,6 +903,11 @@ bool toEngineStyleDefaults(const SnowCanvasStyleDefaults& defaults,
         &defaults.penHighlight,
         &defaults.speechBubble,
     };
+    for (const auto* style : shapes) {
+        if (style != &defaults.speechBubble &&
+            style->shape == SnowCanvasRectangleShape::ThoughtBubble)
+            return false;
+    }
     if (std::any_of(
             std::begin(shapes), std::end(shapes),
             [](const SnowCanvasShapeStyle* style) { return !validShapeStyleEnums(*style); }) ||

@@ -205,6 +205,11 @@ pub(crate) fn compose_overlay_items(
         )));
     }
     for (kind, center) in &presentation.speech_bubble_handles {
+        let size = if *kind == 0 {
+            arrow_point_handle_size(zoom)
+        } else {
+            selection_handle_size(zoom)
+        };
         let kind = match kind {
             0 => UiShapeKind::SpeechBubbleAddTailHandle,
             1 => UiShapeKind::SpeechBubbleTailBaseHandle,
@@ -212,19 +217,13 @@ pub(crate) fn compose_overlay_items(
         };
         items.push(OverlayDisplayItem::Rectangle(ui_rect_item(
             kind,
-            selection_handle_rect(
-                *center,
-                selection_handle_size(frame_view.camera.zoom),
-                0.0,
-                true,
-                frame_view.camera.zoom,
-            ),
+            selection_handle_rect(*center, size, 0.0, true, zoom),
         )));
     }
     if let Some(center) = presentation.shape_text_handle {
         items.push(OverlayDisplayItem::Rectangle(ui_rect_item(
             UiShapeKind::ShapeTextHandle,
-            selection_handle_rect(center, selection_handle_size(zoom), 0.0, true, zoom),
+            selection_handle_rect(center, arrow_point_handle_size(zoom), 0.0, true, zoom),
         )));
     }
     items.retain(|item| overlay_item_visible(item, frame_view));
@@ -462,6 +461,7 @@ fn magnifier_source_outline(
                 },
             ]
         }
+        HighlightShape::ThoughtBubble => unreachable!("thought bubbles are not magnifiers"),
         HighlightShape::Diamond => snow_draw_engine_document::RoundedDiamond::new(
             value.width,
             value.height,

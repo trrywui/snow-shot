@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,8 @@ typedef struct SnowMacRecordingConfig {
     uint32_t highlight_rgba;      /* 0xRRGGBBAA multiply tint, visible cursor only */
     uint32_t record_mouse_clicks; /* independent of keyboard */
     uint32_t highlight_radius;    /* output pixels (8..128); older callers use 41 */
+    uint32_t reserved_padding;
+    uint32_t record_mouse_scrolling;
 } SnowMacRecordingConfig;
 typedef struct SnowMacRecordingEvent {
     uint32_t kind; /* 0 idle, 1 configuration, 2 encoded frame, 3 source interrupted */
@@ -58,6 +61,12 @@ typedef struct SnowMacRecordingReport {
 uint8_t snow_recording_macos_input_permission_check(void);
 uint8_t snow_recording_macos_input_permission_request(void);
 uint8_t snow_recording_macos_microphone_permission_check(void);
+/* Native microphone setup/cleanup failures, including exception names/reasons.
+ * The callback runs synchronously on a worker; copy the UTF-8 bytes before
+ * returning. Install before capture starts; callback code must outlive capture.
+ * Pass NULL to disconnect. Applies to both live meters and recording startup. */
+typedef void (*SnowMacMicrophoneDiagnosticCallback)(const uint8_t*, size_t);
+void snow_recording_macos_set_microphone_diagnostic_callback(SnowMacMicrophoneDiagnosticCallback);
 /* The completion runs once on an arbitrary OS queue. Keep callback/context
  * alive until completion. The host main run loop must remain active. */
 SnowMacRecordingStatus

@@ -235,7 +235,7 @@ void showCapturedImageOverlayNow(ScreenshotOverlayWindow& overlay, bool framePac
         return;
     }
     raiseOverlayWindow(overlay);
-    // Every display needs its selection cursor, independently of keyboard ownership.
+    // Cursor ownership follows the live pointer, independently of keyboard ownership.
     commitInitialSelectionCursorOn(&overlay, generation);
 }
 
@@ -569,7 +569,7 @@ void ScreenshotOverlayCanvasPresenter::setOverlayEffectCursor(
         return;
     const qreal dpr = canvas->devicePixelRatioF();
     const QCursor cursor =
-        handle == ScreenshotSelectionEffectHandle::Shadow
+        handle == ScreenshotSelectionEffectHandle::Width
             ? adqt::icons::makeCursor(
                   snow_shot::presentation::icons::custom::cursor::SelectionShadowCursor(),
                   QSize(32, 32), QPoint(3, 3), dpr)

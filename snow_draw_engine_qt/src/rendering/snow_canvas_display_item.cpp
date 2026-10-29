@@ -623,6 +623,12 @@ bool SnowCanvasSceneItem::applyPathGeometryPatch(
                 source.command_count == 0 ? nullptr : commands + source.command_offset,
                 source.command_count);
             chunk.commandStart = source.command_start;
+            chunk.startsSubpath =
+                source.command_count != 0 &&
+                commands[source.command_offset].kind == SNOW_ARROW_PATH_COMMAND_MOVE_TO;
+            for (std::uint32_t index = 0; index < source.command_count; ++index)
+                if (commands[source.command_offset + index].kind == SNOW_ARROW_PATH_COMMAND_MOVE_TO)
+                    ++chunk.subpathCount;
             chunk.canvasBounds =
                 QRectF(QPointF(source.min_x, source.min_y), QPointF(source.max_x, source.max_y))
                     .normalized();
@@ -746,10 +752,43 @@ void SnowCanvasSceneItem::rebuildAggregateClosedPath(bool geometryChanged) {
     if (!geometryChanged && !m_aggregateClosedPath.isEmpty())
         return;
     m_aggregateClosedPath = {};
+    std::uint32_t subpaths = 0;
+    if (kind == SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE) {
+        for (const PathChunk& chunk : m_pathGeometry.chunks) {
+            subpaths += chunk.subpathCount;
+            if (subpaths > 1)
+                break;
+        }
+    }
     for (const PathChunk& chunk : m_pathGeometry.chunks) {
-        m_aggregateClosedPath.connectPath(chunk.canvasPath);
+        // Retain the inexpensive Qt append for the existing continuous outlines.
+        if (subpaths <= 1) {
+            m_aggregateClosedPath.connectPath(chunk.canvasPath);
+            continue;
+        }
+        // Chunk-local paths begin with a synthetic move when they continue an
+        // earlier contour. Replay explicit moves against the aggregate so each
+        // contour closes at its real start, even when it spans several chunks.
+        for (int index = 0; index < chunk.canvasPath.elementCount(); ++index) {
+            const auto element = chunk.canvasPath.elementAt(index);
+            if (element.isMoveTo()) {
+                if (index != 0 || chunk.startsSubpath || m_aggregateClosedPath.isEmpty()) {
+                    m_aggregateClosedPath.closeSubpath();
+                    m_aggregateClosedPath.moveTo(element.x, element.y);
+                }
+            } else if (element.isLineTo()) {
+                m_aggregateClosedPath.lineTo(element.x, element.y);
+            } else if (element.type == QPainterPath::CurveToElement) {
+                const auto control = chunk.canvasPath.elementAt(++index);
+                const auto end = chunk.canvasPath.elementAt(++index);
+                m_aggregateClosedPath.cubicTo(element.x, element.y, control.x, control.y, end.x,
+                                              end.y);
+            }
+        }
     }
     m_aggregateClosedPath.closeSubpath();
+    if (kind == SNOW_SCENE_DISPLAY_ITEM_SPEECH_BUBBLE)
+        m_aggregateClosedPath.setFillRule(Qt::WindingFill);
 }
 
 const std::vector<SnowCanvasSceneItem::PathChunk>& SnowCanvasSceneItem::pathChunks() const {

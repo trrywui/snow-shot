@@ -17,9 +17,9 @@ inline std::optional<QString> language(const QString& provider, const QString& c
     const auto index = codes.indexOf(code);
     if (index < 0 || (target && index == 0))
         return std::nullopt;
-    if (provider == QStringLiteral("deepl")) {
+    if (provider == QStringLiteral("deepl") || provider == QStringLiteral("deeplx")) {
         if (index == 0)
-            return QString();
+            return provider == QStringLiteral("deeplx") ? QStringLiteral("AUTO") : QString();
         if (code.startsWith(QStringLiteral("zh-")))
             return target ? (code == QStringLiteral("zh-Hant") ? QStringLiteral("ZH-HANT")
                                                                : QStringLiteral("ZH-HANS"))
@@ -51,6 +51,12 @@ inline QByteArray body(const TextTranslationConfiguration& config,
     const auto target = language(config.provider, request.targetLanguage, true);
     if (!source || !target)
         return {};
+    if (config.provider == QStringLiteral("deeplx")) {
+        return QJsonDocument(QJsonObject{{QStringLiteral("text"), request.text},
+                                         {QStringLiteral("source_lang"), *source},
+                                         {QStringLiteral("target_lang"), *target}})
+            .toJson(QJsonDocument::Compact);
+    }
     if (config.provider == QStringLiteral("deepl")) {
         QJsonObject object{{QStringLiteral("text"), QJsonArray{request.text}},
                            {QStringLiteral("target_lang"), *target}};
@@ -106,6 +112,22 @@ inline Response parse(const QString& provider, const QByteArray& bytes) {
     if (!document.isObject())
         return result;
     const auto object = document.object();
+    if (provider == QStringLiteral("deeplx")) {
+        const auto code = object.value(QStringLiteral("code"));
+        if (!code.isDouble() || code.toDouble() != code.toInt(-1))
+            return result;
+        if (code.toInt() != 200) {
+            result.code = QString::number(code.toInt());
+            result.throttled = code.toInt() == 429;
+            return result;
+        }
+        const auto data = object.value(QStringLiteral("data"));
+        if (data.isString()) {
+            result.text = data.toString();
+            result.valid = !result.text.trimmed().isEmpty();
+        }
+        return result;
+    }
     const auto error =
         object.value(provider == QStringLiteral("youdao") ? QStringLiteral("errorCode")
                                                           : QStringLiteral("error_code"));

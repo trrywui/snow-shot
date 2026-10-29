@@ -11,6 +11,8 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QFile>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QMenu>
 #include <QTemporaryDir>
@@ -26,6 +28,51 @@ void require(bool condition, const char* message) {
         std::exit(EXIT_FAILURE);
     }
 }
+
+void legacyFontSizesMigrate(const QString& directory) {
+    namespace storage = snow_shot::storage;
+    struct Case {
+        QJsonValue percentage;
+        int expected;
+    };
+    const Case cases[] = {
+        {100, 14}, {101, 14}, {133, 19}, {150, 21},   {175, 25},
+        {200, 28}, {99, 14},  {201, 14}, {150.5, 14}, {QStringLiteral("150"), 14}};
+    const QString path = QDir(directory).filePath(QStringLiteral("legacy-font.json"));
+    for (const auto& test : cases) {
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly), "create the legacy font configuration");
+        const QByteArray document =
+            QJsonDocument(
+                QJsonObject{
+                    {QStringLiteral("storage"),
+                     QJsonObject{{QStringLiteral("schema_version"),
+                                  storage::ConfigurationSchema::currentVersion()}}},
+                    {QStringLiteral("interface"),
+                     QJsonObject{{QStringLiteral("app_font_size_percentage"), test.percentage}}}})
+                .toJson();
+        require(file.write(document) == document.size(), "write the legacy font configuration");
+        file.close();
+        storage::ConfigurationStore configuration(path, true, true, 60000);
+        require(configuration.value(QStringLiteral("interface/app_font_size")).toInt() ==
+                    test.expected,
+                "legacy percentages migrate to rounded pixels and invalid values use defaults");
+        require(configuration.flushNow().success, "save the migrated font size");
+        require(file.open(QIODevice::ReadOnly), "read the migrated font configuration");
+        const auto interfaceValues = QJsonDocument::fromJson(file.readAll())
+                                         .object()
+                                         .value(QStringLiteral("interface"))
+                                         .toObject();
+        require(!interfaceValues.contains(QStringLiteral("app_font_size_percentage")) &&
+                    interfaceValues.value(QStringLiteral("app_font_size")).toInt() == test.expected,
+                "migration replaces the persisted percentage with a pixel size");
+    }
+    const auto values = storage::ConfigurationSchema::migrateLegacyValues(
+        {{QStringLiteral("interface/app_font_size_percentage"), 200},
+         {QStringLiteral("interface/app_font_size"), 12}});
+    require(values.value(QStringLiteral("interface/app_font_size")).toInt() == 12,
+            "an explicit pixel size takes precedence over the legacy percentage");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -38,6 +85,7 @@ int main(int argc, char** argv) {
 #endif
     QTemporaryDir temporary;
     require(temporary.isValid(), "create isolated font storage");
+    legacyFontSizesMigrate(temporary.path());
     namespace presentation = snow_shot::presentation;
     namespace storage = snow_shot::storage;
     namespace settings = presentation::settings;
@@ -48,16 +96,11 @@ int main(int argc, char** argv) {
     presentation::LanguageManager::instance().initialize();
     const storage::InterfaceSettings preferences;
     require(preferences.appFontFamily().isEmpty(), "system font is the default");
-    require(preferences.appFontSizePercentage() == 100, "font size defaults to 100 percent");
+    require(preferences.appFontSize() == 14, "font size defaults to 14 pixels");
     const QFont originalFont = QApplication::font();
-    const int originalThemeFontSize =
-        qRound(adqt::theme::ThemeManager::instance().config().fontSize);
-    const auto requireFontSize = [&](const QFont& font, int percentage) {
-        const qreal scale = percentage / 100.0;
-        require(originalFont.pointSizeF() > 0
-                    ? qFuzzyCompare(font.pointSizeF(), originalFont.pointSizeF() * scale)
-                    : font.pixelSize() == qRound(originalFont.pixelSize() * scale),
-                "application font scales from its original size without compounding");
+    const auto requireFontSize = [](const QFont& font, int pixelSize) {
+        require(font.pixelSize() == pixelSize,
+                "application font uses the requested pixel size without compounding");
     };
     const QStringList families = presentation::applicationFontFamilies();
     require(!families.isEmpty(), "font families are available");
@@ -68,13 +111,13 @@ int main(int argc, char** argv) {
             "font choices are sorted");
     const QString family = families.first();
     require(preferences.setAppFontFamily(family), "save startup font");
-    require(preferences.setAppFontSizePercentage(150), "save startup font size");
+    require(preferences.setAppFontSize(21), "save startup font size");
     auto& theme = styles::ThemeManager::instance();
     theme.initialize(application);
     require(theme.appFontFamily() == family && QApplication::font().family() == family,
             "startup applies the saved family");
-    require(theme.appFontSizePercentage() == 150, "startup applies the saved font size");
-    requireFontSize(QApplication::font(), 150);
+    require(theme.appFontSize() == 21, "startup applies the saved font size");
+    requireFontSize(QApplication::font(), 21);
     presentation::GlobalShortcutManager shortcuts;
     settings::BuiltInSettingsBackend backend(shortcuts);
     const auto registry = settings::buildBuiltInSettingsRegistry();
@@ -92,16 +135,15 @@ int main(int argc, char** argv) {
             "font size immediately follows app font in Appearance");
     const auto* sizeSchema = storage::ConfigurationSchema::entry(sizeField->configurationKey);
     require(sizeField->kind == settings::SettingsFieldKind::Slider && sizeSchema &&
-                sizeField->configurationKey ==
-                    QStringLiteral("interface/app_font_size_percentage") &&
-                sizeField->defaultValue.toInt() == 100 && sizeSchema->integerRange.has_value() &&
-                sizeSchema->integerRange->minimum == 100 &&
-                sizeSchema->integerRange->maximum == 200 && sizeSchema->integerRange->step == 1 &&
+                sizeField->configurationKey == QStringLiteral("interface/app_font_size") &&
+                sizeField->defaultValue.toInt() == 14 && sizeSchema->integerRange.has_value() &&
+                sizeSchema->integerRange->minimum == 12 &&
+                sizeSchema->integerRange->maximum == 32 && sizeSchema->integerRange->step == 1 &&
                 std::get<settings::SettingsSliderDefinition>(sizeField->definition->payload)
-                        .suffix.translated() == QStringLiteral("%"),
-            "font size slider ranges from 100 to 200 percent with a 100 percent default");
+                        .suffix.translated() == QStringLiteral("px"),
+            "font size slider ranges from 12 to 32 pixels with a 14 pixel default");
     const auto sizeBinding = settings::SettingsSliderBinding::AppFontSize;
-    require(backend.applySliderValue(sizeBinding, 100), "restore the default startup size");
+    require(backend.applySliderValue(sizeBinding, 14), "restore the default startup size");
     QLabel existing(QStringLiteral("Existing label"));
     QMenu menu;
     const auto binding = settings::SettingsSelectBinding::AppFont;
@@ -114,40 +156,39 @@ int main(int argc, char** argv) {
     require(existing.font().family() == next && created.font().family() == next,
             "existing and new widgets use the selected family");
     require(menu.font().family() == next, "native popup fonts follow the selected family");
-    require(QApplication::font().pointSizeF() == originalFont.pointSizeF() &&
+    require(QApplication::font().pixelSize() == 14 &&
                 QApplication::font().weight() == originalFont.weight() &&
                 QApplication::font().hintingPreference() == QFont::PreferNoHinting,
             "changing family preserves size, weight and smooth rendering");
-    for (const int percentage : {101, 133, 200, 150, 100, 200}) {
-        require(backend.applySliderValue(sizeBinding, percentage) &&
-                    preferences.appFontSizePercentage() == percentage &&
-                    backend.sliderValue(sizeBinding) == percentage,
+    for (const int pixelSize : {12, 13, 21, 32, 17, 14, 32}) {
+        require(backend.applySliderValue(sizeBinding, pixelSize) &&
+                    preferences.appFontSize() == pixelSize &&
+                    backend.sliderValue(sizeBinding) == pixelSize,
                 "font size edits persist and update runtime state");
         QCoreApplication::processEvents();
         const QLabel newLabel(QStringLiteral("New scaled label"));
-        requireFontSize(QApplication::font(), percentage);
-        requireFontSize(existing.font(), percentage);
-        requireFontSize(newLabel.font(), percentage);
-        requireFontSize(menu.font(), percentage);
-        require(theme.themeColorScheme().metricAlias.fontSize ==
-                        qRound(originalThemeFontSize * percentage / 100.0) &&
+        requireFontSize(QApplication::font(), pixelSize);
+        requireFontSize(existing.font(), pixelSize);
+        requireFontSize(newLabel.font(), pixelSize);
+        requireFontSize(menu.font(), pixelSize);
+        require(theme.themeColorScheme().metricAlias.fontSize == pixelSize &&
                     QApplication::font().family() == next,
-                "theme typography and application fonts scale together while preserving family");
+                "theme typography and application fonts use pixels while preserving family");
     }
-    require(!backend.applySliderValue(sizeBinding, 99) &&
-                !backend.applySliderValue(sizeBinding, 201) &&
-                theme.appFontSizePercentage() == 200 && preferences.appFontSizePercentage() == 200,
+    require(!backend.applySliderValue(sizeBinding, 11) &&
+                !backend.applySliderValue(sizeBinding, 33) && theme.appFontSize() == 32 &&
+                preferences.appFontSize() == 32,
             "out-of-range font sizes leave runtime and stored settings unchanged");
     require(backend.applySelectValue(binding, QString()), "select system font at an enlarged size");
-    requireFontSize(QApplication::font(), 200);
+    requireFontSize(QApplication::font(), 32);
     require(backend.applySelectValue(binding, next), "restore selected family at an enlarged size");
-    requireFontSize(QApplication::font(), 200);
+    requireFontSize(QApplication::font(), 32);
     require(appStorage.flushNow().success, "flush font preferences");
     const storage::ConfigurationStore reloaded(
         QDir(appStorage.configurationDirectory()).filePath(QStringLiteral("config.json")), true,
         false);
     require(reloaded.value(QStringLiteral("interface/app_font")).toString() == next &&
-                reloaded.value(QStringLiteral("interface/app_font_size_percentage")).toInt() == 200,
+                reloaded.value(QStringLiteral("interface/app_font_size")).toInt() == 32,
             "font family and size preferences survive reload");
     for (auto mode :
          {styles::ThemeMode::Dark, styles::ThemeMode::Light, styles::ThemeMode::FollowSystem}) {
@@ -158,48 +199,55 @@ int main(int argc, char** argv) {
         require(theme.appFontFamily() == next && QApplication::font().family() == next &&
                     adqt::theme::ThemeManager::instance().config().appFont.family() == next,
                 "theme changes preserve the font family");
-        requireFontSize(QApplication::font(), 200);
-        require(theme.themeColorScheme().metricAlias.fontSize == originalThemeFontSize * 2,
+        requireFontSize(QApplication::font(), 32);
+        require(theme.themeColorScheme().metricAlias.fontSize == 32,
                 "theme and density changes preserve the font size");
     }
     const auto previous = appStorage.configuration().snapshot();
     auto imported = previous;
     const QString unavailable = QStringLiteral("SnowShot Missing Font Test Family");
     imported.insert(QStringLiteral("interface/app_font"), unavailable);
-    imported.insert(QStringLiteral("interface/app_font_size_percentage"), 175);
+    imported.insert(QStringLiteral("interface/app_font_size"), 25);
     require(backend.importConfigurationSnapshot(imported, 3) &&
-                theme.appFontFamily() == unavailable && theme.appFontSizePercentage() == 175,
+                theme.appFontFamily() == unavailable && theme.appFontSize() == 25,
             "configuration import applies font family and size using Qt fallback");
-    requireFontSize(QApplication::font(), 175);
+    requireFontSize(QApplication::font(), 25);
     const auto options = backend.dynamicSelectOptions(binding);
     require(std::any_of(options.cbegin(), options.cend(),
                         [&](const auto& option) { return option.value.toString() == unavailable; }),
             "unavailable saved font remains an option");
     require(backend.importConfigurationSnapshot(previous, 3) && theme.appFontFamily() == next &&
-                theme.appFontSizePercentage() == 200,
+                theme.appFontSize() == 32,
             "restoring a snapshot restores the live font and size");
+    auto legacy = previous;
+    legacy.remove(QStringLiteral("interface/app_font_size"));
+    legacy.insert(QStringLiteral("interface/app_font_size_percentage"), 150);
+    require(backend.importConfigurationSnapshot(legacy, 3) && theme.appFontSize() == 21 &&
+                preferences.appFontSize() == 21,
+            "legacy configuration imports migrate the live and stored font size to pixels");
+    requireFontSize(QApplication::font(), 21);
     imported.insert(QStringLiteral("interface/app_font"), 42);
-    imported.insert(QStringLiteral("interface/app_font_size_percentage"), 201);
+    imported.insert(QStringLiteral("interface/app_font_size"), 33);
     require(backend.importConfigurationSnapshot(imported, 3) && theme.appFontFamily().isEmpty() &&
-                preferences.appFontFamily().isEmpty() && theme.appFontSizePercentage() == 100 &&
-                preferences.appFontSizePercentage() == 100,
+                preferences.appFontFamily().isEmpty() && theme.appFontSize() == 14 &&
+                preferences.appFontSize() == 14,
             "invalid imported font values follow the schema salvage rule and restore default");
-    requireFontSize(QApplication::font(), 100);
+    requireFontSize(QApplication::font(), 14);
     require(backend.importConfigurationSnapshot(previous, 3), "restore the font after salvage");
     require(!backend.importConfigurationSnapshot(imported, 999) && theme.appFontFamily() == next &&
-                preferences.appFontFamily() == next && theme.appFontSizePercentage() == 200 &&
-                preferences.appFontSizePercentage() == 200,
+                preferences.appFontFamily() == next && theme.appFontSize() == 32 &&
+                preferences.appFontSize() == 32,
             "rejected import leaves live and stored font unchanged");
     const bool reset = backend.resetSection(settings::SettingsSectionReset::GeneralSettings);
     require(reset && theme.appFontFamily().isEmpty() && preferences.appFontFamily().isEmpty() &&
-                theme.appFontSizePercentage() == 100 && preferences.appFontSizePercentage() == 100,
-            "General reset restores System default and 100 percent font size");
+                theme.appFontSize() == 14 && preferences.appFontSize() == 14,
+            "General reset restores System default and 14 pixel font size");
     QCoreApplication::processEvents();
     require(QApplication::font().family() == originalFont.family() &&
                 existing.font().family() == originalFont.family(),
             "System default restores the original platform family");
-    requireFontSize(QApplication::font(), 100);
-    requireFontSize(existing.font(), 100);
+    requireFontSize(QApplication::font(), 14);
+    requireFontSize(existing.font(), 14);
     appStorage.shutdown();
     return 0;
 }

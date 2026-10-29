@@ -8,6 +8,8 @@
 #include "snow_canvas_viewport.h"
 
 #include <QApplication>
+#include <QClipboard>
+#include <QInputMethodEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -71,6 +73,350 @@ void drag(SnowCanvasWidget& canvas, QPointF start = {100, 180}, QPointF end = {3
     mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
     mouse(canvas, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
     mouse(canvas, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+}
+
+void key(SnowCanvasWidget& canvas, int code, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+         const QString& text = {}) {
+    QKeyEvent event(QEvent::KeyPress, code, modifiers, text);
+    QApplication::sendEvent(&canvas, &event);
+    QApplication::processEvents();
+}
+
+void replaceValue(SnowCanvasWidget& canvas, const QString& value) {
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    QApplication::clipboard()->setText(value);
+    key(canvas, Qt::Key_V, Qt::ControlModifier);
+}
+
+void inlineDistanceOpeningDragSelectsDigits() {
+    for (const auto tool : {SnowCanvasTool::Distance, SnowCanvasTool::Select}) {
+        for (const double zoom : {0.5, 1.0, 2.0}) {
+            for (const bool reverse : {false, true}) {
+                SnowCanvasRuntime runtime;
+                SnowCanvasWidget canvas(runtime);
+                prepare(canvas);
+                auto style = canvas.canvasDistanceStyle();
+                style.decimalPlaces = 3;
+                require(canvas.setCanvasDistanceStyle(style), "set drag-selection precision");
+                drag(canvas);
+                require(canvas.setCanvasTool(tool), "set numeric drag-selection tool");
+                require(canvas.setViewportCamera(-100, 0, zoom), "zoom numeric drag selection");
+                const auto document = runtime.serializeDocumentSession();
+                const auto history = runtime.serializeDocumentHistory();
+                const QPointF left(300 - 47 * zoom, 180);
+                const QPointF right(300 + 5 * zoom, 180);
+                const QPointF start = reverse ? right : left;
+                const QPointF end = reverse ? left : right;
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+                require(canvas.hasActiveTextEditing(), "opening press enters numeric editing");
+                mouse(canvas, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+                mouse(canvas, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+                const auto selected = static_cast<QWidget&>(canvas)
+                                          .inputMethodQuery(Qt::ImCurrentSelection)
+                                          .toString();
+                require(!selected.isEmpty() && !selected.contains(QLatin1Char(' ')),
+                        "the opening drag selects digits without the unit");
+                mouse(canvas, QEvent::MouseMove, {450, 250}, Qt::NoButton, Qt::NoButton);
+                require(static_cast<QWidget&>(canvas)
+                                .inputMethodQuery(Qt::ImCurrentSelection)
+                                .toString() == selected,
+                        "releasing the opening drag ends selection tracking");
+                key(canvas, Qt::Key_C, Qt::ControlModifier);
+                require(QApplication::clipboard()->text() == selected,
+                        "opening-drag selection can be copied");
+                key(canvas, Qt::Key_5, Qt::NoModifier, QStringLiteral("5"));
+                const auto edited = static_cast<QWidget&>(canvas)
+                                        .inputMethodQuery(Qt::ImSurroundingText)
+                                        .toString();
+                require(edited.contains(QLatin1Char('5')) &&
+                            edited.size() == QStringLiteral("200.000").size() - selected.size() + 1,
+                        "typing replaces the opening-drag selection");
+                key(canvas, Qt::Key_Escape);
+                require(!canvas.hasActiveTextEditing() &&
+                            runtime.serializeDocumentSession() == document &&
+                            runtime.serializeDocumentHistory() == history,
+                        "canceling a selected numeric edit preserves the owner and history");
+            }
+        }
+    }
+}
+
+void inlineDistanceValuesKeepTheirOwnerAndControls() {
+    SnowCanvasRuntime runtime;
+    SnowCanvasWidget canvas(runtime);
+    prepare(canvas);
+    auto style = canvas.canvasDistanceStyle();
+    style.decimalPlaces = 3;
+    require(canvas.setCanvasDistanceStyle(style), "set distance precision");
+    drag(canvas);
+    const auto points = only(runtime, QStringLiteral("Arrow")).value(QStringLiteral("points"));
+    const auto initialHistory = runtime.serializeDocumentHistory();
+    const auto valuePoint = QPointF(170, 180);
+    mouse(canvas, QEvent::MouseMove, valuePoint, Qt::NoButton, Qt::NoButton);
+    require(canvas.cursor().shape() == Qt::IBeamCursor, "numeric distance hover uses I-beam");
+    click(canvas, valuePoint);
+    require(canvas.hasActiveTextEditing(), "one click edits an unselected distance value");
+    require(canvas.canvasStyleToolbarState().source ==
+                SnowCanvasStyleToolbarSource::SelectedDistance,
+            "inline value editing preserves distance toolbar");
+    mouse(canvas, QEvent::MouseMove, {240, 180}, Qt::NoButton, Qt::NoButton);
+    require(canvas.cursor().shape() != Qt::IBeamCursor,
+            "unit hover stays noneditable during numeric editing");
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    key(canvas, Qt::Key_C, Qt::ControlModifier);
+    require(QApplication::clipboard()->text() == QStringLiteral("200.000"),
+            "selection excludes the unit");
+    key(canvas, Qt::Key_Return);
+    require(!canvas.hasActiveTextEditing() && runtime.serializeDocumentHistory() == initialHistory,
+            "unchanged value does not create an undo step");
+    click(canvas, valuePoint);
+    replaceValue(canvas, QStringLiteral("25.125"));
+    require(only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                QStringLiteral("200.000 cm"),
+            "draft remains temporary until committed");
+    key(canvas, Qt::Key_Return);
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                    QStringLiteral("25.125 cm") &&
+                only(runtime, QStringLiteral("Arrow")).value(QStringLiteral("points")) == points,
+            "Enter recalibrates the value without moving endpoints");
+    require(canvas.undo() && only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                                 QStringLiteral("200.000 cm"),
+            "one undo restores the original value");
+    require(canvas.redo(), "redo inline distance value");
+    click(canvas, {180, 180});
+    require(canvas.hasActiveTextEditing(), "click edits a selected distance");
+    replaceValue(canvas, QStringLiteral("50"));
+    key(canvas, Qt::Key_Escape);
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                    QStringLiteral("25.125 cm"),
+            "Escape cancels the draft");
+    click(canvas, {180, 180});
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    key(canvas, Qt::Key_Delete);
+    key(canvas, Qt::Key_Return);
+    require(canvas.hasActiveTextEditing() && records(runtime, QStringLiteral("Arrow")).size() == 1,
+            "empty input stays editable and Delete never removes the annotation");
+    click(canvas, {450, 250});
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                    QStringLiteral("25.125 cm"),
+            "outside click discards invalid input");
+    click(canvas, {180, 180});
+    replaceValue(canvas, QStringLiteral("30.500"));
+    click(canvas, {450, 250});
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                    QStringLiteral("30.500 cm"),
+            "outside click saves valid input");
+    mouse(canvas, QEvent::MouseMove, {230, 180}, Qt::NoButton, Qt::NoButton);
+    require(canvas.cursor().shape() != Qt::IBeamCursor, "unit suffix is not editable");
+    click(canvas, {230, 180});
+    require(!canvas.hasActiveTextEditing(), "unit click retains annotation selection behavior");
+    click(canvas, {180, 180});
+    replaceValue(canvas, QStringLiteral("40"));
+    style = canvas.canvasDistanceStyle();
+    style.unit = SnowCanvasDistanceUnit::Mm;
+    require(canvas.setCanvasDistanceStyle(style, SnowCanvasDistanceStylePropertyUnit),
+            "change unit from distance controls");
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                    QStringLiteral("40.000 mm"),
+            "toolbar edit commits the pending value before changing unit");
+}
+
+void inlineDistanceZoomInputAndLifecycle() {
+    SnowCanvasRuntime runtime;
+    SnowCanvasWidget canvas(runtime);
+    prepare(canvas);
+    drag(canvas);
+    require(canvas.setCanvasTool(SnowCanvasTool::Select), "use select for numeric editing");
+    for (double zoom : {0.5, 1.0, 2.0}) {
+        require(canvas.setViewportCamera(-100, 0, zoom), "zoom the distance canvas");
+        const QPointF point(300 - 15 * zoom, 180);
+        mouse(canvas, QEvent::MouseMove, point, Qt::NoButton, Qt::NoButton);
+        require(canvas.cursor().shape() == Qt::IBeamCursor, "numeric hover follows zoom");
+        click(canvas, point);
+        require(canvas.hasActiveTextEditing(), "numeric click follows zoom");
+        key(canvas, Qt::Key_Escape);
+        mouse(canvas, QEvent::MouseMove, {300 + 25 * zoom, 180}, Qt::NoButton, Qt::NoButton);
+        require(canvas.cursor().shape() != Qt::IBeamCursor,
+                "unit hover stays outside numeric hit area at each zoom");
+    }
+    click(canvas, {270, 180});
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent ime;
+    ime.setCommitString(QStringLiteral("12.5"));
+    QApplication::sendEvent(&canvas, &ime);
+    require(static_cast<QWidget&>(canvas).inputMethodQuery(Qt::ImSurroundingText).toString() ==
+                QStringLiteral("12.5"),
+            "IME edits only the numeric buffer");
+    key(canvas, Qt::Key_Z, Qt::ControlModifier);
+    require(static_cast<QWidget&>(canvas).inputMethodQuery(Qt::ImSurroundingText).toString() ==
+                QStringLiteral("200"),
+            "local undo restores the numeric buffer");
+    replaceValue(canvas, QStringLiteral("12.3456"));
+    require(static_cast<QWidget&>(canvas).inputMethodQuery(Qt::ImSurroundingText).toString() ==
+                QStringLiteral("200"),
+            "four decimal places are rejected");
+    replaceValue(canvas, QStringLiteral("12 mm"));
+    require(static_cast<QWidget&>(canvas).inputMethodQuery(Qt::ImSurroundingText).toString() ==
+                QStringLiteral("200"),
+            "pasted unit text is rejected");
+    replaceValue(canvas, QStringLiteral("12\n"));
+    require(static_cast<QWidget&>(canvas).inputMethodQuery(Qt::ImSurroundingText).toString() ==
+                QStringLiteral("200"),
+            "pasted trailing newlines are rejected");
+    replaceValue(canvas, QStringLiteral("50"));
+    canvas.setInteractionEnabled(false);
+    require(!canvas.hasActiveTextEditing() && canvas.canvasDistanceStyle().factor == 1.0,
+            "disabling interaction cancels the numeric draft");
+    canvas.setInteractionEnabled(true);
+    click(canvas, {270, 180});
+    const auto session = runtime.serializeDocumentSession();
+    require(runtime.restoreDocumentSession(session), "restore during numeric editing");
+    require(!canvas.hasActiveTextEditing() && !canvas.testAttribute(Qt::WA_InputMethodEnabled),
+            "document restoration releases the numeric editor and input method");
+    require(canvas.setViewportCamera(-100, 0, 2), "restore zoom after session replacement");
+    require(canvas.setCanvasTool(SnowCanvasTool::Distance),
+            "activate distance after session replacement");
+    click(canvas, {270, 180});
+    require(canvas.hasActiveTextEditing(), "reopen editor before external deletion");
+    SnowCanvasWidget other(runtime);
+    require(other.deleteSelected(), "delete owner through another viewport");
+    require(!canvas.hasActiveTextEditing() && records(runtime, QStringLiteral("Arrow")).isEmpty(),
+            "owner deletion releases the active numeric editor");
+}
+
+void inlineDistanceImePreeditIsPublishedWithoutCommitting() {
+    SnowCanvasRuntime runtime;
+    SnowCanvasWidget canvas(runtime);
+    prepare(canvas);
+    auto style = canvas.canvasDistanceStyle();
+    style.decimalPlaces = 3;
+    require(canvas.setCanvasDistanceStyle(style), "set IME distance precision");
+    drag(canvas);
+    const auto originalArrow = only(runtime, QStringLiteral("Arrow"));
+    const auto originalText = only(runtime, QStringLiteral("Text"));
+    const auto history = runtime.serializeDocumentHistory();
+    const auto engine = snow_canvas_runtime::Access::handle(runtime);
+    SnowCanvasViewport observer;
+    require(observer.create(engine, snow_canvas_viewport::defaultEngineConfig()),
+            "create IME presentation observer");
+    require(snow_viewport_set_surface_size(engine, observer.get(), 600, 360) == SNOW_OK,
+            "set IME observer surface");
+    const auto requirePresentation = [&](const QString& value) {
+        require(static_cast<QWidget&>(canvas).inputMethodQuery(Qt::ImSurroundingText).toString() ==
+                    value,
+                "IME surrounding text contains the numeric composition without the unit");
+        ScopedPatchHandle patch;
+        require(snow_viewport_acquire_patch(engine, observer.get(), nullptr, patch.outParam()) ==
+                    SNOW_OK,
+                "read composed distance scene");
+        const SnowSceneDisplayItem* items = nullptr;
+        std::uint32_t count = 0;
+        require(snow_patch_get_scene_items(patch.get(), &items, &count) == SNOW_OK,
+                "read composed distance scene items");
+        bool found = false;
+        for (std::uint32_t index = 0; index < count; ++index) {
+            if (items[index].kind == SNOW_SCENE_DISPLAY_ITEM_TEXT) {
+                require(QString::fromUtf8(items[index].text_utf8, items[index].text_utf8_len) ==
+                            value + QStringLiteral(" cm"),
+                        "rendered distance label includes the current IME composition");
+                found = true;
+            }
+        }
+        require(found, "composed distance label remains in the scene");
+        require(only(runtime, QStringLiteral("Arrow")) == originalArrow &&
+                    only(runtime, QStringLiteral("Text")) == originalText &&
+                    runtime.serializeDocumentHistory() == history,
+                "IME composition preserves the document and undo history");
+    };
+
+    click(canvas, {170, 180});
+    require(canvas.hasActiveTextEditing(), "open distance editor for IME composition");
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    for (const auto& value : {QStringLiteral("12.5"), QStringLiteral("12.3456"),
+                              QStringLiteral("pending"), QString()}) {
+        QInputMethodEvent preedit(value, {});
+        QApplication::sendEvent(&canvas, &preedit);
+        requirePresentation(value.isEmpty() ? QStringLiteral("200.000") : value);
+    }
+    for (const auto& rejected : {QStringLiteral("12.3456"), QStringLiteral("pending")}) {
+        key(canvas, Qt::Key_A, Qt::ControlModifier);
+        QInputMethodEvent rejectedPreedit(rejected, {});
+        QApplication::sendEvent(&canvas, &rejectedPreedit);
+        requirePresentation(rejected);
+        QInputMethodEvent rejectedCommit;
+        rejectedCommit.setCommitString(rejected);
+        QApplication::sendEvent(&canvas, &rejectedCommit);
+        requirePresentation(QStringLiteral("200.000"));
+    }
+    key(canvas, Qt::Key_End);
+    QInputMethodEvent oldComposition(QStringLiteral("pending"), {});
+    QApplication::sendEvent(&canvas, &oldComposition);
+    requirePresentation(QStringLiteral("200.000pending"));
+    QInputMethodEvent nextComposition(QStringLiteral("next"), {});
+    nextComposition.setCommitString(QStringLiteral("invalid"));
+    QApplication::sendEvent(&canvas, &nextComposition);
+    requirePresentation(QStringLiteral("200.000next"));
+    QInputMethodEvent clearComposition;
+    QApplication::sendEvent(&canvas, &clearComposition);
+    requirePresentation(QStringLiteral("200.000"));
+
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent beforeRejectedKey(QStringLiteral("pending"), {});
+    QApplication::sendEvent(&canvas, &beforeRejectedKey);
+    key(canvas, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+    requirePresentation(QStringLiteral("200.000"));
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent preedit(QStringLiteral("12.5"), {});
+    QApplication::sendEvent(&canvas, &preedit);
+    key(canvas, Qt::Key_Escape);
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")) == originalText &&
+                runtime.serializeDocumentHistory() == history,
+            "Escape discards numeric composition without committing it");
+
+    click(canvas, {170, 180});
+    require(canvas.hasActiveTextEditing(), "reopen distance editor for IME acceptance");
+    key(canvas, Qt::Key_A, Qt::ControlModifier);
+    QInputMethodEvent acceptedPreedit(QStringLiteral("12.5"), {});
+    QApplication::sendEvent(&canvas, &acceptedPreedit);
+    QInputMethodEvent committed;
+    committed.setCommitString(QStringLiteral("12.5"));
+    QApplication::sendEvent(&canvas, &committed);
+    requirePresentation(QStringLiteral("12.5"));
+    key(canvas, Qt::Key_Return);
+    require(!canvas.hasActiveTextEditing() &&
+                only(runtime, QStringLiteral("Text")).value(QStringLiteral("text")) ==
+                    QStringLiteral("12.500 cm") &&
+                only(runtime, QStringLiteral("Arrow")).value(QStringLiteral("points")) ==
+                    originalArrow.value(QStringLiteral("points")),
+            "accepted IME number recalibrates the distance on Enter");
+    require(canvas.undo() && only(runtime, QStringLiteral("Arrow")) == originalArrow &&
+                only(runtime, QStringLiteral("Text")) == originalText,
+            "one undo restores the distance before the accepted IME edit");
+}
+
+void unchangedRoundedDistancePreservesCalibration() {
+    SnowCanvasRuntime runtime;
+    SnowCanvasWidget canvas(runtime);
+    prepare(canvas);
+    require(canvas.setDistanceCreationPixelScale({2, 3}), "use anisotropic pixel calibration");
+    drag(canvas, {100, 180}, {130, 220});
+    const auto history = runtime.serializeDocumentHistory();
+    click(canvas, {105, 200});
+    require(canvas.hasActiveTextEditing(), "edit a rounded calibrated value");
+    key(canvas, Qt::Key_Return);
+    require(runtime.serializeDocumentHistory() == history &&
+                only(runtime, QStringLiteral("Arrow"))
+                        .value(QStringLiteral("distance"))
+                        .toObject()
+                        .value(QStringLiteral("factor"))
+                        .toDouble() == 1.0,
+            "unchanged rounded value preserves exact calibration and history");
 }
 
 void pixelCalibrationPreservesFocusAndPublishedPresentation() {
@@ -428,6 +774,11 @@ int main(int argc, char** argv) {
     }
 #endif
     QApplication application(argc, argv);
+    inlineDistanceOpeningDragSelectsDigits();
+    inlineDistanceValuesKeepTheirOwnerAndControls();
+    inlineDistanceZoomInputAndLifecycle();
+    inlineDistanceImePreeditIsPublishedWithoutCommitting();
+    unchangedRoundedDistancePreservesCalibration();
     pixelCalibrationPreservesFocusAndPublishedPresentation();
     calibrationFollowsRuntimeReplacementAndCaptureReset();
     distanceMovesPublishOneIncrementalPatchForEveryViewport();

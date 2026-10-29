@@ -1,4 +1,5 @@
 #include "snow_shot/storage/storageusagetracker.h"
+#include "snow_shot/app/distribution.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -6,6 +7,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QScopeGuard>
+#include <QStandardPaths>
 
 #include <atomic>
 #include <chrono>
@@ -195,6 +198,114 @@ void missingLocationsReportZeroUsage() {
             "missing locations must report zero usage");
 }
 
+void emptyLocationsDoNotInspectOrClearTheWorkingDirectory() {
+    QTemporaryDir temporary;
+    require(temporary.isValid(), "empty-location fixture must be available");
+    const QString previousDirectory = QDir::currentPath();
+    const auto restoreDirectory = qScopeGuard([&] { QDir::setCurrent(previousDirectory); });
+    require(QDir::setCurrent(temporary.path()), "empty-location fixture must become current");
+    const QString thumbnail = temporary.filePath(QStringLiteral("keep.png"));
+    const QString recording = temporary.filePath(QStringLiteral("keep/session.pcm"));
+    writeBytes(thumbnail, 11);
+    writeBytes(recording, 13);
+    storage::StorageUsageTrackerOptions options;
+    options.diagnosticsDirectories = {QString()};
+    storage::StorageUsageTracker tracker(options);
+    tracker.requestRefresh();
+    tracker.drain();
+    require(tracker.usage().totalBytes() == 0,
+            "unavailable locations must not scan the current directory");
+    const auto thumbnails = tracker.requestClear(storage::StorageCacheKind::ThumbnailCache);
+    const auto recordings = tracker.requestClear(storage::StorageCacheKind::RecordingTemp);
+    tracker.drain();
+    require(thumbnails.get().success && recordings.get().success && QFile::exists(thumbnail) &&
+                QFile::exists(recording),
+            "unavailable locations must not delete current-directory files");
+}
+
+void nestedCachesAreCountedOnce() {
+    TrackerDirs dirs;
+    dirs.thumbnails = QDir(dirs.appData).filePath(QStringLiteral("cache/thumbnails"));
+    dirs.recordingTemp = QDir(dirs.appData).filePath(QStringLiteral("cache/recordings"));
+    writeBytes(QDir(dirs.appData).filePath(QStringLiteral("config.json")), 7);
+    writeBytes(QDir(dirs.thumbnails).filePath(QStringLiteral("thumb.png")), 11);
+    writeBytes(QDir(dirs.recordingTemp).filePath(QStringLiteral("session.pcm")), 13);
+    writeBytes(QDir(dirs.appData).filePath(QStringLiteral("cache/clipboard/export.png")), 17);
+    storage::StorageUsageTracker tracker(trackerOptions(dirs, {}));
+    tracker.requestRefresh();
+    tracker.drain();
+    const auto usage = tracker.usage();
+    require(usage.thumbnailCacheBytes == 11 && usage.recordingTempBytes == 13 &&
+                usage.otherBytes == 24 && usage.totalBytes() == 48,
+            "nested caches must retain their category without double counting app data");
+}
+
+void defaultCachesFollowTheDistributionPolicy() {
+    namespace distribution = snow_shot::app::distribution;
+    if (!distribution::isStoreManaged()) {
+        const QString root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        const QString recordingRoot =
+            root.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::TempLocation) : root;
+        require(storage::StorageUsageTracker::defaultThumbnailCacheDirectory() ==
+                        (root.isEmpty() ? QString()
+                                        : QDir(root).filePath(
+                                              QStringLiteral("snow-shot/history-thumbnails"))) &&
+                    storage::StorageUsageTracker::defaultRecordingTempDirectory() ==
+                        (recordingRoot.isEmpty()
+                             ? QString()
+                             : QDir(recordingRoot).filePath(QStringLiteral("recordings"))),
+                "standalone cache defaults must retain their native paths");
+        return;
+    }
+    QTemporaryDir temporary;
+    require(temporary.isValid(), "Store cache fixture must be available");
+    const bool hadLocal = qEnvironmentVariableIsSet("LOCALAPPDATA");
+    const QByteArray previousLocal = qgetenv("LOCALAPPDATA");
+    const auto restoreLocal = qScopeGuard([&] {
+        if (hadLocal)
+            qputenv("LOCALAPPDATA", previousLocal);
+        else
+            qunsetenv("LOCALAPPDATA");
+    });
+    require(qputenv("LOCALAPPDATA", temporary.path().toUtf8()),
+            "Store cache LOCALAPPDATA fixture must be set");
+    const QString localState = distribution::writableDataDirectory();
+    const QString cache = QDir(localState).filePath(QStringLiteral("cache"));
+    const QString thumbnails = storage::StorageUsageTracker::defaultThumbnailCacheDirectory();
+    const QString recordings = storage::StorageUsageTracker::defaultRecordingTempDirectory();
+    require(!localState.isEmpty() &&
+                thumbnails ==
+                    QDir(cache).filePath(QStringLiteral("snow-shot/history-thumbnails")) &&
+                recordings == QDir(cache).filePath(QStringLiteral("recordings")),
+            "Store caches must remain inside the stable package LocalState directory");
+    const QString nativeThumbnail = temporary.filePath(QStringLiteral("native/cache/thumb.png"));
+    const QString nativeRecording = temporary.filePath(QStringLiteral("native/recordings/a.pcm"));
+    writeBytes(nativeThumbnail, 19);
+    writeBytes(nativeRecording, 23);
+    writeBytes(QDir(thumbnails).filePath(QStringLiteral("thumb.png")), 11);
+    writeBytes(QDir(recordings).filePath(QStringLiteral("a.pcm")), 13);
+    storage::StorageUsageTrackerOptions options;
+    options.appDataDirectory = localState;
+    options.thumbnailCacheDirectory = thumbnails;
+    options.recordingTempDirectory = recordings;
+    storage::StorageUsageTracker tracker(options);
+    const auto clearThumbnails = tracker.requestClear(storage::StorageCacheKind::ThumbnailCache);
+    const auto clearRecordings = tracker.requestClear(storage::StorageCacheKind::RecordingTemp);
+    tracker.drain();
+    require(clearThumbnails.get().success && clearRecordings.get().success &&
+                QFile::exists(nativeThumbnail) && QFile::exists(nativeRecording),
+            "clearing Store caches must preserve standalone files");
+    require(qunsetenv("LOCALAPPDATA"), "Store cache LOCALAPPDATA fixture must be unset");
+    require(storage::StorageUsageTracker::defaultThumbnailCacheDirectory().isEmpty() &&
+                storage::StorageUsageTracker::defaultRecordingTempDirectory().isEmpty(),
+            "unavailable Store cache roots must not fall back to shared directories");
+    require(qputenv("LOCALAPPDATA", "relative-store-data"),
+            "relative Store cache LOCALAPPDATA fixture must be set");
+    require(storage::StorageUsageTracker::defaultThumbnailCacheDirectory().isEmpty() &&
+                storage::StorageUsageTracker::defaultRecordingTempDirectory().isEmpty(),
+            "relative Store cache roots must not create working-directory caches");
+}
+
 void refreshRequestsAreCoalesced() {
     TrackerDirs dirs;
     writeBytes(QDir(dirs.appData).filePath(QStringLiteral("config.json")), 10);
@@ -349,6 +460,11 @@ int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("SnowShotTests"));
     QCoreApplication::setApplicationName(QStringLiteral("storage-usage-tracker-tests"));
+    defaultCachesFollowTheDistributionPolicy();
+    emptyLocationsDoNotInspectOrClearTheWorkingDirectory();
+    nestedCachesAreCountedOnce();
+    if (application.arguments().contains(QStringLiteral("--distribution-paths-only")))
+        return 0;
     scanCategorizesAppOwnedLocations();
     constructionDefersScanningUntilRefresh();
     workerRestartsAfterGoingIdle();

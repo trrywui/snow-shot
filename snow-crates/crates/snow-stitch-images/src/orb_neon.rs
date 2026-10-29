@@ -128,6 +128,41 @@ pub(super) fn strongest_fast_arc(differences: &[i16; 16]) -> i16 {
     }
 }
 
+// Score sixteen centers with the same exact circular FAST-9 criterion as `score`.
+// Unsigned min/max on the circle intensities avoids widening all sixteen lanes.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn fast_responses(
+    center: uint8x16_t,
+    samples: &[uint8x16_t; 16],
+    threshold: uint8x16_t,
+) -> uint8x16_t {
+    let pair_min: [_; 8] =
+        std::array::from_fn(|i| vminq_u8(samples[i * 2 + 1], samples[(i * 2 + 2) % 16]));
+    let pair_max: [_; 8] =
+        std::array::from_fn(|i| vmaxq_u8(samples[i * 2 + 1], samples[(i * 2 + 2) % 16]));
+    let quad_min: [_; 8] = std::array::from_fn(|i| vminq_u8(pair_min[i], pair_min[(i + 1) % 8]));
+    let quad_max: [_; 8] = std::array::from_fn(|i| vmaxq_u8(pair_max[i], pair_max[(i + 1) % 8]));
+    let mut lower = vdupq_n_u8(0);
+    let mut upper = vdupq_n_u8(255);
+    for i in 0..8 {
+        // The arcs starting at 2i and 2i+1 share eight samples.
+        // Combine their optional endpoints before reducing across arcs:
+        // max(min(a, c), min(b, c)) = min(max(a, b), c).
+        let a = samples[i * 2];
+        let b = samples[(i * 2 + 9) % 16];
+        let low = vminq_u8(quad_min[i], quad_min[(i + 2) % 8]);
+        let high = vmaxq_u8(quad_max[i], quad_max[(i + 2) % 8]);
+        lower = vmaxq_u8(lower, vminq_u8(low, vmaxq_u8(a, b)));
+        upper = vminq_u8(upper, vmaxq_u8(high, vminq_u8(a, b)));
+    }
+    let strongest = vmaxq_u8(vqsubq_u8(center, upper), vqsubq_u8(lower, center));
+    vandq_u8(
+        vcgtq_u8(strongest, threshold),
+        vqsubq_u8(strongest, vdupq_n_u8(1)),
+    )
+}
+
 #[target_feature(enable = "neon")]
 pub(super) unsafe fn fast_scores(
     width: u32,
@@ -147,41 +182,35 @@ pub(super) unsafe fn fast_scores(
             unsafe {
                 let w = width as usize;
                 let mut x = border as usize;
-                while x + 8 <= w - border as usize {
+                while x + 16 <= w - border as usize {
+                    // Each lane scores one pixel. The border and loop bound keep every
+                    // circle load (including the last lane) inside the source image.
                     let center_index = y * w + x;
-                    let center =
-                        vreinterpretq_s16_u16(vmovl_u8(vld1_u8(pixels.as_ptr().add(center_index))));
-                    let mut dark = vdupq_n_u16(0);
+                    let source = pixels.as_ptr().add(center_index);
+                    let center = vld1q_u8(source);
+                    let threshold = vdupq_n_u8(threshold as u8);
+                    let mut samples = [vdupq_n_u8(0); 16];
+                    let mut dark = vdupq_n_u8(0);
                     let mut bright = dark;
-                    for offset in [3 * w as isize, 3, -3 * w as isize, -3] {
-                        let sample = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(
-                            pixels.as_ptr().add(center_index).offset(offset),
-                        )));
-                        dark = vsubq_u16(
-                            dark,
-                            vcgtq_s16(vsubq_s16(center, sample), vdupq_n_s16(threshold)),
-                        );
-                        bright = vsubq_u16(
-                            bright,
-                            vcgtq_s16(vsubq_s16(sample, center), vdupq_n_s16(threshold)),
-                        );
+                    for index in [0, 4, 8, 12] {
+                        let (dx, dy) = CIRCLE[index];
+                        let sample =
+                            vld1q_u8(source.offset(dy as isize * w as isize + dx as isize));
+                        samples[index] = sample;
+                        dark = vsubq_u8(dark, vcgtq_u8(vqsubq_u8(center, sample), threshold));
+                        bright = vsubq_u8(bright, vcgtq_u8(vqsubq_u8(sample, center), threshold));
                     }
-                    let passes = vorrq_u16(
-                        vcgtq_u16(dark, vdupq_n_u16(1)),
-                        vcgtq_u16(bright, vdupq_n_u16(1)),
-                    );
-                    let mut lanes = [0_u16; 8];
-                    vst1q_u16(lanes.as_mut_ptr(), passes);
-                    for (lane, pass) in lanes.into_iter().enumerate() {
-                        if pass != 0 {
-                            row[x + lane] = score(
-                                circle_values(width, pixels, (x + lane) as u32, y as u32),
-                                threshold,
-                            )
-                            .unwrap_or(0);
+                    // Every nine-pixel arc contains at least two cardinal samples.
+                    if vmaxvq_u8(vmaxq_u8(dark, bright)) >= 2 {
+                        for index in [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15] {
+                            let (dx, dy) = CIRCLE[index];
+                            samples[index] =
+                                vld1q_u8(source.offset(dy as isize * w as isize + dx as isize));
                         }
+                        let response = fast_responses(center, &samples, threshold);
+                        vst1q_u8(row.as_mut_ptr().add(x), response);
                     }
-                    x += 8;
+                    x += 16;
                 }
                 if x > border as usize {
                     executed(1);
@@ -196,6 +225,50 @@ pub(super) unsafe fn fast_scores(
             }
         });
     scores
+}
+
+#[target_feature(enable = "neon")]
+pub(super) unsafe fn suppress_nonmax_row(
+    width: u32,
+    scores: &[u8],
+    y: u32,
+    border: u32,
+    keypoints: &mut Vec<FastKeypoint>,
+) {
+    let mut x = border;
+    while x + 16 <= width - border {
+        // SAFETY: The caller supplies a full score raster and an interior row.
+        // The loop bound leaves the right-hand neighbor of the last lane in bounds.
+        let (responses, neighbors) = unsafe {
+            let center = scores.as_ptr().add((y * width + x) as usize);
+            let above = center.sub(width as usize);
+            let below = center.add(width as usize);
+            let mut neighbors = vmaxq_u8(vld1q_u8(center.sub(1)), vld1q_u8(center.add(1)));
+            for row in [above, below] {
+                neighbors = vmaxq_u8(neighbors, vld1q_u8(row.sub(1)));
+                neighbors = vmaxq_u8(neighbors, vld1q_u8(row));
+                neighbors = vmaxq_u8(neighbors, vld1q_u8(row.add(1)));
+            }
+            (vld1q_u8(center), neighbors)
+        };
+        // A zero response and any tied neighbor must both be suppressed.
+        let keep = vcgtq_u8(responses, neighbors);
+        if vmaxvq_u8(keep) != 0 {
+            let mut lanes = [0; 16];
+            unsafe { vst1q_u8(lanes.as_mut_ptr(), vandq_u8(keep, responses)) };
+            for (lane, response) in lanes.into_iter().enumerate() {
+                if response != 0 {
+                    keypoints.push(FastKeypoint {
+                        x: x + lane as u32,
+                        y,
+                        response,
+                    });
+                }
+            }
+        }
+        x += 16;
+    }
+    suppress_nonmax_row_scalar(width, scores, y, x..width - border, keypoints);
 }
 
 #[target_feature(enable = "neon")]
@@ -441,6 +514,123 @@ mod tests {
         }
     }
     #[test]
+    fn neon_fast_responses_preserve_every_arc_mask_and_threshold_ties() {
+        for strength in [20_u8, 21, 255] {
+            for dark in [false, true] {
+                let center = if dark { 255 } else { 0 };
+                let active = if dark { 255 - strength } else { strength };
+                for first_mask in (0_u32..=u16::MAX.into()).step_by(16) {
+                    let samples = std::array::from_fn(|bit| {
+                        let lanes: [u8; 16] = std::array::from_fn(|lane| {
+                            if (first_mask + lane as u32) & (1 << bit) != 0 {
+                                active
+                            } else {
+                                center
+                            }
+                        });
+                        unsafe { vld1q_u8(lanes.as_ptr()) }
+                    });
+                    let mut actual = [0; 16];
+                    unsafe {
+                        vst1q_u8(
+                            actual.as_mut_ptr(),
+                            fast_responses(vdupq_n_u8(center), &samples, vdupq_n_u8(20)),
+                        );
+                    }
+                    for (lane, response) in actual.into_iter().enumerate() {
+                        let mask = first_mask + lane as u32;
+                        let has_arc = (0..16).any(|start| {
+                            (0..9).all(|offset| mask & (1 << ((start + offset) % 16)) != 0)
+                        });
+                        let expected = if has_arc && strength > 20 {
+                            strength - 1
+                        } else {
+                            0
+                        };
+                        assert_eq!(
+                            response, expected,
+                            "mask {mask:#06x}, dark {dark}, strength {strength}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn neon_fast_score_maps_preserve_borders_unaligned_rows_and_tails() {
+        for width in (7..=40).chain([61, 62, 63, 64, 65, 66, 77, 96, 127]) {
+            for border in [3, 30, 31] {
+                if width <= 2 * border {
+                    continue;
+                }
+                let height = 2 * border + 17;
+                for seed in 0..3_u32 {
+                    let mut state = seed;
+                    let storage: Vec<u8> = (0..width * height + 1)
+                        .map(|i| {
+                            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                            match seed {
+                                0 => (state >> 24) as u8,
+                                1 => ((i / width / 4 * 37) ^ (i % width / 4 * 71)) as u8,
+                                _ => {
+                                    if state & 0x8000_0000 == 0 {
+                                        0
+                                    } else {
+                                        255
+                                    }
+                                }
+                            }
+                        })
+                        .collect();
+                    for threshold in [0, 1, 20, 127, 254, 255] {
+                        let pixels = &storage[1..];
+                        assert_eq!(
+                            unsafe { fast_scores(width, height, pixels, threshold, border) },
+                            fast_scores_scalar(width, height, pixels, threshold, border),
+                            "{width}x{height}, border {border}, seed {seed}, threshold {threshold}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn neon_nonmax_suppression_preserves_ties_borders_tails_and_order() {
+        for border in [3, 31] {
+            for width in 2 * border + 1..=2 * border + 65 {
+                let height = border * 2 + 5;
+                for levels in [1, 2, 4, 256] {
+                    let mut state = 17_u32;
+                    let scores: Vec<u8> = (0..width * height)
+                        .map(|_| {
+                            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                            ((state >> 24) % levels) as u8
+                        })
+                        .collect();
+                    let mut actual = Vec::new();
+                    let mut expected = Vec::new();
+                    for y in border..height - border {
+                        unsafe { suppress_nonmax_row(width, &scores, y, border, &mut actual) };
+                        suppress_nonmax_row_scalar(
+                            width,
+                            &scores,
+                            y,
+                            border..width - border,
+                            &mut expected,
+                        );
+                    }
+                    assert_eq!(
+                        actual, expected,
+                        "width {width}, border {border}, levels {levels}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "paired Release-only ARM64 kernel measurement"]
     fn neon_release_benchmark_orb() {
         use std::hint::black_box;
@@ -468,10 +658,29 @@ mod tests {
         );
         let small = Image::new(512, 384, image.pixels[..512 * 384].to_vec());
         crate::neon_benchmark::paired(
-            "stitch_orb_fast_prefilter",
+            "stitch_orb_fast_scores",
             4,
             || fast_scores_scalar(512, 384, black_box(&small.pixels), 20, 3),
             || unsafe { fast_scores(512, 384, black_box(&small.pixels), 20, 3) },
+        );
+        let scores = fast_scores_scalar(512, 384, &small.pixels, 20, 3);
+        crate::neon_benchmark::paired(
+            "stitch_orb_nonmax_suppression",
+            8,
+            || {
+                let mut points = Vec::new();
+                for y in 3..381 {
+                    suppress_nonmax_row_scalar(512, black_box(&scores), y, 3..509, &mut points);
+                }
+                points
+            },
+            || {
+                let mut points = Vec::new();
+                for y in 3..381 {
+                    unsafe { suppress_nonmax_row(512, black_box(&scores), y, 3, &mut points) };
+                }
+                points
+            },
         );
         let differences = std::array::from_fn(|i| (i as i16 * 73 % 511) - 255);
         crate::neon_benchmark::paired(

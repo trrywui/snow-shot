@@ -5,6 +5,110 @@ use snow_memory::RasterBuffer;
 
 use crate::StitchError;
 
+fn rgba_visible_equal_scalar(left: &[u8], right: &[u8]) -> bool {
+    left.chunks_exact(4)
+        .zip(right.chunks_exact(4))
+        .all(|(left, right)| left[..3] == right[..3])
+}
+
+fn rgba_visible_equal(left: &[u8], right: &[u8]) -> bool {
+    debug_assert_eq!(left.len(), right.len());
+    debug_assert_eq!(left.len() % 4, 0);
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 is available; both slices contain the same number of complete pixels.
+        return unsafe { rgba_visible_equal_avx2(left, right) };
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: ARM64 provides NEON; the slices contain complete, equally sized pixels.
+        unsafe { rgba_visible_equal_neon(left, right) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    rgba_visible_equal_scalar(left, right)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn rgba_visible_equal_neon(left: &[u8], right: &[u8]) -> bool {
+    use std::arch::aarch64::*;
+
+    // Byte lanes keep the alpha mask independent of the target's endianness.
+    let rgb_mask = unsafe {
+        vld1q_u8(
+            [
+                255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 255, 0,
+            ]
+            .as_ptr(),
+        )
+    };
+    let mut offset = 0;
+    while offset + 64 <= left.len() {
+        let mut difference = vdupq_n_u8(0);
+        for block in [0, 16, 32, 48] {
+            // SAFETY: The loop bounds all four unaligned loads to both slices.
+            let (a, b) = unsafe {
+                (
+                    vld1q_u8(left.as_ptr().add(offset + block)),
+                    vld1q_u8(right.as_ptr().add(offset + block)),
+                )
+            };
+            difference = vorrq_u8(difference, veorq_u8(a, b));
+        }
+        if vmaxvq_u8(vandq_u8(difference, rgb_mask)) != 0 {
+            return false;
+        }
+        offset += 64;
+    }
+    while offset + 16 <= left.len() {
+        // SAFETY: The loop bounds both unaligned loads to the supplied slices.
+        let difference = unsafe {
+            veorq_u8(
+                vld1q_u8(left.as_ptr().add(offset)),
+                vld1q_u8(right.as_ptr().add(offset)),
+            )
+        };
+        if vmaxvq_u8(vandq_u8(difference, rgb_mask)) != 0 {
+            return false;
+        }
+        offset += 16;
+    }
+    rgba_visible_equal_scalar(&left[offset..], &right[offset..])
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn rgba_visible_equal_avx2(left: &[u8], right: &[u8]) -> bool {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::{
+        _mm256_and_si256, _mm256_loadu_si256, _mm256_set1_epi32, _mm256_testz_si256,
+        _mm256_xor_si256,
+    };
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::{
+        _mm256_and_si256, _mm256_loadu_si256, _mm256_set1_epi32, _mm256_testz_si256,
+        _mm256_xor_si256,
+    };
+
+    let rgb_mask = _mm256_set1_epi32(0x00ff_ffff);
+    let mut offset = 0;
+    while offset + 32 <= left.len() {
+        // SAFETY: The loop bounds both unaligned loads to the supplied slices.
+        let (left_pixels, right_pixels) = unsafe {
+            (
+                _mm256_loadu_si256(left.as_ptr().add(offset).cast()),
+                _mm256_loadu_si256(right.as_ptr().add(offset).cast()),
+            )
+        };
+        let difference = _mm256_and_si256(_mm256_xor_si256(left_pixels, right_pixels), rgb_mask);
+        if _mm256_testz_si256(difference, difference) == 0 {
+            return false;
+        }
+        offset += 32;
+    }
+    rgba_visible_equal_scalar(&left[offset..], &right[offset..])
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PixelFormat {
@@ -437,11 +541,7 @@ impl Frame {
         }
         match self.pixel_format {
             PixelFormat::Gray8 | PixelFormat::Rgb8 => self.pixels == other.pixels,
-            PixelFormat::Rgba8 => self
-                .pixels
-                .chunks_exact(4)
-                .zip(other.pixels.chunks_exact(4))
-                .all(|(left, right)| left[..3] == right[..3]),
+            PixelFormat::Rgba8 => rgba_visible_equal(&self.pixels, &other.pixels),
         }
     }
 
@@ -462,13 +562,10 @@ impl Frame {
             }),
             PixelFormat::Rgba8 => (1..self.height as usize - 1).all(|y| {
                 let row_start = y * row_len;
-                self.pixels[row_start + interior_start..row_start + interior_end]
-                    .chunks_exact(4)
-                    .zip(
-                        other.pixels[row_start + interior_start..row_start + interior_end]
-                            .chunks_exact(4),
-                    )
-                    .all(|(left, right)| left[..3] == right[..3])
+                rgba_visible_equal(
+                    &self.pixels[row_start + interior_start..row_start + interior_end],
+                    &other.pixels[row_start + interior_start..row_start + interior_end],
+                )
             }),
         }
     }
@@ -833,6 +930,84 @@ mod tests {
         let visible = Frame::new(2, 1, PixelFormat::Rgba8, vec![1, 2, 4, 4, 5, 6, 7, 8]).unwrap();
         assert!(base.visible_pixels_equal(&alpha));
         assert!(!base.visible_pixels_equal(&visible));
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[ignore = "paired Release-only ARM64 kernel measurement"]
+    fn neon_release_benchmark_rgba_equality() {
+        use std::hint::black_box;
+
+        for (name, pixels) in [("1080p", 1920 * 1080), ("4k", 3840 * 2160)] {
+            let left: Vec<u8> = (0..pixels * 4).map(|i| i as u8).collect();
+            let mut right = left.clone();
+            for alpha in right.iter_mut().skip(3).step_by(4) {
+                *alpha ^= 255;
+            }
+            for mismatch in [false, true] {
+                if mismatch {
+                    right[pixels * 4 - 2] ^= 128;
+                }
+                crate::neon_benchmark::paired(
+                    &format!("stitch_rgba_equality_{name}_late_mismatch_{mismatch}"),
+                    8,
+                    || rgba_visible_equal_scalar(black_box(&left), black_box(&right)),
+                    || unsafe { rgba_visible_equal_neon(black_box(&left), black_box(&right)) },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rgba_equality_matches_scalar_for_unaligned_vectors_and_tails() {
+        for start in 0..32 {
+            for pixels in 0..66 {
+                let bytes = pixels * 4;
+                let left: Vec<u8> = (0..start + bytes).map(|i| i as u8).collect();
+                let mut right = left.clone();
+                for alpha in (start + 3..start + bytes).step_by(4) {
+                    right[alpha] ^= 0xff;
+                }
+                let left = &left[start..];
+                let right = &mut right[start..];
+                assert!(rgba_visible_equal_scalar(left, right));
+                assert!(rgba_visible_equal(left, right));
+                for byte in 0..bytes {
+                    right[byte] ^= 0x80;
+                    let expected = byte % 4 == 3;
+                    assert_eq!(rgba_visible_equal_scalar(left, right), expected);
+                    assert_eq!(rgba_visible_equal(left, right), expected);
+                    right[byte] ^= 0x80;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rgba_interior_equality_handles_vector_boundaries_and_every_border() {
+        for width in 3..22 {
+            let height = 5;
+            let left = Frame::new(
+                width,
+                height,
+                PixelFormat::Rgba8,
+                [10, 20, 30, 40].repeat((width * height) as usize),
+            )
+            .unwrap();
+            let mut right = left.clone();
+            for y in 0..height {
+                for x in 0..width {
+                    for channel in 0..4 {
+                        let byte = ((y * width + x) * 4 + channel) as usize;
+                        right.pixels_mut()[byte] ^= 0xff;
+                        let expected =
+                            channel == 3 || x == 0 || x == width - 1 || y == 0 || y == height - 1;
+                        assert_eq!(left.visible_interior_pixels_equal(&right), expected);
+                        right.pixels_mut()[byte] ^= 0xff;
+                    }
+                }
+            }
+        }
     }
 
     #[test]

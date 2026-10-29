@@ -1,22 +1,101 @@
 #include "snow_shot/app/edition.h"
+#include "snow_shot/app/distribution.h"
 #include "snow_shot/platform/windows/autostartregistration.h"
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QScopeGuard>
 
 #include <limits>
 #include <string>
+#include <future>
+#include <optional>
 
 #if defined(Q_OS_WIN) || defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <qt_windows.h>
+#include <winrt/Windows.ApplicationModel.h>
+#include <winrt/Windows.Foundation.h>
 #endif
 
 namespace snow_shot::platform::windows {
 namespace {
 #if defined(Q_OS_WIN) || defined(_WIN32)
+AutoStartRegistrationSnapshot storeStartupState(std::optional<bool> enabled = std::nullopt) {
+    // Store-policy development executables have no registered StartupTask. Do not invoke
+    // the package-only WinRT API using the policy's fallback storage identity.
+    if (app::distribution::runtimePackageFamilyName().isEmpty()) {
+        AutoStartRegistrationSnapshot result;
+        result.error = QCoreApplication::translate("AutoStartRegistration",
+                                                   "Windows startup settings are unavailable.");
+        return result;
+    }
+    return std::async(
+               std::launch::async,
+               [enabled] {
+                   AutoStartRegistrationSnapshot result;
+                   try {
+                       winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                       const auto apartment = qScopeGuard([] { winrt::uninit_apartment(); });
+                       // The static StartupTask methods cache an activation factory across
+                       // apartments. Own this factory locally so it is released before this
+                       // request's MTA is uninitialized, including failed GetAsync calls.
+                       const auto factory = winrt::get_activation_factory<
+                           winrt::Windows::ApplicationModel::IStartupTaskStatics>(
+                           winrt::name_of<winrt::Windows::ApplicationModel::StartupTask>());
+                       auto task = factory.GetAsync(L"SnowShotStartup").get();
+                       if (!task) {
+                           result.error = QCoreApplication::translate(
+                               "AutoStartRegistration",
+                               "Windows startup settings are unavailable.");
+                           return result;
+                       }
+                       using State = winrt::Windows::ApplicationModel::StartupTaskState;
+                       if (enabled &&
+                           (task.State() == State::Disabled || task.State() == State::Enabled)) {
+                           if (*enabled) {
+                               static_cast<void>(task.RequestEnableAsync().get());
+                           } else {
+                               task.Disable();
+                           }
+                       }
+                       switch (task.State()) {
+                       case State::Disabled:
+                           result.state = AutoStartState::Disabled;
+                           break;
+                       case State::Enabled:
+                           result.state = AutoStartState::Enabled;
+                           break;
+                       case State::DisabledByUser:
+                           result.state = AutoStartState::DisabledByUser;
+                           break;
+                       case State::DisabledByPolicy:
+                           result.state = AutoStartState::DisabledByPolicy;
+                           break;
+                       case State::EnabledByPolicy:
+                           result.state = AutoStartState::EnabledByPolicy;
+                           break;
+                       default:
+                           break;
+                       }
+                       result.valid = result.state != AutoStartState::Unavailable;
+                       result.exists = result.state == AutoStartState::Enabled ||
+                                       result.state == AutoStartState::EnabledByPolicy;
+                       if (!result.valid)
+                           result.error = QCoreApplication::translate(
+                               "AutoStartRegistration",
+                               "Windows startup settings are unavailable.");
+                   } catch (const winrt::hresult_error&) {
+                       result.error = QCoreApplication::translate(
+                           "AutoStartRegistration", "Windows startup settings are unavailable.");
+                   }
+                   return result;
+               })
+        .get();
+}
+
 constexpr wchar_t RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* startupValueName() {
     static const std::wstring value = app::edition::registryName().toStdWString();
@@ -105,6 +184,20 @@ bool AutoStartRegistration::isSupported() {
 #endif
 }
 
+QString AutoStartRegistration::hint() {
+    if (!app::distribution::isStoreManaged())
+        return {};
+    const auto current = snapshot();
+    if (current.state == AutoStartState::DisabledByUser)
+        return QCoreApplication::translate(
+            "AutoStartRegistration", "Enable Snow Shot in Windows Settings > Apps > Startup.");
+    if (current.state == AutoStartState::DisabledByPolicy ||
+        current.state == AutoStartState::EnabledByPolicy)
+        return QCoreApplication::translate("AutoStartRegistration",
+                                           "Startup is managed by your organization.");
+    return current.error;
+}
+
 QString AutoStartRegistration::expectedCommand() {
     const QString executable = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
     return QStringLiteral("\"%1\" --autostart").arg(executable);
@@ -113,6 +206,8 @@ QString AutoStartRegistration::expectedCommand() {
 AutoStartRegistrationSnapshot AutoStartRegistration::snapshot() {
     AutoStartRegistrationSnapshot result;
 #if defined(Q_OS_WIN) || defined(_WIN32)
+    if (app::distribution::isStoreManaged())
+        return storeStartupState();
     HKEY key = nullptr;
     const LSTATUS openStatus = RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &key);
     if (openStatus == ERROR_FILE_NOT_FOUND) {
@@ -163,6 +258,8 @@ AutoStartRegistrationSnapshot AutoStartRegistration::snapshot() {
 
 bool AutoStartRegistration::matchesExpectedCommand() {
 #if defined(Q_OS_WIN) || defined(_WIN32)
+    if (app::distribution::isStoreManaged())
+        return snapshot().exists;
     const AutoStartRegistrationSnapshot current = snapshot();
     if (!current.valid || !current.exists ||
         (current.nativeType != REG_SZ && current.nativeType != REG_EXPAND_SZ) ||
@@ -184,6 +281,17 @@ bool AutoStartRegistration::matchesExpectedCommand() {
 
 bool AutoStartRegistration::setEnabled(bool enabled, QString* error) {
 #if defined(Q_OS_WIN) || defined(_WIN32)
+    if (app::distribution::isStoreManaged()) {
+        const auto current = storeStartupState(enabled);
+        const bool success = current.valid && current.exists == enabled;
+        if (!success && error) {
+            *error = current.error.isEmpty() ? hint() : current.error;
+            if (error->isEmpty())
+                *error = QCoreApplication::translate("AutoStartRegistration",
+                                                     "Windows startup settings are unavailable.");
+        }
+        return success;
+    }
     if (!enabled) {
         return deleteRegistration(error);
     }
@@ -205,6 +313,8 @@ bool AutoStartRegistration::restore(const AutoStartRegistrationSnapshot& previou
         return false;
     }
 #if defined(Q_OS_WIN) || defined(_WIN32)
+    if (app::distribution::isStoreManaged())
+        return setEnabled(previous.exists, error);
     return previous.exists ? writeRegistration(previous.nativeType, previous.nativeData, error)
                            : deleteRegistration(error);
 #else

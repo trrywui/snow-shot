@@ -9,6 +9,7 @@ pub fn create(config: &KeyboardOverlayConfig) -> Result<Box<dyn KeycapRasterizer
 mod platform {
     use super::*;
     use crate::keyboard_overlay::{KEYCAP_SIZE, Keycap};
+    use windows::Win32::Foundation::CO_E_NOTINITIALIZED;
     use windows::Win32::Graphics::Direct2D::Common::*;
     use windows::Win32::Graphics::Direct2D::*;
     use windows::Win32::Graphics::DirectWrite::*;
@@ -22,6 +23,26 @@ mod platform {
     use windows::core::{Interface, PCWSTR, w};
 
     struct ComApartment;
+    impl ComApartment {
+        fn initialize() -> windows::core::Result<Self> {
+            let mut apartment = APTTYPE_CURRENT;
+            let mut qualifier = APTTYPEQUALIFIER_NONE;
+            if let Err(error) = unsafe { CoGetApartmentType(&mut apartment, &mut qualifier) }
+                && error.code() != CO_E_NOTINITIALIZED
+            {
+                return Err(error);
+            }
+            // Qt's GUI thread already owns an STA; recording workers normally use MTA.
+            // Acquire a matching reference so our drop never uninitializes the caller's COM.
+            let mode = if apartment == APTTYPE_STA || apartment == APTTYPE_MAINSTA {
+                COINIT_APARTMENTTHREADED
+            } else {
+                COINIT_MULTITHREADED
+            };
+            unsafe { CoInitializeEx(None, mode).ok()? };
+            Ok(Self)
+        }
+    }
     impl Drop for ComApartment {
         fn drop(&mut self) {
             unsafe {
@@ -54,8 +75,7 @@ mod platform {
     ) -> windows::core::Result<Rasterizer> {
         let native = || -> windows::core::Result<Rasterizer> {
             unsafe {
-                CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
-                let apartment = ComApartment;
+                let apartment = ComApartment::initialize()?;
                 let write: IDWriteFactory2 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
                 let fallback = write.CreateFontFallbackBuilder()?;
                 let (family, weight) = if let Some(font) = &config.font {
@@ -268,6 +288,56 @@ mod platform {
     mod tests {
         use super::*;
         use std::os::windows::ffi::OsStrExt;
+
+        #[test]
+        fn rasterizer_preserves_caller_com_apartment() {
+            for caller_mode in [
+                Some(COINIT_APARTMENTTHREADED),
+                Some(COINIT_MULTITHREADED),
+                None,
+            ] {
+                std::thread::spawn(move || {
+                    let caller_apartment = caller_mode.map(|mode| {
+                        unsafe { CoInitializeEx(None, mode).ok().unwrap() };
+                        ComApartment
+                    });
+                    let config = KeyboardOverlayConfig {
+                        font: None,
+                        keycap_size: 64,
+                        background_rgba: [0; 4],
+                        border_rgba: [0; 4],
+                        text_rgba: [255; 4],
+                        labels: Default::default(),
+                    };
+                    for _ in 0..2 {
+                        let mut rasterizer = create(&config).unwrap();
+                        let glyph = rasterizer.rasterize_glyph("0", 24.0).unwrap();
+                        assert!(glyph.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
+                    }
+                    let opposite_mode = if caller_mode == Some(COINIT_APARTMENTTHREADED) {
+                        COINIT_MULTITHREADED
+                    } else {
+                        COINIT_APARTMENTTHREADED
+                    };
+                    if caller_mode.is_some() {
+                        assert_eq!(
+                            unsafe { CoInitializeEx(None, opposite_mode) },
+                            windows::Win32::Foundation::RPC_E_CHANGED_MODE,
+                            "dropping rasterizers must retain the caller's COM apartment"
+                        );
+                    }
+                    drop(caller_apartment);
+                    assert_eq!(
+                        unsafe { CoInitializeEx(None, opposite_mode) },
+                        windows::Win32::Foundation::S_OK,
+                        "rasterizers must balance every COM initialization they acquire"
+                    );
+                    unsafe { CoUninitialize() };
+                })
+                .join()
+                .unwrap();
+            }
+        }
 
         fn fixture_rasterizer(config: &KeyboardOverlayConfig) -> Rasterizer {
             // An isolated font collection exercises the real DirectWrite path,

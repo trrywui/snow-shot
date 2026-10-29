@@ -21,12 +21,12 @@ enum class ScreenshotSelectionEffectHandle {
     TopRight,
     BottomRight,
     BottomLeft,
-    Shadow
+    Width
 };
 
 inline bool screenshotSelectionRadiusHandle(ScreenshotSelectionEffectHandle handle) {
     return handle != ScreenshotSelectionEffectHandle::None &&
-           handle != ScreenshotSelectionEffectHandle::Shadow;
+           handle != ScreenshotSelectionEffectHandle::Width;
 }
 
 struct ScreenshotSelectionEffectLayout {

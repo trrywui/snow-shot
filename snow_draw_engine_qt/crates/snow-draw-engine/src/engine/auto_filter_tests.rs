@@ -38,6 +38,7 @@ fn apply(engine: &mut Engine, viewport: ViewportId, transaction: Transaction) {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();

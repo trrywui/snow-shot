@@ -8,6 +8,7 @@ class QScreen;
 class QWidget;
 class SnowCanvasWidget;
 class ScreenshotFloatingToolPaletteWindow;
+class RecordingEffectsSource;
 
 namespace snow_shot::presentation {
 class GlobalCanvasController final : public QObject {
@@ -16,8 +17,10 @@ class GlobalCanvasController final : public QObject {
     struct Platform {
         std::function<QScreen*()> pointerScreen;
         std::function<bool(QWidget*, bool)> setInputTransparent;
+        std::function<std::unique_ptr<RecordingEffectsSource>()> createEffectsSource = {};
     };
-    explicit GlobalCanvasController(QObject* parent = nullptr, Platform platform = {});
+    explicit GlobalCanvasController(QObject* parent = nullptr);
+    GlobalCanvasController(QObject* parent, Platform platform);
     ~GlobalCanvasController() override;
     void activate();
     void shutdown();

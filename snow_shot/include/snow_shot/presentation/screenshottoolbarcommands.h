@@ -92,6 +92,7 @@ class ScreenshotToolbarCommandSink {
     virtual void mergeTableSelection() {}
     virtual void splitTableSelection() {}
     virtual void resetTable() {}
+    virtual void openSpreadsheetFile() {}
     virtual void setShowOriginalImage(bool) {}
     virtual void beginTextEditing() {}
     virtual void toggleTextEditing() {
@@ -110,6 +111,7 @@ class ScreenshotToolbarCommandSink {
     virtual void startScrollingScreenshot() = 0;
     virtual void restartScrollingScreenshot() {}
     virtual void splitScrollingScreenshot() {}
+    virtual void editScrollingScreenshot() {}
     virtual void setScrollingScreenshotRecognitionMode(ScreenshotScrollingRecognitionMode) {}
     virtual void setScrollingScreenshotAutoScroll(bool) {}
     virtual void setScrollingScreenshotAutoScrollIntervalMs(int) {}
@@ -118,6 +120,7 @@ class ScreenshotToolbarCommandSink {
     virtual void endScrollingSelectionMove() {}
     virtual void pinSelectionToScreen() = 0;
     virtual void printSelection() {}
+    virtual void airDropSelection() {}
     virtual void saveSelectionToFile() {}
     virtual void quickSaveSelection() {}
     virtual void uploadSelectionToCloud() {}
@@ -171,8 +174,8 @@ class ScreenshotSelectionToolbarCommandSink {
     virtual void hideColorPickersForScreenshotUi() = 0;
     virtual void adjustSelectionFromToolbar(int minDx, int minDy, int maxDx, int maxDy) = 0;
     virtual void setSelectionCornerRadiusFromToolbar(int radius) = 0;
-    virtual void setSelectionShadowWidthFromToolbar(int shadowWidth) = 0;
-    virtual void adjustSelectionEffectsFromWheel(int radiusDelta, int shadowDelta) = 0;
+    virtual void setSelectionEffectWidthFromToolbar(int effectWidth) = 0;
+    virtual void adjustSelectionEffectsFromWheel(int radiusDelta, int effectDelta) = 0;
     virtual void setSelectionToolbarHovered(bool hovered) = 0;
     virtual void setSelectionToolbarPopupVisible(bool) {}
 };

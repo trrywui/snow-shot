@@ -733,6 +733,25 @@ class SharedInteractionOverlay final : public QWidget {
     if (geometry() != parentRect) {
       setGeometry(parentRect);
     }
+
+    // Native siblings can promote this transparent overlay to a child window. Limit its
+    // footprint to the tracked controls so it cannot occlude unrelated native content.
+    QRegion footprint;
+    for (auto it = waveTracks_.cbegin(); it != waveTracks_.cend(); ++it) {
+      const qreal strokeScale = std::max<qreal>(0.1, it->request.strokeWidthScale);
+      const qreal margin = std::max<qreal>(0.6, 6.0 * strokeScale) + 1.0;
+      footprint +=
+          it->request.baseRectInWindow.adjusted(-margin, -margin, margin, margin).toAlignedRect();
+    }
+    for (auto it = focusTracks_.cbegin(); it != focusTracks_.cend(); ++it) {
+      const qreal margin = std::max<qreal>(0.0, it->request.offset) +
+                           std::max<qreal>(1.0, it->request.strokeWidth) + 1.0;
+      footprint +=
+          focusTrackBaseRect(it.value()).adjusted(-margin, -margin, margin, margin).toAlignedRect();
+    }
+    if (mask() != footprint) {
+      setMask(footprint);
+    }
   }
 
   void refreshZOrder() {

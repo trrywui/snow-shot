@@ -4,6 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+typedef struct SnowWebcam SnowWebcam;
 typedef struct SnowRecordingSessionImpl SnowRecordingSession;
 typedef struct SnowRecordingSourceImpl SnowRecordingSource;
 typedef struct SnowRecordingRenderTaskImpl SnowRecordingRenderTask;
@@ -121,7 +122,10 @@ typedef enum SnowCaptureVideoEncodingPreset {
 
 typedef enum SnowCaptureEncoderPreference {
     SNOW_CAPTURE_ENCODER_PREFERENCE_SOFTWARE = 0,
-    SNOW_CAPTURE_ENCODER_PREFERENCE_H264_HARDWARE = 1,
+    /* Applies to the selected video codec (H.264 or H.265). */
+    SNOW_CAPTURE_ENCODER_PREFERENCE_HARDWARE = 1,
+    /* Source/ABI compatibility with existing clients. */
+    SNOW_CAPTURE_ENCODER_PREFERENCE_H264_HARDWARE = SNOW_CAPTURE_ENCODER_PREFERENCE_HARDWARE,
 } SnowCaptureEncoderPreference;
 
 #define SNOW_RECORDING_EXPORT_CONFIG_VERSION 1u
@@ -152,7 +156,7 @@ typedef struct SnowCaptureExclusions {
 } SnowCaptureExclusions;
 #endif
 
-#define SNOW_CAPTURE_DIRECT_RECORDING_CONFIG_VERSION 12u
+#define SNOW_CAPTURE_DIRECT_RECORDING_CONFIG_VERSION 16u
 
 /* Strings are bounded UTF-8 key names, copied during session creation. */
 typedef struct SnowCaptureKeyboardLabel {
@@ -226,6 +230,18 @@ typedef struct SnowCaptureDirectRecordingConfig {
     int32_t microphone_gain_db;
     /* v12: highlight radius in output pixels (8..128); older callers use 41. */
     uint32_t mouse_highlight_radius;
+    /* v13: retained camera source; null disables webcam. Shape: 0 square, 1 circle. */
+    const SnowWebcam* webcam_source;
+    uint32_t webcam_size;
+    uint32_t webcam_shape;
+    /* Preferred pixel distances from the region's left and bottom edges. */
+    uint32_t webcam_offset_left;
+    uint32_t webcam_offset_bottom;
+    /* Version 15: vertical scroll labels, independent of clicks and keyboard. */
+    uint32_t record_mouse_scrolling;
+    /* Version 16: clockwise quarter-turns in bits 0..1, horizontal reflection
+       before rotation in bit 2 (0..7). Older configurations use identity. */
+    uint32_t webcam_orientation;
 } SnowCaptureDirectRecordingConfig;
 
 #define SNOW_RECORDING_DEFERRED_OPTIONS_VERSION 1u

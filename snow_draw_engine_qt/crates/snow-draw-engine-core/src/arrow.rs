@@ -429,3 +429,28 @@ mod stroke_rendering_tests {
         assert_eq!(stroke_rendering_seed(1, 1), stroke_rendering_seed(1, 1));
     }
 }
+
+/// Default outline colour shared with the text stroke editor.
+pub fn default_arrow_outline_color() -> crate::ColorRgba8 {
+    crate::ColorRgba8 {
+        r: 0xff,
+        g: 0xcc,
+        b: 0xc7,
+        a: 255,
+    }
+}
+
+pub fn normalize_arrow_outline_width(width: f64) -> f64 {
+    if width.is_finite() {
+        width.clamp(0.0, 72.0)
+    } else {
+        0.0
+    }
+}
+
+pub fn deserialize_arrow_outline_width<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<f64, D::Error> {
+    let width = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(normalize_arrow_outline_width(width))
+}

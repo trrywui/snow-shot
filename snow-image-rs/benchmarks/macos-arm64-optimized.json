@@ -1,0 +1,308 @@
+{
+  "schema": 1,
+  "platform": "aarch64-macos",
+  "iterations": 5,
+  "settings": "v2; generated-ui; PNG opaque+alpha adaptive balanced; JPEG95/444/sequential; fit2048 linear premultiplied; service latency includes worker, transport and publication; PSNR includes RGBA; null PSNR means exact or not applicable",
+  "records": [
+    {
+      "name": "png-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "median_ms": 16.824375,
+      "samples_ms": [
+        15.677625,
+        15.900167,
+        16.824375,
+        18.200999999999997,
+        20.764292
+      ],
+      "output_bytes": 28700,
+      "psnr_db": null,
+      "peak_accounted_bytes": 550375438,
+      "peak_reserved_disk_bytes": 8589963292,
+      "sampled_worker_footprint_bytes": 10289536,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "png-alpha-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "median_ms": 17.075625000000002,
+      "samples_ms": [
+        16.981625,
+        17.031875,
+        17.075625000000002,
+        17.166166,
+        17.201
+      ],
+      "output_bytes": 47062,
+      "psnr_db": null,
+      "peak_accounted_bytes": 550384619,
+      "peak_reserved_disk_bytes": 8589981654,
+      "sampled_worker_footprint_bytes": 10322304,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "preview-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "median_ms": 12.627583,
+      "samples_ms": [
+        12.602125000000001,
+        12.622959,
+        12.627583,
+        12.629833999999999,
+        12.974957999999999
+      ],
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "peak_accounted_bytes": 551146587,
+      "peak_reserved_disk_bytes": 8591505590,
+      "sampled_worker_footprint_bytes": 11682176,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "jpeg-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "median_ms": 14.312167,
+      "samples_ms": [
+        14.036750000000001,
+        14.253417,
+        14.312167,
+        14.312417,
+        14.365709
+      ],
+      "output_bytes": 1570998,
+      "psnr_db": 42.01967097036278,
+      "peak_accounted_bytes": 551146587,
+      "peak_reserved_disk_bytes": 8591505590,
+      "sampled_worker_footprint_bytes": 11682176,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "png-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "median_ms": 52.962583,
+      "samples_ms": [
+        52.001167,
+        52.772209000000004,
+        52.962583,
+        53.105125,
+        53.399125
+      ],
+      "output_bytes": 96829,
+      "psnr_db": null,
+      "peak_accounted_bytes": 587734302,
+      "peak_reserved_disk_bytes": 8590031421,
+      "sampled_worker_footprint_bytes": 35258776,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "png-alpha-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "median_ms": 59.142333,
+      "samples_ms": [
+        58.883207999999996,
+        58.883916,
+        59.142333,
+        59.167792,
+        59.649459
+      ],
+      "output_bytes": 164786,
+      "psnr_db": null,
+      "peak_accounted_bytes": 587768281,
+      "peak_reserved_disk_bytes": 8590099378,
+      "sampled_worker_footprint_bytes": 35357104,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "preview-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "median_ms": 80.071375,
+      "samples_ms": [
+        79.297583,
+        79.83520800000001,
+        80.071375,
+        80.089083,
+        80.76754199999999
+      ],
+      "output_bytes": 9437184,
+      "psnr_db": null,
+      "peak_accounted_bytes": 590825655,
+      "peak_reserved_disk_bytes": 8596214126,
+      "sampled_worker_footprint_bytes": 122175968,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "jpeg-3840x2160",
+      "width": 3840,
+      "height": 2160,
+      "median_ms": 47.471792,
+      "samples_ms": [
+        47.121375,
+        47.393125,
+        47.471792,
+        47.498084000000006,
+        47.738375
+      ],
+      "output_bytes": 6279534,
+      "psnr_db": 42.01357788973149,
+      "peak_accounted_bytes": 590825655,
+      "peak_reserved_disk_bytes": 8596214126,
+      "sampled_worker_footprint_bytes": 122175968,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "png-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "median_ms": 197.33104200000002,
+      "samples_ms": [
+        196.646541,
+        196.921042,
+        197.33104200000002,
+        197.808875,
+        198.3185
+      ],
+      "output_bytes": 348662,
+      "psnr_db": null,
+      "peak_accounted_bytes": 737159419,
+      "peak_reserved_disk_bytes": 8590283254,
+      "sampled_worker_footprint_bytes": 135152120,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "png-alpha-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "median_ms": 220.534042,
+      "samples_ms": [
+        219.109375,
+        219.398208,
+        220.534042,
+        220.761542,
+        221.518833
+      ],
+      "output_bytes": 596745,
+      "psnr_db": null,
+      "peak_accounted_bytes": 737283460,
+      "peak_reserved_disk_bytes": 8590531337,
+      "sampled_worker_footprint_bytes": 135381472,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "preview-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "median_ms": 169.33675,
+      "samples_ms": [
+        167.738208,
+        168.617875,
+        169.33675,
+        169.50775000000002,
+        169.704833
+      ],
+      "output_bytes": 9437184,
+      "psnr_db": null,
+      "peak_accounted_bytes": 749561960,
+      "peak_reserved_disk_bytes": 8615088336,
+      "sampled_worker_footprint_bytes": 169738768,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "jpeg-7680x4320",
+      "width": 7680,
+      "height": 4320,
+      "median_ms": 178.17866700000002,
+      "samples_ms": [
+        177.997334,
+        178.02325,
+        178.17866700000002,
+        179.057875,
+        181.4915
+      ],
+      "output_bytes": 25153744,
+      "psnr_db": 42.015659580618674,
+      "peak_accounted_bytes": 749561960,
+      "peak_reserved_disk_bytes": 8615088336,
+      "sampled_worker_footprint_bytes": 169738768,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "tall-png-256x131072",
+      "width": 256,
+      "height": 131072,
+      "median_ms": 136.171459,
+      "samples_ms": [
+        135.115208,
+        136.051625,
+        136.171459,
+        136.220167,
+        137.216167
+      ],
+      "output_bytes": 6794708,
+      "psnr_db": null,
+      "peak_accounted_bytes": 537985024,
+      "peak_reserved_disk_bytes": 8596729300,
+      "sampled_worker_footprint_bytes": 2687384,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "hdr-screenshot-sdr-1920x1080",
+      "width": 1920,
+      "height": 1080,
+      "median_ms": 113.745417,
+      "samples_ms": [
+        110.517958,
+        112.276709,
+        113.745417,
+        113.775166,
+        115.871875
+      ],
+      "output_bytes": 8294400,
+      "psnr_db": null,
+      "peak_accounted_bytes": 554569728,
+      "peak_reserved_disk_bytes": 8598228992,
+      "sampled_worker_footprint_bytes": 2687384,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    },
+    {
+      "name": "four-animations-32-frames",
+      "width": 320,
+      "height": 180,
+      "median_ms": 9.301083,
+      "samples_ms": [
+        9.221583,
+        9.225583,
+        9.301083,
+        9.310709000000001,
+        9.39425
+      ],
+      "output_bytes": 0,
+      "psnr_db": null,
+      "peak_accounted_bytes": 598620387,
+      "peak_reserved_disk_bytes": 9544373008,
+      "sampled_worker_footprint_bytes": 3899800,
+      "post_job_accounted_bytes": 0,
+      "post_job_disk_bytes": 0
+    }
+  ]
+}

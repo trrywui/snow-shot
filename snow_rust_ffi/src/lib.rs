@@ -47,6 +47,10 @@ pub mod recording {
     pub use snow_recording_c::*;
 }
 
+pub mod webcam {
+    pub use snow_webcam::ffi::*;
+}
+
 // Launch-scoped policy shared by native Qt workers and Rust workers.
 #[unsafe(no_mangle)]
 pub extern "C" fn snow_application_qos_initialize(

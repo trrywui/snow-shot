@@ -1,7 +1,11 @@
 {
   "schemaVersion": 1,
-  "windowsSourcePatches": ["qtbase-timezone-without-cldr.patch"],
+  "windowsSourcePatches": [
+    "qtbase-timezone-without-cldr.patch",
+    "qtbase-graphicsview-exposed-rect.patch"
+  ],
   "features": {
+    "concurrent": true,
     "ltcg": true,
     "system_png": true,
     "system_zlib": true,

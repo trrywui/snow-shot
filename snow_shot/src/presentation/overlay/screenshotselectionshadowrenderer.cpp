@@ -4,11 +4,11 @@
 #include "snow_shot/presentation/screenshotshadowprofile.h"
 
 #include "snow_shot/presentation/screenshotresultcompositor.h"
-#include "snow_shot/presentation/screenshotselectionlimits.h"
 #include "widgets/checkerboard.h"
 
 #include <QPainter>
 #include <QPainterPath>
+#include <QPainterPathStroker>
 #include <QRegion>
 #include <QColorSpace>
 
@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <list>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -70,7 +71,13 @@ struct ShadowCache {
     std::size_t bytes = 0;
 };
 
-thread_local ShadowCache g_cache;
+ShadowCache& shadowCacheForCurrentThread() {
+    // Debug iterator tracking can allocate even for an empty vector. Defer
+    // construction until use, after loader TLS initialization has completed.
+    thread_local ShadowCache cache;
+    return cache;
+}
+
 thread_local ScreenshotSelectionShadowDiagnostics g_diagnostics;
 thread_local std::size_t g_liveRegionCacheBytes = 0;
 
@@ -137,18 +144,19 @@ QImage buildShadowAsset(const ShadowKey& key) {
 }
 
 QImage shadowAsset(int physicalRadius, int physicalShadowWidth, const QColor& color, qreal dpr) {
+    auto& cache = shadowCacheForCurrentThread();
     const ShadowKey key{
         std::max(0, physicalRadius),
         std::max(1, physicalShadowWidth),
         color.rgba(),
         quantizedDpr(dpr),
     };
-    ++g_cache.use;
-    for (ShadowCacheEntry& entry : g_cache.entries) {
+    ++cache.use;
+    for (ShadowCacheEntry& entry : cache.entries) {
         if (!(entry.key == key)) {
             continue;
         }
-        entry.lastUsed = g_cache.use;
+        entry.lastUsed = cache.use;
         ++g_diagnostics.cacheHits;
         return entry.image;
     }
@@ -168,22 +176,22 @@ QImage shadowAsset(int physicalRadius, int physicalShadowWidth, const QColor& co
     entry.key = key;
     entry.image = std::move(asset);
     entry.bytes = assetBytes;
-    entry.lastUsed = g_cache.use;
+    entry.lastUsed = cache.use;
 
-    while ((static_cast<int>(g_cache.entries.size()) >= kCacheEntryLimit ||
-            entry.bytes > kCacheByteLimit - g_cache.bytes) &&
-           !g_cache.entries.empty()) {
+    while ((static_cast<int>(cache.entries.size()) >= kCacheEntryLimit ||
+            entry.bytes > kCacheByteLimit - cache.bytes) &&
+           !cache.entries.empty()) {
         const auto leastUsed =
-            std::min_element(g_cache.entries.begin(), g_cache.entries.end(),
+            std::min_element(cache.entries.begin(), cache.entries.end(),
                              [](const ShadowCacheEntry& left, const ShadowCacheEntry& right) {
                                  return left.lastUsed < right.lastUsed;
                              });
-        g_cache.bytes -= leastUsed->bytes;
-        g_cache.entries.erase(leastUsed);
+        cache.bytes -= leastUsed->bytes;
+        cache.entries.erase(leastUsed);
     }
-    g_cache.bytes += entry.bytes;
-    g_cache.entries.push_back(std::move(entry));
-    return g_cache.entries.back().image;
+    cache.bytes += entry.bytes;
+    cache.entries.push_back(std::move(entry));
+    return cache.entries.back().image;
 }
 
 QPainterPath roundedHole(const QRectF& selectionBounds, qreal cornerRadius) {
@@ -274,8 +282,9 @@ void renderShadow(QPainter& painter, const QRectF& selectionBounds, qreal corner
         return;
     }
     const qreal effectiveDevicePixelRatio = std::max<qreal>(1.0, dpr);
-    const int physicalRadius =
-        qRound(std::max<qreal>(0.0, cornerRadius) * effectiveDevicePixelRatio);
+    const qreal radius = std::clamp(
+        cornerRadius, 0.0, std::min(selectionBounds.width(), selectionBounds.height()) / 2.0);
+    const int physicalRadius = qRound(radius * effectiveDevicePixelRatio);
     const int physicalShadowWidth = std::max(1, qRound(shadowWidth * effectiveDevicePixelRatio));
     const QColor color = shadowColor.isValid() ? shadowColor : QColor(0x33, 0x33, 0x33);
     const QImage asset =
@@ -293,6 +302,26 @@ void ScreenshotSelectionShadowRenderer::renderPreview(
     paintCheckerboardPerimeter(painter, selectionBounds, cornerRadius, shadowWidth, widget);
     renderShadow(painter, selectionBounds, cornerRadius, shadowWidth, shadowColor,
                  devicePixelRatio);
+}
+
+void ScreenshotSelectionShadowRenderer::renderBorder(QPainter& painter,
+                                                     const QPainterPath& selectionPath, qreal width,
+                                                     const QColor& color) {
+    if (width <= 0 || selectionPath.isEmpty())
+        return;
+    QPainterPathStroker stroker;
+    stroker.setWidth(2 * width);
+    // A constant-width exterior must fit the fixed effect insets used by every
+    // output and damage calculation. Miter tips can exceed those insets at acute
+    // corners; round joins stay within one width of the selection.
+    stroker.setJoinStyle(Qt::RoundJoin);
+    const QPainterPath exterior = stroker.createStroke(selectionPath).subtracted(selectionPath);
+    QColor opaque = color.isValid() ? color : QColor(Qt::white);
+    opaque.setAlpha(255);
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.fillPath(exterior, opaque);
+    painter.restore();
 }
 
 QImage ScreenshotSelectionShadowRenderer::composeExport(const QImage& content, int cornerRadius,
@@ -699,15 +728,9 @@ QImage composeRegion(const QImage& content, const ScreenshotResultStyle& style,
                      qreal devicePixelRatio, qreal opacity) {
     const auto layout =
         ScreenshotResultCompositor::layoutForContent(content.size(), style, devicePixelRatio);
-    const qreal scale = style.regionScale;
-    QTransform transform;
-    transform.translate(layout.contentRect.x(), layout.contentRect.y());
-    transform.scale(scale, scale);
-    const QPainterPath path = transform.map(
-        (style.region->custom()
-             ? style.region->path(scale)
-             : screenshotRegionPath(*style.region,
-                                    style.cornerRadius * layout.devicePixelRatio / scale)));
+    const auto path =
+        screenshotSelectionPath(layout.contentRect, style.region,
+                                style.cornerRadius * layout.devicePixelRatio, style.regionScale);
     const auto sparseTiles = sparseRegionTiles(path, layout.outputRect, layout.effectInsets.left());
     if (!sparseTiles.empty())
         return composeSparseRegion(content, layout, style, sparseTiles, opacity);
@@ -1049,15 +1072,11 @@ void ScreenshotRegionShadowRenderer::render(
     QPainter& painter, const ScreenshotRegionGeometry& region, int cornerRadius, int shadowWidth,
     const QColor& shadowColor, const QTransform& canvasToView, const QRegion& exposedView) {
     const QRect bounds = region.boundingRect();
-    shadowWidth =
-        std::clamp(shadowWidth, 0, snow_shot::presentation::kScreenshotSelectionShadowWidthMax);
+    shadowWidth = std::max(0, shadowWidth);
     if (bounds.isEmpty() || shadowWidth == 0 || exposedView.isEmpty())
         return;
     const QColor color = shadowColor.isValid() ? shadowColor : QColor(0x33, 0x33, 0x33);
-    const int radius =
-        region.custom() ? 0
-                        : std::clamp(cornerRadius, 0,
-                                     snow_shot::presentation::kScreenshotSelectionCornerRadiusMax);
+    const int radius = region.custom() ? 0 : std::max(0, cornerRadius);
     auto& cache = *m_cache;
     cache.prepare(region.translated(-bounds.topLeft()), radius, shadowWidth);
     const QRectF outputBounds(
@@ -1259,16 +1278,55 @@ void ScreenshotRegionShadowRenderer::render(
     cache.publishBytes();
 }
 
+QPainterPath screenshotSelectionPath(const QRectF& contentBounds,
+                                     const std::optional<ScreenshotRegionGeometry>& region,
+                                     qreal cornerRadius, qreal regionScale) {
+    if (!region)
+        return roundedHole(contentBounds, cornerRadius);
+    if (!std::isfinite(regionScale) || regionScale <= 0)
+        return {};
+    QTransform transform;
+    transform.translate(contentBounds.x(), contentBounds.y());
+    transform.scale(regionScale, regionScale);
+    return transform.map(region->custom()
+                             ? region->path(regionScale)
+                             : screenshotRegionPath(*region, cornerRadius / regionScale));
+}
+
+ScreenshotResultStyle ScreenshotResultCompositor::scaledStyle(const ScreenshotResultStyle& style,
+                                                              qreal scale) {
+    auto result = normalizedStyle(style);
+    result.regionScale *= scale;
+    result.cornerRadius = qRound(result.cornerRadius * scale);
+    result.shadowWidth = qRound(result.shadowWidth * scale);
+    result.borderWidth = qRound(result.borderWidth * scale);
+    return result;
+}
+
+std::shared_ptr<const ScreenshotLayoutCompactionPlan>
+ScreenshotResultCompositor::layoutCompactionForContent(const QSize& contentPixelSize,
+                                                       const ScreenshotResultStyle& style,
+                                                       ScreenshotLayoutCompaction options,
+                                                       qreal scale) {
+    if (!options.enabled || !style.region)
+        return {};
+    const auto output = scaledStyle(style, scale);
+    return screenshotLayoutCompactionPlan(*output.region, contentPixelSize, output.regionScale,
+                                          options, output.effectWidth());
+}
+
 ScreenshotResultStyle
 ScreenshotResultCompositor::normalizedStyle(const ScreenshotResultStyle& style) {
     ScreenshotResultStyle normalized = style;
     normalized.backgroundOpacityPercent = std::clamp(normalized.backgroundOpacityPercent, 0, 100);
-    normalized.cornerRadius = std::clamp(
-        normalized.cornerRadius, 0, snow_shot::presentation::kScreenshotSelectionCornerRadiusMax);
+    normalized.cornerRadius = std::max(normalized.cornerRadius, 0);
     if (normalized.region && normalized.region->custom())
         normalized.cornerRadius = 0;
-    normalized.shadowWidth = std::clamp(
-        normalized.shadowWidth, 0, snow_shot::presentation::kScreenshotSelectionShadowWidthMax);
+    normalized.shadowWidth = std::max(normalized.shadowWidth, 0);
+    normalized.borderWidth = std::max(normalized.borderWidth, 0);
+    if (!normalized.borderColor.isValid())
+        normalized.borderColor = QColor(Qt::white);
+    normalized.borderColor.setAlpha(255);
     if (!normalized.shadowColor.isValid()) {
         normalized.shadowColor = QColor(0x33, 0x33, 0x33);
     }
@@ -1277,12 +1335,22 @@ ScreenshotResultCompositor::normalizedStyle(const ScreenshotResultStyle& style) 
 
 ScreenshotResultLayout ScreenshotResultCompositor::layoutForContent(
     const QSize& contentPixelSize, const ScreenshotResultStyle& style, qreal devicePixelRatio) {
-    if (!contentPixelSize.isValid() || contentPixelSize.isEmpty()) {
+    if (!contentPixelSize.isValid() || contentPixelSize.isEmpty() ||
+        !std::isfinite(devicePixelRatio) || devicePixelRatio <= 0 ||
+        !std::isfinite(style.regionScale) || style.regionScale <= 0) {
         return {};
     }
     const ScreenshotResultStyle normalized = normalizedStyle(style);
     const qreal dpr = std::max<qreal>(1.0, devicePixelRatio);
-    const int effect = std::max(0, qRound(normalized.shadowWidth * dpr));
+    const qreal physicalEffect = std::round(normalized.effectWidth() * dpr);
+    const qreal width = contentPixelSize.width() + 2 * physicalEffect;
+    const qreal height = contentPixelSize.height() + 2 * physicalEffect;
+    // Expansion must remain representable before converting the padding to int.
+    // Each export entry point retains its own existing raster allocation budget.
+    if (!std::isfinite(width) || !std::isfinite(height) ||
+        width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
+        return {};
+    const int effect = static_cast<int>(physicalEffect);
     ScreenshotResultLayout layout;
     layout.effectInsets = QMargins(effect, effect, effect, effect);
     layout.outputRect = QRect(QPoint(), contentPixelSize + QSize(effect * 2, effect * 2));
@@ -1328,29 +1396,18 @@ QImage ScreenshotResultCompositor::compose(const QImage& content,
         return {};
     }
     const ScreenshotResultStyle normalized = normalizedStyle(style);
+    const auto layout = layoutForContent(normalizedContent.size(), normalized, devicePixelRatio);
+    if (!layout.isValid())
+        return {};
     if (normalized.backgroundOpacityPercent > 0 && !background.isNull()) {
         auto selectedStyle = normalized;
         selectedStyle.backgroundOpacityPercent = 0;
         QImage result = compose(normalizedContent, selectedStyle, devicePixelRatio);
         if (result.isNull() || result.size() != background.size())
             return {};
-        const auto layout =
-            layoutForContent(normalizedContent.size(), normalized, devicePixelRatio);
-        QPainterPath path;
-        if (normalized.region) {
-            QTransform transform;
-            transform.translate(layout.contentRect.x(), layout.contentRect.y());
-            transform.scale(normalized.regionScale, normalized.regionScale);
-            path = transform.map(
-                normalized.region->custom()
-                    ? normalized.region->path(normalized.regionScale)
-                    : screenshotRegionPath(*normalized.region, normalized.cornerRadius *
-                                                                   layout.devicePixelRatio /
-                                                                   normalized.regionScale));
-        } else {
-            path =
-                roundedHole(layout.contentRect, normalized.cornerRadius * layout.devicePixelRatio);
-        }
+        const auto path = screenshotSelectionPath(layout.contentRect, normalized.region,
+                                                  normalized.cornerRadius * layout.devicePixelRatio,
+                                                  normalized.regionScale);
         const auto retained = maskBackgroundForSelection(
             normalizeImage(background), normalizedContent, path, layout.contentRect.topLeft());
         if (retained.isNull())
@@ -1362,21 +1419,15 @@ QImage ScreenshotResultCompositor::compose(const QImage& content,
         painter.end();
         return applyOutputOpacity(std::move(result), outputOpacity);
     }
-    if (normalized.region) {
+    if (normalized.region && normalized.borderType == ScreenshotSelectionBorderType::Shadow)
         return composeRegion(normalizedContent, normalized, devicePixelRatio, outputOpacity);
-    }
-    if (normalized.cornerRadius == 0 && normalized.shadowWidth == 0) {
+    if (!normalized.region && normalized.cornerRadius == 0 && normalized.effectWidth() == 0)
         return applyOutputOpacity(std::move(normalizedContent), outputOpacity);
-    }
-    const ScreenshotResultLayout layout =
-        layoutForContent(normalizedContent.size(), normalized, devicePixelRatio);
-    if (!layout.isValid()) {
-        return {};
-    }
-
     ++g_diagnostics.selectionSizedTransientAllocations;
     QImage output =
         snowCanvasAllocateImage(layout.outputRect.size(), QImage::Format_ARGB32_Premultiplied);
+    if (output.isNull())
+        return {};
     output.setColorSpace(normalizedContent.colorSpace());
     output.setDevicePixelRatio(1.0);
     output.fill(Qt::transparent);
@@ -1385,26 +1436,116 @@ QImage ScreenshotResultCompositor::compose(const QImage& content,
     painter.drawImage(layout.contentRect, normalizedContent);
 
     const qreal physicalRadius = normalized.cornerRadius * layout.devicePixelRatio;
-    if (normalized.cornerRadius > 0) {
-        QImage mask = snowCanvasAllocateZeroedImage(output.size(), QImage::Format_Alpha8);
-        {
-            QPainter maskPainter(&mask);
-            maskPainter.setRenderHint(QPainter::Antialiasing, true);
-            maskPainter.setPen(Qt::NoPen);
-            maskPainter.setBrush(Qt::white);
-            maskPainter.drawPath(roundedHole(layout.contentRect, physicalRadius));
-        }
+    const auto path = screenshotSelectionPath(layout.contentRect, normalized.region, physicalRadius,
+                                              normalized.regionScale);
+    if (normalized.cornerRadius > 0 || normalized.region) {
+        const auto mask = regionMask(output.size(), path);
         painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
         painter.drawImage(QPoint(), mask);
     }
-    if (normalized.shadowWidth > 0) {
+    if (normalized.effectWidth() > 0) {
         painter.setCompositionMode(QPainter::CompositionMode_DestinationOver);
-        // Composition draws this shadow only once; retain assets for repainted live surfaces.
-        renderShadow(painter, layout.contentRect, physicalRadius, layout.effectInsets.left(),
-                     normalized.shadowColor, 1.0, false);
+        if (normalized.borderType == ScreenshotSelectionBorderType::Border) {
+            ScreenshotSelectionShadowRenderer::renderBorder(
+                painter, path, layout.effectInsets.left(), normalized.borderColor);
+        } else {
+            // Composition draws this shadow once; retain assets only for live surfaces.
+            renderShadow(painter, layout.contentRect, physicalRadius, layout.effectInsets.left(),
+                         normalized.shadowColor, 1.0, false);
+        }
     }
     painter.end();
     return applyOutputOpacity(std::move(output), outputOpacity);
+}
+
+namespace {
+// SourceOver and DestinationOut leave the destination unchanged at zero source
+// alpha, so inverse coverage is valid for both painting and erasing an exterior.
+void paintSelectionExterior(QPainter& painter, const QRectF& viewportBounds,
+                            const QPainterPath& selectionPath, const QColor& color,
+                            QPainter::CompositionMode composition) {
+    if (viewportBounds.isEmpty())
+        return;
+    painter.save();
+    painter.setCompositionMode(composition);
+    painter.setClipRect(viewportBounds, Qt::IntersectClip);
+    if (selectionPath.fillRule() == Qt::OddEvenFill) {
+        // Adding one enclosing contour inverts parity without flattening curves.
+        // It must contain the entire path, including content beyond the viewport.
+        QPainterPath outside;
+        outside.addRect(viewportBounds.united(selectionPath.boundingRect()));
+        outside.addPath(selectionPath);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.fillPath(outside, color);
+    } else {
+        // Winding coverage cannot be inverted by adding a contour: winding
+        // counts can have either sign or magnitude. Invert raster coverage instead,
+        // preserving the original curves and fill rule at the actual device phase.
+        const auto device = painter.deviceTransform();
+        bool invertible = false;
+        const auto inverse = device.inverted(&invertible);
+        if (!invertible) {
+            painter.restore();
+            return;
+        }
+        const auto path = device.map(selectionPath);
+        const QRect pixels = device.mapRect(painter.clipBoundingRect()).toAlignedRect();
+        constexpr int side = 256;
+        QImage mask;
+        painter.setWorldTransform(inverse, true);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+        for (int y = pixels.top(); y <= pixels.bottom(); y += side) {
+            for (int x = pixels.left(); x <= pixels.right(); x += side) {
+                const QRect tile = QRect(x, y, side, side).intersected(pixels);
+                const QRectF neighborhood = QRectF(tile).adjusted(-1, -1, 1, 1);
+                if (path.contains(neighborhood))
+                    continue;
+                if (!path.intersects(neighborhood)) {
+                    painter.fillRect(tile, color);
+                    continue;
+                }
+                if (mask.isNull()) {
+                    mask = snowCanvasAllocateImage(
+                        QSize(std::min(side, pixels.width()), std::min(side, pixels.height())),
+                        QImage::Format_ARGB32_Premultiplied);
+                    if (mask.isNull()) {
+                        painter.restore();
+                        return;
+                    }
+                    g_diagnostics.regionScratchPeakBytes =
+                        std::max(g_diagnostics.regionScratchPeakBytes,
+                                 static_cast<std::size_t>(mask.sizeInBytes()));
+                }
+                mask.fill(color);
+                {
+                    QPainter raster(&mask);
+                    raster.setRenderHint(QPainter::Antialiasing);
+                    raster.translate(-tile.topLeft());
+                    raster.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                    raster.fillPath(path, Qt::black);
+                }
+                ++g_diagnostics.regionMaskBuilds;
+                painter.drawImage(tile.topLeft(), mask, QRect(QPoint(), tile.size()));
+            }
+        }
+    }
+    painter.restore();
+}
+} // namespace
+
+void ScreenshotResultCompositor::fillOutsideSelection(QPainter& painter,
+                                                      const QRectF& viewportBounds,
+                                                      const QPainterPath& selectionPath,
+                                                      const QColor& color) {
+    paintSelectionExterior(painter, viewportBounds, selectionPath, color,
+                           QPainter::CompositionMode_SourceOver);
+}
+
+void ScreenshotResultCompositor::maskLiveSurface(QPainter& painter, const QRectF& viewportBounds,
+                                                 const QPainterPath& selectionPath) {
+    paintSelectionExterior(painter, viewportBounds, selectionPath, Qt::black,
+                           QPainter::CompositionMode_DestinationOut);
 }
 
 void ScreenshotResultCompositor::finishLiveSurface(QPainter& painter, const QRectF& viewportBounds,
@@ -1418,34 +1559,33 @@ void ScreenshotResultCompositor::finishLiveSurface(QPainter& painter, const QRec
     const ScreenshotResultStyle normalized = normalizedStyle(style);
     const qreal viewScale = std::max<qreal>(0.0, canvasToViewScale);
     const qreal viewRadius = normalized.cornerRadius * viewScale;
-    const qreal viewShadow = normalized.shadowWidth * viewScale;
+    const qreal viewShadow = normalized.effectWidth() * viewScale;
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // The widget's integer-DIP bounds need not contain the physical content.
-    // Use a containing outer rectangle so odd-even fill is a difference, never
-    // an XOR of intersecting shapes. Clip that difference to the viewport.
-    // Avoid QPainterPath::subtracted: it flattens curves and can misclassify
-    // nearly coincident edges produced by fractional camera roundoff.
-    QPainterPath outside;
-    outside.setFillRule(Qt::OddEvenFill);
-    outside.addRect(viewportBounds.united(contentBounds));
-    outside.addPath(roundedHole(contentBounds, viewRadius));
-    painter.save();
-    painter.setClipRect(viewportBounds, Qt::IntersectClip);
-    painter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-    painter.fillPath(outside, Qt::black);
-    painter.restore();
+    const auto contentPath = screenshotSelectionPath(
+        contentBounds,
+        normalized.borderType == ScreenshotSelectionBorderType::Border ? normalized.region
+                                                                       : std::nullopt,
+        viewRadius, normalized.regionScale * viewScale);
+    maskLiveSurface(painter, viewportBounds, contentPath);
     painter.setCompositionMode(QPainter::CompositionMode_DestinationOver);
-    ScreenshotSelectionShadowRenderer::renderResultShadow(
-        painter, contentBounds, viewRadius, viewShadow, normalized.shadowColor, devicePixelRatio);
+    if (normalized.borderType == ScreenshotSelectionBorderType::Border) {
+        ScreenshotSelectionShadowRenderer::renderBorder(painter, contentPath, viewShadow,
+                                                        normalized.borderColor);
+    } else {
+        ScreenshotSelectionShadowRenderer::renderResultShadow(painter, contentBounds, viewRadius,
+                                                              viewShadow, normalized.shadowColor,
+                                                              devicePixelRatio);
+    }
     painter.restore();
 }
 
 ScreenshotSelectionShadowDiagnostics
 ScreenshotSelectionShadowRenderer::diagnosticsForCurrentThread() {
+    const auto& cache = shadowCacheForCurrentThread();
     ScreenshotSelectionShadowDiagnostics result = g_diagnostics;
-    result.retainedBytes = g_cache.bytes;
-    result.retainedEntries = g_cache.entries.size();
+    result.retainedBytes = cache.bytes;
+    result.retainedEntries = cache.entries.size();
     result.regionCacheRetainedBytes =
         static_cast<std::size_t>(g_regionCompositionCache.mask.sizeInBytes() +
                                  g_regionCompositionCache.shadow.sizeInBytes()) +
@@ -1460,7 +1600,7 @@ void ScreenshotSelectionShadowRenderer::resetDiagnosticsForCurrentThread() {
 }
 
 void ScreenshotSelectionShadowRenderer::resetCacheForCurrentThread() {
-    g_cache = ShadowCache{};
+    shadowCacheForCurrentThread() = ShadowCache{};
     g_regionPathCache = {};
     g_regionCompositionCache = {};
 }

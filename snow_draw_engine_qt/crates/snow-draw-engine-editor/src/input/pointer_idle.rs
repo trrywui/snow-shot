@@ -585,11 +585,24 @@ impl Editor {
             PrimaryPointerIntent::BeginElementSelectionMove { id } => {
                 Ok(self.begin_element_selection_move(document, event, id, canvas_point))
             }
+            PrimaryPointerIntent::DistanceValueEdit { id } => {
+                self.set_selection_state_with_document(Some(document), vec![id], Some(id));
+                self.set_hovered_element(None);
+                self.state.pending_distance_value_edit = Some(id);
+                Ok(InteractionOutput {
+                    consumed: true,
+                    capture: PointerCaptureCommand::NoChange,
+                    cursor: CursorCommand::Set(CursorStyle::Text),
+                })
+            }
             PrimaryPointerIntent::TextEditCandidate { id } => {
                 if !self.state.selection.contains(id) || self.state.selection.ids.len() != 1 {
                     self.set_selection_state_with_document(Some(document), vec![id], Some(id));
                 }
                 self.set_hovered_element(None);
+                // Hosts consume the accepted intent after input dispatch; selection
+                // and cursor feedback alone do not open their native text editor.
+                self.state.pending_text_edit = Some(id);
                 Ok(InteractionOutput {
                     consumed: true,
                     capture: PointerCaptureCommand::NoChange,

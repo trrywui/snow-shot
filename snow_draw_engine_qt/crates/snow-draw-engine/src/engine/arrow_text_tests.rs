@@ -48,6 +48,7 @@ fn setup() -> (Engine, ViewportId, ElementId) {
             ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -85,6 +86,7 @@ fn magnifier_hit_queries_block_arrow_text_through_source_and_lens() {
                     ApplyTransactionCommand {
                         transaction,
                         history_undo_snapshot: None,
+                        created_selection_target: None,
                     },
                 )
                 .unwrap();
@@ -104,6 +106,7 @@ fn magnifier_hit_queries_block_arrow_text_through_source_and_lens() {
                         ApplyTransactionCommand {
                             transaction,
                             history_undo_snapshot: None,
+                            created_selection_target: None,
                         },
                     )
                     .unwrap();
@@ -167,6 +170,7 @@ fn magnifier_hit_queries_block_arrow_text_through_source_and_lens() {
                     ApplyTransactionCommand {
                         transaction,
                         history_undo_snapshot: None,
+                        created_selection_target: None,
                     },
                 )
                 .unwrap();
@@ -496,6 +500,7 @@ fn dragging_bound_text_moves_only_the_label_along_the_arrow_and_round_trips() {
             ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -531,6 +536,7 @@ fn arrow_label_drag_projects_to_bent_path_and_clamps_at_ends() {
                 ApplyTransactionCommand {
                     transaction: tx,
                     history_undo_snapshot: None,
+                    created_selection_target: None,
                 },
             )
             .unwrap();
@@ -662,6 +668,7 @@ fn arrow_text_creation_move_delete_and_history_are_atomic() {
             ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -831,6 +838,7 @@ fn arrow_text_measurements_are_keyed_and_join_the_next_geometry_transaction() {
             ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             },
         )
         .unwrap();
@@ -895,6 +903,7 @@ fn arrow_text_owner_metadata_and_invalid_commit_preserve_draft() {
                 ApplyTransactionCommand {
                     transaction: tx,
                     history_undo_snapshot: None,
+                    created_selection_target: None,
                 },
             )
             .unwrap();

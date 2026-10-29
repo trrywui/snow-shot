@@ -29,7 +29,7 @@ impl DirectFrame {
             Self::Gpu(frame) => frame.metadata(),
         }
     }
-    #[cfg(any(test, feature = "bench-synthetic-input"))]
+    #[cfg(any(not(target_os = "macos"), test, feature = "bench-synthetic-input"))]
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Cpu(frame) => frame.dimensions(),
@@ -89,14 +89,14 @@ pub(crate) enum DirectCapture {
     Gpu(snow_capture::gpu::GpuCaptureStream),
 }
 
-pub(super) fn stream_config(
+pub(crate) fn stream_config(
     config: &DirectRecordingConfig,
     include_cursor: bool,
 ) -> CaptureStreamConfig {
     CaptureStreamConfig {
         target_fps: config.capture_fps,
         min_fps: config.output_fps.min(config.capture_fps).max(1),
-        buffer_depth: 2,
+        buffer_depth: crate::capture_queue::STREAM_DEPTH,
         max_consecutive_errors: 30,
         adaptive_fps: false,
         pause_on_resolution_change: false,

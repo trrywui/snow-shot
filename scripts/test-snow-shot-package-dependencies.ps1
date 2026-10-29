@@ -42,6 +42,28 @@ for ($index = $auditIndex + 1; $index -lt $statements.Count -and
 }
 $audit = [scriptblock]::Create($auditText -join "`n")
 
+# Exercise the channel-specific required files and binary allowlist from the
+# same packaging script, including their actual failure checks.
+$stageAuditText = @()
+$stagePolicyText = @()
+foreach ($variable in @('$requiredStageFiles', '$missingStageFiles', '$expectedBinaryPaths', '$unexpectedBinaries')) {
+    $assignmentIndexes = @(for ($index = 0; $index -lt $statements.Count; $index++) {
+        if ($statements[$index] -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $statements[$index].Left.Extent.Text -ceq $variable) { $index }
+    })
+    if ($assignmentIndexes.Count -ne 1) { throw "Package staging contract is missing: $variable" }
+    $index = $assignmentIndexes[0]
+    $contract = @($statements[$index].Extent.Text)
+    if ($statements[$index + 1] -is [Management.Automation.Language.IfStatementAst]) {
+        $contract += $statements[$index + 1].Extent.Text
+    }
+    $stageAuditText += $contract
+    if ($variable -in @('$requiredStageFiles', '$expectedBinaryPaths')) { $stagePolicyText += $contract }
+}
+$stageAudit = [scriptblock]::Create($stageAuditText -join "`n")
+$stagePolicy = [scriptblock]::Create(($stagePolicyText -join "`n") +
+    "`n[pscustomobject]@{ Required = `$requiredStageFiles; Binaries = `$expectedBinaryPaths }")
+
 $script:DumpbinPath = Join-Path $testRoot 'host-import-inspector.ps1'
 [IO.File]::WriteAllText($script:DumpbinPath, @'
 param([string]$Nologo, [string]$Dependents, [string]$Image)
@@ -51,11 +73,12 @@ exit 0
 
 function Test-PackageDependencyCase {
     param([string]$Name, [string]$Architecture, [int]$Machine,
-        [string[]]$Imports, [string]$ExpectedFailure, [switch]$MissingSystemFile)
+        [string[]]$Imports, [string]$ExpectedFailure, [switch]$MissingSystemFile,
+        [string]$BinaryName = 'snow_shot.exe')
 
     $caseRoot = Join-Path $testRoot $Name
     $null = New-Item -ItemType Directory -Path $caseRoot
-    $image = Join-Path $caseRoot 'snow_shot.exe'
+    $image = Join-Path $caseRoot $BinaryName
     $bytes = [byte[]]::new(128)
     [BitConverter]::GetBytes([uint16]0x5a4d).CopyTo($bytes, 0)
     [BitConverter]::GetBytes([uint32]64).CopyTo($bytes, 0x3c)
@@ -81,13 +104,53 @@ function Test-PackageDependencyCase {
     Write-Output "PASS: $Name"
 }
 
+function Test-PackageStageCase {
+    param([string]$Name, [bool]$Store, [string]$ExpectedFailure,
+        [switch]$AddExtension, [switch]$MissingExtension)
+
+    $installDirectory = Join-Path $testRoot $Name
+    $policy = & $stagePolicy
+    foreach ($relative in @($policy.Required) + @($policy.Binaries)) {
+        $path = Join-Path $installDirectory $relative
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force
+        [IO.File]::WriteAllText($path, 'staged fixture')
+    }
+    $extension = Join-Path $installDirectory 'bin\SnowShotExplorerCommand.dll'
+    if ($AddExtension) { [IO.File]::WriteAllText($extension, 'extension fixture') }
+    if ($MissingExtension -and (Test-Path -LiteralPath $extension -PathType Leaf)) {
+        Remove-Item -LiteralPath $extension -Force
+    }
+    $stagedBinaries = @(Get-ChildItem -LiteralPath $installDirectory -Recurse -File |
+        Where-Object { $_.Extension -in @('.exe', '.dll') })
+    $failure = $null
+    try { & $stageAudit } catch { $failure = $_.Exception.Message }
+    if ($ExpectedFailure) {
+        if ($null -eq $failure -or $failure -notlike $ExpectedFailure) {
+            throw "Package staging audit failed to reject $Name for the required reason: $failure"
+        }
+    } elseif ($null -ne $failure) {
+        throw "Package staging audit rejected the valid $Name payload: $failure"
+    }
+    Write-Output "PASS: $Name"
+}
+
 try {
+    Test-PackageStageCase standalone-stage $false
+    Test-PackageStageCase store-stage $true
+    Test-PackageStageCase standalone-extension $false 'Release staging contains unexpected binary files*' -AddExtension
+    Test-PackageStageCase store-missing-extension $true 'Release staging is missing required runtime files*SnowShotExplorerCommand.dll*' -MissingExtension
     Test-PackageDependencyCase x64-color-management x64 0x8664 @('MSCMS.dll')
     Test-PackageDependencyCase arm64-color-management arm64 0xaa64 @('mscms.dll')
+    Test-PackageDependencyCase x64-media-foundation x64 0x8664 @('MF.dll', 'MFPlat.dll', 'MFReadWrite.dll')
+    Test-PackageDependencyCase arm64-media-foundation arm64 0xaa64 @('mf.dll', 'mfplat.dll', 'mfreadwrite.dll')
+    Test-PackageDependencyCase x64-explorer-command x64 0x8664 @('KERNEL32.dll', 'ole32.dll', 'SHELL32.dll', 'SHLWAPI.dll', 'USER32.dll') -BinaryName 'SnowShotExplorerCommand.dll'
+    Test-PackageDependencyCase arm64-explorer-command arm64 0xaa64 @('kernel32.dll', 'OLE32.dll', 'shell32.dll', 'shlwapi.dll', 'user32.dll') -BinaryName 'SnowShotExplorerCommand.dll'
+    Test-PackageDependencyCase explorer-command-dynamic-runtime x64 0x8664 @('VCRUNTIME140.dll') 'Release staging imports non-system or disallowed libraries*' -BinaryName 'SnowShotExplorerCommand.dll'
     Test-PackageDependencyCase opposite-architecture arm64 0x8664 @('mscms.dll') 'Expected arm64 PE machine*'
     Test-PackageDependencyCase non-system-runtime arm64 0xaa64 @('snow-private-runtime.dll') 'Release staging imports non-system or disallowed libraries*'
     Test-PackageDependencyCase debug-runtime arm64 0xaa64 @('VCRUNTIME140D.dll') 'Release staging imports debug runtime libraries*'
     Test-PackageDependencyCase missing-system-file arm64 0xaa64 @('mscms.dll') 'Release staging has unresolved PE dependencies*' -MissingSystemFile
+    Test-PackageDependencyCase missing-media-foundation-file arm64 0xaa64 @('mfplat.dll') 'Release staging has unresolved PE dependencies*' -MissingSystemFile
 } finally {
     $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
     $expectedParent = [IO.Path]::GetFullPath((Join-Path $repoRoot 'build')).TrimEnd('\') + '\'

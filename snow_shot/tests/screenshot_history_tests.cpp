@@ -4,7 +4,7 @@
 #include "snow_shot/image/screenshotregionpoints.h"
 #include "snow_shot/presentation/screenshotselectorworkflow.h"
 #include "snow_shot/presentation/screenshotregionpreferences.h"
-#include "snow_shot/presentation/screenshotregiontypeshortcut.h"
+#include "snow_shot/shortcuts/screenshotregiontypeshortcut.h"
 #include "snow_shot/presentation/screenshothistoryservice.h"
 #include "snow_shot/presentation/directcapturehistory.h"
 #include "snowimageqtcodec.h"
@@ -2643,6 +2643,8 @@ void completionGesturesUseSharedEligibilityAcrossTools() {
         {QStringLiteral("save"), QStringLiteral("save_as_file")},
         {QStringLiteral("quick_save"), QStringLiteral("quick_save")},
         {QStringLiteral("pin"), QStringLiteral("pin_to_screen")},
+        {QStringLiteral("ocr"), QStringLiteral("text_recognition")},
+        {QStringLiteral("ocr_copy"), QStringLiteral("text_recognition_copy")},
         {QStringLiteral("none"), QString()},
     };
     for (const auto& [setting, command] : commands) {
@@ -2709,6 +2711,37 @@ void completionGesturesUseSharedEligibilityAcrossTools() {
                 handler.setExternalDragActive(false);
             }
         }
+        dispatched.clear();
+        interaction.enterOverlayVisible(true);
+        handler.handleUnhandledLeftDoubleClick();
+        handler.handleUnhandledMiddleClick();
+        require(dispatched.isEmpty(),
+                "every mouse action requires a confirmed screenshot selection");
+        interaction.confirmSelection();
+        interaction.setCanvasTool(ScreenshotActiveTool::Ocr);
+        require(interaction.enterSelectionDrag(ScreenshotSelectionDragMode::All),
+                "begin a selection drag before testing mouse action eligibility");
+        handler.handleUnhandledLeftDoubleClick();
+        handler.handleUnhandledMiddleClick();
+        require(dispatched.isEmpty(), "mouse actions must defer to unfinished selection drags");
+        interaction.finishDrag();
+        interaction.confirmSelection();
+        selection.setRegionType(ScreenshotRegionType::Polyline);
+        selection.beginRegionOperation(ScreenshotSelectionModel::RegionOperation::Add);
+        handler.handleUnhandledLeftDoubleClick();
+        handler.handleUnhandledMiddleClick();
+        require(dispatched.isEmpty(), "mouse actions must defer to region construction");
+        selection.cancelRegionOperation();
+        handler.handleUnhandledLeftDoubleClick();
+        handler.handleUnhandledMiddleClick();
+        require(dispatched == (command.isEmpty() ? QStringList{} : QStringList{command, command}),
+                "each mouse action must resume after region construction ends");
+        dispatched.clear();
+        selection.clearSelection();
+        handler.handleUnhandledLeftDoubleClick();
+        handler.handleUnhandledMiddleClick();
+        require(dispatched.isEmpty(), "mouse actions require a nonempty screenshot selection");
+        selection.setSelectionRect(QRectF(1, 2, 20, 21));
     }
 
     require(settings.setDoubleClickAction(QStringLiteral("copy")) &&
@@ -5343,7 +5376,7 @@ void rejectedGlobalScreenshotShortcutsPreserveSession() {
                 ScreenshotInteractionState::EffectGesture gesture;
                 gesture.handle = reason == Rejection::CornerRadiusDrag
                                      ? ScreenshotSelectionEffectHandle::TopLeft
-                                     : ScreenshotSelectionEffectHandle::Shadow;
+                                     : ScreenshotSelectionEffectHandle::Width;
                 gesture.rollback = [&] { ++rollbacks; };
                 require(interaction.beginEffectDrag(std::move(gesture)),
                         "start global shortcut effect drag");

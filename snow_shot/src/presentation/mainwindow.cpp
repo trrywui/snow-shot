@@ -288,10 +288,14 @@ void MainWindow::buildUi() {
             &MainWindow::screenshotHistoryCollageRequested);
     connect(m_contentCard, &ContentCardWidget::screenshotHistorySplitRequested, this,
             &MainWindow::screenshotHistorySplitRequested);
+    connect(m_contentCard, &ContentCardWidget::screenshotHistoryImageEditingRequested, this,
+            &MainWindow::screenshotHistoryImageEditingRequested);
     connect(m_contentCard, &ContentCardWidget::pinnedWindowCollageRequested, this,
             &MainWindow::pinnedWindowCollageRequested);
     connect(m_contentCard, &ContentCardWidget::pinnedWindowSplitRequested, this,
             &MainWindow::pinnedWindowSplitRequested);
+    connect(m_contentCard, &ContentCardWidget::pinnedWindowImageEditingRequested, this,
+            &MainWindow::pinnedWindowImageEditingRequested);
     m_contentCard->setCurrentRoute(m_sidebar->currentRoute());
     m_contentHeader->setSections(m_contentCard->currentSections());
     m_contentHeader->setCurrentSection(m_contentCard->currentLocation().sectionId);

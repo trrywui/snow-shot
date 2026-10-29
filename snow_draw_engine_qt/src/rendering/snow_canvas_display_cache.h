@@ -89,6 +89,8 @@ class SnowCanvasDisplayCache {
     std::size_t retainedStorageBytes() const;
     const WatermarkDisplayInfo& watermarkInfo() const;
     const SpotlightDisplayInfo& spotlightInfo() const;
+    // Source damage from the last sync, excluding watermark-only changes.
+    const QRegion& spotlightDamage() const;
     const OverlayDisplayInfo& overlayInfo() const;
     const SnowPatchCursor& patchCursor() const;
 
@@ -127,6 +129,7 @@ class SnowCanvasDisplayCache {
     SceneDisplayInfo m_sceneDisplayInfo{};
     WatermarkDisplayInfo m_watermarkDisplayInfo{};
     SpotlightDisplayInfo m_spotlightDisplayInfo{};
+    QRegion m_spotlightDamage;
     OverlayDisplayInfo m_overlayDisplayInfo{};
     std::vector<SnowCanvasSceneItem> m_sceneStorage;
     std::vector<SnowCanvasOverlayItem> m_overlayStorage;

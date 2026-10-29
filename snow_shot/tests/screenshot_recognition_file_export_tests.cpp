@@ -12,6 +12,8 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTranslator>
+#include <QUrl>
+#include <QtEndian>
 
 #include <stdexcept>
 #include <iostream>
@@ -32,6 +34,83 @@ void write(const QString& path, const QByteArray& bytes) {
     QFile file(path);
     require(file.open(QIODevice::WriteOnly), "text fixture cannot be written");
     require(file.write(bytes) == bytes.size(), "text fixture write failed");
+}
+
+void requireClassicZipWorkbook(const QString& path) {
+    // Read the ZIP records directly: minizip accepts ZIP64 local headers that older Excel
+    // versions reject, even when the central directory only contains 32-bit sizes.
+    const QByteArray bytes = read(path);
+    const auto word = [&](qsizetype offset) {
+        require(offset >= 0 && offset + 2 <= bytes.size(), "truncated ZIP word");
+        return qFromLittleEndian<quint16>(bytes.constData() + offset);
+    };
+    const auto dword = [&](qsizetype offset) {
+        require(offset >= 0 && offset + 4 <= bytes.size(), "truncated ZIP dword");
+        return qFromLittleEndian<quint32>(bytes.constData() + offset);
+    };
+    const auto checkExtraFields = [&](qsizetype offset, quint16 length) {
+        const qsizetype end = offset + length;
+        require(end <= bytes.size(), "truncated ZIP extra fields");
+        while (offset < end) {
+            require(offset + 4 <= end && word(offset) != 0x0001,
+                    "Excel workbook entries must not require ZIP64 extra fields");
+            offset += 4 + word(offset + 2);
+            require(offset <= end, "invalid ZIP extra field length");
+        }
+    };
+
+    const qsizetype end = bytes.lastIndexOf(QByteArray::fromHex("504b0506"));
+    require(end >= 0 && end + 22 + word(end + 20) == bytes.size(),
+            "workbook must end with a classic ZIP end record");
+    const quint16 count = word(end + 10);
+    require(word(end + 4) == 0 && word(end + 6) == 0 && count > 0 && count < 0xffff &&
+                word(end + 8) == count,
+            "workbook must be a single-disk classic ZIP archive");
+    qsizetype central = dword(end + 16);
+    require(central + dword(end + 12) == end,
+            "the central directory must be followed directly by the classic end record");
+    qsizetype nextLocal = 0;
+    for (quint16 index = 0; index < count; ++index) {
+        require(dword(central) == 0x02014b50 && word(central + 6) <= 20,
+                "workbook central directory must support ZIP 2.0 readers");
+        const quint16 flags = word(central + 8);
+        require((flags & ~quint16(0x080e)) == 0 && word(central + 10) == 8 &&
+                    word(central + 34) == 0,
+                "workbook parts must use unencrypted, single-disk DEFLATE");
+        const quint32 crc = dword(central + 16);
+        const quint32 compressed = dword(central + 20);
+        const quint32 uncompressed = dword(central + 24);
+        require(compressed < 0xffffffff && uncompressed < 0xffffffff,
+                "workbook sizes must fit classic ZIP fields");
+        const quint16 nameLength = word(central + 28);
+        const quint16 extraLength = word(central + 30);
+        checkExtraFields(central + 46 + nameLength, extraLength);
+        const qsizetype local = dword(central + 42);
+        require(local == nextLocal && dword(local) == 0x04034b50 && word(local + 4) <= 20,
+                "workbook local headers must support ZIP 2.0 readers without ZIP64");
+        require(word(local + 6) == flags && word(local + 8) == 8 &&
+                    word(local + 26) == nameLength &&
+                    bytes.mid(local + 30, nameLength) == bytes.mid(central + 46, nameLength),
+                "local and central ZIP entry metadata must agree");
+        const quint16 localExtraLength = word(local + 28);
+        checkExtraFields(local + 30 + nameLength, localExtraLength);
+        require(dword(local + 18) < 0xffffffff && dword(local + 22) < 0xffffffff,
+                "local ZIP sizes must not use ZIP64 sentinels");
+        nextLocal = local + 30 + nameLength + localExtraLength + compressed;
+        if (flags & 0x0008) {
+            require(dword(nextLocal) == 0x08074b50 && dword(nextLocal + 4) == crc &&
+                        dword(nextLocal + 8) == compressed && dword(nextLocal + 12) == uncompressed,
+                    "streamed workbook parts must have matching 32-bit data descriptors");
+            nextLocal += 16;
+        } else {
+            require(dword(local + 14) == crc && dword(local + 18) == compressed &&
+                        dword(local + 22) == uncompressed,
+                    "non-streamed workbook parts must have matching CRC and sizes");
+        }
+        central += 46 + nameLength + extraLength + word(central + 32);
+    }
+    require(central == end && nextLocal == dword(end + 16),
+            "all workbook ZIP entries must end at the central directory");
 }
 
 void savesConversionPairsWithExactSource() {
@@ -75,6 +154,7 @@ void savesRealWorkbookWithLiteralCellsAndSpans() {
         snapshot, directory.filePath(QStringLiteral("表格.png")));
     require(saved.succeeded() && saved.path.endsWith(QStringLiteral("表格.xlsx")),
             "table saves must normalize to an Excel extension");
+    requireClassicZipWorkbook(saved.path);
     require(QDir(directory.path()).entryList(QDir::Files).size() == 1 &&
                 ScreenshotRecognitionFileExport::outputPaths(saved.path, snapshot.kind) ==
                     QStringList{saved.path},
@@ -109,6 +189,136 @@ void savesRealWorkbookWithLiteralCellsAndSpans() {
                 package.value(QStringLiteral("xl/styles.xml")).contains("<b/>") &&
                 package.value(QStringLiteral("xl/styles.xml")).contains("wrapText=\"1\""),
             "header cells must be bold and multiline text must wrap");
+}
+
+void temporaryWorkbooksOpenOnlyAfterSavingAndSurviveSuccess() {
+    auto snapshot = tableSnapshot();
+    snapshot.table->setCellText(1, 0, QStringLiteral("雪\n00123"));
+    snapshot.table->setCellText(1, 1, QStringLiteral("=SUM(A1:A2)"));
+    QStringList paths;
+    const auto launch = [&](const QUrl& url) {
+        require(url.isLocalFile(), "the default application receives a local file URL");
+        const QString path = url.toLocalFile();
+        require(QFileInfo(path).fileName().startsWith(QStringLiteral("Table-")) &&
+                    QFileInfo(path).suffix() == QStringLiteral("xlsx") &&
+                    QFileInfo(QFileInfo(path).absolutePath()).absolutePath() == QDir::tempPath(),
+                "workbooks use a reserved directory directly under the system temporary directory");
+        const auto sheet = recognition_workbook_test::sheet(recognition_workbook_test::parts(path));
+        require(sheet.dimension == QStringLiteral("A1:C3") && sheet.merges.size() == 2 &&
+                    sheet.cells.value(QStringLiteral("A2")) == QStringLiteral("雪\n00123") &&
+                    sheet.cells.value(QStringLiteral("B2")) == QStringLiteral("=SUM(A1:A2)"),
+                "the launched workbook preserves the complete table and literal cell values");
+        require(QFile::rename(path, path + QStringLiteral(".probe")) &&
+                    QFile::rename(path + QStringLiteral(".probe"), path),
+                "the workbook is closed before launching the default application");
+        paths.append(path);
+        return true;
+    };
+    require(ScreenshotRecognitionFileExport::openTemporaryTable(snapshot, launch).succeeded() &&
+                ScreenshotRecognitionFileExport::openTemporaryTable(snapshot, launch).succeeded() &&
+                paths.size() == 2 && paths[0] != paths[1] &&
+                QFileInfo(paths[0]).fileName() != QFileInfo(paths[1]).fileName(),
+            "repeated opens retain workbooks with unique filenames as well as unique paths");
+    for (const QString& path : paths) {
+        require(QFileInfo::exists(path),
+                "the workbook survives the temporary helper's destruction");
+        require(QFile::remove(path) && QDir().rmdir(QFileInfo(path).absolutePath()),
+                "remove the test's retained workbook");
+    }
+    QString rejectedPath;
+    const auto rejected =
+        ScreenshotRecognitionFileExport::openTemporaryTable(snapshot, [&](const QUrl& url) {
+            rejectedPath = url.toLocalFile();
+            return false;
+        });
+    require(!rejected.succeeded() && !rejected.error.isEmpty() && !rejectedPath.isEmpty() &&
+                !QFileInfo::exists(QFileInfo(rejectedPath).absolutePath()),
+            "rejected launches remove the reserved directory and report an error");
+    const auto before =
+        QDir(QDir::tempPath())
+            .entryList({QStringLiteral("SnowShot-table-*")}, QDir::Dirs | QDir::NoDotAndDotDot);
+    int launches = 0;
+    const auto unexpectedLaunch = [&](const QUrl&) {
+        ++launches;
+        return true;
+    };
+    snapshot.table->setCellText(1, 0, QString(32768, QLatin1Char('x')));
+    require(!ScreenshotRecognitionFileExport::openTemporaryTable(snapshot, unexpectedLaunch)
+                 .succeeded(),
+            "workbook serialization failure prevents a launch");
+    snapshot.table.reset();
+    require(!ScreenshotRecognitionFileExport::openTemporaryTable(snapshot, unexpectedLaunch)
+                    .succeeded() &&
+                launches == 0 &&
+                before == QDir(QDir::tempPath())
+                              .entryList({QStringLiteral("SnowShot-table-*")},
+                                         QDir::Dirs | QDir::NoDotAndDotDot),
+            "missing results and failed exports leave no temporary artifacts");
+}
+
+void requireDefaultWorkbookFonts(const QMap<QString, QByteArray>& package) {
+    QXmlStreamReader xml(package.value(QStringLiteral("xl/styles.xml")));
+    int fonts = 0;
+    int boldFonts = 0;
+    bool inFont = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isEndElement() && xml.name() == u"font")
+            inFont = false;
+        if (!xml.isStartElement())
+            continue;
+        if (xml.name() == u"font") {
+            inFont = true;
+            ++fonts;
+        }
+        if (inFont) {
+            require(xml.name() != u"name" && xml.name() != u"sz" && xml.name() != u"scheme",
+                    "saving column widths must not override the spreadsheet's default font");
+            if (xml.name() == u"b")
+                ++boldFonts;
+        }
+    }
+    require(!xml.hasError() && fonts == 2 && boldFonts == 1,
+            "default workbook fonts must retain normal cells and bold headers");
+}
+
+void workbookPreservesColumnWidths() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "column width export fixture directory");
+    auto snapshot = tableSnapshot();
+    snapshot.tableColumnWidths = {92, 203, 350};
+    const auto verify = [&](const QString& path) {
+        requireClassicZipWorkbook(path);
+        const auto package = recognition_workbook_test::parts(path);
+        requireDefaultWorkbookFonts(package);
+        const auto sheet = recognition_workbook_test::sheet(package);
+        require(sheet.columnWidths.size() == 3 && sheet.columnWidths.value(1) == 13.140625 &&
+                    sheet.columnWidths.value(2) == 29.0 && sheet.columnWidths.value(3) == 50.0,
+                "each column must retain its displayed width, including columns in merged cells");
+    };
+    const auto saved = ScreenshotRecognitionFileExport::saveToPath(
+        snapshot, directory.filePath(QStringLiteral("widths.xlsx")));
+    require(saved.succeeded(), "save workbook with column widths");
+    verify(saved.path);
+    const auto quick = ScreenshotRecognitionFileExport::quickSave(snapshot, directory.path(),
+                                                                  QStringLiteral("quick-widths"));
+    require(quick.succeeded(), "quick save workbook with column widths");
+    verify(quick.path);
+    const auto opened =
+        ScreenshotRecognitionFileExport::openTemporaryTable(snapshot, [&](const QUrl& url) {
+            verify(url.toLocalFile());
+            return false;
+        });
+    require(!opened.succeeded(), "declined test launch cleans up the temporary workbook");
+
+    snapshot.tableColumnWidths.clear();
+    const auto headless = ScreenshotRecognitionFileExport::saveToPath(
+        snapshot, directory.filePath(QStringLiteral("headless.xlsx")));
+    require(headless.succeeded() &&
+                recognition_workbook_test::sheet(recognition_workbook_test::parts(headless.path))
+                    .columnWidths.isEmpty(),
+            "headless snapshots without layout keep the workbook's default widths");
+    requireDefaultWorkbookFonts(recognition_workbook_test::parts(headless.path));
 }
 
 void workbookSaveHandlesCollisionsOverwriteAndFailures() {
@@ -352,6 +562,8 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     try {
         savesRealWorkbookWithLiteralCellsAndSpans();
+        workbookPreservesColumnWidths();
+        temporaryWorkbooksOpenOnlyAfterSavingAndSurviveSuccess();
         workbookSaveHandlesCollisionsOverwriteAndFailures();
         savesConversionPairsWithExactSource();
         savesQrValuesAsOneTextFile();

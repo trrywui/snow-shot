@@ -34,7 +34,7 @@ impl VideoIndexReader {
         Self::from_range(File::open(path)?, asset.offset, asset.len).map(Some)
     }
 
-    fn from_range(mut file: File, offset: u64, length: u64) -> Result<Self> {
+    pub fn from_range(mut file: File, offset: u64, length: u64) -> Result<Self> {
         let records = length
             .checked_sub(VIDEO_INDEX_MAGIC.len() as u64)
             .filter(|bytes| *bytes != 0 && *bytes % VIDEO_INDEX_RECORD_BYTES as u64 == 0)

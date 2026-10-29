@@ -43,11 +43,23 @@ SnowError snow_runtime_serialize_document_session(SnowRuntime runtime, uint8_t* 
 // Release it with snow_serialized_bytes_destroy after copying/consuming its data.
 SnowError snow_runtime_serialize_document_session_bytes(SnowRuntime runtime,
                                                         SnowSerializedBytes* out_bytes);
+// A restorable session of committed document/configuration without undo/redo or input drafts.
+// Snapshot serialization depends only on current content, never on accumulated history.
+// Retains the persisted-session limit of 16 MiB for current content.
+SnowError snow_runtime_serialize_document_snapshot_bytes(SnowRuntime runtime,
+                                                         SnowSerializedBytes* out_bytes);
+// Canonical current-document JSON bytes, not a hash or a restorable session.
+// Excludes history, editor defaults, revisions and unused trailing element slots.
+// Both functions return owned handles released with snow_serialized_bytes_destroy.
+SnowError snow_runtime_document_checkpoint_bytes(SnowRuntime runtime,
+                                                 SnowSerializedBytes* out_bytes);
 // The read-only data remains valid until the handle is destroyed, even if the
 // originating runtime changes or is destroyed.
 SnowError snow_serialized_bytes_data(SnowSerializedBytes bytes, const uint8_t** out_data,
                                      size_t* out_size);
 void snow_serialized_bytes_destroy(SnowSerializedBytes bytes);
+// Current draw-template schema version; versions 1 through this value are supported.
+uint32_t snow_draw_template_schema_version(void);
 SnowError snow_runtime_serialize_selected_draw_template(SnowRuntime runtime, uint8_t* buffer,
                                                         size_t buffer_capacity, size_t* out_size);
 SnowError snow_runtime_serialize_selected_element_ids(SnowRuntime runtime, uint8_t* buffer,
@@ -507,7 +519,8 @@ typedef enum SnowHighlightShape {
 typedef enum SnowRectangleShape {
     SNOW_RECTANGLE_SHAPE_RECTANGLE = 0,
     SNOW_RECTANGLE_SHAPE_ELLIPSE = 1,
-    SNOW_RECTANGLE_SHAPE_DIAMOND = 2
+    SNOW_RECTANGLE_SHAPE_DIAMOND = 2,
+    SNOW_RECTANGLE_SHAPE_THOUGHT_BUBBLE = 3
 } SnowRectangleShape;
 
 typedef enum SnowBrushMode {
@@ -532,6 +545,8 @@ typedef struct SnowShapeStyle {
     SnowHighlightShape highlight_shape;
     SnowRectangleShape shape;
     SnowBrushMode brush_mode;
+    SnowColorRgba8 arrow_outline_color;
+    double arrow_outline_width;
 } SnowShapeStyle;
 
 typedef enum SnowShapeKind {
@@ -554,6 +569,10 @@ typedef enum SnowShapeKind {
 #define SNOW_SHAPE_STYLE_PROPERTY_START_ARROWHEAD (1u << 5)
 #define SNOW_SHAPE_STYLE_PROPERTY_END_ARROWHEAD (1u << 6)
 #define SNOW_SHAPE_STYLE_PROPERTY_STROKE_STYLE (1u << 7)
+#define SNOW_SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR (1u << 16)
+#define SNOW_SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH (1u << 17)
+#define SNOW_SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR SNOW_SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR
+#define SNOW_SHAPE_STYLE_MIXED_ARROW_OUTLINE_WIDTH SNOW_SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH
 #define SNOW_SHAPE_STYLE_PROPERTY_ARROW_RATIO (1u << 13)
 #define SNOW_SHAPE_STYLE_PROPERTY_ARROW_SHAFT_TYPE (1u << 12)
 #define SNOW_SHAPE_STYLE_PROPERTY_ARROW_TYPE (1u << 8)
@@ -597,6 +616,8 @@ typedef struct SnowArrowStyle {
     SnowArrowShaftType arrow_shaft_type;
     double arrow_ratio;
     uint8_t reserved0[4];
+    SnowColorRgba8 arrow_outline_color;
+    double arrow_outline_width;
 } SnowArrowStyle;
 
 typedef struct SnowTextStyle {
@@ -973,6 +994,12 @@ SnowError snow_viewport_take_speech_bubble_text_edit_request(SnowRuntime runtime
                                                              SnowViewport viewport,
                                                              SnowElementId* out_owner,
                                                              uint8_t* out_requested);
+/* Resolves and consumes the requested bubble's text target independently of selection. */
+SnowError snow_viewport_take_speech_bubble_text_edit_target(SnowRuntime runtime,
+                                                            SnowViewport viewport,
+                                                            SnowTextElementInfo* out_info,
+                                                            SnowTextStyle* out_style,
+                                                            uint8_t* out_found);
 SnowError snow_speech_bubble_resolve_text_layout(const SnowTextElementInfo* info,
                                                  double minimum_grapheme_width,
                                                  double text_ink_reserve,
@@ -992,6 +1019,7 @@ typedef struct SnowArrowTextLayoutRequest {
     SnowTextStyle style;
     uint64_t key;
     double max_width;
+    uint32_t distance_value_chars;
 } SnowArrowTextLayoutRequest;
 
 typedef struct SnowArrowTextLayoutResult {
@@ -1008,6 +1036,7 @@ typedef struct SnowArrowTextLayoutMetrics {
        Zero means
      * unknown and restricts reuse to the original constraint. */
     double natural_width;
+    double distance_value_width;
 } SnowArrowTextLayoutMetrics;
 
 /* Call before requesting replacement layouts after host font or DPI changes. */
@@ -1025,6 +1054,19 @@ typedef struct SnowSerialLabelLayoutRequest {
 } SnowSerialLabelLayoutRequest;
 
 uint32_t snow_runtime_arrow_text_count(SnowRuntime runtime);
+SnowError snow_viewport_take_distance_value_edit_target(SnowRuntime runtime, SnowViewport viewport,
+                                                        SnowTextElementInfo* out_info,
+                                                        SnowTextStyle* out_style,
+                                                        uint8_t* out_found);
+/* Draft text includes temporary IME composition; only commit changes calibration. */
+SnowError snow_viewport_set_distance_value_draft_ex(SnowRuntime runtime, SnowViewport viewport,
+                                                    SnowElementId owner, const char* text,
+                                                    uint32_t length, SnowTextLayoutSize layout,
+                                                    SnowChangedViewportList* out_changed_viewports);
+SnowError snow_viewport_commit_distance_value_ex(SnowRuntime runtime, SnowViewport viewport,
+                                                 SnowElementId owner, double value,
+                                                 SnowChangedViewportList* out_changed_viewports);
+
 SnowError snow_viewport_get_arrow_text_layout_requests(SnowRuntime runtime, SnowViewport viewport,
                                                        SnowArrowTextLayoutRequest* out_items,
                                                        uint32_t capacity, uint32_t* out_count);
@@ -1401,6 +1443,8 @@ typedef struct SnowSceneDisplayItem {
     const char* font_family_utf8;
     SnowMagnifierGeometry magnifier;
     double text_ink_reserve;
+    SnowColorRgba8 arrow_outline_color;
+    double arrow_outline_width;
 } SnowSceneDisplayItem;
 
 /* Conservative ink (fill padding plus text stroke halo) for dirty regions. */
@@ -1476,6 +1520,8 @@ typedef struct SnowOverlayDisplayItem {
     double snap_marker_size;
     double snap_gap_dash_length;
     double snap_gap_dash_gap;
+    SnowColorRgba8 arrow_outline_color;
+    double arrow_outline_width;
 } SnowOverlayDisplayItem;
 
 SnowError snow_runtime_create(SnowRuntime* out_runtime);
@@ -1499,6 +1545,11 @@ SnowError snow_runtime_begin_presentation_update(SnowRuntime runtime);
 SnowError snow_runtime_end_presentation_update_ex(SnowRuntime runtime,
                                                   SnowChangedViewportList* out_changed_viewports);
 
+SnowError snow_runtime_set_automatically_select_newly_created_elements_ex(
+    SnowRuntime runtime, uint8_t enabled, SnowChangedViewportList* out_changed_viewports);
+
+SnowError snow_runtime_set_automatic_selection_excluded_tools_ex(
+    SnowRuntime runtime, uint64_t tools, SnowChangedViewportList* out_changed_viewports);
 SnowError
 snow_runtime_set_quick_selection_disabled_tools_ex(SnowRuntime runtime, uint64_t tools,
                                                    SnowChangedViewportList* out_changed_viewports);
@@ -1557,6 +1608,11 @@ SnowError snow_viewport_fill_auto_filter_category(SnowRuntime runtime, SnowViewp
                                                   SnowChangedViewportList* changed);
 
 SnowError snow_runtime_get_history_state(SnowRuntime runtime, SnowHistoryState* out_state);
+/* Runtime-only host edits share annotation undo ordering, but are not serialized. */
+SnowError snow_runtime_host_history_state(SnowRuntime runtime, int32_t direction,
+                                          uint64_t* out_state);
+SnowError snow_runtime_commit_host_history_state(SnowRuntime runtime, uint64_t state,
+                                                 SnowChangedViewportList* out_changed_viewports);
 /* Reports current capture ownership after input, cancellation, and document mutations. */
 SnowError snow_runtime_has_pointer_capture(SnowRuntime runtime, uint8_t* out_active);
 
@@ -1730,6 +1786,10 @@ snow_viewport_commit_text_draft_payload_ex(SnowRuntime runtime, SnowViewport vie
 SnowError snow_viewport_select_element_ex(SnowRuntime runtime, SnowViewport viewport,
                                           SnowElementId id,
                                           SnowChangedViewportList* out_changed_viewports);
+
+/* Clears selection without changing the active tool or document history. */
+SnowError snow_viewport_clear_selection_ex(SnowRuntime runtime, SnowViewport viewport,
+                                           SnowChangedViewportList* out_changed_viewports);
 
 SnowError snow_viewport_reset_editing_state_ex(SnowRuntime runtime, SnowViewport viewport,
                                                SnowChangedViewportList* out_changed_viewports);

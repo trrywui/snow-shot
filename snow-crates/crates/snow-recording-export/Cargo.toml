@@ -15,6 +15,7 @@ snow-core = { path = "../snow-core" }
 snow-audio-recorder = { path = "../snow-audio-recorder" }
 snow-recording-model = { path = "../snow-recording-model" }
 snow-recording-effects = { path = "../snow-recording-effects" }
+snow-webcam = { path = "../snow-webcam" }
 bincode.workspace = true
 crossbeam-channel.workspace = true
 ffmpeg-next.workspace = true

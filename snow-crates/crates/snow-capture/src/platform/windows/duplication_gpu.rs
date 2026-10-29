@@ -1,6 +1,6 @@
 use super::*;
-use crate::gpu::{GpuMonitorFrame, acquire_conversion_output, copy_texture};
-use snow_d3d11::{SharedDevice, TexturePool};
+use crate::gpu::{GpuMonitorFrame, acquire_conversion_output, copy_texture_region, native_crop};
+use snow_d3d11::{Rect, SharedDevice, TexturePool};
 
 pub(crate) struct GpuDxgiCapturer {
     device: SharedDevice,
@@ -35,11 +35,14 @@ impl GpuDxgiCapturer {
         })
     }
 
-    pub(crate) fn capture(&mut self) -> CaptureResult<GpuMonitorFrame> {
+    pub(crate) fn capture(&mut self, crop: Rect) -> CaptureResult<GpuMonitorFrame> {
         let device = self.device.clone();
         let _lock = device.lock();
         device.check().map_err(CaptureError::platform)?;
-        let (texture, info, guard) = match try_acquire_frame(&self.duplication, 0, false)? {
+        let acquired = acquire_with_capacity(&self.native, &self.converted, || {
+            try_acquire_frame(&self.duplication, 0, false)
+        })?;
+        let (texture, info, guard) = match acquired {
             TryAcquireResult::Ok(texture, info, guard) => (texture, info, guard),
             TryAcquireResult::AccessLost => {
                 self.duplication = create_duplication(&self.output, device.device())?;
@@ -52,8 +55,19 @@ impl GpuDxgiCapturer {
             drop(guard);
             return self.duplicate();
         }
-        // Never retain the duplication-owned surface after ReleaseFrame.
-        let native = copy_texture(&device, &mut self.native, &texture)?;
+        let output_desc = unsafe { self.output.GetDesc() }.map_err(CaptureError::platform)?;
+        let rotation = match output_desc.Rotation.0 {
+            2 => 1,
+            3 => 2,
+            4 => 3,
+            _ => 0,
+        };
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { texture.GetDesc(&mut desc) };
+        let crop = native_crop(crop, (desc.Width, desc.Height), rotation)?;
+        // Detach only the selected region before ReleaseFrame. HDR conversion
+        // then operates on that same bounded surface without a full-display copy.
+        let native = copy_texture_region(&device, &mut self.native, &texture, crop)?;
         drop(guard);
         let desc = native.desc();
         let texture = if desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
@@ -88,13 +102,6 @@ impl GpuDxgiCapturer {
         } else {
             native
         };
-        let output_desc = unsafe { self.output.GetDesc() }.map_err(CaptureError::platform)?;
-        let rotation = match output_desc.Rotation.0 {
-            2 => 1,
-            3 => 2,
-            4 => 3,
-            _ => 0,
-        };
         self.generation = self.generation.wrapping_add(1);
         let mut metadata = crate::frame::FrameMetadata {
             backend_kind: CaptureBackendKind::DxgiDuplication,
@@ -106,6 +113,7 @@ impl GpuDxgiCapturer {
             (info.LastPresentTime != 0).then_some(info.LastPresentTime),
         );
         let frame = GpuMonitorFrame {
+            source: Rect::full(texture.dimensions()),
             texture,
             rotation,
             metadata,
@@ -118,5 +126,98 @@ impl GpuDxgiCapturer {
         let mut frame = self.latest.clone().ok_or(CaptureError::Timeout)?;
         frame.metadata.is_duplicate = true;
         Ok(frame)
+    }
+}
+
+/// AcquireNextFrame consumes a desktop update even if the subsequent copy
+/// cannot obtain a texture. Check every destination pool first, including HDR
+/// conversion: no Timeout may discard that update after ReleaseFrame.
+///
+/// Both pools belong exclusively to the capture thread. Until its one acquire
+/// per pool below, external readers can only release leases, so available
+/// capacity cannot disappear between this check and the copy/conversion.
+fn acquire_with_capacity<T>(
+    native: &TexturePool,
+    converted: &TexturePool,
+    acquire: impl FnOnce() -> CaptureResult<T>,
+) -> CaptureResult<T> {
+    if !native.has_capacity() || !converted.has_capacity() {
+        return Err(CaptureError::Timeout);
+    }
+    acquire()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+    };
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory4};
+
+    #[test]
+    fn gpu_backpressure_does_not_consume_the_final_desktop_update() -> anyhow::Result<()> {
+        let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory1()? };
+        let adapter = unsafe { factory.EnumWarpAdapter()? };
+        let device = SharedDevice::create_compute(&adapter)?;
+        for (block_native, block_converted) in [(true, false), (false, true), (true, true)] {
+            let mut native = TexturePool::new(device.clone(), 2);
+            let mut converted = TexturePool::new(device.clone(), 2);
+            assert!(native.has_capacity());
+            assert!(converted.has_capacity());
+            let mut native_leases = Vec::new();
+            let mut converted_leases = Vec::new();
+            for (pool, leases, full) in [
+                (&mut native, &mut native_leases, block_native),
+                (&mut converted, &mut converted_leases, block_converted),
+            ] {
+                for _ in 0..if full { 2 } else { 1 } {
+                    leases.push(
+                        pool.acquire(8, 6, DXGI_FORMAT_R8G8B8A8_UNORM, 0)?
+                            .expect("available texture"),
+                    );
+                }
+            }
+            let mut final_update = Some(42);
+            let mut acquisitions = 0;
+            let mut acquire = || {
+                acquisitions += 1;
+                Ok(final_update.take())
+            };
+            for _ in 0..3 {
+                assert!(matches!(
+                    acquire_with_capacity(&native, &converted, &mut acquire),
+                    Err(CaptureError::Timeout)
+                ));
+            }
+            native_leases.clear();
+            if block_converted {
+                assert!(matches!(
+                    acquire_with_capacity(&native, &converted, &mut acquire),
+                    Err(CaptureError::Timeout)
+                ));
+            }
+            converted_leases.clear();
+            assert_eq!(
+                acquire_with_capacity(&native, &converted, &mut acquire)?,
+                Some(42),
+                "the last update must remain available without another desktop change"
+            );
+            assert_eq!(acquisitions, 1);
+            assert!(final_update.is_none());
+            // Free storage also admits geometry/format changes, even at capacity.
+            assert!(
+                native
+                    .acquire(16, 12, DXGI_FORMAT_B8G8R8A8_UNORM, 0)?
+                    .is_some()
+            );
+            assert!(matches!(
+                acquire_with_capacity(&native, &converted, || Err::<(), _>(
+                    CaptureError::AccessLost
+                )),
+                Err(CaptureError::AccessLost)
+            ));
+        }
+        Ok(())
     }
 }

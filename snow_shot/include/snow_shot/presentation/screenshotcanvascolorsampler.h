@@ -9,6 +9,7 @@
 #include <QSize>
 
 class QWidget;
+class SnowCanvasWidget;
 
 class ScreenshotCanvasColorSampler final {
   public:
@@ -16,6 +17,8 @@ class ScreenshotCanvasColorSampler final {
 
     void reset();
     [[nodiscard]] bool ensureSnapshot(QWidget& canvas, const QRect& physicalBounds);
+    // Render document pixels without screenshot selection UI or editor overlays.
+    [[nodiscard]] bool ensureContentSnapshot(SnowCanvasWidget& canvas, const QRect& physicalBounds);
     [[nodiscard]] QImage previewAtPhysicalPoint(const QPoint& physicalPoint) const;
 
     [[nodiscard]] static QPoint physicalPointForLocalPosition(const QPointF& localPosition,
@@ -29,6 +32,7 @@ class ScreenshotCanvasColorSampler final {
     QPointer<QWidget> m_canvas;
     QImage m_physicalRaster;
     QRect m_physicalBounds;
+    bool m_contentSnapshot = false;
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTCANVASCOLORSAMPLER_H

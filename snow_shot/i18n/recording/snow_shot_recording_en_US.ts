@@ -23,24 +23,32 @@
     <context>
         <name>RecordingKeyboardLabels</name>
         <message>
-            <source>Left click</source>
-            <translation>Left click</translation>
+            <source>Button 4</source>
+            <translation>Button 4</translation>
         </message>
         <message>
-            <source>Middle click</source>
-            <translation>Middle click</translation>
+            <source>Button 5</source>
+            <translation>Button 5</translation>
         </message>
         <message>
-            <source>Mouse button 4</source>
-            <translation>Mouse button 4</translation>
+            <source>Left</source>
+            <translation>Left</translation>
         </message>
         <message>
-            <source>Mouse button 5</source>
-            <translation>Mouse button 5</translation>
+            <source>Middle</source>
+            <translation>Middle</translation>
         </message>
         <message>
-            <source>Right click</source>
-            <translation>Right click</translation>
+            <source>Right</source>
+            <translation>Right</translation>
+        </message>
+        <message>
+            <source>Scroll down</source>
+            <translation>Scroll down</translation>
+        </message>
+        <message>
+            <source>Scroll up</source>
+            <translation>Scroll up</translation>
         </message>
     </context>
     <context>
@@ -116,6 +124,41 @@
         </message>
     </context>
     <context>
+        <name>RecordingStatusPrompt</name>
+        <message>
+            <source>Format: %1; %2; %3</source>
+            <translation>Format: %1; %2; %3</translation>
+        </message>
+        <message>
+            <source>GIF</source>
+            <translation>GIF</translation>
+        </message>
+        <message>
+            <source>MP4</source>
+            <translation>MP4</translation>
+        </message>
+        <message>
+            <source>Microphone disabled</source>
+            <translation>Microphone disabled</translation>
+        </message>
+        <message>
+            <source>Microphone enabled</source>
+            <translation>Microphone enabled</translation>
+        </message>
+        <message>
+            <source>Speaker disabled</source>
+            <translation>Speaker disabled</translation>
+        </message>
+        <message>
+            <source>Speaker enabled</source>
+            <translation>Speaker enabled</translation>
+        </message>
+        <message>
+            <source>WebP</source>
+            <translation>WebP</translation>
+        </message>
+    </context>
+    <context>
         <name>RecordingTrimSession</name>
         <message>
             <source>Choose a different file to preserve the original recording.</source>
@@ -141,6 +184,14 @@
             <translation>%1x</translation>
         </message>
         <message>
+            <source>Pause</source>
+            <translation>Pause</translation>
+        </message>
+        <message>
+            <source>Play</source>
+            <translation>Play</translation>
+        </message>
+        <message>
             <source>Playback and export speed</source>
             <translation>Playback and export speed</translation>
         </message>
@@ -162,7 +213,38 @@
         </message>
     </context>
     <context>
+        <name>RecordingWebcamControl</name>
+        <message>
+            <source>Flip horizontally</source>
+            <translation>Flip horizontally</translation>
+        </message>
+        <message>
+            <source>Flip vertically</source>
+            <translation>Flip vertically</translation>
+        </message>
+        <message>
+            <source>Move webcam</source>
+            <translation>Move webcam</translation>
+        </message>
+        <message>
+            <source>Resize webcam</source>
+            <translation>Resize webcam</translation>
+        </message>
+        <message>
+            <source>Rotate clockwise</source>
+            <translation>Rotate clockwise</translation>
+        </message>
+        <message>
+            <source>Rotate counterclockwise</source>
+            <translation>Rotate counterclockwise</translation>
+        </message>
+    </context>
+    <context>
         <name>ScreenRecordingController</name>
+        <message>
+            <source>A recording was interrupted when Windows ended the session. Recover the saved recording or open its folder.</source>
+            <translation>A recording was interrupted when Windows ended the session. Recover the saved recording or open its folder.</translation>
+        </message>
         <message>
             <source>Keyboard recording failed: %1</source>
             <translation>Keyboard recording failed: %1</translation>
@@ -170,6 +252,18 @@
         <message>
             <source>Motion preview unavailable: %1</source>
             <translation>Motion preview unavailable: %1</translation>
+        </message>
+        <message>
+            <source>Open folder</source>
+            <translation>Open folder</translation>
+        </message>
+        <message>
+            <source>Recording recovery</source>
+            <translation>Recording recovery</translation>
+        </message>
+        <message>
+            <source>Recover</source>
+            <translation>Recover</translation>
         </message>
         <message>
             <source>Screen recording</source>
@@ -190,6 +284,10 @@ Keep this folder to recover the recording.</translation>
             <translation>The recording operation failed</translation>
         </message>
         <message>
+            <source>The webcam could not be initialized.</source>
+            <translation>The webcam could not be initialized.</translation>
+        </message>
+        <message>
             <source>Unable to create the recording directory</source>
             <translation>Unable to create the recording directory</translation>
         </message>
@@ -200,6 +298,10 @@ Keep this folder to recover the recording.</translation>
         <message>
             <source>Unknown recording error</source>
             <translation>Unknown recording error</translation>
+        </message>
+        <message>
+            <source>Webcam unavailable: %1</source>
+            <translation>Webcam unavailable: %1</translation>
         </message>
     </context>
     <context>

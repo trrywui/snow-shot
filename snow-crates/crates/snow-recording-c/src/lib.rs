@@ -50,6 +50,16 @@ fn clear_last_error() {
     });
 }
 
+// Live meters and the current recording backend also use this entry point
+// when the legacy macOS recording interface is disabled.
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub extern "C" fn snow_recording_macos_set_microphone_diagnostic_callback(
+    callback: Option<snow_macos::microphone::MicrophoneDiagnosticCallback>,
+) {
+    snow_macos::microphone::set_diagnostic_callback(callback);
+}
+
 fn parse_capture_backend(value: u8) -> Result<CaptureBackendKind, String> {
     match value {
         0 => Ok(CaptureBackendKind::Auto),
@@ -524,6 +534,13 @@ pub struct SnowCaptureDirectRecordingConfig {
     system_audio_gain_db: i32,
     microphone_gain_db: i32,
     mouse_highlight_radius: u32,
+    webcam_source: *const snow_webcam::Source,
+    webcam_size: u32,
+    webcam_shape: u32,
+    webcam_offset_left: u32,
+    webcam_offset_bottom: u32,
+    record_mouse_scrolling: u32,
+    webcam_orientation: u32,
 }
 
 #[repr(C)]
@@ -533,7 +550,13 @@ struct SnowCaptureDirectRecordingConfigHeader {
     struct_size: u32,
 }
 
-pub const DIRECT_RECORDING_CONFIG_VERSION: u32 = 12;
+pub const DIRECT_RECORDING_CONFIG_VERSION: u32 = 16;
+const DIRECT_RECORDING_CONFIG_V15_FIELDS_SIZE: usize =
+    std::mem::offset_of!(SnowCaptureDirectRecordingConfig, webcam_orientation);
+const DIRECT_RECORDING_CONFIG_V15_SIZE: u32 = (DIRECT_RECORDING_CONFIG_V15_FIELDS_SIZE
+    .div_ceil(std::mem::align_of::<SnowCaptureDirectRecordingConfig>())
+    * std::mem::align_of::<SnowCaptureDirectRecordingConfig>())
+    as u32;
 // Version 8 ended with four padding bytes now occupied by quality.
 const DIRECT_RECORDING_CONFIG_V8_SIZE: u32 = 256;
 const DIRECT_RECORDING_CONFIG_V4_FIELDS_SIZE: usize =
@@ -569,7 +592,13 @@ fn direct_config_size(version: u32) -> Result<u32, String> {
         8 | 9 => Ok(DIRECT_RECORDING_CONFIG_V8_SIZE),
         10 => Ok(std::mem::offset_of!(SnowCaptureDirectRecordingConfig, microphone_gain_db) as u32),
         // Version 12 uses the four tail-padding bytes of the version-11 structure.
-        11 => Ok(272),
+        11 | 12 => Ok(272),
+        13 => Ok(std::mem::offset_of!(SnowCaptureDirectRecordingConfig, webcam_offset_left) as u32),
+        14 => Ok(
+            std::mem::offset_of!(SnowCaptureDirectRecordingConfig, record_mouse_scrolling) as u32,
+        ),
+        // v16 occupies the former v15 tail padding, without changing sizeof.
+        15 => Ok(DIRECT_RECORDING_CONFIG_V15_SIZE),
         DIRECT_RECORDING_CONFIG_VERSION => Ok(DIRECT_RECORDING_CONFIG_SIZE),
         _ => Err(format!(
             "unsupported direct recording config version: {version}"
@@ -904,13 +933,17 @@ fn parse_keyboard_config(
     }
     if config.show_keyboard > 1
         || (config.version >= 7 && config.record_mouse_clicks > 1)
+        || (config.version >= 15 && config.record_mouse_scrolling > 1)
         || (config.version == 2 && config.mouse_trail_duration_ms != 0)
         || (config.version >= 4 && !(32..=128).contains(&config.keyboard_size))
         || config.keyboard_label_count > 256
     {
         return Err("invalid keyboard recording options".into());
     }
-    if config.show_keyboard == 0 && (config.version < 7 || config.record_mouse_clicks == 0) {
+    if config.show_keyboard == 0
+        && (config.version < 7 || config.record_mouse_clicks == 0)
+        && (config.version < 15 || config.record_mouse_scrolling == 0)
+    {
         return Ok(None);
     }
     if config.keyboard_label_count != 0 && config.keyboard_labels.is_null() {
@@ -919,7 +952,7 @@ fn parse_keyboard_config(
     let mut labels = std::collections::BTreeMap::new();
     for index in 0..config.keyboard_label_count as usize {
         let label = unsafe { std::ptr::read_unaligned(config.keyboard_labels.add(index)) };
-        if (label.key_code > 255 && !(0x200..=0x204).contains(&label.key_code))
+        if (label.key_code > 255 && !(0x200..=0x206).contains(&label.key_code))
             || label.utf8_len == 0
             || label.utf8_len > 128
             || label.utf8.is_null()
@@ -1063,7 +1096,31 @@ fn parse_direct_recording_config(
             value => return Err(format!("invalid recording audio mode: {value}")),
         }
     };
+    let orientation = snow_webcam::WebcamOrientation::from_raw(if config.version >= 16 {
+        config.webcam_orientation
+    } else {
+        0
+    })?;
     let direct = DirectRecordingConfig {
+        webcam: if config.version >= 13 {
+            unsafe {
+                snow_webcam::config_from_raw(
+                    config.webcam_source,
+                    config.webcam_size,
+                    config.webcam_shape,
+                )?
+                .map(|mut webcam| {
+                    webcam.style.orientation = orientation;
+                    if config.version >= 14 {
+                        webcam.style.offset_left = config.webcam_offset_left;
+                        webcam.style.offset_bottom = config.webcam_offset_bottom;
+                    }
+                    webcam
+                })
+            }
+        } else {
+            None
+        },
         audio_mode,
         system_audio_gain_db: if config.version >= 11 {
             config.system_audio_gain_db
@@ -1110,6 +1167,7 @@ fn parse_direct_recording_config(
             [0; 4]
         },
         record_mouse_clicks: config.version >= 7 && config.record_mouse_clicks != 0,
+        record_mouse_scrolling: config.version >= 15 && config.record_mouse_scrolling != 0,
         show_keyboard: config.show_keyboard != 0,
         excluded_windows,
         excluded_processes,
@@ -1140,6 +1198,9 @@ unsafe fn read_direct_recording_config(
         DIRECT_RECORDING_CONFIG_V1_FIELDS_SIZE
     } else if header.version == 4 {
         DIRECT_RECORDING_CONFIG_V4_FIELDS_SIZE
+    } else if header.version == 15 {
+        // Do not import the old caller's uninitialized tail padding as orientation.
+        DIRECT_RECORDING_CONFIG_V15_FIELDS_SIZE
     } else {
         required_size as usize
     };
@@ -1379,15 +1440,11 @@ pub unsafe extern "C" fn snow_recording_gpu_probe(
     let config = match unsafe { read_direct_recording_config(config) }
         .and_then(|config| parse_direct_recording_config(&config))
     {
-        Ok(config)
-            if config.prefer_hardware_encoder
-                && config.format == ExportFormat::Mp4
-                && config.codec == VideoCodec::H264 =>
-        {
+        Ok(config) if config.prefer_hardware_encoder && config.format == ExportFormat::Mp4 => {
             config
         }
         Ok(_) => {
-            set_last_error("GPU probe requires hardware H.264 MP4");
+            set_last_error("GPU probe requires hardware H.264 or H.265 MP4");
             return SnowRecordingResult::InvalidArgument;
         }
         Err(error) => {
@@ -1895,12 +1952,17 @@ mod tests {
 
     #[test]
     fn direct_recording_exclusion_abi_layout() {
-        assert_eq!(DIRECT_RECORDING_CONFIG_VERSION, 12);
+        assert_eq!(DIRECT_RECORDING_CONFIG_VERSION, 16);
         assert_eq!(
             std::mem::offset_of!(SnowCaptureDirectRecordingConfig, exclusions),
             192
         );
-        assert_eq!(DIRECT_RECORDING_CONFIG_SIZE, 272);
+        assert_eq!(DIRECT_RECORDING_CONFIG_SIZE, 304);
+        assert_eq!(direct_config_size(15).unwrap(), 304);
+        assert_eq!(direct_config_size(14).unwrap(), 296);
+        assert_eq!(direct_config_size(13).unwrap(), 288);
+        assert_eq!(direct_config_size(12).unwrap(), 272);
+        assert_eq!(direct_config_size(11).unwrap(), 272);
         assert_eq!(direct_config_size(10).unwrap(), 264);
         assert_eq!(direct_config_size(9).unwrap(), 256);
         assert_eq!(
@@ -1910,7 +1972,7 @@ mod tests {
         assert_eq!(direct_config_size(7).unwrap(), 232);
         assert_eq!(direct_config_size(6).unwrap(), 224);
         assert_eq!(DIRECT_RECORDING_CONFIG_V5_SIZE, 192);
-        for version in [5, 6, 7, 8, 9, 10] {
+        for version in [5, 6, 7, 8, 9, 10, 11, 12, 13] {
             let header = SnowCaptureDirectRecordingConfigHeader {
                 version,
                 struct_size: 8,
@@ -2235,6 +2297,21 @@ mod tests {
         );
     }
     #[test]
+    fn scrolling_config_is_independent_and_old_layouts_default_off() {
+        let mut raw = direct_config(c"scroll.mp4");
+        raw.record_mouse_scrolling = 1;
+        let parsed = parse_direct_recording_config(&raw).unwrap();
+        assert!(parsed.record_mouse_scrolling && parsed.keyboard.is_some());
+        assert!(!parsed.record_mouse_clicks && !parsed.show_keyboard);
+        raw.record_mouse_scrolling = 2;
+        assert!(parse_direct_recording_config(&raw).is_err());
+        raw.version = 14;
+        raw.struct_size = direct_config_size(14).unwrap();
+        let old = unsafe { read_direct_recording_config(&raw) }.unwrap();
+        let parsed = parse_direct_recording_config(&old).unwrap();
+        assert!(!parsed.record_mouse_scrolling && parsed.keyboard.is_none());
+    }
+    #[test]
     fn mouse_config_round_trips_and_legacy_callers_default_off() {
         let output = CString::new("mouse.mp4").unwrap();
         let mut raw = direct_config(&output);
@@ -2282,6 +2359,12 @@ mod tests {
 
     pub(super) fn direct_config(output: &CStr) -> SnowCaptureDirectRecordingConfig {
         SnowCaptureDirectRecordingConfig {
+            webcam_source: std::ptr::null(),
+            webcam_size: 150,
+            webcam_shape: 0,
+            webcam_offset_left: 48,
+            webcam_offset_bottom: 48,
+            webcam_orientation: 0,
             exclusions: Default::default(),
             audio_mode: 0,
             system_audio_gain_db: 0,
@@ -2312,6 +2395,7 @@ mod tests {
             mouse_click_rgba: 0xAABBCC80,
             mouse_highlight_rgba: 0,
             record_mouse_clicks: 0,
+            record_mouse_scrolling: 0,
             keyboard_font_family_utf8: std::ptr::null(),
             keyboard_cjk_font_family_utf8: std::ptr::null(),
             keyboard_font_weight: 0,
@@ -2327,6 +2411,68 @@ mod tests {
             keyboard_size: 64,
             loop_animated_images: 1,
         }
+    }
+    #[test]
+    fn webcam_direct_v13_retains_source_and_v12_defaults_disabled() {
+        let output = CString::new("webcam-abi.mp4").unwrap();
+        let source = snow_webcam::Source::with_backend(
+            snow_webcam::CaptureOptions { size: 150, fps: 30 },
+            |_| Err("unused".into()),
+        )
+        .unwrap();
+        let mut raw = direct_config(&output);
+        raw.webcam_source = &source;
+        raw.webcam_size = 500;
+        raw.webcam_offset_left = 300;
+        raw.webcam_offset_bottom = 220;
+        raw.webcam_orientation = 7;
+        raw.webcam_shape = 1;
+        let parsed =
+            parse_direct_recording_config(&unsafe { read_direct_recording_config(&raw) }.unwrap())
+                .unwrap();
+        assert_eq!(parsed.webcam.as_ref().unwrap().style.size, 500);
+        assert_eq!(parsed.webcam.as_ref().unwrap().style.offset_left, 300);
+        assert_eq!(parsed.webcam.as_ref().unwrap().style.offset_bottom, 220);
+        assert_eq!(parsed.webcam.as_ref().unwrap().style.orientation as u32, 7);
+        raw.webcam_orientation = 8;
+        assert!(parse_direct_recording_config(&raw).is_err());
+        raw.version = 15;
+        assert_eq!(
+            unsafe { read_direct_recording_config(&raw) }
+                .unwrap()
+                .webcam_orientation,
+            0
+        );
+        assert_eq!(
+            parse_direct_recording_config(&raw)
+                .unwrap()
+                .webcam
+                .unwrap()
+                .style
+                .orientation as u32,
+            0
+        );
+        raw.version = 16;
+        raw.webcam_orientation = 7;
+        raw.struct_size -= 1;
+        assert!(unsafe { read_direct_recording_config(&raw) }.is_err());
+        raw.version = 13;
+        raw.struct_size = direct_config_size(13).unwrap();
+        let legacy =
+            parse_direct_recording_config(&unsafe { read_direct_recording_config(&raw) }.unwrap())
+                .unwrap();
+        assert_eq!(legacy.webcam.unwrap().style.offset_left, 48);
+        assert_eq!(parsed.webcam.as_ref().unwrap().source, source);
+        raw.webcam_shape = 2;
+        assert!(parse_direct_recording_config(&raw).is_err());
+        raw.version = 12;
+        raw.struct_size = direct_config_size(12).unwrap();
+        assert!(
+            parse_direct_recording_config(&unsafe { read_direct_recording_config(&raw) }.unwrap())
+                .unwrap()
+                .webcam
+                .is_none()
+        );
     }
     #[test]
     fn gpu_probe_rejects_invalid_and_software_configs_before_capture() {
@@ -2400,6 +2546,21 @@ mod tests {
         assert_eq!(parsed.mouse_trail_rgba, [0x11, 0x22, 0x33, 0x44]);
         assert_eq!(parsed.mouse_click_rgba, [0xAA, 0xBB, 0xCC, 0x80]);
     }
+    #[test]
+    fn direct_hevc_hardware_config_preserves_codec_and_preference() {
+        let output = CString::new("hevc.mp4").unwrap();
+        let mut config = direct_config(&output);
+        config.codec = 1;
+        config.encoder_preference = 1;
+        let parsed = parse_direct_recording_config(&config).unwrap();
+        assert_eq!(parsed.codec, VideoCodec::H265);
+        assert!(parsed.prefer_hardware_encoder);
+        config.encoder_preference = 0;
+        let parsed = parse_direct_recording_config(&config).unwrap();
+        assert_eq!(parsed.codec, VideoCodec::H265);
+        assert!(!parsed.prefer_hardware_encoder);
+    }
+
     #[test]
     fn animated_direct_configs_omit_audio() {
         let output = CString::new("recording.webp").unwrap();

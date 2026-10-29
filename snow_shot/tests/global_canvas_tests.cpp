@@ -1,4 +1,6 @@
+#include "canvas_automatic_selection_test_support.h"
 #include "angle_wheel_host_test_support.h"
+#include "canvas_text_editing_preferences_test_support.h"
 #include "../../test-support/canvas_quick_selection_test_support.h"
 #include "snow_shot/presentation/globalcanvascontroller.h"
 #include "snow_shot/presentation/crosshaircursor.h"
@@ -14,10 +16,12 @@
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
 #include "widgets/button.h"
 #include "widgets/color_picker.h"
+#include "widgets/popover.h"
 #include "widgets/select.h"
 #include "widgets/slider.h"
 #include "theme/theme_manager.h"
 #include <QApplication>
+#include <QCursor>
 #include <QDir>
 #include <QLineEdit>
 #include <QFontDatabase>
@@ -28,6 +32,7 @@
 #include <QScreen>
 #include <QScopeGuard>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTranslator>
 #include <qpa/qplatformscreen.h>
 #include <qpa/qwindowsysteminterface.h>
@@ -39,12 +44,17 @@
 #include <QWheelEvent>
 #ifdef Q_OS_MACOS
 #include "../src/platform/macos/capturewindowlayers_p.h"
+#include "safe_area_test_support.h"
 #endif
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #endif
 
 using namespace snow_shot;
+void canvasLaserPointer(QApplication& app);
+#ifdef Q_OS_WIN
+bool nativeCanvasLaserPointer(QApplication& app);
+#endif
 void require(bool condition, const char* message) {
     if (!condition) {
         std::cerr << message << '\n';
@@ -1200,6 +1210,108 @@ void angleCanvasWheel(QApplication& app) {
     controller.shutdown();
 }
 
+void canvasClickThroughToolbarOpacity(QApplication& app) {
+    const QPoint originalCursor = QCursor::pos();
+    const auto restoreCursor = qScopeGuard([&]() { QCursor::setPos(originalCursor); });
+    bool failTransition = false;
+    presentation::GlobalCanvasController controller(
+        nullptr,
+        {[&]() { return app.primaryScreen(); }, [&](QWidget*, bool) { return !failTransition; }});
+    controller.activate();
+    app.processEvents();
+    auto* toolbar = controller.toolbar();
+    auto* toggle = toolbar->palette()->findChild<adqt::widgets::AdButton*>(
+        QStringLiteral("globalCanvasClickThroughButton"));
+    auto* timer =
+        controller.window()->findChild<QTimer*>(QStringLiteral("globalCanvasToolbarOpacityTimer"));
+    require(toggle && timer, "opacity fixture requires the click-through button and hover timer");
+    const QPoint inside = toggle->mapToGlobal(toggle->rect().center());
+    const QPoint outside = toolbar->geometry().topLeft() - QPoint(20, 20);
+    const auto hover = [&](const QPoint& position) {
+        QCursor::setPos(position);
+        require(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection),
+                "toolbar opacity refresh must be deterministic");
+    };
+    const auto requireOpacity = [&](qreal opacity, const char* message) {
+        require(qAbs(toolbar->windowOpacity() - opacity) < 0.01, message);
+        require(controller.window()->windowOpacity() == 1.0,
+                "toolbar fading must preserve the canvas and annotation opacity");
+    };
+    hover(outside);
+    require(!timer->isActive(), "drawing mode does not poll for toolbar hover");
+    requireOpacity(1.0, "drawing toolbar remains opaque away from the pointer");
+    failTransition = true;
+    toggle->click();
+    require(!controller.clickThrough() && !timer->isActive(),
+            "failed click-through entry does not enable toolbar fading");
+    requireOpacity(1.0, "failed click-through entry preserves toolbar opacity");
+    failTransition = false;
+    toggle->click();
+    require(controller.clickThrough() && timer->isActive(),
+            "click-through starts watching hover even without a canvas mouse event");
+    requireOpacity(0.32, "click-through immediately fades a toolbar outside the pointer");
+    hover(inside);
+    requireOpacity(1.0, "entering the click-through toolbar restores full opacity");
+    require(!toolbar->testAttribute(Qt::WA_TransparentForMouseEvents),
+            "the faded toolbar must retain its input controls");
+    hover(outside);
+    requireOpacity(0.32, "leaving the click-through toolbar makes it semi-transparent");
+    // The fixed native frame includes unused transparent space around the rows.
+    const QPoint unused = toolbar->mapToGlobal(QPoint(0, 0));
+    require(!toolbar->containsInteractiveGlobalPoint(unused),
+            "opacity fixture requires unused toolbar frame space");
+    hover(unused);
+    requireOpacity(0.32, "unused toolbar frame space must not count as hovering controls");
+    toolbar->palette()->freeDrawRequested();
+    app.processEvents();
+    auto* style = toolbar->palette()->stylePanel();
+    require(style && style->isVisible(), "opacity fixture requires a visible style row");
+    hover(style->mapToGlobal(style->rect().center()));
+    requireOpacity(1.0, "hovering the secondary style toolbar restores full opacity");
+    {
+        adqt::widgets::AdPopover popover(toolbar);
+        popover.setSourceWidget(toggle);
+        auto* content = new QWidget;
+        content->setFixedSize(160, 80);
+        popover.setContentWidget(content);
+        popover.show();
+        app.processEvents();
+        auto* surface = popover.surfaceWidget();
+        require(surface && surface->isVisible(), "opacity fixture opens an owned toolbar popup");
+        hover(surface->mapToGlobal(surface->rect().center()));
+        requireOpacity(1.0, "hovering an owned popup keeps its toolbar fully opaque");
+        popover.hide();
+    }
+    hover(outside);
+    failTransition = true;
+    controller.activate();
+    require(controller.clickThrough() && timer->isActive(),
+            "failed click-through exit retains hover tracking");
+    requireOpacity(0.32, "failed click-through exit preserves the faded toolbar");
+    hover(inside);
+    requireOpacity(1.0, "hover still restores opacity after a failed mode transition");
+    hover(outside);
+    toolbar->hide();
+    require(!timer->isActive(), "a hidden toolbar stops polling for hover");
+    toolbar->show();
+    require(timer->isActive(), "showing the click-through toolbar resumes hover tracking");
+    requireOpacity(0.32, "showing the toolbar refreshes its opacity from the current pointer");
+    failTransition = false;
+    controller.activate();
+    require(!controller.clickThrough() && !timer->isActive(),
+            "exiting click-through stops hover polling");
+    requireOpacity(1.0, "exiting click-through restores full opacity outside the toolbar");
+    hover(inside);
+    toggle->click();
+    require(controller.clickThrough() && timer->isActive(), "re-enter click-through while hovered");
+    requireOpacity(1.0, "enabling click-through under the pointer keeps the toolbar opaque");
+    controller.shutdown();
+    controller.activate();
+    require(controller.toolbar()->windowOpacity() == 1.0 && !controller.clickThrough(),
+            "a new canvas session starts with an opaque toolbar");
+    controller.shutdown();
+}
+
 void canvasClickThroughButtonStyle(QApplication& app) {
     using adqt::widgets::AdButton;
     using presentation::styles::ThemeMode;
@@ -1285,6 +1397,46 @@ void canvasClickThroughButtonStyle(QApplication& app) {
     controller.shutdown();
 }
 
+#ifdef Q_OS_MACOS
+void canvasSafeAreaChangesPreserveDrawing(QApplication& app) {
+    presentation::GlobalCanvasController controller(
+        nullptr, {[&]() { return app.primaryScreen(); }, [](QWidget*, bool) { return true; }});
+    controller.activate();
+    app.processEvents();
+    auto* window = controller.window();
+    auto* canvas = controller.canvas();
+    canvas->setViewportCamera(237, 159, 1.5);
+    const QTransform camera = canvas->canvasToViewTransform();
+    const QRect geometry = window->geometry();
+    const QCursor idleCursor = canvas->cursor();
+    adqt::widgets::AdColorPicker picker;
+    controller.toolbar()->palette()->canvasColorSamplingRequested(&picker);
+    const QCursor samplingCursor = canvas->cursor();
+    require(samplingCursor.shape() == Qt::BitmapCursor || samplingCursor.shape() == Qt::CrossCursor,
+            "safe-area fixture must start canvas color sampling");
+    safe_area_tests::exercise(*window->windowHandle(), [&](QMargins margins) {
+        require(window->windowHandle()->safeAreaMargins() == margins,
+                "canvas fixture must expose logical safe-area margins");
+        require(window->geometry() == geometry && canvas->geometry() == window->rect(),
+                "safe-area changes must retain the full-screen drawing surface");
+        require(canvas->cursor() == samplingCursor,
+                "safe-area notifications must not cancel color sampling on an unchanged canvas");
+        require(canvas->canvasToViewTransform() == camera,
+                "safe-area changes must preserve the canvas camera and coordinate mapping");
+    });
+    window->resize(window->size() + QSize(20, 30));
+    require(canvas->geometry() == window->rect() && canvas->cursor() == idleCursor,
+            "a real canvas resize must still resize the drawing surface and cancel sampling");
+    const QPointF landmark(17, 19);
+    require(
+        (canvas->canvasToViewTransform().map(landmark) - camera.map(landmark)).manhattanLength() <
+                0.001 &&
+            qAbs(canvas->canvasToViewTransform().m11() - camera.m11()) < 0.001,
+        "a real canvas resize must preserve pan and zoom");
+    controller.shutdown();
+}
+#endif
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
@@ -1309,6 +1461,11 @@ int main(int argc, char** argv) {
                 .success,
             "initialize storage");
 #ifdef Q_OS_MACOS
+    if (app.arguments().contains(QStringLiteral("--safe-area-only"))) {
+        canvasSafeAreaChangesPreserveDrawing(app);
+        storage.shutdown();
+        return 0;
+    }
     if (app.arguments().contains(QStringLiteral("--native-only"))) {
         nativeCanvasLifecycle();
         storage.shutdown();
@@ -1316,6 +1473,11 @@ int main(int argc, char** argv) {
     }
 #endif
 #ifdef Q_OS_WIN
+    if (app.arguments().contains(QStringLiteral("--laser-native-only"))) {
+        const bool success = nativeCanvasLaserPointer(app);
+        storage.shutdown();
+        return success ? 0 : 1;
+    }
     if (app.arguments().contains(QStringLiteral("--native-only"))) {
         nativeInput();
         storage.shutdown();
@@ -1335,8 +1497,18 @@ int main(int argc, char** argv) {
         storage.shutdown();
         return 0;
     }
+    if (app.arguments().contains(QStringLiteral("--click-through-opacity-only"))) {
+        canvasClickThroughToolbarOpacity(app);
+        storage.shutdown();
+        return 0;
+    }
     if (app.arguments().contains(QStringLiteral("--click-through-style-only"))) {
         canvasClickThroughButtonStyle(app);
+        storage.shutdown();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--laser-pointer-only"))) {
+        canvasLaserPointer(app);
         storage.shutdown();
         return 0;
     }
@@ -1347,6 +1519,32 @@ int main(int argc, char** argv) {
     }
     if (app.arguments().contains(QStringLiteral("--right-quick-selection-only"))) {
         canvasRightQuickSelection(app);
+        storage.shutdown();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--automatic-selection-only"))) {
+        canvas_automatic_selection_test::exercise([&](auto verify) {
+            presentation::GlobalCanvasController controller(
+                nullptr,
+                {[&] { return app.primaryScreen(); }, [](QWidget*, bool) { return true; }});
+            controller.activate();
+            require(controller.canvas() != nullptr, "create global canvas");
+            verify(*controller.canvas());
+            controller.shutdown();
+        });
+        storage.shutdown();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--delete-text-after-cursor-only"))) {
+        canvas_text_editing_preferences_test::exercise([&](auto verify) {
+            presentation::GlobalCanvasController controller(
+                nullptr,
+                {[&] { return app.primaryScreen(); }, [](QWidget*, bool) { return true; }});
+            controller.activate();
+            require(controller.canvas() != nullptr, "create global canvas for preferences");
+            verify(*controller.canvas());
+            controller.shutdown();
+        });
         storage.shutdown();
         return 0;
     }
@@ -1426,6 +1624,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     canvasClickThroughButtonStyle(app);
+    canvasLaserPointer(app);
     bool nativeTransparent = false;
     bool failTransition = false;
     int pointerReads = 0;

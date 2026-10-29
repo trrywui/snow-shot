@@ -1,8 +1,16 @@
+use snow_draw_engine_display::FrameView;
 use std::sync::Arc;
 
 use super::*;
 
 impl Engine {
+    pub(crate) fn invalidate_retained_viewports(&mut self) {
+        for slot in self.viewports.values_mut() {
+            if let Some(retained) = &mut slot.retained {
+                retained.get_mut().invalidate_document();
+            }
+        }
+    }
     /// Defer presentation composition until the host has supplied text metrics.
     /// Document/editor queries remain current; patches remain at the previous
     /// published cursor. Scopes nest and must be balanced, including on errors.
@@ -53,6 +61,23 @@ impl Engine {
     }
 
     pub fn create_viewport(&mut self, config: ViewportConfig) -> Result<ViewportId, ErrorCode> {
+        self.create_viewport_with_retention(config, false)
+    }
+
+    /// Create an uncropped, lazily composed viewport for retained renderers.
+    /// Consume this viewport through `acquire_retained_scene_delta`.
+    pub fn create_retained_viewport(
+        &mut self,
+        config: ViewportConfig,
+    ) -> Result<ViewportId, ErrorCode> {
+        self.create_viewport_with_retention(config, true)
+    }
+
+    fn create_viewport_with_retention(
+        &mut self,
+        config: ViewportConfig,
+        retained: bool,
+    ) -> Result<ViewportId, ErrorCode> {
         if !self.session_config_seeded {
             self.editor.set_config(config.engine)?;
             self.session_config_seeded = true;
@@ -65,6 +90,9 @@ impl Engine {
             ViewportSlot {
                 view: EditorViewportState::default(),
                 composer: ViewportComposer::new(),
+                retained: retained.then(|| {
+                    std::cell::RefCell::new(snow_draw_engine_scene::RetainedSceneComposer::new())
+                }),
             },
         );
         self.refresh_viewport(id)?;
@@ -108,12 +136,69 @@ impl Engine {
         self.refresh_single_viewport(id)
     }
 
+    /// Current interaction transform without composing a display scene.
+    pub fn viewport_frame(&self, id: ViewportId) -> Result<FrameView, ErrorCode> {
+        let state = self.editor.view_state(&self.viewport_slot(id)?.view);
+        Ok(FrameView {
+            surface: state.surface,
+            camera: state.camera,
+            clear_color: state.clear_color,
+        })
+    }
+
     pub fn acquire_patch(
         &self,
         id: ViewportId,
         cursor: Option<PatchCursor>,
     ) -> Result<Arc<ViewportPatch>, ErrorCode> {
+        if self.viewport_slot(id)?.retained.is_some() {
+            return Err(ErrorCode::InvalidState);
+        }
         Ok(self.viewport_slot(id)?.composer.acquire_patch(cursor))
+    }
+
+    /// Obtain all document content on reset, or sparse ID-keyed updates since
+    /// `cursor`. Camera/overlay changes never rebuild committed scene nodes.
+    /// End any presentation-update scope before publishing a frame.
+    pub fn acquire_retained_scene_delta(
+        &self,
+        id: ViewportId,
+        cursor: Option<u64>,
+    ) -> Result<Arc<snow_draw_engine_display::RetainedSceneDelta>, ErrorCode> {
+        self.prepare_retained_viewport(id)?;
+        Ok(self
+            .viewport_slot(id)?
+            .retained
+            .as_ref()
+            .ok_or(ErrorCode::InvalidState)?
+            .borrow()
+            .acquire(cursor))
+    }
+
+    pub fn retained_scene_diagnostics(
+        &self,
+        id: ViewportId,
+    ) -> Result<snow_draw_engine_display::RetainedSceneDiagnostics, ErrorCode> {
+        Ok(self
+            .viewport_slot(id)?
+            .retained
+            .as_ref()
+            .ok_or(ErrorCode::InvalidState)?
+            .borrow()
+            .diagnostics())
+    }
+
+    fn prepare_retained_viewport(&self, id: ViewportId) -> Result<(), ErrorCode> {
+        if self.presentation_update_depth != 0 {
+            return Err(ErrorCode::InvalidState);
+        }
+        let slot = self.viewports.get(&id).ok_or(ErrorCode::NotFound)?;
+        slot.retained
+            .as_ref()
+            .ok_or(ErrorCode::InvalidState)?
+            .borrow_mut()
+            .refresh(&self.scene_cache, &self.model, &self.editor, &slot.view);
+        Ok(())
     }
 
     pub(super) fn refresh_single_viewport(
@@ -125,6 +210,11 @@ impl Engine {
             self.pending_viewports.insert(id);
             return Ok(MutationResult::default());
         }
+        if self.viewport_slot(id)?.retained.is_some() {
+            return Ok(MutationResult {
+                changed_viewports: vec![id],
+            });
+        }
         self.refresh_viewport(id)?;
         let after = self.viewport_slot(id)?.composer.current_cursor();
         Ok(MutationResult {
@@ -134,6 +224,9 @@ impl Engine {
 
     pub(super) fn refresh_viewport(&mut self, id: ViewportId) -> Result<(), ErrorCode> {
         let slot = self.viewports.get_mut(&id).ok_or(ErrorCode::NotFound)?;
+        if slot.retained.is_some() {
+            return Ok(());
+        }
         slot.composer
             .refresh(&self.scene_cache, &self.model, &mut self.editor, &slot.view);
         Ok(())

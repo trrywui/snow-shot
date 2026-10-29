@@ -74,6 +74,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -368,7 +369,11 @@ ScreenshotRecognitionWindow::ScreenshotRecognitionWindow(
                           : Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint),
       m_actions(std::move(actions)), m_contentContainer(new QWidget(this)),
       m_stack(new QStackedLayout(m_contentContainer)),
-      m_textLayer(new ScreenshotOcrTextLayer(this)), m_presentationMode(presentationMode) {
+      m_textLayer(new ScreenshotOcrTextLayer(
+          this, presentationMode == PresentationMode::EmbeddedChild
+                    ? ScreenshotOcrTextLayer::HighlightingResolution::Image
+                    : ScreenshotOcrTextLayer::HighlightingResolution::Device)),
+      m_presentationMode(presentationMode) {
     if (shortcutManager == nullptr) {
         m_ownedShortcutManager = std::make_unique<snow_shot::presentation::WindowShortcutManager>();
         shortcutManager = m_ownedShortcutManager.get();
@@ -717,11 +722,11 @@ void ScreenshotRecognitionWindow::updateOriginalImagePreview() {
     }
 }
 
-std::optional<ScreenshotRecognitionImageSnapshot>
-ScreenshotRecognitionWindow::imageSnapshot(QImage image, const QRectF& canvasRect,
-                                           QImage filteredImage, const QRectF& filteredCanvasRect,
-                                           const ScreenshotResultStyle& style) const {
-    if (m_showOriginalImage || m_stack->currentWidget() != m_textLayer || image.isNull())
+std::optional<ScreenshotRecognitionImageSnapshot> ScreenshotRecognitionWindow::imageSnapshot(
+    QImage image, const QRectF& canvasRect, QImage filteredImage, const QRectF& filteredCanvasRect,
+    const ScreenshotResultStyle& style, bool includeHiddenContent) const {
+    if ((!includeHiddenContent && m_showOriginalImage) || m_stack->currentWidget() != m_textLayer ||
+        image.isNull())
         return std::nullopt;
     ScreenshotRecognitionImageSnapshot snapshot;
     snapshot.image = std::move(image);
@@ -734,6 +739,37 @@ ScreenshotRecognitionWindow::imageSnapshot(QImage image, const QRectF& canvasRec
     snapshot.textColor = m_textLayer->textColor();
     snapshot.resultStyle = style;
     return snapshot;
+}
+
+void ScreenshotRecognitionWindow::setTranslationClipboardProvider(
+    std::function<bool()> active, std::function<std::unique_ptr<QMimeData>()> provider) {
+    m_translationCopyActive = std::move(active);
+    m_translationClipboardProvider = std::move(provider);
+}
+
+QImage ScreenshotRecognitionWindow::translationDocumentImage() const {
+    if (!m_textEditor || m_textEditor->document()->isEmpty())
+        return {};
+    // Clone the document so layout and painting cannot alter the live editor or its history.
+    const std::unique_ptr<QTextDocument> document(m_textEditor->document()->clone());
+    document->setTextWidth(std::max(1, m_textEditor->viewport()->width()));
+    const QSizeF size = document->documentLayout()->documentSize();
+    const qreal dpr = m_textEditor->devicePixelRatioF();
+    if (!std::isfinite(size.width()) || !std::isfinite(size.height()) || size.width() <= 0 ||
+        size.height() <= 0 || size.width() * dpr > std::numeric_limits<int>::max() ||
+        size.height() * dpr > std::numeric_limits<int>::max())
+        return {};
+    QImage image(QSize(qCeil(size.width() * dpr), qCeil(size.height() * dpr)),
+                 QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull())
+        return {};
+    image.setDevicePixelRatio(dpr);
+    image.fill(m_textEditorContainer->palette().window().color());
+    QPainter painter(&image);
+    QAbstractTextDocumentLayout::PaintContext context;
+    context.palette = m_textEditor->palette();
+    document->documentLayout()->draw(&painter, context);
+    return image;
 }
 
 QImage ScreenshotRecognitionWindow::printViewportSnapshot(QImage background,
@@ -936,6 +972,20 @@ bool ScreenshotRecognitionWindow::textSelectionActive() const {
 }
 
 std::unique_ptr<QMimeData> ScreenshotRecognitionWindow::textSelectionClipboardMimeData() const {
+    if (m_textEditor && m_stack->currentWidget() == m_textEditorContainer) {
+        const auto cursor = m_textEditor->textCursor();
+        if (!cursor.hasSelection())
+            return {};
+        auto mime = std::make_unique<QMimeData>();
+#if SNOW_SHOT_ENABLE_LATEX_RECOGNITION
+        if (m_latexDocument) {
+            mime->setText(currentLatexSource(cursor.selectionStart(), cursor.selectionEnd()));
+            return mime;
+        }
+#endif
+        mime->setText(QTextDocumentFragment(cursor).toPlainText());
+        return mime;
+    }
     if (m_formattedTextLayer && m_stack->currentWidget() == m_formattedTextLayer) {
         const auto cursor = m_formattedTextLayer->textCursor();
         if (!cursor.hasSelection())
@@ -946,7 +996,25 @@ std::unique_ptr<QMimeData> ScreenshotRecognitionWindow::textSelectionClipboardMi
         mime->setHtml(fragment.toHtml());
         return mime;
     }
-    if (!m_ocrPresentation || !m_ocrPresentation->hasTextSelection())
+#if SNOW_SHOT_ENABLE_QR_RECOGNITION || SNOW_SHOT_ENABLE_LATEX_RECOGNITION
+    if (m_qrBrowser && m_stack->currentWidget() == m_qrBrowser) {
+        const auto cursor = m_qrBrowser->textCursor();
+        if (!cursor.hasSelection())
+            return {};
+        auto mime = std::make_unique<QMimeData>();
+        const qsizetype start = m_qrSourceOffsets.at(cursor.selectionStart());
+        const qsizetype end = m_qrSourceOffsets.at(cursor.selectionEnd());
+        mime->setText(m_qrSource.mid(start, end - start));
+        return mime;
+    }
+#endif
+#if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
+    if (m_tableEditor && m_stack->currentWidget() == m_tableEditor &&
+        m_tableEditor->selectedRange().isValid())
+        return m_tableEditor->clipboardMimeData();
+#endif
+    if (m_stack->currentWidget() != m_textLayer || !m_ocrPresentation ||
+        !m_ocrPresentation->hasTextSelection())
         return {};
     auto mime = std::make_unique<QMimeData>();
     const snow_shot::storage::TextRecognitionSettings settings;
@@ -1125,6 +1193,19 @@ void ScreenshotRecognitionWindow::redoTableEdit() {
         m_tableEditor->redoEdit();
     }
 #endif
+}
+
+QVector<int> ScreenshotRecognitionWindow::tableColumnWidths() const {
+    QVector<int> widths;
+#if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
+    if (m_tableEditor && m_tableEditor->model()) {
+        const int columns = m_tableEditor->model()->columnCount();
+        widths.reserve(columns);
+        for (int column = 0; column < columns; ++column)
+            widths.append(m_tableEditor->columnWidth(column));
+    }
+#endif
+    return widths;
 }
 
 void ScreenshotRecognitionWindow::commitActiveTableEdit() {
@@ -1778,6 +1859,8 @@ void ScreenshotRecognitionWindow::showQrContents(const QStringList& contents, bo
                                                : tr("LaTeX formula source"));
     QTextDocument* document = m_qrBrowser->document();
     document->clear();
+    m_qrSource = contents.join(QLatin1Char('\n'));
+    m_qrSourceOffsets = {0};
     document->setDocumentMargin(0.0);
     QFont browserFont = theme.appFont.family().isEmpty() ? m_qrBrowser->font() : theme.appFont;
     browserFont.setPixelSize(qRound(theme.fontSize));
@@ -1795,8 +1878,19 @@ void ScreenshotRecognitionWindow::showQrContents(const QStringList& contents, bo
     for (qsizetype index = 0; index < contents.size(); ++index) {
         if (index > 0) {
             cursor.insertBlock();
+            m_qrSourceOffsets.append(m_qrSourceOffsets.constLast() + 1);
         }
         const QString content = contents.at(index);
+        const qsizetype sourceOffset = m_qrSourceOffsets.constLast();
+        for (qsizetype position = 0; position < content.size(); ++position) {
+            // QTextDocument stores CRLF as one position and preserves other character
+            // positions. Map each payload separately from the inserted separator.
+            if (content.at(position) == QLatin1Char('\r') && position + 1 < content.size() &&
+                content.at(position + 1) == QLatin1Char('\n')) {
+                ++position;
+            }
+            m_qrSourceOffsets.append(sourceOffset + position + 1);
+        }
         const QString trimmed = content.trimmed();
         QUrl url;
         if (detectLinks && !trimmed.isEmpty() && isHttpUrl(trimmed, &url)) {
@@ -1832,6 +1926,8 @@ void ScreenshotRecognitionWindow::clearQrContents() {
     m_stack->removeWidget(m_qrBrowser);
     delete m_qrBrowser;
     m_qrBrowser = nullptr;
+    m_qrSource.clear();
+    m_qrSourceOffsets.clear();
     m_stack->setCurrentWidget(m_textLayer);
 #endif
 }
@@ -1930,6 +2026,19 @@ bool ScreenshotRecognitionWindow::copyVisibleContentToClipboard() {
         return false;
     }
 
+    if (m_translationCopyActive && m_translationCopyActive() && m_translationClipboardProvider) {
+        auto mime = m_translationClipboardProvider();
+        if (!mime)
+            return false;
+        clipboard->setMimeData(mime.release());
+        return true;
+    }
+
+    if (auto selected = textSelectionClipboardMimeData()) {
+        clipboard->setMimeData(selected.release());
+        return true;
+    }
+
 #if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
     if (m_tableEditor != nullptr) {
         return m_tableEditor->copySelectionToClipboard();
@@ -1954,10 +2063,8 @@ bool ScreenshotRecognitionWindow::copyVisibleContentToClipboard() {
     }
 #if SNOW_SHOT_ENABLE_QR_RECOGNITION || SNOW_SHOT_ENABLE_LATEX_RECOGNITION
     else if (m_qrBrowser != nullptr) {
-        contentAvailable = true;
-        const QTextCursor cursor = m_qrBrowser->textCursor();
-        text = cursor.hasSelection() ? QTextDocumentFragment(cursor).toPlainText()
-                                     : m_qrBrowser->toPlainText();
+        clipboard->setText(m_qrSource);
+        return true;
     }
 #endif
     else if (m_ocrPresentation != nullptr) {
@@ -2051,13 +2158,18 @@ void ScreenshotRecognitionWindow::showTextEditorContextMenu(const QPoint& global
 
     const bool hasSelection = m_textEditor->textCursor().hasSelection();
     const bool writable = !m_textEditor->isReadOnly();
-    copy->setEnabled(hasSelection);
+    const bool translationCopy = m_translationCopyActive && m_translationCopyActive();
+    copy->setEnabled(hasSelection || (translationCopy && !m_textEditor->document()->isEmpty()));
     cut->setEnabled(writable && hasSelection);
     paste->setEnabled(writable && m_textEditor->canPaste());
     remove->setEnabled(writable && hasSelection);
     selectAll->setEnabled(!m_textEditor->document()->isEmpty());
 
     connect(copy, &QAction::triggered, m_textEditor, [this]() {
+        if (m_translationCopyActive && m_translationCopyActive()) {
+            static_cast<void>(copyVisibleContentToClipboard());
+            return;
+        }
 #if SNOW_SHOT_ENABLE_LATEX_RECOGNITION
         if (m_latexDocument) {
             static_cast<void>(copyVisibleContentToClipboard());

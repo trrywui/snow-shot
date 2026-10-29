@@ -1,9 +1,9 @@
 #include "snow_shot/runtime/runtimeactivitytracker.h"
 #include "snow_shot/platform/applicationqos.h"
 #include "snow_shot/storage/applicationstorage.h"
+#include "snow_shot/app/distribution.h"
+#include "snow_shot/app/edition.h"
 #include <QTimer>
-
-#include "snow_shot/presentation/editionfeatures.h"
 
 #include "snow_shot/storage/capturehistoryrepository.h"
 #include "snow_shot/storage/pinnedwindowrepository.h"
@@ -152,14 +152,27 @@ ApplicationStorage::resolveDirectory(const StorageInitializationOptions& options
 #endif
     }
     executableDirectory = QDir::cleanPath(executableDirectory);
-    const QString appDataDirectory =
-        QDir::cleanPath(options.appDataDirectory.isEmpty()
-                            ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                            : options.appDataDirectory);
+    const QString requestedAppData =
+        options.appDataDirectory.isEmpty()
+            ? (app::distribution::isStoreManaged()
+                   ? app::distribution::writableDataDirectory()
+                   : QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+            : options.appDataDirectory;
+    if (requestedAppData.isEmpty()) {
+        StorageDirectorySelection unavailable;
+        unavailable.executableDirectory = executableDirectory;
+        unavailable.fallbackReason = QCoreApplication::translate(
+            "StorageDirectoryChange", "The storage directory path is empty");
+        return unavailable;
+    }
+    const QString appDataDirectory = QDir::cleanPath(requestedAppData);
 
     bool markerPresent = false;
     QString markerError;
-    QString markerDirectory = markerSelection(executableDirectory, &markerPresent, &markerError);
+    QString markerDirectory =
+        app::distribution::isStoreManaged()
+            ? QString()
+            : markerSelection(executableDirectory, &markerPresent, &markerError);
     bool savedSelection = false;
 #ifdef Q_OS_WIN
     QString recoveryWarning;
@@ -234,9 +247,12 @@ StorageResult ApplicationStorage::initialize(const StorageInitializationOptions&
     m_configuration.reset();
     const auto selection = resolveDirectory(options);
     m_executableDirectory = selection.executableDirectory;
-    m_bootstrapDirectory = options.appDataDirectory.isEmpty()
-                               ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                               : options.appDataDirectory;
+    m_bootstrapDirectory =
+        options.appDataDirectory.isEmpty()
+            ? (app::distribution::isStoreManaged()
+                   ? app::distribution::writableDataDirectory()
+                   : QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+            : options.appDataDirectory;
     const QString effectiveDirectory = selection.effectiveDirectory;
     m_status = {};
     m_status.requestedDirectory = selection.requestedDirectory;
@@ -251,7 +267,9 @@ StorageResult ApplicationStorage::initialize(const StorageInitializationOptions&
             : QDir(effectiveDirectory).filePath(QStringLiteral("config.json"));
     m_configuration = std::make_unique<ConfigurationStore>(
         configurationFile, m_status.readAvailable, m_status.writeAvailable,
-        options.debounceMilliseconds, this);
+        options.debounceMilliseconds, this,
+        selection.mode == StorageMode::Portable ? ConfigurationDefaults::Portable
+                                                : ConfigurationDefaults::Standard);
 #ifdef Q_OS_MACOS
     platform::initializeApplicationQoS(
         platform::applicationQoSForValue(
@@ -327,11 +345,11 @@ StorageResult ApplicationStorage::initialize(const StorageInitializationOptions&
     static_cast<void>(m_pinnedWindows->setPolicy(pinnedWindowPolicy(), false));
     m_pinnedWindows->setCompressionLevel(
         m_configuration->value(QStringLiteral("pinned_history/compression_level")).toString());
-    auto* pinnedCleanupTimer = new QTimer(m_configuration.get());
-    pinnedCleanupTimer->setInterval(60000);
-    connect(pinnedCleanupTimer, &QTimer::timeout, this,
+    m_pinnedCleanupTimer = std::make_unique<QTimer>(this);
+    m_pinnedCleanupTimer->setInterval(60000);
+    connect(m_pinnedCleanupTimer.get(), &QTimer::timeout, this,
             [this] { requestPinnedWindowRetentionCleanup(false); });
-    pinnedCleanupTimer->start();
+    m_pinnedCleanupTimer->start();
     connect(
         m_configuration.get(), &ConfigurationStore::valueChanged, this,
         [this](const QString& key, const QJsonValue&) {
@@ -366,6 +384,9 @@ StorageResult ApplicationStorage::initialize(const StorageInitializationOptions&
                 }
             });
     if (QCoreApplication::instance() != nullptr) {
+        // Post routines also run for hosts that return without entering exec(), before
+        // Qt destroys its dispatcher. Repository consumers can still finish destruction.
+        qAddPostRoutine(&ApplicationStorage::releaseApplicationResources);
         m_aboutToQuitConnection =
             connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, [this]() {
                 // Consumers still hold repository pointers while their destructors run.
@@ -443,8 +464,23 @@ StorageResult ApplicationStorage::flushNow() {
 }
 
 void ApplicationStorage::shutdown() {
+    qRemovePostRoutine(&ApplicationStorage::releaseApplicationResources);
     disconnect(m_aboutToQuitConnection);
     m_aboutToQuitConnection = {};
+    drainRuntimeWork();
+    m_initialized = false;
+}
+
+void ApplicationStorage::releaseApplicationResources() {
+    // Unlike explicit shutdown, application teardown must not make settings reads
+    // reinitialize and replace repositories still held by consumer destructors.
+    instance().drainRuntimeWork();
+}
+
+void ApplicationStorage::drainRuntimeWork() {
+    // Periodic admission ends with storage, while repositories remain available to consumers.
+    // An active timer must not survive until this singleton's post-application destruction.
+    m_pinnedCleanupTimer.reset();
     if (m_directoryWorker.valid())
         m_directoryWorker.wait();
     if (!m_initialized) {
@@ -477,7 +513,6 @@ void ApplicationStorage::shutdown() {
         m_status.appUsage = m_usageTracker->usage();
         m_usageTracker.reset();
     }
-    m_initialized = false;
 }
 
 ConfigurationStore& ApplicationStorage::configuration() {

@@ -1,0 +1,6 @@
+[build]
+target-dir = "target/cargo"
+rustflags = ["-Dwarnings"]
+
+[alias]
+xtask = "run --package xtask --"

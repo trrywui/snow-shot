@@ -812,7 +812,20 @@ def screenshot_contract_outcomes(client, directory, resources=False):
             assert completed["result"]["result"]["fixture_provider"] is True
         if name == "snow_shot_screenshot_draw_template":
             template = json.loads(envelope["result"]["payload"])
-            assert template["schemaVersion"] == 1 and len(template["elements"]) == 1
+            assert len(template["elements"]) == 1, template
+            # The drawing engine owns template versions. Verify that its exported
+            # payload remains editable through the public roundtrip instead of
+            # pinning an obsolete storage schema version here.
+            inserted = client.tool(name, {
+                "session_id": envelope["session_id"], "expected_revision": envelope["revision"],
+                "action": "insert", "payload": envelope["result"]["payload"],
+            })
+            assert inserted["result"]["document_revision"] > envelope["result"]["document_revision"], inserted
+            reexported = client.tool(name, {
+                "session_id": inserted["session_id"], "expected_revision": inserted["revision"],
+                "action": "export",
+            })
+            assert len(json.loads(reexported["result"]["payload"])["elements"]) == 1, reexported
         if name == "snow_shot_screenshot_scroll_once":
             assert envelope["result"]["scroll_steps"] == 1
         if name == "snow_shot_screenshot_edit_recognition":

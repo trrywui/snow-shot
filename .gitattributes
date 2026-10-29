@@ -5,3 +5,4 @@
 /scripts/build-toolchain.json text eol=lf
 /scripts/static-qt-features.json text eol=lf
 /scripts/qtbase-timezone-without-cldr.patch text eol=lf
+/scripts/qtbase-graphicsview-exposed-rect.patch text eol=lf

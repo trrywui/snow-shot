@@ -13,7 +13,6 @@ Options:\n\
       --min-confidence <VALUE>     Required confidence in [0, 1] (default: 0.65)\n\
       --tile-size <PIXELS>         Region tile size (default: 32)\n\
       --max-features <COUNT>       Selected motion-feature limit (default: 2500)\n\
-      --learning-rate <VALUE>      Temporal learning rate in (0, 1] (default: 0.2)\n\
   -h, --help                       Show this help";
 
 #[derive(Debug, PartialEq)]
@@ -112,12 +111,6 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                     "--max-features",
                 )?;
             }
-            "--learning-rate" => {
-                estimator.temporal_learning_rate = parse_f32(
-                    &option_value(&mut arguments, "--learning-rate")?,
-                    "--learning-rate",
-                )?;
-            }
             _ if text.starts_with("--output=") => {
                 output = PathBuf::from(&text["--output=".len()..]);
             }
@@ -149,12 +142,6 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Comm
                 estimator.max_features = parse_u32(
                     &OsString::from(&text["--max-features=".len()..]),
                     "--max-features",
-                )?;
-            }
-            _ if text.starts_with("--learning-rate=") => {
-                estimator.temporal_learning_rate = parse_f32(
-                    &OsString::from(&text["--learning-rate=".len()..]),
-                    "--learning-rate",
                 )?;
             }
             _ if text.starts_with('-') => bail!("unknown option {text:?}\n\n{USAGE}"),
@@ -228,7 +215,6 @@ mod tests {
             "--tile-size",
             "48",
             "--max-features=3000",
-            "--learning-rate=0.1",
             "one.png",
             "two.png",
         ]))
@@ -242,8 +228,17 @@ mod tests {
         assert_eq!(parsed.estimator.min_confidence, 0.7);
         assert_eq!(parsed.estimator.tile_size, 48);
         assert_eq!(parsed.estimator.max_features, 3000);
-        assert_eq!(parsed.estimator.temporal_learning_rate, 0.1);
         assert_eq!(parsed.inputs.len(), 2);
+    }
+
+    #[test]
+    fn rejects_removed_learning_rate_option() {
+        for arguments in [
+            vec!["--learning-rate", "0.2", "one.png", "two.png"],
+            vec!["--learning-rate=0.2", "one.png", "two.png"],
+        ] {
+            assert!(parse_arguments(args(&arguments)).is_err());
+        }
     }
 
     #[test]

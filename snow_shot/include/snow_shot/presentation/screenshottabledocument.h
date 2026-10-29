@@ -82,6 +82,7 @@ class ScreenshotTableDocument final {
     bool clear(const ScreenshotTableRange& range);
 
     [[nodiscard]] QString toHtml() const;
+    [[nodiscard]] QByteArray contentCheckpoint() const;
     [[nodiscard]] QString toHtml(const ScreenshotTableRange& range) const;
     [[nodiscard]] QString toPlainText() const;
     [[nodiscard]] QString toPlainText(const ScreenshotTableRange& range) const;
@@ -113,6 +114,7 @@ class ScreenshotTableDocument final {
     void splitAnchor(int row, int column, bool headerRow);
 
     QVector<QVector<Slot>> m_slots;
+    mutable QByteArray m_contentCheckpoint;
 };
 
 #endif // SNOW_SHOT_ENABLE_TABLE_RECOGNITION

@@ -3,6 +3,7 @@
 #include "snow_canvas_display_item.h"
 #include "snow_canvas_filter_render.h"
 #include <QPainterPath>
+#include <QRegion>
 #include <cstdint>
 #include <vector>
 
@@ -55,6 +56,17 @@ struct SceneExecutionPlan {
         return restorations[static_cast<std::size_t>(restorationForItem[index])];
     }
 };
+
+struct SceneItemDamage {
+    std::uint32_t index = 0;
+    QRegion region;
+};
+
+// Propagate source damage in paint order. Item damage is ordered by index and
+// belongs to ordinary drawables (for example lenses sampling changed originals).
+// Sibling filters read one entering source; only later passes see their outputs.
+QRegion sceneDamageThroughFilters(const SceneExecutionPlan& plan, const QRegion& backdropDamage,
+                                  const std::vector<SceneItemDamage>& itemDamage = {});
 
 // Used only for direct callers supplying a complete, uncropped ordered scene.
 std::vector<SnowSceneRenderRun> buildUnculledRenderPlan(const SnowCanvasSceneItem* items,

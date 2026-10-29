@@ -9,6 +9,10 @@
 #include <QMessageBox>
 #include <QTemporaryFile>
 #if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
+#include <QDesktopServices>
+#include <QTemporaryDir>
+#include <QUrl>
+#include <QUuid>
 #include <QScopeGuard>
 #include <QXmlStreamWriter>
 #include <mz.h>
@@ -17,6 +21,7 @@
 #include <mz_zip.h>
 #include <mz_zip_rw.h>
 #include <algorithm>
+#include <cmath>
 #endif
 
 namespace {
@@ -58,7 +63,8 @@ QString spreadsheetText(const QString& text) {
     return result;
 }
 
-QByteArray tableWorkbook(const ScreenshotTableDocument& document) {
+QByteArray tableWorkbook(const ScreenshotTableDocument& document,
+                         const QVector<int>& columnWidths) {
     if (document.empty() || document.rowCount() > 1048576 || document.columnCount() > 16384)
         return {};
     void* stream = mz_stream_mem_create();
@@ -88,6 +94,10 @@ QByteArray tableWorkbook(const ScreenshotTableDocument& document) {
         mz_zip_file entry{};
         entry.filename = name;
         entry.compression_method = MZ_COMPRESS_METHOD_DEFLATE;
+        // The workbook fits a 32-bit memory stream. Unknown entry sizes make minizip emit
+        // ZIP64 local headers even for tiny parts, which older Excel versions reject.
+        entry.uncompressed_size = bytes.size();
+        entry.zip64 = MZ_ZIP64_DISABLE;
         return mz_zip_writer_add_buffer(writer, bytes.constData(),
                                         static_cast<int32_t>(bytes.size()), &entry) == MZ_OK;
     };
@@ -152,6 +162,7 @@ QByteArray tableWorkbook(const ScreenshotTableDocument& document) {
         !addXml("xl/styles.xml", u"styleSheet", spreadsheetNamespace, [](QXmlStreamWriter& xml) {
             xml.writeStartElement(u"fonts");
             xml.writeAttribute(u"count", u"2");
+            // Preserve viewer-selected fonts; column sizing must not change cell typography.
             xml.writeEmptyElement(u"font");
             xml.writeStartElement(u"font");
             xml.writeEmptyElement(u"b");
@@ -209,6 +220,29 @@ QByteArray tableWorkbook(const ScreenshotTableDocument& document) {
                     xml.writeAttribute(u"ref", QStringLiteral("A1:") +
                                                    cellReference(document.rowCount() - 1,
                                                                  document.columnCount() - 1));
+                    if (!columnWidths.isEmpty()) {
+                        xml.writeStartElement(u"cols");
+                        for (int column = 0;
+                             column < document.columnCount() && column < columnWidths.size();
+                             ++column) {
+                            const int pixels = columnWidths.at(column);
+                            if (pixels <= 0)
+                                continue;
+                            // OOXML stores the padded width in 1/256 digit-width units.
+                            // QTableView widths already include padding; use logical pixels,
+                            // without multiplying by the screen's device pixel ratio.
+                            // Use a 7-pixel reference digit width without forcing a cell font.
+                            // The viewer's default font can affect the final rendered width.
+                            const double width =
+                                std::min(255.0, std::floor(pixels * 256.0 / 7.0) / 256.0);
+                            xml.writeEmptyElement(u"col");
+                            xml.writeAttribute(u"min", QString::number(column + 1));
+                            xml.writeAttribute(u"max", QString::number(column + 1));
+                            xml.writeAttribute(u"width", QString::number(width, 'f', 8));
+                            xml.writeAttribute(u"customWidth", u"1");
+                        }
+                        xml.writeEndElement();
+                    }
                     xml.writeStartElement(u"sheetData");
                     QStringList merges;
                     for (int row = 0; row < document.rowCount(); ++row) {
@@ -366,6 +400,34 @@ bool ScreenshotRecognitionFileExport::confirmOverwrite(QWidget* owner, const QSt
     return dialog.exec() == QMessageBox::Yes;
 }
 
+#if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
+ScreenshotRecognitionFileSaveResult ScreenshotRecognitionFileExport::openTemporaryTable(
+    const ScreenshotRecognitionFileSnapshot& snapshot, std::function<bool(const QUrl&)> openUrl) {
+    if (snapshot.kind != ScreenshotRecognitionFileKind::Table || !snapshot.hasContent())
+        return {{},
+                message(QT_TRANSLATE_NOOP("ScreenshotRecognitionFileExport",
+                                          "No recognition result is available to save"))};
+    QTemporaryDir directory(
+        QDir(QDir::tempPath()).filePath(QStringLiteral("SnowShot-table-XXXXXX")));
+    if (!directory.isValid())
+        return {{},
+                message(QT_TRANSLATE_NOOP("ScreenshotRecognitionFileExport",
+                                          "The temporary directory could not be created"))};
+    const QString fileName =
+        QStringLiteral("Table-%1.xlsx").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    const auto result = saveToPath(snapshot, directory.filePath(fileName));
+    if (!result.succeeded())
+        return result;
+    const QUrl url = QUrl::fromLocalFile(result.path);
+    if (!(openUrl ? openUrl(url) : QDesktopServices::openUrl(url)))
+        return {{},
+                message(QT_TRANSLATE_NOOP("ScreenshotRecognitionFileExport",
+                                          "The spreadsheet file could not be opened"))};
+    directory.setAutoRemove(false);
+    return result;
+}
+#endif
+
 ScreenshotRecognitionFileSaveResult
 ScreenshotRecognitionFileExport::saveToPath(const ScreenshotRecognitionFileSnapshot& snapshot,
                                             const QString& path, bool allowOverwrite) {
@@ -399,7 +461,7 @@ ScreenshotRecognitionFileExport::saveToPath(const ScreenshotRecognitionFileSnaps
     QByteArray bytes;
 #if SNOW_SHOT_ENABLE_TABLE_RECOGNITION
     if (snapshot.kind == ScreenshotRecognitionFileKind::Table) {
-        bytes = tableWorkbook(*snapshot.table);
+        bytes = tableWorkbook(*snapshot.table, snapshot.tableColumnWidths);
         if (bytes.isEmpty())
             return {{},
                     message(QT_TRANSLATE_NOOP("ScreenshotRecognitionFileExport",

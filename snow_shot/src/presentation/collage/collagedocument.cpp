@@ -1319,15 +1319,15 @@ qint64 collageImageImportBytes(QSize size, QString* error) {
         report(error, preparationError());
         return 0;
     }
-    const qint64 pixels = qint64(size.width()) * size.height();
-    if (pixels > 64'000'000) {
+    qint64 bytes = 0;
+    if (!outputBytes(size, &bytes)) {
         report(error, QCoreApplication::translate(
                           "CollageDocument",
                           "This collage requires too much temporary memory. Try fewer images "
                           "or smaller image sizes."));
         return 0;
     }
-    return pixels * 8;
+    return bytes * 2;
 }
 
 QImage captureCollageImage(QSize size, const std::function<QImage()>& capture, QString* error) {

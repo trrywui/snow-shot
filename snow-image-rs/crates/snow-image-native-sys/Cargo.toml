@@ -1,0 +1,17 @@
+[package]
+name = "snow-image-native-sys"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+links = "snow_image_native"
+build = "build.rs"
+
+[features]
+default = ["native-backends"]
+native-backends = []
+
+[build-dependencies]
+sha2 = "=0.10.9"
+
+[lints]
+workspace = true

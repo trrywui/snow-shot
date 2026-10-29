@@ -110,6 +110,13 @@ pub struct ArrowStyle {
         deserialize_with = "snow_draw_engine_core::arrow::deserialize_arrow_ratio"
     )]
     pub arrow_ratio: f64,
+    #[serde(default = "snow_draw_engine_core::arrow::default_arrow_outline_color")]
+    pub arrow_outline_color: ColorRgba8,
+    #[serde(
+        default,
+        deserialize_with = "snow_draw_engine_core::arrow::deserialize_arrow_outline_width"
+    )]
+    pub arrow_outline_width: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -137,6 +144,13 @@ pub struct ShapeStyle {
     pub opacity: f64,
     pub highlight_shape: HighlightShape,
     pub shape: HighlightShape,
+    #[serde(default = "snow_draw_engine_core::arrow::default_arrow_outline_color")]
+    pub arrow_outline_color: ColorRgba8,
+    #[serde(
+        default,
+        deserialize_with = "snow_draw_engine_core::arrow::deserialize_arrow_outline_width"
+    )]
+    pub arrow_outline_width: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +260,8 @@ pub const SHAPE_STYLE_PROPERTY_CORNER_RADII: u32 = 1 << 4;
 pub const SHAPE_STYLE_PROPERTY_START_ARROWHEAD: u32 = 1 << 5;
 pub const SHAPE_STYLE_PROPERTY_END_ARROWHEAD: u32 = 1 << 6;
 pub const SHAPE_STYLE_PROPERTY_STROKE_STYLE: u32 = 1 << 7;
+pub const SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR: u32 = 1 << 16;
+pub const SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH: u32 = 1 << 17;
 pub const SHAPE_STYLE_PROPERTY_ARROW_RATIO: u32 = 1 << 13;
 pub const SHAPE_STYLE_PROPERTY_BRUSH_MODE: u32 = 1 << 14;
 pub const SHAPE_STYLE_PROPERTY_STROKE_RENDERING_STYLE: u32 = 1 << 15;
@@ -273,6 +289,8 @@ pub const SHAPE_STYLE_PROPERTY_ARROW: u32 = SHAPE_STYLE_PROPERTY_STROKE
     | SHAPE_STYLE_PROPERTY_STROKE_STYLE
     | SHAPE_STYLE_PROPERTY_ARROW_TYPE
     | SHAPE_STYLE_PROPERTY_ARROW_SHAFT_TYPE
+    | SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR
+    | SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH
     | SHAPE_STYLE_PROPERTY_ARROW_RATIO
     | SHAPE_STYLE_PROPERTY_STROKE_RENDERING_STYLE;
 pub const SHAPE_STYLE_PROPERTY_LINE: u32 = SHAPE_STYLE_PROPERTY_FILL
@@ -300,10 +318,7 @@ pub const SHAPE_STYLE_PROPERTY_ALL: u32 = SHAPE_STYLE_PROPERTY_RECTANGLE
 impl ShapeKind {
     pub const fn supported_properties(self) -> u32 {
         match self {
-            Self::Rectangle => SHAPE_STYLE_PROPERTY_RECTANGLE,
-            Self::SpeechBubble => {
-                SHAPE_STYLE_PROPERTY_RECTANGLE & !SHAPE_STYLE_PROPERTY_STROKE_RENDERING_STYLE
-            }
+            Self::Rectangle | Self::SpeechBubble => SHAPE_STYLE_PROPERTY_RECTANGLE,
             Self::Arrow => SHAPE_STYLE_PROPERTY_ARROW,
             Self::Line => SHAPE_STYLE_PROPERTY_LINE,
             Self::FreeDraw => SHAPE_STYLE_PROPERTY_FREE_DRAW,
@@ -326,6 +341,8 @@ pub const SHAPE_STYLE_MIXED_CORNER_RADII: u32 = SHAPE_STYLE_PROPERTY_CORNER_RADI
 pub const SHAPE_STYLE_MIXED_START_ARROWHEAD: u32 = SHAPE_STYLE_PROPERTY_START_ARROWHEAD;
 pub const SHAPE_STYLE_MIXED_END_ARROWHEAD: u32 = SHAPE_STYLE_PROPERTY_END_ARROWHEAD;
 pub const SHAPE_STYLE_MIXED_STROKE_STYLE: u32 = SHAPE_STYLE_PROPERTY_STROKE_STYLE;
+pub const SHAPE_STYLE_MIXED_ARROW_OUTLINE_COLOR: u32 = SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_COLOR;
+pub const SHAPE_STYLE_MIXED_ARROW_OUTLINE_WIDTH: u32 = SHAPE_STYLE_PROPERTY_ARROW_OUTLINE_WIDTH;
 pub const SHAPE_STYLE_MIXED_ARROW_RATIO: u32 = SHAPE_STYLE_PROPERTY_ARROW_RATIO;
 pub const SHAPE_STYLE_MIXED_ARROW_SHAFT_TYPE: u32 = SHAPE_STYLE_PROPERTY_ARROW_SHAFT_TYPE;
 pub const SHAPE_STYLE_MIXED_ARROW_TYPE: u32 = SHAPE_STYLE_PROPERTY_ARROW_TYPE;

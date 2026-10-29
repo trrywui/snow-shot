@@ -22,7 +22,8 @@ snow_shot::storage::ConfigurationStore& configuration() {
 storage::PersistedSelection persistedSelection(const ScreenshotSelectionParams& params) {
     return {params.selection,   params.radius,           params.shadowWidth,
             params.shadowColor, params.lockAspectRatio,  params.lockDragAspectRatio,
-            params.region,      params.layoutCompaction, params.backgroundOpacityPercent};
+            params.region,      params.layoutCompaction, params.backgroundOpacityPercent,
+            params.borderType,  params.borderWidth,      params.borderColor};
 }
 
 std::optional<ScreenshotSelectionParams> selectionFromJson(const QJsonValue& value) {
@@ -34,7 +35,8 @@ std::optional<ScreenshotSelectionParams> selectionFromJson(const QJsonValue& val
     return ScreenshotSelectionParams{
         selection.rectangle,   selection.cornerRadius,     selection.shadowWidth,
         selection.shadowColor, selection.lockAspectRatio,  selection.lockDragAspectRatio,
-        selection.region,      selection.layoutCompaction, selection.backgroundOpacityPercent};
+        selection.region,      selection.layoutCompaction, selection.backgroundOpacityPercent,
+        selection.borderType,  selection.borderWidth,      selection.borderColor};
 }
 } // namespace
 
@@ -66,6 +68,43 @@ int ScreenshotSelectionSettingsStore::shadowWidth() const {
 QColor ScreenshotSelectionSettingsStore::shadowColor() const {
     return storage::colorFromRgbaString(
         configuration().value(QStringLiteral("screenshot_selection/shadow_color")).toString());
+}
+
+ScreenshotSelectionBorderType ScreenshotSelectionSettingsStore::borderType() const {
+    return configuration().value(QStringLiteral("screenshot_selection/border_type")) ==
+                   QStringLiteral("border")
+               ? ScreenshotSelectionBorderType::Border
+               : ScreenshotSelectionBorderType::Shadow;
+}
+int ScreenshotSelectionSettingsStore::borderWidth() const {
+    return configuration().value(QStringLiteral("screenshot_selection/border_width")).toInt();
+}
+QColor ScreenshotSelectionSettingsStore::borderColor() const {
+    return storage::colorFromRgbaString(
+        configuration().value(QStringLiteral("screenshot_selection/border_color")).toString());
+}
+void ScreenshotSelectionSettingsStore::setSelectionBorder(ScreenshotSelectionBorderType type,
+                                                          int width, const QColor& color) {
+    static_cast<void>(configuration().setValues({
+        {QStringLiteral("screenshot_selection/border_type"), screenshotSelectionBorderTypeId(type)},
+        {QStringLiteral("screenshot_selection/border_width"), width},
+        {QStringLiteral("screenshot_selection/border_color"), storage::colorToRgbaString(color)},
+    }));
+}
+
+void ScreenshotSelectionSettingsStore::setSelectionEffects(
+    const ScreenshotSelectionParams& params) {
+    static_cast<void>(configuration().setValues({
+        {QStringLiteral("screenshot_selection/corner_radius"), params.radius},
+        {QStringLiteral("screenshot_selection/shadow_width"), params.shadowWidth},
+        {QStringLiteral("screenshot_selection/shadow_color"),
+         storage::colorToRgbaString(params.shadowColor)},
+        {QStringLiteral("screenshot_selection/border_type"),
+         screenshotSelectionBorderTypeId(params.borderType)},
+        {QStringLiteral("screenshot_selection/border_width"), params.borderWidth},
+        {QStringLiteral("screenshot_selection/border_color"),
+         storage::colorToRgbaString(params.borderColor)},
+    }));
 }
 
 void ScreenshotSelectionSettingsStore::setSelectionEffects(int cornerRadius, int shadowWidth,
@@ -169,6 +208,9 @@ void ScreenshotSelectionSettingsStore::clear() {
         {QStringLiteral("screenshot_selection/layout_compaction_enabled"), false},
         {QStringLiteral("screenshot_selection/layout_compaction_spacing"), 0},
         {QStringLiteral("screenshot_selection/corner_radius"), 0},
+        {QStringLiteral("screenshot_selection/border_type"), QStringLiteral("shadow")},
+        {QStringLiteral("screenshot_selection/border_width"), 0},
+        {QStringLiteral("screenshot_selection/border_color"), QStringLiteral("#FFFFFFFF")},
         {QStringLiteral("screenshot_selection/shadow_width"), 0},
         {QStringLiteral("screenshot_selection/shadow_color"), QStringLiteral("#333333FF")},
         {QStringLiteral("screenshot_selection/aspect_ratio"), QStringLiteral("free")},

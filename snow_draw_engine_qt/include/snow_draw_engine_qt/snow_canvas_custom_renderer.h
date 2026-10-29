@@ -15,15 +15,23 @@ class QPainter;
 
 // A fixed source-pixel grid for scenes whose filters must scale with the image.
 struct SnowCanvasFilterRenderReference {
+    enum class Presentation { Replace, Composite };
+
     QRectF canvasRect;
     qreal pixelsPerCanvasUnit = 1.0;
+    // Replace owns the destination, including any viewport-wide backdrop. Composite
+    // draws only the complete reference scene over a background owned by the host.
+    Presentation presentation = Presentation::Replace;
 };
 
 struct SnowCanvasRenderContext {
+    enum class Purpose { Widget, ContentSnapshot };
+
     QRect viewportRect;
     QRegion exposedRegion;
     QTransform canvasToViewTransform;
     qreal devicePixelRatio = 1.0;
+    Purpose purpose = Purpose::Widget;
 };
 
 class SnowCanvasCustomRenderer {

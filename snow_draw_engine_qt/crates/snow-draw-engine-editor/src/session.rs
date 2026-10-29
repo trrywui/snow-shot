@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use snow_draw_engine_core::{EngineConfig, ErrorCode, GridConfig, Point, SnapConfig};
-use snow_draw_engine_document::{ElementId, SerialNumberNumericType, TextLayoutSize};
+use snow_draw_engine_document::{
+    ElementId, HighlightShape, SerialNumberNumericType, TextLayoutSize,
+};
 use snow_draw_engine_interaction::InputEvent;
 use snow_draw_engine_model::DocumentModel;
 
@@ -19,6 +21,8 @@ pub struct EditorSessionSnapshot {
     state: EditorState,
     config: EngineConfig,
     quick_selection_disabled_tools: u64,
+    automatically_select_newly_created_elements: bool,
+    automatic_selection_excluded_tools: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +176,37 @@ impl EditorSession {
         }
         Ok(())
     }
+    pub fn apply_distance_value_widths(&mut self, widths: &[(ElementId, u64, f64)]) {
+        self.editor.apply_distance_value_widths(widths);
+    }
+    pub fn take_distance_value_edit_request(&mut self) -> Option<ElementId> {
+        self.editor.state.pending_distance_value_edit.take()
+    }
+    pub fn distance_value_target(
+        &self,
+        document: &DocumentModel,
+        owner: ElementId,
+    ) -> Result<ElementId, ErrorCode> {
+        self.editor.distance_value_target(document, owner)
+    }
+    pub fn set_distance_value_draft(
+        &mut self,
+        document: &DocumentModel,
+        owner: ElementId,
+        text: String,
+        layout: TextLayoutSize,
+    ) -> Result<bool, ErrorCode> {
+        self.editor
+            .set_distance_value_draft(document, owner, text, layout)
+    }
+    pub fn commit_distance_value(
+        &mut self,
+        document: &DocumentModel,
+        owner: ElementId,
+        value: f64,
+    ) -> Result<Option<EditorCommand>, ErrorCode> {
+        self.editor.commit_distance_value(document, owner, value)
+    }
     pub fn take_text_edit_request(&mut self) -> Option<ElementId> {
         self.editor.state.pending_text_edit.take()
     }
@@ -309,6 +344,10 @@ impl EditorSession {
             state: self.editor.state.clone(),
             config: self.editor.config,
             quick_selection_disabled_tools: self.editor.quick_selection_disabled_tools(),
+            automatic_selection_excluded_tools: self.editor.automatic_selection_excluded_tools(),
+            automatically_select_newly_created_elements: self
+                .editor
+                .automatically_select_newly_created_elements(),
         }
     }
 
@@ -424,6 +463,27 @@ impl EditorSession {
         Ok(())
     }
 
+    pub fn automatically_select_newly_created_elements(&self) -> bool {
+        self.editor.automatically_select_newly_created_elements()
+    }
+
+    pub fn set_automatically_select_newly_created_elements(&mut self, enabled: bool) {
+        self.editor
+            .set_automatically_select_newly_created_elements(enabled);
+    }
+
+    pub fn automatic_selection_excluded_tools(&self) -> u64 {
+        self.editor.automatic_selection_excluded_tools()
+    }
+
+    pub fn set_automatic_selection_excluded_tools(&mut self, tools: u64) {
+        self.editor.set_automatic_selection_excluded_tools(tools);
+    }
+
+    pub fn select_created_element(&mut self, document: &DocumentModel, id: ElementId) {
+        self.editor.select_created_element(document, id);
+    }
+
     pub fn quick_selection_disabled_tools(&self) -> u64 {
         self.editor.quick_selection_disabled_tools()
     }
@@ -468,6 +528,14 @@ impl EditorSession {
     /// Native pointer capture belongs to the current runtime, not its persisted document.
     pub fn has_pointer_capture(&self) -> bool {
         self.editor.captured_pointer.is_some()
+    }
+
+    /// Multi-click construction can remain active between native pointer grabs.
+    /// Hosts must preserve that transaction before confirming or replacing input.
+    pub fn has_active_interaction(&self) -> bool {
+        !matches!(self.editor.state.interaction, crate::InteractionState::Idle)
+            || self.editor.state.shape_text_drag.is_some()
+            || self.editor.speech_bubble_tail_drag.is_some()
     }
 
     /// A cloned document session does not inherit native pointer ownership or queued releases.
@@ -763,6 +831,10 @@ impl EditorSession {
 
     pub fn selected_ids(&self) -> Vec<ElementId> {
         self.editor.selected_ids()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.editor.clear_selection();
     }
 
     pub fn select_element(
@@ -1164,9 +1236,12 @@ mod borrowed_view_query_tests {
 }
 
 pub fn validate_editor_style_defaults(defaults: &EditorStyleDefaults) -> Result<(), ErrorCode> {
+    if defaults.spotlight_shape == HighlightShape::ThoughtBubble {
+        return Err(ErrorCode::InvalidArgument);
+    }
     crate::validate_magnifier_style(defaults.magnifier)?;
     super::style::validate_rectangle_shape_style(defaults.rectangle)?;
-    super::style::validate_rectangle_shape_style(defaults.speech_bubble)?;
+    super::style::validate_speech_bubble_style(defaults.speech_bubble)?;
     super::style::validate_rectangle_shape_style(RectangleShapeStyle {
         corner_radii: defaults.spotlight_corner_radii,
         ..defaults.rectangle
@@ -1211,8 +1286,13 @@ pub fn validate_editor_style_defaults(defaults: &EditorStyleDefaults) -> Result<
 }
 
 fn validate_persisted_editor_styles(persisted: &PersistedEditorSession) -> Result<(), ErrorCode> {
+    if persisted.spotlight_shape == HighlightShape::ThoughtBubble
+        || persisted.rectangle.shape == HighlightShape::ThoughtBubble
+    {
+        return Err(ErrorCode::InvalidArgument);
+    }
     crate::validate_magnifier_style(persisted.magnifier)?;
-    super::style::validate_rectangle_shape_style(persisted.speech_bubble)?;
+    super::style::validate_speech_bubble_style(persisted.speech_bubble)?;
     crate::validate_distance_style(persisted.distance)?;
     crate::validate_angle_style(persisted.angle)?;
     fn finite_non_negative(value: f64) -> bool {
@@ -1229,7 +1309,9 @@ fn validate_persisted_editor_styles(persisted: &PersistedEditorSession) -> Resul
         .all(finite_non_negative)
     }
     fn valid_shape(style: super::ShapeStyle) -> bool {
-        finite_non_negative(style.stroke_width)
+        style.shape != HighlightShape::ThoughtBubble
+            && style.highlight_shape != HighlightShape::ThoughtBubble
+            && finite_non_negative(style.stroke_width)
             && style.opacity.is_finite()
             && (0.0..=1.0).contains(&style.opacity)
             && valid_corner_radii(style.corner_radii)
@@ -1283,11 +1365,13 @@ mod document_reset_tests {
                 size: TextLayoutSize::new(20.0, 10.0),
                 text_key: 11,
                 natural_width: 20.0,
+                distance_value_width: 0.0,
             },
         );
         session.editor.state.ui.snap_guides.reserve(64);
         session.editor.state.selection.ids.reserve(64);
         session.set_quick_selection_disabled_tools(3);
+        session.set_automatic_selection_excluded_tools(ActiveTool::Shape.policy_bit());
         let config = session.config();
         let generation = session.editor.state.arrow_text_measurement_generation;
 
@@ -1306,5 +1390,9 @@ mod document_reset_tests {
         );
         assert_eq!(session.config(), config);
         assert_eq!(session.quick_selection_disabled_tools(), 3);
+        assert_eq!(
+            session.automatic_selection_excluded_tools(),
+            ActiveTool::Shape.policy_bit()
+        );
     }
 }

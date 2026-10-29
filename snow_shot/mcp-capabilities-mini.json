@@ -136,6 +136,7 @@
         "MultiSelect",
         "Slider",
         "Color",
+        "ColorPalette",
         "Radio",
         "FilePath",
         "DirectoryPath",
@@ -172,6 +173,7 @@
         "StorageStatus",
         "DrawingToolbarEditor",
         "ScreenshotToolbarEditor",
+        "RecordingToolbarEditor",
         "PinnedToolbarEditor",
         "TrayMenuOptions",
         "FloatingToolbarEditor",
@@ -211,6 +213,8 @@
         "DefaultBrushEraser",
         "DefaultAngle",
         "SelectedAngle",
+        "DefaultDistance",
+        "SelectedDistance",
         "DefaultMagnifier",
         "SelectedMagnifier",
         "DefaultSpeechBubble",
@@ -224,6 +228,7 @@
         "Shape": "Rectangle",
         "Arrow": "Arrow",
         "Angle": "Angle",
+        "Distance": "Distance",
         "Line": "Line",
         "FreeDraw": "Freehand",
         "RectangleHighlight": "RectangleHighlight",
@@ -266,8 +271,12 @@
         "capture_toolbar",
         "show_cursor",
         "show_keyboard",
+        "webcam",
+        "webcam_size",
+        "webcam_shape",
         "mouse_highlight",
         "record_mouse_clicks",
+        "record_mouse_scrolling",
         "mouse_trail_duration_ms",
         "keyboard_size",
         "keyboard_background",
@@ -275,10 +284,199 @@
         "mouse_trail",
         "mouse_click",
         "mouse_highlight_color",
+        "mouse_highlight_radius",
         "post_processing",
         "post_processing_effect",
         "progress_bar_color"
-      ]
+      ],
+      "validation": {
+        "path": {
+          "type": "string",
+          "format": "output-path"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "mp4",
+            "gif",
+            "apng",
+            "webp"
+          ]
+        },
+        "start_delay_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "microphone": {
+          "type": "boolean"
+        },
+        "system_audio": {
+          "type": "boolean"
+        },
+        "microphone_gain_db": {
+          "type": "integer",
+          "minimum": -24,
+          "maximum": 24
+        },
+        "system_audio_gain_db": {
+          "type": "integer",
+          "minimum": -24,
+          "maximum": 24
+        },
+        "separate_audio_tracks": {
+          "type": "boolean"
+        },
+        "frame_rate": {
+          "type": "integer",
+          "enum": [
+            5,
+            10,
+            15,
+            24,
+            30,
+            60,
+            120,
+            83
+          ]
+        },
+        "animated_frame_rate": {
+          "type": "integer",
+          "enum": [
+            5,
+            10,
+            15,
+            24
+          ]
+        },
+        "clarity": {
+          "type": "string",
+          "enum": [
+            "4k",
+            "2k",
+            "1080p",
+            "720p",
+            "480p"
+          ]
+        },
+        "animated_clarity": {
+          "type": "string",
+          "enum": [
+            "1080p",
+            "720p",
+            "480p"
+          ]
+        },
+        "encoder": {
+          "type": "string",
+          "enum": [
+            "h264",
+            "h265",
+            "h264_hw",
+            "h265_hw"
+          ]
+        },
+        "encoding_preset": {
+          "type": "string",
+          "enum": [
+            "ultrafast",
+            "veryfast",
+            "medium",
+            "veryslow",
+            "placebo"
+          ]
+        },
+        "quality": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "loop": {
+          "type": "boolean"
+        },
+        "capture_toolbar": {
+          "type": "boolean"
+        },
+        "show_cursor": {
+          "type": "boolean"
+        },
+        "show_keyboard": {
+          "type": "boolean"
+        },
+        "webcam": {
+          "type": "boolean"
+        },
+        "webcam_size": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 500
+        },
+        "webcam_shape": {
+          "type": "string",
+          "enum": [
+            "square",
+            "circle"
+          ]
+        },
+        "mouse_highlight": {
+          "type": "boolean"
+        },
+        "record_mouse_clicks": {
+          "type": "boolean"
+        },
+        "record_mouse_scrolling": {
+          "type": "boolean"
+        },
+        "mouse_trail_duration_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 2000
+        },
+        "keyboard_size": {
+          "type": "integer",
+          "minimum": 32,
+          "maximum": 128
+        },
+        "keyboard_background": {
+          "type": "string",
+          "format": "qt-color"
+        },
+        "keyboard_foreground": {
+          "type": "string",
+          "format": "qt-color"
+        },
+        "mouse_trail": {
+          "type": "string",
+          "format": "qt-color"
+        },
+        "mouse_click": {
+          "type": "string",
+          "format": "qt-color"
+        },
+        "mouse_highlight_color": {
+          "type": "string",
+          "format": "qt-color"
+        },
+        "mouse_highlight_radius": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 128
+        },
+        "post_processing": {
+          "type": "boolean"
+        },
+        "post_processing_effect": {
+          "type": "string",
+          "enum": [
+            "progress_bar",
+            "playback_time"
+          ]
+        },
+        "progress_bar_color": {
+          "type": "string",
+          "format": "qt-color"
+        }
+      }
     },
     "settings_shortcut_adjustments": {
       "adapter": "Settings catalog-derived auxiliary field IDs and settings_get/update",

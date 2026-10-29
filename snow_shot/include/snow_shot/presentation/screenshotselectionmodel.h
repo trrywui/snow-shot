@@ -151,6 +151,30 @@ class ScreenshotSelectionModel final {
     [[nodiscard]] int cornerRadius() const;
     [[nodiscard]] int shadowWidth() const;
     [[nodiscard]] QColor shadowColor() const;
+    [[nodiscard]] ScreenshotSelectionBorderType borderType() const {
+        return m_borderType;
+    }
+    [[nodiscard]] int borderWidth() const {
+        return m_borderWidth;
+    }
+    [[nodiscard]] QColor borderColor() const {
+        return m_borderColor;
+    }
+    [[nodiscard]] int effectWidth() const {
+        return m_borderType == ScreenshotSelectionBorderType::Border ? m_borderWidth
+                                                                     : m_shadowWidth;
+    }
+    [[nodiscard]] QColor effectColor() const {
+        return m_borderType == ScreenshotSelectionBorderType::Border ? m_borderColor
+                                                                     : m_shadowColor;
+    }
+    bool setBorderType(ScreenshotSelectionBorderType type);
+    bool setBorderWidth(int width);
+    void setBorderColor(const QColor& color);
+    bool setEffectWidth(int width) {
+        return m_borderType == ScreenshotSelectionBorderType::Border ? setBorderWidth(width)
+                                                                     : setShadowWidth(width);
+    }
     [[nodiscard]] bool aspectRatioLocked() const;
     [[nodiscard]] ScreenshotSelectionAspectRatioPreset aspectRatioPreset() const;
 
@@ -172,6 +196,7 @@ class ScreenshotSelectionModel final {
 
   private:
     class ChangeRevisionGuard;
+    [[nodiscard]] ScreenshotSelectionParams currentParams() const;
     [[nodiscard]] bool hasSameSelectionState(const ScreenshotSelectionModel& other) const;
     [[nodiscard]] bool hasSameCreatedRegions(const ScreenshotSelectionModel& other) const;
     // Store derived geometry without replacing the editable region collection.
@@ -228,6 +253,9 @@ class ScreenshotSelectionModel final {
     mutable bool m_multipleComponents = false;
     int m_backgroundOpacityPercent = 0;
     int m_cornerRadius = 0;
+    ScreenshotSelectionBorderType m_borderType = ScreenshotSelectionBorderType::Shadow;
+    int m_borderWidth = 0;
+    QColor m_borderColor = QColor(Qt::white);
     int m_shadowWidth = 0;
     QColor m_shadowColor = QColor(0x33, 0x33, 0x33);
     bool m_aspectRatioLockEnabled = false;

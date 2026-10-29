@@ -166,6 +166,10 @@ so every moment on screen can be expressed clearly and shared easily.</translati
             <translation>Official website</translation>
         </message>
         <message>
+            <source>Open Microsoft Store</source>
+            <translation>Open Microsoft Store</translation>
+        </message>
+        <message>
             <source>Original Snow Apps by mg-chao</source>
             <translation>Original Snow Apps by mg-chao</translation>
         </message>
@@ -180,6 +184,10 @@ so every moment on screen can be expressed clearly and shared easily.</translati
         <message>
             <source>Preview</source>
             <translation>Preview</translation>
+        </message>
+        <message>
+            <source>Privacy policy</source>
+            <translation>Privacy policy</translation>
         </message>
         <message>
             <source>Project website</source>
@@ -250,6 +258,10 @@ so every moment on screen can be expressed clearly and shared easily.</translati
             <translation>Update failed: %1</translation>
         </message>
         <message>
+            <source>Updates are managed by Microsoft Store.</source>
+            <translation>Updates are managed by Microsoft Store.</translation>
+        </message>
+        <message>
             <source>Upstream project</source>
             <translation>Upstream project</translation>
         </message>
@@ -262,8 +274,8 @@ so every moment on screen can be expressed clearly and shared easily.</translati
             <translation>View the source and improve it together</translation>
         </message>
         <message>
-            <source>You are up to date.</source>
-            <translation>You are up to date.</translation>
+            <source>You are up to date</source>
+            <translation>You are up to date</translation>
         </message>
     </context>
     <context>
@@ -633,6 +645,13 @@ so every moment on screen can be expressed clearly and shared easily.</translati
         <message>
             <source>Reset "%1" to default settings?</source>
             <translation>Reset "%1" to default settings?</translation>
+        </message>
+    </context>
+    <context>
+        <name>ShortcutDisplayService</name>
+        <message>
+            <source>Enter</source>
+            <translation>Enter</translation>
         </message>
     </context>
     <context>

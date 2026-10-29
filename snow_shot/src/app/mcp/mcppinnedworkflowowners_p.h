@@ -46,7 +46,7 @@ class McpPinnedWorkflowOwners final : public QObject {
         m_entries.insert(window, std::move(entry));
     }
 
-    void cancel(quint64 connection) {
+    QList<QPointer<ScreenshotPinnedWindow>> take(quint64 connection) {
         QList<QPointer<ScreenshotPinnedWindow>> windows;
         const auto entries = m_entries;
         for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
@@ -55,19 +55,27 @@ class McpPinnedWorkflowOwners final : public QObject {
                 release(it.key());
             }
         }
-        for (const auto& window : windows)
+        return windows;
+    }
+
+    void cancel(quint64 connection) {
+        for (const auto& window : take(connection))
             if (window)
                 window->cancelAutomationRecognition();
     }
 
-    void cancelAll() {
+    QList<QPointer<ScreenshotPinnedWindow>> takeAll() {
         QList<QPointer<ScreenshotPinnedWindow>> windows;
         const auto entries = m_entries;
         for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
             windows.append(it->window);
             release(it.key());
         }
-        for (const auto& window : windows)
+        return windows;
+    }
+
+    void cancelAll() {
+        for (const auto& window : takeAll())
             if (window)
                 window->cancelAutomationRecognition();
     }

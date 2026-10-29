@@ -23,6 +23,8 @@ class RecordingRenderJob final : public QObject {
     void start();
     // Detach before the recording area is hidden or destroyed, preserving the job's UI.
     void detachWindowOwner();
+    // Retain native work until process exit; terminal shutdown must not cancel or join it.
+    void prepareForSessionEnd();
     bool cancel();
     bool retry();
     bool release(bool discard);

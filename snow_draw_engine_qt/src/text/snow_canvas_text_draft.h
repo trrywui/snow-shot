@@ -8,10 +8,13 @@ class QInputMethodEvent;
 
 class SnowCanvasTextDraft final {
   public:
+    using TextValidator = bool (*)(const QString&);
+
     void reset();
     void releaseRetainedState();
     std::size_t retainedHistoryStorageBytes() const;
-    void begin(const QString& text);
+    // Validate committed replacements independently of temporary IME composition.
+    void begin(const QString& text, TextValidator validator = nullptr);
 
     const QString& text() const;
     QString displayText() const;
@@ -60,6 +63,7 @@ class SnowCanvasTextDraft final {
     bool replaceRange(const Range& range, const QString& text);
 
     QString m_text;
+    TextValidator m_validator = nullptr;
     int m_cursorPosition = 0;
     int m_anchorPosition = 0;
     QString m_preeditText;

@@ -39,6 +39,8 @@ void ScreenshotToolPaletteStyleState::reset(const SnowCanvasStyleDefaults& defau
         defaults.arrow.arrowShaftType, defaults.arrow.arrowRatio,
     };
     m_creationArrowStyle.strokeRenderingStyle = defaults.arrow.strokeRenderingStyle;
+    m_creationArrowStyle.arrowOutlineColor = defaults.arrow.arrowOutlineColor;
+    m_creationArrowStyle.arrowOutlineWidth = defaults.arrow.arrowOutlineWidth;
     m_arrowStyle = m_creationArrowStyle;
     creationDistanceStyle = defaults.distance;
     distanceStyle = defaults.distance;

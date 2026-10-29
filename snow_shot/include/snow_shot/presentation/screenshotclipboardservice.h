@@ -44,6 +44,9 @@ class ScreenshotClipboardPayload final {
     [[nodiscard]] const QByteArray& placementBytes() const {
         return m_placementBytes;
     }
+    [[nodiscard]] const QString& filePath() const {
+        return m_filePath;
+    }
 
   private:
     friend class ScreenshotClipboardService;
@@ -56,10 +59,12 @@ class ScreenshotClipboardPayload final {
     void* m_pngHandle = nullptr;
     void* m_placementHandle = nullptr;
     void* m_appearanceHandle = nullptr;
+    void* m_fileHandle = nullptr;
 #endif
     QByteArray m_pngBytes;
     QByteArray m_placementBytes;
     QByteArray m_appearanceBytes;
+    QString m_filePath;
 };
 
 enum class ScreenshotClipboardCommitFailure {
@@ -124,6 +129,9 @@ class ScreenshotClipboardService final {
     // Duplicate native ownership for simultaneous consumers without producing image rows again.
     [[nodiscard]] static ScreenshotClipboardPayload
     clonePrepared(const ScreenshotClipboardPayload& payload);
+    // Add an exported file to the same publication as the image representations.
+    [[nodiscard]] static ScreenshotClipboardPayload withFile(ScreenshotClipboardPayload payload,
+                                                             const QString& path);
     [[nodiscard]] static ScreenshotClipboardCommitHandle commit(QClipboard* clipboard,
                                                                 QObject* receiver,
                                                                 ScreenshotClipboardPayload payload,

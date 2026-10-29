@@ -37,8 +37,7 @@ TextTranslationConfiguration config(const QString& endpoint,
             provider,
             endpoint,
             QStringLiteral("secret"),
-            QStringLiteral("app"),
-            4};
+            QStringLiteral("app")};
 }
 class HttpServer : public QObject {
   public:
@@ -94,9 +93,11 @@ class HttpServer : public QObject {
         socket->disconnectFromHost();
     }
 };
-void persistence() {
+void persistence(const QString& provider) {
     QTemporaryDir directory;
-    auto value = config(QStringLiteral("http://localhost/custom/?a=1%2B2"));
+    auto value = config(QStringLiteral("http://localhost/custom/?a=1%2B2"), provider);
+    require(value.concurrency == 8, "new configurations default to eight concurrent requests");
+    value.concurrency = 4;
     const auto path = directory.filePath(QStringLiteral("config.json"));
     {
         storage::ConfigurationStore store(path, true, true, 8000);
@@ -126,8 +127,8 @@ void persistence() {
         require(!validTranslationEndpoint(url), "invalid endpoint rejected");
     auto json = textTranslationConfigurationsToJson({value}).first().toObject();
     json.remove(QStringLiteral("concurrency"));
-    require(textTranslationConfigurationsFromJson(QJsonArray{json}).first().concurrency == 4,
-            "missing limit defaults to four");
+    require(textTranslationConfigurationsFromJson(QJsonArray{json}).first().concurrency == 8,
+            "missing limit defaults to eight");
     json.insert(QStringLiteral("concurrency"), 1.5);
     require(!storage::ConfigurationSchema::normalize(key, QJsonArray{json}).valid,
             "fraction rejected");
@@ -151,8 +152,8 @@ void persistence() {
             "changed endpoint cannot inherit secret");
 }
 void protocols() {
-    for (const auto& provider :
-         {QStringLiteral("deepl"), QStringLiteral("baidu"), QStringLiteral("youdao")}) {
+    for (const auto& provider : {QStringLiteral("deepl"), QStringLiteral("deeplx"),
+                                 QStringLiteral("baidu"), QStringLiteral("youdao")}) {
         HttpServer server;
         SnowShotApiClient client(QString{});
         auto value = config(server.url(), provider);
@@ -183,6 +184,17 @@ void protocols() {
                     "DeepL auto and Traditional Chinese");
             require(body[QStringLiteral("text")].toArray().first() == source, "DeepL text");
             server.respond(0);
+        } else if (provider == QStringLiteral("deeplx")) {
+            require(request.headers.contains("Authorization: Bearer secret") &&
+                        request.headers.contains("Content-Type: application/json"),
+                    "DeepLX JSON and Bearer authorization");
+            const auto body = QJsonDocument::fromJson(request.body).object();
+            require(body[QStringLiteral("source_lang")] == QStringLiteral("AUTO") &&
+                        body[QStringLiteral("target_lang")] == QStringLiteral("ZH-HANT") &&
+                        body[QStringLiteral("text")].isString() &&
+                        body[QStringLiteral("text")] == source,
+                    "DeepLX auto, Traditional Chinese, and scalar Unicode text");
+            server.respond(0, R"({"code":200,"data":"translated","alternatives":["ignored"]})");
         } else {
             QUrlQuery form(QString::fromUtf8(request.body));
             const auto field = [&](const QString& name) {
@@ -244,6 +256,58 @@ void protocols() {
                         .toHex()),
             "Youdao long text signs Unicode code points");
 }
+void deepLXWithoutToken() {
+    struct Languages {
+        QString source;
+        QString target;
+        QString expectedSource;
+        QString expectedTarget;
+    };
+    const QList<Languages> cases{
+        {QStringLiteral("auto"), QStringLiteral("en"), QStringLiteral("AUTO"),
+         QStringLiteral("EN")},
+        {QStringLiteral("en"), QStringLiteral("de"), QStringLiteral("EN"), QStringLiteral("DE")},
+        {QStringLiteral("zh-Hans"), QStringLiteral("zh-Hant"), QStringLiteral("ZH"),
+         QStringLiteral("ZH-HANT")},
+        {QStringLiteral("zh-Hant"), QStringLiteral("zh-Hans"), QStringLiteral("ZH"),
+         QStringLiteral("ZH-HANS")}};
+    HttpServer server;
+    SnowShotApiClient client(QString{});
+    auto value = config(server.url(), QStringLiteral("deeplx"));
+    value.apiKey.clear();
+    value.applicationId.clear();
+    client.setTextTranslationConfigurations({value});
+    QObject receiver;
+    const QString source = QString::fromUcs4(U"Hello \"world\"\n\U0001F600 + & ");
+    const QString translated = QString::fromUcs4(U" \u4F60\u597D\n\U0001F600 ");
+    for (const auto& languages : cases) {
+        const auto index = server.requests.size();
+        bool done = false;
+        QString text;
+        require(client.streamTranslation(
+                    {value.selectionId(), languages.source, languages.target, source}, &receiver,
+                    [&](const auto& delta) { text += delta; },
+                    [&](auto result) {
+                        require(result.succeeded(), "DeepLX without a token succeeds");
+                        done = true;
+                    }) != 0,
+                "DeepLX without a token returns a request token");
+        waitUntil([&] { return server.requests.size() == index + 1; }, "DeepLX request arrives");
+        const auto request = server.requests[index];
+        require(!request.headers.toLower().contains("authorization:"),
+                "empty DeepLX token omits Authorization");
+        const auto body = QJsonDocument::fromJson(request.body).object();
+        require(body[QStringLiteral("source_lang")] == languages.expectedSource &&
+                    body[QStringLiteral("target_lang")] == languages.expectedTarget &&
+                    body[QStringLiteral("text")] == source,
+                "DeepLX maps explicit and automatic languages and preserves input text");
+        server.respond(index, QJsonDocument(QJsonObject{{QStringLiteral("code"), 200},
+                                                        {QStringLiteral("data"), translated}})
+                                  .toJson(QJsonDocument::Compact));
+        waitUntil([&] { return done; }, "DeepLX result arrives");
+        require(text == translated, "DeepLX preserves translated Unicode and whitespace");
+    }
+}
 void providerFailures() {
     struct Failure {
         QString provider;
@@ -255,6 +319,29 @@ void providerFailures() {
         {QStringLiteral("deepl"), QByteArrayLiteral(R"({"message":"quota exhausted"})"), 456, 456},
         {QStringLiteral("deepl"), QByteArrayLiteral(R"({"translations":[]})"), 200, 200},
         {QStringLiteral("deepl"), QByteArrayLiteral(R"({"message":"throttled"})"), 429, 429},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":401,"message":"secret"})"), 401,
+         401},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":500,"message":"secret"})"), 200,
+         200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":429,"message":"secret"})"), 200,
+         429},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":429})"), 429, 429},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200,"data":"translated"})"), 500,
+         500},
+        {QStringLiteral("deeplx"), QByteArrayLiteral("not json"), 200, 200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"([{"code":200,"data":"translated"}])"), 200,
+         200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"data":"translated"})"), 200, 200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":"200","data":"translated"})"), 200,
+         200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200.5,"data":"translated"})"), 200,
+         200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200})"), 200, 200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200,"data":42})"), 200, 200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200,"data":["translated"]})"), 200,
+         200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200,"data":""})"), 200, 200},
+        {QStringLiteral("deeplx"), QByteArrayLiteral(R"({"code":200,"data":" \n\t"})"), 200, 200},
         {QStringLiteral("baidu"), QByteArrayLiteral(R"({"error_code":"54001"})"), 200, 200},
         {QStringLiteral("youdao"), QByteArrayLiteral(R"({"errorCode":"411"})"), 200, 429},
         {QStringLiteral("youdao"), QByteArrayLiteral(R"({"errorCode":"202"})"), 200, 200},
@@ -285,16 +372,19 @@ void providerFailures() {
         require(!result.succeeded() && result.httpStatus == failure.expectedStatus &&
                     SnowShotApiClientTestAccess::requests(client) == 0,
                 "provider failure is normalized and releases capacity");
+        require(!result.error.contains(QStringLiteral("secret")) &&
+                    !result.error.contains(value.endpoint),
+                "provider errors do not expose credentials or endpoint URLs");
     }
 }
 
-void queueAndJobs() {
-    for (int limit : {1, 4, 16}) {
+void queueAndJobs(const QString& provider) {
+    for (int limit : {1, 4, 8, 16}) {
         HttpServer server;
         QTemporaryDir directory;
         storage::ConfigurationStore settings(directory.filePath(QStringLiteral("config.json")),
                                              true, true, 8000);
-        auto value = config(server.url());
+        auto value = config(server.url(), provider);
         value.concurrency = limit;
         require(settings.setValue(key, textTranslationConfigurationsToJson({value})),
                 "configure jobs");
@@ -329,6 +419,8 @@ void queueAndJobs() {
                     SnowShotApiClientTestAccess::queued(client) == 0,
                 "cancel clears active and queued requests");
     }
+}
+void queueChangesAndLifetime() {
     HttpServer server;
     SnowShotApiClient client(QString{});
     auto value = config(server.url());
@@ -378,14 +470,14 @@ void queueAndJobs() {
     require(SnowShotApiClientTestAccess::requests(client) == 0,
             "owner destruction clears queue and active");
 }
-void unavailableCatalog() {
+void unavailableCatalog(const QString& provider) {
     Server builtIn;
     builtIn.rejectModels = true;
     HttpServer custom;
     QTemporaryDir directory;
     storage::ConfigurationStore settings(directory.filePath(QStringLiteral("config.json")), true,
                                          true, 8000);
-    const auto value = config(custom.url());
+    const auto value = config(custom.url(), provider);
     require(settings.setValue(key, textTranslationConfigurationsToJson({value})),
             "custom settings before catalog");
     SnowShotApiClient client(builtIn.url());
@@ -402,7 +494,7 @@ void independentQueuesAndReentrancy() {
     HttpServer firstServer;
     HttpServer secondServer;
     SnowShotApiClient client(QString{});
-    auto first = config(firstServer.url());
+    auto first = config(firstServer.url(), QStringLiteral("deeplx"));
     first.concurrency = 1;
     auto second = config(secondServer.url());
     second.name = QStringLiteral("Second");
@@ -425,11 +517,11 @@ void independentQueuesAndReentrancy() {
     waitUntil([&] { return firstServer.requests.size() == 2; }, "increase only first queue");
     first.concurrency = 1;
     client.setTextTranslationConfigurations({first, second});
-    firstServer.respond(0);
+    firstServer.respond(0, R"({"code":200,"data":"translated"})");
     waitUntil([&] { return completed == 1; }, "one outstanding request after decrease");
     flushEvents();
     require(firstServer.requests.size() == 2, "decrease prevents admission while at capacity");
-    firstServer.respond(1);
+    firstServer.respond(1, R"({"code":200,"data":"translated"})");
     waitUntil([&] { return firstServer.requests.size() == 3; },
               "queue resumes below decreased cap");
     client.setTextTranslationConfigurations({});
@@ -453,10 +545,14 @@ void independentQueuesAndReentrancy() {
     waitUntil([&] { return !owned; }, "consumer may destroy client during result callback");
 }
 
-void errorsAndInvalidation() {
+void errorsAndInvalidation(const QString& provider) {
     HttpServer server;
     SnowShotApiClient client(QString{});
-    auto value = config(server.url(), QStringLiteral("baidu"));
+    auto value = config(server.url(), provider);
+    const QByteArray throttle =
+        provider == QStringLiteral("deeplx")
+            ? QByteArrayLiteral(R"({"code":429,"message":"rate limited"})")
+            : QByteArrayLiteral(R"({"error_code":"54003","error_msg":"rate limited"})");
     client.setTextTranslationConfigurations({value});
     QObject receiver;
     int completed = 0;
@@ -474,7 +570,7 @@ void errorsAndInvalidation() {
     };
     submit();
     waitUntil([&] { return server.requests.size() == 1; }, "error arrives");
-    server.respond(0, "{\"error_code\":\"54003\",\"error_msg\":\"rate limited\"}");
+    server.respond(0, throttle);
     waitUntil([&] { return completed == 1; }, "error completion");
     require(result.httpStatus == 429 && !result.succeeded(), "provider throttle normalized");
     submit();
@@ -516,7 +612,7 @@ void errorsAndInvalidation() {
                           nullptr));
     throttled->start();
     waitUntil([&] { return server.requests.size() == 5; }, "throttled job starts");
-    server.respond(4, "{\"error_code\":\"54003\"}");
+    server.respond(4, throttle);
     waitUntil([&] { return !throttled->busy(); }, "throttled job stops");
     require(SnowShotApiClientTestAccess::requests(client) == 0 && server.requests.size() == 5,
             "throttling cancels remaining queued job work");
@@ -530,7 +626,9 @@ void errorsAndInvalidation() {
         waitUntil([&] { return server.requests.size() == index + 1; },
                   "retry starts each unique throttled source once");
         const QByteArray output = QByteArray::number(index);
-        server.respond(index, "{\"trans_result\":[{\"dst\":\"" + output + "\"}]}");
+        server.respond(index, provider == QStringLiteral("deeplx")
+                                  ? "{\"code\":200,\"data\":\"" + output + "\"}"
+                                  : "{\"trans_result\":[{\"dst\":\"" + output + "\"}]}");
     }
     waitUntil([&] { return !throttled->busy(); }, "retry settles every throttled duplicate group");
     require(throttled->state() == translation::TranslationJob::State::Completed &&
@@ -544,12 +642,17 @@ void errorsAndInvalidation() {
 } // namespace
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
-    persistence();
+    for (const auto& provider : {QStringLiteral("deepl"), QStringLiteral("deeplx")}) {
+        persistence(provider);
+        queueAndJobs(provider);
+        unavailableCatalog(provider);
+    }
     protocols();
+    deepLXWithoutToken();
     providerFailures();
-    queueAndJobs();
-    unavailableCatalog();
+    queueChangesAndLifetime();
     independentQueuesAndReentrancy();
-    errorsAndInvalidation();
+    for (const auto& provider : {QStringLiteral("baidu"), QStringLiteral("deeplx")})
+        errorsAndInvalidation(provider);
     return 0;
 }

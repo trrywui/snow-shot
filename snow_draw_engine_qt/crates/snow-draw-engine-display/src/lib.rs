@@ -444,6 +444,8 @@ pub struct ArrowDisplayItem {
     pub opacity: f64,
     pub is_free_draw: bool,
     pub blend_mode: DisplayBlendMode,
+    pub arrow_outline_color: ColorRgba8,
+    pub arrow_outline_width: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -561,6 +563,8 @@ pub struct SerialNumberConnectorDisplayItem {
 impl Default for ArrowDisplayItem {
     fn default() -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             stroke_rendering_seed: 0,
             stroke_rendering_style: Default::default(),
             brush_mode: Default::default(),
@@ -744,11 +748,15 @@ pub struct UiFocusConnectionDisplayItem {
     pub stroke_width: f64,
     pub stroke_style: StrokeStyle,
     pub arrowhead_primitives: Vec<ArrowheadDisplayPrimitive>,
+    pub arrow_outline_color: ColorRgba8,
+    pub arrow_outline_width: f64,
 }
 
 impl Default for UiFocusConnectionDisplayItem {
     fn default() -> Self {
         Self {
+            arrow_outline_color: snow_draw_engine_core::arrow::default_arrow_outline_color(),
+            arrow_outline_width: 0.0,
             points: Vec::new(),
             path_commands: Vec::new(),
             arrow_type: ArrowType::Straight,
@@ -1057,3 +1065,5 @@ pub fn full_surface_dirty_region(surface: SurfaceSize) -> Vec<DirtyRegion> {
         )]
     }
 }
+mod retained;
+pub use retained::*;

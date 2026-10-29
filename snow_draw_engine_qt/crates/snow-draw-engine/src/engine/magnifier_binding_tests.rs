@@ -121,6 +121,7 @@ fn fixture(mode: BindMode, group: bool) -> Fixture {
             EditorCommand::ApplyTransaction(ApplyTransactionCommand {
                 transaction,
                 history_undo_snapshot: None,
+                created_selection_target: None,
             }),
         )
         .unwrap();

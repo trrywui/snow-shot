@@ -699,6 +699,7 @@ pub fn recover_with_hooks(root: &Path, hooks: TransactionHooks<'_>) -> Result<()
     if transaction_pending(root) {
         restore_with_progress(root, hooks.progress)?;
     }
+    prune_finished_work(root);
     Ok(())
 }
 
@@ -735,14 +736,18 @@ pub fn apply_transaction(
     )?;
     report_progress(hooks.progress, ProgressPhase::Preparing, 0, 0);
     validate_root(root)?;
-    fs::create_dir_all(root.join(UPDATE_WORK)).map_err(|error| {
-        io_error(
-            "update_work_create_failed",
-            "Could not create update work directory",
-            error,
-        )
-    })?;
     let _lock = acquire_lock(root, "Another update transaction is running")?;
+    let result = apply_locked(root, archive, release, hooks);
+    prune_finished_work(root);
+    result
+}
+
+fn apply_locked(
+    root: &Path,
+    archive: &Path,
+    release: &UpdateRelease,
+    hooks: TransactionHooks<'_>,
+) -> Result<()> {
     if transaction_pending(root) {
         restore_with_progress(root, hooks.progress)?;
     }
@@ -968,13 +973,32 @@ fn matches_work_file(name: &str, prefix: &str, suffix: &str) -> bool {
 
 pub fn prune_update_work(root: &Path) -> Result<()> {
     validate_root(root)?;
-    let work = root.join(UPDATE_WORK);
-    if transaction_pending(root) || !work.exists() {
+    if !root.join(UPDATE_WORK).exists() {
         return Ok(());
     }
     let Ok(_lock) = acquire_lock(root, "Another update transaction is running") else {
         return Ok(());
     };
+    prune_update_work_locked(root)
+}
+
+// Call while holding transaction.lock. Cleanup must never change an install/recovery result;
+// locked files can be retried when the update service next starts.
+fn prune_finished_work(root: &Path) {
+    if let Err(error) = prune_update_work_locked(root) {
+        tracing::warn!("could not clean completed update work: {error}");
+    }
+}
+
+fn prune_update_work_locked(root: &Path) -> Result<()> {
+    // Check under the lock: a different transaction may have started before we acquired it.
+    if transaction_pending(root) {
+        return Ok(());
+    }
+    for name in ["stage", "backup"] {
+        clear_work_tree(root, name)?;
+    }
+    let work = root.join(UPDATE_WORK);
     let now = std::time::SystemTime::now();
     for entry in fs::read_dir(&work).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -1490,9 +1514,22 @@ mod tests {
         for name in [&recent, &recent_input, &retired] {
             fs::write(work_path(&root, name), b"recent").unwrap();
         }
+        for name in ["stage/bin/payload.dll", "backup/bin/payload.dll"] {
+            let path = work_path(&root, name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"completed transaction payload").unwrap();
+        }
+        fs::write(work_path(&root, "failed-version.txt"), b"2.0.0").unwrap();
 
         prune_update_work(&root).unwrap();
 
+        assert!(!work_path(&root, "stage").exists());
+        assert!(!work_path(&root, "backup").exists());
+        assert!(work_path(&root, "transaction.lock").is_file());
+        assert_eq!(
+            fs::read(work_path(&root, "failed-version.txt")).unwrap(),
+            b"2.0.0"
+        );
         for name in &expired {
             assert!(
                 !work_path(&root, name).exists(),
@@ -1508,6 +1545,103 @@ mod tests {
                 work_path(&root, name).is_file(),
                 "unrelated/recent {name} must survive"
             );
+        }
+    }
+
+    #[test]
+    fn prune_update_work_preserves_pending_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("SnowShot");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        for name in ["stage/bin/payload.dll", "backup/bin/payload.dll"] {
+            let path = work_path(&root, name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"needed for recovery").unwrap();
+        }
+        // Even an unreadable journal must keep recovery data intact.
+        fs::write(work_path(&root, "journal.json"), b"damaged journal").unwrap();
+        let retired = work_path(&root, format!("retired-{}.file", "a".repeat(32)));
+        fs::write(&retired, b"retired image").unwrap();
+
+        prune_update_work(&root).unwrap();
+        assert!(recover_transaction(&root).is_err());
+        assert!(transaction_pending(&root));
+        assert!(retired.is_file());
+        for name in ["stage/bin/payload.dll", "backup/bin/payload.dll"] {
+            assert_eq!(
+                fs::read(work_path(&root, name)).unwrap(),
+                b"needed for recovery"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_update_work_rejects_a_selected_data_collision() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("SnowShot");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(work_path(&root, "stage")).unwrap();
+        fs::write(work_path(&root, "stage/photo.png"), b"user photo").unwrap();
+        fs::write(
+            root.join(crate::edition::MARKER_PATH),
+            format!("../{UPDATE_WORK}").as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            prune_update_work(&root).unwrap_err().code,
+            "selected_data_collision"
+        );
+        assert_eq!(
+            fs::read(work_path(&root, "stage/photo.png")).unwrap(),
+            b"user photo"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn completed_recovery_tolerates_locked_cleanup_files_and_retries_later() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("SnowShot");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(work_path(&root, "stage")).unwrap();
+        fs::write(work_path(&root, "stage/payload"), b"locked payload").unwrap();
+        fs::write(
+            work_path(&root, "journal.json"),
+            br#"{"schema":1,"state":"committed","version":"2.0.0","previousVersion":"1.0.0","files":[]}"#,
+        )
+        .unwrap();
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .open(work_path(&root, "stage/payload"))
+            .unwrap();
+
+        recover_transaction(&root).unwrap();
+        assert!(!transaction_pending(&root));
+        assert!(work_path(&root, "stage/payload").is_file());
+        drop(locked);
+        prune_update_work(&root).unwrap();
+        assert!(!work_path(&root, "stage").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prune_update_work_preserves_an_active_transaction() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("SnowShot");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let _lock = acquire_lock(&root, "held").unwrap();
+        for name in ["stage", "backup"] {
+            fs::create_dir_all(work_path(&root, name)).unwrap();
+            fs::write(work_path(&root, Path::new(name).join("payload")), b"in use").unwrap();
+        }
+        prune_update_work(&root).unwrap();
+        for name in ["stage/payload", "backup/payload"] {
+            assert_eq!(fs::read(work_path(&root, name)).unwrap(), b"in use");
         }
     }
 
@@ -1684,7 +1818,12 @@ mod tests {
             "2.0.0"
         );
         assert!(!transaction_pending(&root));
+        assert!(!work_path(&root, "backup").exists());
 
+        fs::create_dir_all(work_path(&root, "stage/bin")).unwrap();
+        fs::create_dir_all(work_path(&root, "backup/bin")).unwrap();
+        fs::write(work_path(&root, "stage/bin/application.dat"), b"new").unwrap();
+        fs::write(work_path(&root, "backup/bin/application.dat"), b"old").unwrap();
         fs::write(
             work_path(&root, "journal.json"),
             br#"{"schema":1,"state":"committed","version":"2.0.0","previousVersion":"1.0.0","files":[]}"#,
@@ -1692,6 +1831,9 @@ mod tests {
         .unwrap();
         recover_transaction(&root).unwrap();
         assert!(!transaction_pending(&root));
+        assert!(!work_path(&root, "stage").exists());
+        assert!(!work_path(&root, "backup").exists());
+        assert_eq!(fs::read(root.join("bin/application.dat")).unwrap(), b"old");
     }
 
     #[test]
@@ -1775,6 +1917,52 @@ mod tests {
     }
 
     #[test]
+    fn invalid_archive_prunes_abandoned_payloads_before_journaling() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("SnowShot");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let app = b"original application";
+        fs::write(root.join(crate::edition::APP_PATH), app).unwrap();
+        let record = InstallationRecord {
+            schema: 1,
+            platform: Some(crate::edition::PLATFORM.to_owned()),
+            product: crate::edition::PRODUCT.to_owned(),
+            variant: "online".to_owned(),
+            version: "1.0.0".to_owned(),
+            files: vec![descriptor(crate::edition::APP_PATH, app)],
+        };
+        fs::write(
+            root.join(INSTALLATION_RECORD),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        for name in ["stage", "backup"] {
+            fs::create_dir_all(work_path(&root, name)).unwrap();
+            fs::write(
+                work_path(&root, Path::new(name).join("payload")),
+                b"abandoned",
+            )
+            .unwrap();
+        }
+        let archive = directory.path().join("invalid.zip");
+        fs::write(&archive, b"corrupt archive").unwrap();
+        let release = UpdateRelease {
+            platform: crate::edition::PLATFORM.to_owned(),
+            version: "2.0.0".to_owned(),
+            packages: vec![package(vec![descriptor(crate::edition::APP_PATH, b"new")])],
+            envelope: Vec::new(),
+        };
+
+        let error =
+            apply_transaction(&root, &archive, &release, TransactionHooks::default()).unwrap_err();
+        assert_eq!(error.code, "update_payload_mismatch");
+        assert_eq!(fs::read(root.join(crate::edition::APP_PATH)).unwrap(), app);
+        assert!(!transaction_pending(&root));
+        assert!(!work_path(&root, "stage").exists());
+        assert!(!work_path(&root, "backup").exists());
+    }
+
+    #[test]
     fn transaction_commits_and_rolls_back_after_probe_failure() {
         for probe_succeeds in [true, false] {
             let directory = tempfile::tempdir().unwrap();
@@ -1784,6 +1972,14 @@ mod tests {
             let old_helper = b"old helper";
             fs::write(root.join(crate::edition::APP_PATH), old_app).unwrap();
             fs::write(root.join(crate::edition::UPDATER_PATH), old_helper).unwrap();
+            let legacy_notice = format!(
+                "{}licenses/third-party/example/LICENSE",
+                crate::edition::SHARE_PREFIX
+            );
+            let license_bundle = format!("{}licenses/LICENSES.txt", crate::edition::SHARE_PREFIX);
+            let notice = b"original dependency notice";
+            fs::create_dir_all(root.join(&legacy_notice).parent().unwrap()).unwrap();
+            fs::write(root.join(&legacy_notice), notice).unwrap();
             let old_record = InstallationRecord {
                 platform: Some(crate::edition::PLATFORM.to_owned()),
                 product: crate::edition::PRODUCT.to_owned(),
@@ -1793,6 +1989,7 @@ mod tests {
                 files: vec![
                     descriptor(crate::edition::APP_PATH, old_app),
                     descriptor(crate::edition::UPDATER_PATH, old_helper),
+                    descriptor(&legacy_notice, notice),
                 ],
             };
             fs::write(
@@ -1812,6 +2009,7 @@ mod tests {
                 files: vec![
                     descriptor(crate::edition::APP_PATH, new_app),
                     descriptor(crate::edition::UPDATER_PATH, new_helper),
+                    descriptor(&license_bundle, notice),
                 ],
             };
             let new_record_bytes = serde_json::to_vec(&new_record).unwrap();
@@ -1821,12 +2019,14 @@ mod tests {
                 &[
                     (crate::edition::APP_PATH, new_app, None),
                     (crate::edition::UPDATER_PATH, new_helper, None),
+                    (&license_bundle, notice, None),
                     (INSTALLATION_RECORD, &new_record_bytes, None),
                 ],
             );
             let mut update_package = package(vec![
                 descriptor(crate::edition::APP_PATH, new_app),
                 descriptor(crate::edition::UPDATER_PATH, new_helper),
+                descriptor(&license_bundle, notice),
                 descriptor(INSTALLATION_RECORD, &new_record_bytes),
             ]);
             update_package.size = fs::metadata(&archive).unwrap().len();
@@ -1905,7 +2105,8 @@ mod tests {
                     new_app
                 );
                 assert!(!transaction_pending(&root));
-                assert!(work_path(&root, format!("backup/{}", crate::edition::APP_PATH)).is_file());
+                assert!(!root.join(&legacy_notice).exists());
+                assert_eq!(fs::read(root.join(&license_bundle)).unwrap(), notice);
             } else {
                 assert_eq!(result.unwrap_err().code, "startup_probe_failed");
                 assert_eq!(
@@ -1917,7 +2118,11 @@ mod tests {
                     "2.0.0"
                 );
                 assert!(!transaction_pending(&root));
+                assert_eq!(fs::read(root.join(&legacy_notice)).unwrap(), notice);
+                assert!(!root.join(&license_bundle).exists());
             }
+            assert!(!work_path(&root, "stage").exists());
+            assert!(!work_path(&root, "backup").exists());
         }
     }
 

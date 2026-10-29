@@ -145,7 +145,8 @@ class AnimationDecoder::Impl final {
   public:
     static std::unique_ptr<Impl> openEncoded(const QByteArray& encoded, QString* error,
                                              AnimationCancellationCheck cancelled,
-                                             AnimationAllocationCheck allocationCheck) {
+                                             AnimationAllocationCheck allocationCheck,
+                                             bool firstFrameOnly = false) {
         if (error)
             error->clear();
         if (!couldBeAnimation(encoded))
@@ -159,8 +160,9 @@ class AnimationDecoder::Impl final {
         std::array<char, kErrorCapacity> detail{};
         impl->decoder = snow_shot_animation_open(
             reinterpret_cast<const uint8_t*>(impl->encoded.constData()),
-            static_cast<uint64_t>(impl->encoded.size()), animationCancelledCallback, &cancelled,
-            admissionCallback, &allocationCheck, &impl->info, detail.data(), detail.size());
+            static_cast<uint64_t>(impl->encoded.size()), firstFrameOnly ? 1 : 0,
+            animationCancelledCallback, &cancelled, admissionCallback, &allocationCheck,
+            &impl->info, detail.data(), detail.size());
         if (!impl->decoder) {
             reportError(error, detail.data());
             return {};
@@ -308,7 +310,8 @@ decodeAnimationSource(const QByteArray& encoded, QString* error,
 QImage decodeAnimationFirstFrame(const QByteArray& encoded, QString* error,
                                  AnimationCancellationCheck cancelled,
                                  AnimationAllocationCheck allocationCheck) {
-    auto impl = AnimationDecoder::Impl::openEncoded(encoded, error, cancelled, allocationCheck);
+    auto impl =
+        AnimationDecoder::Impl::openEncoded(encoded, error, cancelled, allocationCheck, true);
     if (!impl)
         return {};
     AnimationDecoder decoder(std::move(impl));
@@ -343,8 +346,9 @@ openAnimationDecoder(std::shared_ptr<const ScreenshotAnimationSource> source, QS
     std::array<char, kErrorCapacity> detail{};
     impl->decoder = snow_shot_animation_open(
         reinterpret_cast<const uint8_t*>(impl->source->encoded.constData()),
-        static_cast<uint64_t>(impl->source->encoded.size()), animationCancelledCallback, &cancelled,
-        admissionCallback, &impl->allocationCheck, &impl->info, detail.data(), detail.size());
+        static_cast<uint64_t>(impl->source->encoded.size()), 0, animationCancelledCallback,
+        &cancelled, admissionCallback, &impl->allocationCheck, &impl->info, detail.data(),
+        detail.size());
     if (!impl->decoder) {
         reportError(error, detail.data());
         return {};

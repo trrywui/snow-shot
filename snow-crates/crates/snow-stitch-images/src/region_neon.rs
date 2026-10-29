@@ -1,4 +1,4 @@
-//! Temporal-region ARM64 kernels retain scalar accumulation and border rules.
+//! Image-similarity ARM64 kernels retain scalar accumulation and border rules.
 use super::*;
 use std::arch::aarch64::*;
 #[cfg(test)]

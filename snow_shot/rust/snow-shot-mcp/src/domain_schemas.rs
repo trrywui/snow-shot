@@ -76,6 +76,8 @@ limited_integer!(DelaySeconds, 0, 10);
 limited_integer!(HistoryPageSize, 1, 200);
 limited_integer!(TrailDuration, 100, 2000);
 limited_integer!(KeyboardSize, 32, 128);
+limited_integer!(WebcamSize, 50, 500);
+limited_integer!(MouseHighlightRadius, 8, 128);
 limited_integer!(Percentage, 0, 100);
 limited_integer!(ArtifactChunkSize, 1, 262144);
 limited_integer!(ExportQuality, 1, 100);
@@ -147,7 +149,14 @@ input!(SettingsReset {
 });
 input!(SettingsAction { field_id: String, path: Option<String> });
 #[cfg(not(feature = "mini"))]
-input!(Model { id: String, name: String, base_url: String, model: String, supports_vision: Option<bool>, supports_reasoning: Option<bool>, api_key: Option<String>, credential_set: Option<bool> });
+choices!(ModelProvider {
+    Openai,
+    Qwen,
+    Deepseek,
+    Doubao
+});
+#[cfg(not(feature = "mini"))]
+input!(Model { id: String, name: String, base_url: String, model: String, supports_vision: Option<bool>, supports_reasoning: Option<bool>, api_key: Option<String>, credential_set: Option<bool>, provider: Option<ModelProvider> });
 #[cfg(not(feature = "mini"))]
 input!(ModelsUpdate { models: Vec<Model> });
 #[cfg(not(feature = "mini"))]
@@ -303,7 +312,12 @@ choices!(RecordingFormat {
     Apng,
     Webp
 });
-choices!(Encoder { H264, H265, H264Hw });
+choices!(Encoder {
+    H264,
+    H265,
+    H264Hw,
+    H265Hw
+});
 #[derive(Deserialize, JsonSchema)]
 enum Clarity {
     #[serde(rename = "4k")]
@@ -337,18 +351,69 @@ choices!(PostProcessingEffect {
     ProgressBar,
     PlaybackTime
 });
-input!(RecordingOptions {
-    path: Option<String>,
-    format: Option<RecordingFormat>, quality: Option<Percentage>, start_delay_seconds: Option<DelaySeconds>, microphone: Option<bool>,
-    system_audio: Option<bool>, system_audio_gain_db: Option<AudioGainDb>, microphone_gain_db: Option<AudioGainDb>, separate_audio_tracks: Option<bool>, frame_rate: Option<FrameRate>, animated_frame_rate: Option<AnimatedFrameRate>,
-    clarity: Option<Clarity>, animated_clarity: Option<AnimatedClarity>, encoder: Option<Encoder>,
-    encoding_preset: Option<EncodingPreset>, r#loop: Option<bool>, capture_toolbar: Option<bool>,
-    post_processing: Option<bool>, post_processing_effect: Option<PostProcessingEffect>, progress_bar_color: Option<String>,
-    show_cursor: Option<bool>, show_keyboard: Option<bool>, mouse_highlight: Option<bool>,
-    record_mouse_clicks: Option<bool>, mouse_trail_duration_ms: Option<TrailDuration>, keyboard_size: Option<KeyboardSize>,
-    keyboard_background: Option<String>, keyboard_foreground: Option<String>, mouse_trail: Option<String>,
-    mouse_click: Option<String>, mouse_highlight_color: Option<String>
-});
+choices!(WebcamShape { Square, Circle });
+// Missing overrides use application preferences. A supplied override must have
+// the declared value type; JSON null is not a request to reset that preference.
+#[derive(JsonSchema)]
+#[schemars(with = "T", inline)]
+struct SuppliedRecordingOption<T>(Option<T>);
+impl<T> Default for SuppliedRecordingOption<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for SuppliedRecordingOption<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(|value| Self(Some(value)))
+    }
+}
+macro_rules! recording_options {
+    ($($field:ident: $ty:ty),* $(,)?) => {
+        #[derive(Deserialize, JsonSchema)]
+        #[serde(deny_unknown_fields)]
+        struct RecordingOptions {
+            $(#[serde(default)] $field: SuppliedRecordingOption<$ty>),*
+        }
+    };
+}
+recording_options! {
+    path: String,
+    format: RecordingFormat,
+    quality: Percentage,
+    start_delay_seconds: DelaySeconds,
+    microphone: bool,
+    system_audio: bool,
+    system_audio_gain_db: AudioGainDb,
+    microphone_gain_db: AudioGainDb,
+    separate_audio_tracks: bool,
+    frame_rate: FrameRate,
+    animated_frame_rate: AnimatedFrameRate,
+    clarity: Clarity,
+    animated_clarity: AnimatedClarity,
+    encoder: Encoder,
+    encoding_preset: EncodingPreset,
+    r#loop: bool,
+    capture_toolbar: bool,
+    post_processing: bool,
+    post_processing_effect: PostProcessingEffect,
+    progress_bar_color: String,
+    show_cursor: bool,
+    show_keyboard: bool,
+    mouse_highlight: bool,
+    webcam: bool,
+    webcam_size: WebcamSize,
+    webcam_shape: WebcamShape,
+    record_mouse_clicks: bool,
+    record_mouse_scrolling: bool,
+    mouse_trail_duration_ms: TrailDuration,
+    keyboard_size: KeyboardSize,
+    keyboard_background: String,
+    keyboard_foreground: String,
+    mouse_trail: String,
+    mouse_click: String,
+    mouse_highlight_color: String,
+    mouse_highlight_radius: MouseHighlightRadius,
+}
 input!(RecordingStart { region: [f64; 4], options: Option<RecordingOptions>, idempotency_key: Option<String> });
 choices!(RecordingAction {
     Pause,
@@ -1010,6 +1075,142 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn recording_schema_matches_application_validation() {
+        fn primitive_contract(root: &Value, schema: &Value) -> Value {
+            if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+                return primitive_contract(root, root.pointer(&reference[1..]).unwrap());
+            }
+            let mut result = Map::new();
+            for key in ["type", "minimum", "maximum", "enum"] {
+                if let Some(value) = schema.get(key) {
+                    result.insert(key.into(), value.clone());
+                }
+            }
+            if let Some(choices) = result.get_mut("enum").and_then(Value::as_array_mut) {
+                choices.sort_unstable_by_key(Value::to_string);
+            }
+            Value::Object(result)
+        }
+
+        let catalog: Value =
+            serde_json::from_str(include_str!("../../../mcp-capabilities.json")).unwrap();
+        // Qt consumes this canonical contract through its generated header;
+        // these Rust input types and serde validation remain independent.
+        let expected = catalog["surface_contracts"]["recording_options"]["validation"]
+            .as_object()
+            .unwrap();
+        let published = Value::Object(model::<RecordingOptions>(None).unwrap());
+        let actual: Map<String, Value> = published["properties"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, schema)| (name.clone(), primitive_contract(&published, schema)))
+            .collect();
+        assert!(
+            actual.keys().eq(expected.keys()),
+            "Rust and Qt recording fields differ"
+        );
+        assert!(
+            published.get("required").is_none(),
+            "All recording overrides are optional"
+        );
+        assert!(model::<RecordingOptions>(Some(json!({}))).is_ok());
+
+        for (name, contract) in expected {
+            assert_eq!(
+                actual[name],
+                primitive_contract(&catalog, contract),
+                "Rust recording field {name} differs from Qt validation"
+            );
+            let accepts = |value: Value| {
+                model::<RecordingOptions>(Some(Value::Object(Map::from_iter([(
+                    name.clone(),
+                    value,
+                )]))))
+                .is_ok()
+            };
+            assert!(
+                !accepts(Value::Null),
+                "{name} must reject a supplied null override"
+            );
+            let wrong_type = match contract["type"].as_str().unwrap() {
+                "integer" => json!(8.5),
+                "boolean" => json!("true"),
+                "string" => json!(true),
+                kind => panic!("Unsupported application primitive: {kind}"),
+            };
+            assert!(
+                !accepts(wrong_type),
+                "{name} must reject the wrong input type"
+            );
+            if let Some(choices) = contract.get("enum").and_then(Value::as_array) {
+                for choice in choices {
+                    assert!(accepts(choice.clone()), "{name} must accept {choice}");
+                }
+                let invalid = if contract["type"] == "integer" {
+                    json!(0)
+                } else {
+                    json!("unsupported_recording_option")
+                };
+                assert!(!accepts(invalid), "{name} must reject an unknown choice");
+            } else if contract["type"] == "integer" {
+                let minimum = contract["minimum"].as_i64().unwrap();
+                let maximum = contract["maximum"].as_i64().unwrap();
+                assert!(accepts(json!(minimum)), "{name} must accept its minimum");
+                assert!(accepts(json!(maximum)), "{name} must accept its maximum");
+                assert!(
+                    !accepts(json!(minimum - 1)),
+                    "{name} must enforce its minimum"
+                );
+                assert!(
+                    !accepts(json!(maximum + 1)),
+                    "{name} must enforce its maximum"
+                );
+            }
+        }
+    }
+    #[test]
+    fn recording_mouse_highlight_radius_matches_application_bounds() {
+        for radius in [8, 24, 128] {
+            assert!(
+                schema(
+                    "snow_shot_recording_start",
+                    Some(json!({
+                        "region": [0, 0, 320, 240],
+                        "options": {"mouse_highlight": true, "mouse_highlight_radius": radius}
+                    }))
+                )
+                .is_ok(),
+                "supported radius {radius}"
+            );
+        }
+        for radius in [
+            json!(-1),
+            json!(7),
+            json!(129),
+            json!(8.5),
+            json!("24"),
+            json!(true),
+        ] {
+            assert!(
+                schema(
+                    "snow_shot_recording_start",
+                    Some(json!({
+                        "region": [0, 0, 320, 240],
+                        "options": {"mouse_highlight_radius": radius}
+                    }))
+                )
+                .is_err(),
+                "invalid radius {radius}"
+            );
+        }
+        let published = schema("snow_shot_recording_start", None).unwrap();
+        let radius = &published["$defs"]["MouseHighlightRadius"];
+        assert_eq!(radius["type"], "integer");
+        assert_eq!(radius["minimum"], 8);
+        assert_eq!(radius["maximum"], 128);
+    }
+    #[test]
     fn recording_capability_catalogs_match_typed_options_without_duplicates() {
         let published = model::<RecordingOptions>(None).unwrap();
         let properties = published["properties"].as_object().unwrap();
@@ -1095,6 +1296,30 @@ mod tests {
                 "snow_shot_recording_start",
                 Some(serde_json::json!({
                     "region": [0, 0, 320, 240], "options": {"separate_audio_tracks": 1}
+                }))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recording_accepts_only_boolean_record_mouse_scrolling() {
+        for value in [serde_json::json!(true), serde_json::json!(false)] {
+            assert!(
+                schema(
+                    "snow_shot_recording_start",
+                    Some(serde_json::json!({
+                        "region": [0, 0, 320, 240], "options": {"record_mouse_scrolling": value}
+                    }))
+                )
+                .is_ok()
+            );
+        }
+        assert!(
+            schema(
+                "snow_shot_recording_start",
+                Some(serde_json::json!({
+                    "region": [0, 0, 320, 240], "options": {"record_mouse_scrolling": 1}
                 }))
             )
             .is_err()
@@ -1320,8 +1545,8 @@ mod audio_gain_tests {
                 serde_json::json!({"microphone_gain_db":value,"system_audio_gain_db":-value}),
             )
             .unwrap();
-            assert_eq!(options.microphone_gain_db.unwrap().0, value);
-            assert_eq!(options.system_audio_gain_db.unwrap().0, -value);
+            assert_eq!(options.microphone_gain_db.0.unwrap().0, value);
+            assert_eq!(options.system_audio_gain_db.0.unwrap().0, -value);
         }
         for value in [
             serde_json::json!(-25),
@@ -1335,6 +1560,43 @@ mod audio_gain_tests {
                     serde_json::json!({"system_audio_gain_db":value})
                 )
                 .is_err()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod webcam_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn recording_webcam_options_validate_types_and_style_boundaries() {
+        for size in [50, 150, 500] {
+            for shape in ["square", "circle"] {
+                assert!(
+                    schema(
+                        "snow_shot_recording_start",
+                        Some(json!({
+                            "region": [0, 0, 320, 240],
+                            "options": {"webcam": true, "webcam_size": size, "webcam_shape": shape}
+                        }))
+                    )
+                    .is_ok()
+                );
+            }
+        }
+        for (key, value) in [
+            ("webcam", json!(1)),
+            ("webcam_size", json!(49)),
+            ("webcam_size", json!(501)),
+            ("webcam_size", json!(150.5)),
+            ("webcam_shape", json!("oval")),
+        ] {
+            let mut input = json!({"region": [0, 0, 320, 240], "options": {}});
+            input["options"][key] = value;
+            assert!(
+                schema("snow_shot_recording_start", Some(input)).is_err(),
+                "{key}"
             );
         }
     }

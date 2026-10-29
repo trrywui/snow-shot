@@ -1124,7 +1124,7 @@ void diagnosticsStateAndCopyFeedback() {
     emit backend.actionFinished(settings::SettingsActionBinding::CopyTodayLog, true, {});
     auto* feedback =
         widget.findChild<QLabel*>(QStringLiteral("settings-storage-log-copy-feedback"));
-    require(feedback && feedback->text() == QStringLiteral("Log file copied."),
+    require(feedback && feedback->text() == QStringLiteral("Log file copied"),
             "async completion reaches widget");
     QEvent language(QEvent::LanguageChange);
     QCoreApplication::sendEvent(&widget, &language);
@@ -1459,8 +1459,7 @@ void directoryDialogLifecycle() {
             "successful storage confirmation commits each changed field exactly once");
     require(!lifetime || !lifetime->isOpen(), "success dismisses modal automatically");
     require(notification && notification->type() == AdMessage::Type::Success &&
-                notification->content() ==
-                    QStringLiteral("Translated: Storage migration complete."),
+                notification->content() == QStringLiteral("Translated: Storage migration complete"),
             "completion uses translated Message notification");
     QCoreApplication::removeTranslator(&translator);
     choose->click();

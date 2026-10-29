@@ -5,6 +5,7 @@ param(
         "windows-msvc-performance",
         "snow-shot-msvc-release",
         "snow-shot-msvc-fast",
+        "snow-shot-msvc-store-release",
         "snow-shot-msvc-arm64-debug",
         "snow-shot-msvc-arm64-performance",
         "snow-shot-msvc-arm64-release",
@@ -114,13 +115,15 @@ $workingDirectory = Split-Path -Parent $executablePath
 if ((Get-SnowPeMachine -Path $executablePath) -ne $windowsTarget.PeMachine) {
     throw "The Snow Shot executable does not match preset $Preset. Rebuild its selected architecture."
 }
+# Snow Shot is a GUI executable and does not create a console. Hidden sets the
+# Windows startup show state and can suppress its first editor while Qt reports it visible.
 if ($Detached) {
-    Start-Process -FilePath $executablePath -WorkingDirectory $workingDirectory -WindowStyle Hidden | Out-Null
+    Start-Process -FilePath $executablePath -WorkingDirectory $workingDirectory -WindowStyle Normal | Out-Null
     return
 }
 
 $process = Start-Process -FilePath $executablePath -WorkingDirectory $workingDirectory `
-    -WindowStyle Hidden -PassThru
+    -WindowStyle Normal -PassThru
 $process.WaitForExit()
 if ($process.ExitCode -ne 0) {
     throw "Snow Shot exited with code $($process.ExitCode)."

@@ -166,6 +166,72 @@ QImage sampleImage() {
     return image;
 }
 
+void conversionAiModelMigrationPreservesHistoricalOutput(const QString& legacy) {
+    using Controller = ScreenshotImageConversionController;
+    using Format = SnowShotImageConversionFormat;
+    const snow_shot::storage::ScreenshotImageConversionSettings settings;
+    const QString previous = settings.visionModel();
+    const auto restore = qScopeGuard([&] { settings.setVisionModel(previous); });
+    require(settings.setVisionModel(legacy), "save legacy conversion selection");
+    ConversionServer server;
+    server.models = QJsonArray{QJsonObject{{QStringLiteral("model"), legacy},
+                                           {QStringLiteral("name"), QStringLiteral("Legacy")},
+                                           {QStringLiteral("supports_vision"), true}}};
+    SnowShotApiClient api(server.url());
+    Controller controller;
+    controller.setProvider(&api);
+    controller.activate(QStringLiteral("historical-ai"), sampleImage(), Format::Markdown);
+    until([&] { return controller.state() == Controller::State::Completed; });
+    require(settings.visionModel() == legacy, "older catalog preserves conversion preference");
+    const QString original = controller.source();
+    server.models = QJsonArray{QJsonObject{{QStringLiteral("model"), QStringLiteral("ai-model")},
+                                           {QStringLiteral("name"), QStringLiteral("AI Model")},
+                                           {QStringLiteral("supports_vision"), true}}};
+    bool completed = false;
+    const auto catalogToken = api.fetchChatModels(QLocale().name(), &controller, [&](auto result) {
+        require(result.succeeded(), "load AI Model conversion catalog");
+        completed = true;
+    });
+    require(catalogToken != 0, "AI Model catalog refresh starts");
+    until([&] { return completed; });
+    require(settings.visionModel() == QStringLiteral("ai-model") &&
+                controller.source() == original &&
+                controller.entries(QStringLiteral("historical-ai")).first().model == legacy &&
+                server.requests.size() == 1,
+            "catalog migration preserves historical output and its model identity");
+    controller.deactivate();
+    controller.activate(QStringLiteral("historical-ai"), sampleImage(), Format::Markdown);
+    require(controller.state() == Controller::State::Completed && controller.source() == original &&
+                controller.activeModel() == legacy && server.requests.size() == 1,
+            "reopening a migrated conversion restores its historical identity without uploading");
+    Controller restored;
+    restored.seed(QStringLiteral("historical-ai"),
+                  controller.entries(QStringLiteral("historical-ai")));
+    restored.activate(QStringLiteral("historical-ai"), sampleImage(), Format::Markdown);
+    require(restored.state() == Controller::State::Completed && restored.source() == original &&
+                restored.activeModel() == legacy,
+            "migrated conversions restore historical output offline without a catalog");
+    controller.activate(QStringLiteral("future-ai"), sampleImage(), Format::Html);
+    until([&] { return controller.state() == Controller::State::Completed; });
+    require(server.requests.last().value(QStringLiteral("model")) == QStringLiteral("ai-model"),
+            "future conversion uses AI Model");
+    controller.activate(QStringLiteral("historical-ai"), sampleImage(), Format::Markdown);
+    server.source = QStringLiteral("# Refreshed");
+    controller.retry();
+    until([&] { return controller.state() == Controller::State::Completed; });
+    require(controller.activeModel() == QStringLiteral("ai-model") &&
+                controller.source() == server.source && server.requests.size() == 3 &&
+                server.requests.last().value(QStringLiteral("model")) == QStringLiteral("ai-model"),
+            "explicit retry refreshes a historical result using the migrated model");
+    controller.deactivate();
+    const auto historical = controller.entries(QStringLiteral("historical-ai"));
+    controller.seed(QStringLiteral("historical-ai"), {historical.last(), historical.first()});
+    controller.activate(QStringLiteral("historical-ai"), sampleImage(), Format::Markdown);
+    require(controller.activeModel() == QStringLiteral("ai-model") &&
+                controller.source() == server.source && server.requests.size() == 3,
+            "an exact canonical cache entry takes precedence over a more recent legacy result");
+}
+
 void conversionNotificationsAllowOwnerDeletion() {
     using Controller = ScreenshotImageConversionController;
     using State = Controller::State;
@@ -2049,6 +2115,8 @@ void initializeRecognitionTestFonts() {
 
 void runImageConversionNetworkTests() {
     initializeRecognitionTestFonts();
+    for (const auto& legacy : {QStringLiteral("qwen3.8-flash"), QStringLiteral("qwen-mt-flash")})
+        conversionAiModelMigrationPreservesHistoricalOutput(legacy);
     settingsInitialAvailability();
     settingsIgnoreRetiredProviderCallbacks();
     conversionCacheUsesRecognitionKeys();
@@ -2349,24 +2417,33 @@ void latexSourcePreservesWhitespace() {
     require(editor && editor->document()->toPlainText() != source,
             "fixture includes whitespace normalized by QTextDocument");
     const auto sourceIs = [&](const QString& expected) {
+        require(!editor->textCursor().hasSelection(),
+                "whole-source checks require no active editor selection");
         const auto file = session.fileExportSnapshot();
-        return session.latexDraft() == expected &&
-               session.recognitionClipboardMimeData()->text() == expected && file &&
+        const auto mime = session.recognitionClipboardMimeData();
+        return session.latexDraft() == expected && mime && mime->text() == expected && file &&
                file->source == expected &&
                session.workflowResult().value(QStringLiteral("text")).toString() == expected;
+    };
+    const auto verifyCopy = [&](const QString& expected, const char* message) {
+        const QString sentinel = QStringLiteral("LaTeX clipboard sentinel");
+        QApplication::clipboard()->setText(sentinel);
+        const auto mime = session.recognitionClipboardMimeData();
+        require(mime && mime->text() == expected, message);
+        require(QApplication::clipboard()->text() == sentinel,
+                "LaTeX clipboard payload creation must not modify the system clipboard");
+        require(window.copyVisibleContentToClipboard() &&
+                    QApplication::clipboard()->text() == expected,
+                message);
     };
     require(sourceIs(source) && !session.cachedRecognitionResults().latexDraft,
             "recognized whitespace remains verbatim through every source export");
     QTextCursor copyCursor(editor->document());
     editor->setTextCursor(copyCursor);
-    QApplication::clipboard()->setText(QStringLiteral("clipboard sentinel"));
-    require(window.copyVisibleContentToClipboard() && QApplication::clipboard()->text() == source,
-            "LaTeX copy without a selection preserves every original source character");
+    verifyCopy(source, "LaTeX copy without a selection preserves every original source character");
     copyCursor.select(QTextCursor::Document);
     editor->setTextCursor(copyCursor);
-    QApplication::clipboard()->setText(QStringLiteral("clipboard sentinel"));
-    require(window.copyVisibleContentToClipboard() && QApplication::clipboard()->text() == source,
-            "LaTeX Select All copy preserves CRLF, NBSP and Unicode separators");
+    verifyCopy(source, "LaTeX Select All copy preserves CRLF, NBSP and Unicode separators");
     const QString raw = editor->document()->toRawText();
     copyCursor.setPosition(static_cast<int>(raw.indexOf(QLatin1Char('a'))));
     copyCursor.setPosition(static_cast<int>(raw.indexOf(QLatin1Char('z')) + 1),
@@ -2375,18 +2452,26 @@ void latexSourcePreservesWhitespace() {
     const qsizetype sourceStart = source.indexOf(QLatin1Char('a'));
     const QString selectedSource =
         source.mid(sourceStart, source.indexOf(QLatin1Char('z')) + 1 - sourceStart);
-    QApplication::clipboard()->setText(QStringLiteral("clipboard sentinel"));
-    require(window.copyVisibleContentToClipboard() &&
-                QApplication::clipboard()->text() == selectedSource,
-            "partial LaTeX copy maps document positions to exact source spans");
+    verifyCopy(selectedSource, "partial LaTeX copy maps document positions to exact source spans");
+    const auto selectedFile = session.fileExportSnapshot();
+    require(selectedFile && selectedFile->source == source && session.latexDraft() == source &&
+                session.workflowResult().value(QStringLiteral("text")).toString() == source,
+            "LaTeX selection copying leaves whole-source exports unchanged");
+    copyCursor.setPosition(static_cast<int>(raw.indexOf(QLatin1Char('z')) + 1));
+    copyCursor.setPosition(static_cast<int>(raw.indexOf(QLatin1Char('a'))),
+                           QTextCursor::KeepAnchor);
+    editor->setTextCursor(copyCursor);
+    verifyCopy(selectedSource, "reversed LaTeX selections preserve the same exact source span");
     const int paragraphPosition = static_cast<int>(raw.indexOf(QChar::ParagraphSeparator));
+    require(paragraphPosition >= 0, "LaTeX copy fixture contains a normalized CRLF paragraph");
     copyCursor.setPosition(paragraphPosition);
     copyCursor.setPosition(paragraphPosition + 1, QTextCursor::KeepAnchor);
     editor->setTextCursor(copyCursor);
-    QApplication::clipboard()->setText(QStringLiteral("clipboard sentinel"));
-    require(window.copyVisibleContentToClipboard() &&
-                QApplication::clipboard()->text() == QStringLiteral("\r\n"),
-            "copying one document paragraph preserves the source CRLF pair");
+    verifyCopy(QStringLiteral("\r\n"),
+               "copying one document paragraph preserves the source CRLF pair");
+    copyCursor.clearSelection();
+    editor->setTextCursor(copyCursor);
+    verifyCopy(source, "clearing the LaTeX selection restores exact whole-source copying");
 
     QString edited = source;
     QTextCursor cursor(editor->document());

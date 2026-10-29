@@ -955,7 +955,7 @@ impl Editor {
             } else {
                 "create free draw"
             });
-            if let Some(target) = state.continuation {
+            if let Some(target) = &state.continuation {
                 transaction.update_free_draw(target.id, free_draw);
             } else {
                 transaction.insert_free_draw(
@@ -964,9 +964,11 @@ impl Editor {
                     free_draw,
                 );
             }
-            self.queue_command(EditorCommand::ApplyTransaction(
-                ApplyTransactionCommand::new(transaction),
-            ));
+            let mut command = ApplyTransactionCommand::new(transaction);
+            if state.continuation.is_none() {
+                command = command.selecting_created(document.peek_next_element_id());
+            }
+            self.queue_command(EditorCommand::ApplyTransaction(command));
         }
         Ok(InteractionOutput {
             consumed: true,

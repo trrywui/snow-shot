@@ -2,7 +2,7 @@
 #define SNOW_SHOT_RECORDINGEFFECTPREVIEW_H
 
 #include "snow_draw_engine_qt/snow_canvas_custom_renderer.h"
-#include "snow_recording_effects.h"
+#include "recordingeffectssource.h"
 #include <QColor>
 #include <QImage>
 #include <QObject>
@@ -14,33 +14,8 @@
 #include <vector>
 
 class CanvasStatusReadout;
+class RecordingStatusPrompt;
 class ScreenRecordingAreaWindow;
-
-struct RecordingEffectsFrame {
-    quint64 generation = 0;
-    quint64 revision = 0;
-    QSize output;
-    struct Tile {
-        QRect rect;
-        QImage image;
-        QSize coordinateSize;
-    };
-    // Images borrow the native frame. Destroy images before releasing the owner.
-    std::shared_ptr<void> lease;
-    std::vector<Tile> tiles;
-    QString error;
-};
-
-// Injectable observation boundary. A stopped source must join before returning.
-class RecordingEffectsSource {
-  public:
-    virtual ~RecordingEffectsSource() = default;
-    virtual bool start(const SnowRecordingEffectsConfig& config, std::function<void()> notify,
-                       QString& error) = 0;
-    virtual bool configure(const SnowRecordingEffectsConfig& config, QString& error) = 0;
-    virtual void stop() = 0;
-    virtual std::shared_ptr<RecordingEffectsFrame> acquire() = 0;
-};
 
 class RecordingEffectPreview final : public QObject, public SnowCanvasCustomRenderer {
   public:
@@ -52,9 +27,15 @@ class RecordingEffectPreview final : public QObject, public SnowCanvasCustomRend
                    const QColor& keyboardBackground = QColor(0, 0, 0, 204),
                    const QColor& keyboardForeground = QColor(Qt::white), int keyboardSize = 64,
                    const QColor& highlight = QColor(0, 0, 0, 0), bool recordMouseClicks = false,
-                   int highlightRadius = 41);
+                   int highlightRadius = 41, uint32_t playbackOverlay = 0,
+                   const QColor& progressBarColor = QColor(22, 119, 255),
+                   SnowWebcam* webcam = nullptr, int webcamSize = 150, uint32_t webcamShape = 0,
+                   const QPoint& webcamOffset = QPoint(48, 48), bool recordMouseScrolling = false,
+                   uint32_t webcamOrientation = 0);
     void setEligible(bool eligible);
+    void setStatusPrompts(bool enabled, const QString& format, bool microphone, bool speaker);
     void stopAndClear(bool present = false);
+    void prepareForSessionEnd();
     [[nodiscard]] bool active() const;
     [[nodiscard]] quint64 generation() const;
     [[nodiscard]] bool hasFrame() const;
@@ -69,12 +50,17 @@ class RecordingEffectPreview final : public QObject, public SnowCanvasCustomRend
     void synchronize();
     void receiveFrame();
     void clearFrame();
+    void clearPlaybackFrame();
     void updateReadout();
+    void updateWebcamControl();
     [[nodiscard]] QTransform outputToCanvas(const QSize& output) const;
     [[nodiscard]] QRegion frameRegion(const RecordingEffectsFrame& frame) const;
     ScreenRecordingAreaWindow& m_area;
     std::unique_ptr<RecordingEffectsSource> m_source;
     CanvasStatusReadout* m_readout;
+    RecordingStatusPrompt* m_statusPrompt;
+    bool m_showStatusPrompts = true;
+    bool m_previewVisible = false;
     QTimer m_configurationTimer;
     QRect m_capture;
     QSize m_output;
@@ -83,15 +69,27 @@ class RecordingEffectPreview final : public QObject, public SnowCanvasCustomRend
     QColor m_highlight{0, 0, 0, 0};
     int m_highlightRadius = 41;
     bool m_recordMouseClicks = false;
+    bool m_recordMouseScrolling = false;
     int m_trailDurationMs = 500;
     QColor m_keyboardBackground{0, 0, 0, 204};
     QColor m_keyboardForeground{Qt::white};
     int m_keyboardSize = 64;
+    uint32_t m_playbackOverlay = 0;
+    QColor m_progressBarColor{22, 119, 255};
+    std::shared_ptr<RecordingEffectsFrame> m_playbackFrame;
+    bool m_playbackDirty = true;
     bool m_keyboard = false;
+    SnowWebcam* m_webcam = nullptr;
+    int m_webcamSize = 150;
+    QPoint m_webcamOffset{48, 48};
+    uint32_t m_webcamShape = 0;
+    uint32_t m_webcamOrientation = 0;
     bool m_eligible = false;
     bool m_running = false;
+    bool m_sessionEnding = false;
     bool m_failed = false;
     bool m_configurationDirty = true;
+    bool m_webcamLayoutDirty = false;
     bool m_windowBlocked = false;
     quint64 m_generation = 0;
     std::atomic<bool> m_notificationPending = false;

@@ -1,0 +1,21 @@
+[package]
+name = "snow-image-codecs"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[features]
+default = []
+native-backends = ["snow-image-native-sys/native-backends"]
+
+[dependencies]
+snow-image-core = { path = "../snow-image-core" }
+snow-image-native-sys = { path = "../snow-image-native-sys", default-features = false }
+png = "=0.18.1"
+gif = "=0.14.2"
+image = { version = "=0.25.10", default-features = false, features = ["bmp", "ico", "png"] }
+half = "=2.7.1"
+
+[lints]
+workspace = true

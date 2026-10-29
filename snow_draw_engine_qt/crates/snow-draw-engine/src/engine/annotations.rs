@@ -234,6 +234,8 @@ struct Style {
     stroke_style: crate::StrokeStyle,
     stroke_rendering_style: crate::StrokeRenderingStyle,
     arrow_type: crate::ArrowType,
+    arrow_outline_color: [u8; 4],
+    arrow_outline_width: f64,
     filter: Filter,
 }
 #[derive(Default, Deserialize)]
@@ -265,6 +267,8 @@ impl Default for Style {
             stroke_style: Default::default(),
             stroke_rendering_style: Default::default(),
             arrow_type: Default::default(),
+            arrow_outline_color: [0xff, 0xcc, 0xc7, 255],
+            arrow_outline_width: 0.0,
             filter: Default::default(),
         }
     }
@@ -284,6 +288,7 @@ impl Style {
         .iter()
         .all(|v| v.is_finite())
             && (0.0..=1024.0).contains(&self.stroke_width)
+            && (0.0..=72.0).contains(&self.arrow_outline_width)
             && (0.0..=1.0).contains(&self.opacity)
             && (0.0..=1.0).contains(&self.strength)
             && (0.0..=10000.0).contains(&self.corner_radius)
@@ -653,6 +658,10 @@ impl Engine {
                     .ok_or(ErrorCode::InvalidArgument)?;
                     data.opacity = s.opacity;
                     data.stroke_rendering_style = s.stroke_rendering_style;
+                    if linear_kind == LinearElementKind::Arrow {
+                        data.arrow_outline_color = rgba(s.arrow_outline_color);
+                        data.arrow_outline_width = s.arrow_outline_width;
+                    }
                     data.stroke_rendering_seed =
                         snow_draw_engine_core::arrow::stroke_rendering_seed(
                             id.index,
@@ -745,6 +754,7 @@ impl Engine {
             ApplyTransactionCommand {
                 transaction: tx,
                 history_undo_snapshot: Some(before),
+                created_selection_target: None,
             },
         ) {
             Ok(result) => result,
@@ -800,6 +810,7 @@ mod tests {
                     ApplyTransactionCommand {
                         transaction,
                         history_undo_snapshot: None,
+                        created_selection_target: None,
                     },
                 )
                 .unwrap();
@@ -934,6 +945,46 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn arrow_outline_annotations_preserve_scope_and_validate_width() {
+        let mut engine = Engine::default();
+        apply(
+            &mut engine,
+            json!([
+                {"type":"arrow", "points":[[0,0],[100,80]], "style":{
+                    "arrow_outline_width":8, "arrow_outline_color":[12,120,240,128]}},
+                {"type":"line", "points":[[0,80],[100,0]], "style":{
+                    "arrow_outline_width":8}},
+                {"type":"arrow", "points":[[0,20],[100,20]]}
+            ]),
+        )
+        .unwrap();
+        let ids = engine.model.paint_order().to_vec();
+        let arrow = engine.model.arrow(ids[0]).unwrap().clone();
+        assert_eq!(arrow.arrow_outline_width, 8.0);
+        assert_eq!(arrow.arrow_outline_color, rgba([12, 120, 240, 128]));
+        assert_eq!(engine.model.arrow(ids[1]).unwrap().arrow_outline_width, 0.0);
+        assert_eq!(engine.model.arrow(ids[2]).unwrap().arrow_outline_width, 0.0);
+        let saved = engine.serialize_document_session().unwrap();
+        for width in [-1.0, 73.0] {
+            assert!(
+                apply(
+                    &mut engine,
+                    json!([{
+                        "type":"arrow", "points":[[0,0],[100,80]],
+                        "style":{"arrow_outline_width":width}
+                    }])
+                )
+                .is_err()
+            );
+            assert_eq!(engine.serialize_document_session().unwrap(), saved);
+        }
+        engine.undo().unwrap();
+        assert!(engine.model.paint_order().is_empty());
+        engine.redo().unwrap();
+        assert_eq!(*engine.model.arrow(ids[0]).unwrap(), arrow);
+    }
+
     #[test]
     fn stroke_rendering_annotations_history_and_sessions_preserve_styles_and_seeds() {
         use snow_draw_engine_core::arrow::StrokeRenderingStyle;

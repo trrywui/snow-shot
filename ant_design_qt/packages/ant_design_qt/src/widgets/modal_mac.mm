@@ -7,6 +7,7 @@
 #include <QScopedValueRollback>
 #include <QWindow>
 #include <QSet>
+#include <utility>
 
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
@@ -58,9 +59,27 @@ void installNativeOrdering(NSWindow* window) {
 
 class CocoaModalSession final : public MacModalSession {
   public:
-    CocoaModalSession(QWidget* surface, QWidget* blocker) : surface_(surface), blocker_(blocker) {
+    CocoaModalSession(QWidget* surface, QWidget* blocker,
+                      std::function<void(bool)> interactionChanged)
+        : surface_(surface), blocker_(blocker) {
         sessions.append(this);
         synchronize();
+        resizeStartedObserver_ = [NSNotificationCenter.defaultCenter
+            addObserverForName:NSWindowWillStartLiveResizeNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification* notification) {
+                      if (notification.object == nativeSurface() && !closing_)
+                          interactionChanged(true);
+                    }];
+        resizeFinishedObserver_ = [NSNotificationCenter.defaultCenter
+            addObserverForName:NSWindowDidEndLiveResizeNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification* notification) {
+                      if (notification.object == nativeSurface() && !closing_)
+                          interactionChanged(false);
+                    }];
         if (!blocker_)
             return;
         // Qt's Cocoa backend relies on an attached sheet to block its direct
@@ -96,6 +115,8 @@ class CocoaModalSession final : public MacModalSession {
     }
 
     ~CocoaModalSession() override {
+        [NSNotificationCenter.defaultCenter removeObserver:resizeStartedObserver_];
+        [NSNotificationCenter.defaultCenter removeObserver:resizeFinishedObserver_];
         if (eventMonitor_)
             [NSEvent removeMonitor:eventMonitor_];
         if (activationObserver_)
@@ -168,6 +189,8 @@ class CocoaModalSession final : public MacModalSession {
     QPointer<QWidget> blocker_;
     id eventMonitor_ = nil;
     id activationObserver_ = nil;
+    id resizeStartedObserver_ = nil;
+    id resizeFinishedObserver_ = nil;
     bool activating_ = false;
     bool closing_ = false;
 };
@@ -224,8 +247,10 @@ void constrainOrdering(NSWindow* window, NSWindowOrderingMode& mode, NSInteger& 
 }
 } // namespace
 
-std::unique_ptr<MacModalSession> createMacModalSession(QWidget* surface, QWidget* blocker) {
-    return std::make_unique<CocoaModalSession>(surface, blocker);
+std::unique_ptr<MacModalSession>
+createMacModalSession(QWidget* surface, QWidget* blocker,
+                      std::function<void(bool)> interactionChanged) {
+    return std::make_unique<CocoaModalSession>(surface, blocker, std::move(interactionChanged));
 }
 
 } // namespace adqt::widgets::detail

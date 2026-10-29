@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet("dxgi", "wgc")][string]$Backend = "dxgi",
+    [ValidateSet("h264", "h265")][string]$Codec = "h264",
     [ValidateRange(1, 120)][int]$DurationSeconds = 10,
     [ValidateRange(0, 30)][int]$WarmupSeconds = 2,
     [string]$OutputDirectory = "",
@@ -27,8 +28,8 @@ foreach ($size in @("1920x1080", "3840x2160")) {
         foreach ($effects in @("no-effects", "all-effects")) {
             foreach ($audio in @($false, $true)) {
                 foreach ($hardware in @($false, $true)) {
-                    $name = "$size-$workload-$effects-audio$([int]$audio)-gpu$([int]$hardware)"
-                    & $runner -Architecture $Architecture -Executable $executable -Backend $Backend -Fps 60 -Clarity native `
+                    $name = "$Codec-$size-$workload-$effects-audio$([int]$audio)-gpu$([int]$hardware)"
+                    & $runner -Codec $Codec -Architecture $Architecture -Executable $executable -Backend $Backend -Fps 60 -Clarity native `
                         -RegionSize $size -Workload $workload -Scenario $effects -Audio:$audio `
                         -PreferHardware:$hardware -DurationSeconds $DurationSeconds `
                         -WarmupSeconds $WarmupSeconds -OutputDirectory (Join-Path $OutputDirectory $name)

@@ -192,6 +192,8 @@ struct CollageResourceUsage final {
 [[nodiscard]] QImage captureCollageImage(QSize size, const std::function<QImage()>& capture,
                                          QString* error = nullptr);
 
+// Import storage is charged to the shared memory-aware budget, including after preparation
+// shrinks it to retained pixels. Bounded painting/preview scratch has its own admission pool.
 class CollageImportReservation final {
   public:
     CollageImportReservation();

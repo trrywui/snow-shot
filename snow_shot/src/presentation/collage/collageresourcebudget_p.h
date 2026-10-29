@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 
+#include "snow_shot/image/imageimportlimits.h"
+
 #include <QString>
 #include <QtGlobal>
 
 #include <memory>
 
 namespace snow_shot::presentation::collage_detail {
-inline constexpr qint64 maximumRasterBytes = qint64{8} * 1024 * 1024 * 1024;
+inline constexpr qint64 maximumRasterBytes = image::maximumImageImportBytes;
 inline constexpr qint64 maximumWindowPreviewBytes = qint64{64} * 1024 * 1024;
 inline constexpr qint64 maximumWorkingBytes = qint64{512} * 1024 * 1024;
 

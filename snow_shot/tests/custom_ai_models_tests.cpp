@@ -171,13 +171,38 @@ void storageContracts() {
     QTemporaryDir directory;
     const auto path = directory.filePath(QStringLiteral("config.json"));
     auto model = example();
+    require(model.provider == QStringLiteral("openai"), "new models default to OpenAI");
     require(!model.supportsReasoning, "custom models disable reasoning by default");
     auto legacy = customAiModelsToJson({model}).first().toObject();
     legacy.remove(QStringLiteral("supports_reasoning"));
     legacy.remove(QStringLiteral("concurrency"));
+    legacy.remove(QStringLiteral("provider"));
     bool valid = false;
-    require(customAiModelsFromJson(QJsonArray{legacy}, &valid) == CustomAiModels{model} && valid,
-            "existing models default to disabled reasoning and four concurrent requests");
+    auto legacyModel = model;
+    legacyModel.provider = QStringLiteral("qwen");
+    require(customAiModelsFromJson(QJsonArray{legacy}, &valid) == CustomAiModels{legacyModel} &&
+                valid,
+            "existing models default to Qwen, disabled reasoning, and four concurrent requests");
+    for (const auto& provider : {QStringLiteral("openai"), QStringLiteral("qwen"),
+                                 QStringLiteral("deepseek"), QStringLiteral("doubao")}) {
+        auto configured = model;
+        configured.provider = provider;
+        require(customAiModelsFromJson(customAiModelsToJson({configured}), &valid) ==
+                        CustomAiModels{configured} &&
+                    valid,
+                "every supported provider survives serialization");
+    }
+    for (const auto& provider : {QJsonValue(QStringLiteral("unknown")), QJsonValue(QString()),
+                                 QJsonValue(1), QJsonValue(false), QJsonValue(QJsonValue::Null)}) {
+        auto invalid = legacy;
+        invalid.insert(QStringLiteral("provider"), provider);
+        require(!storage::ConfigurationSchema::normalize(key, QJsonArray{invalid}).valid,
+                "invalid provider values are rejected");
+        require(customAiModelsFromJson(QJsonArray{invalid, legacy}, &valid) ==
+                        CustomAiModels{legacyModel} &&
+                    !valid,
+                "loading salvages valid models alongside an invalid provider");
+    }
     legacy.insert(QStringLiteral("supports_reasoning"), QStringLiteral("yes"));
     require(!storage::ConfigurationSchema::normalize(key, QJsonArray{legacy}).valid,
             "reasoning setting requires a boolean");
@@ -212,6 +237,7 @@ void storageContracts() {
                 "models survive reopening");
         model.supportsReasoning = true;
         model.concurrency = 16;
+        model.provider = QStringLiteral("deepseek");
         require(store.setValue(key, customAiModelsToJson({model})) && store.flushNow().success,
                 "reasoning support and concurrency save");
     }
@@ -314,7 +340,7 @@ void widgetContracts(QApplication& application) {
         auto* modal = widget->findChild<AdModal*>(QStringLiteral("customAiModelEditor"));
         require(modal != nullptr, "add opens form");
         const auto sharedFields = modal->contentWidget()->findChildren<form_fields::FormField*>();
-        require(sharedFields.size() == 7, "AI editor uses seven shared fields");
+        require(sharedFields.size() == 8, "AI editor uses eight shared fields");
         int sharedEdits = 0;
         int sharedCommits = 0;
         for (auto* field : sharedFields) {
@@ -346,13 +372,50 @@ void widgetContracts(QApplication& application) {
                     position(key).y() > position(name).y(),
                 "editor arranges fields in two columns in reading order");
         const auto fields = modal->contentWidget()->findChildren<AdFormItem*>();
-        require(fields.size() == 7, "editor has seven labeled fields");
+        require(fields.size() == 8, "editor has eight labeled fields");
         auto* reasoning =
             modal->contentWidget()->findChild<AdSwitch*>(QStringLiteral("reasoningSupport"));
         auto* concurrency = modal->contentWidget()->findChild<AdInputNumber*>(
             QStringLiteral("customAiModelConcurrency"));
         require(reasoning != nullptr && !reasoning->isChecked(),
                 "reasoning support starts disabled");
+        auto* provider =
+            modal->contentWidget()->findChild<AdComboBox*>(QStringLiteral("providerType"));
+        require(provider && !provider->editable() && provider->options().size() == 4 &&
+                    provider->currentValue() == QStringLiteral("openai") && !reasoning->isEnabled(),
+                "provider defaults to OpenAI with model-controlled reasoning");
+        const QStringList providerIds{QStringLiteral("openai"), QStringLiteral("qwen"),
+                                      QStringLiteral("deepseek"), QStringLiteral("doubao")};
+        const QStringList providerLabels{QStringLiteral("OpenAI"), QStringLiteral("Qwen"),
+                                         QStringLiteral("DeepSeek"), QStringLiteral("Doubao")};
+        for (qsizetype i = 0; i < providerIds.size(); ++i)
+            require(provider->options()[i].value == providerIds[i] &&
+                        provider->options()[i].label == providerLabels[i],
+                    "provider selector offers the four named providers in order");
+        require(position(provider).x() > position(concurrency).x() &&
+                    position(provider).y() == position(concurrency).y(),
+                "provider selector sits beside concurrency");
+        provider->setCurrentValue(QStringLiteral("deepseek"));
+        require(reasoning->isEnabled(), "DeepSeek enables the reasoning switch");
+        reasoning->setChecked(true);
+        provider->setCurrentValue(QStringLiteral("openai"));
+        require(!reasoning->isEnabled() && reasoning->isChecked(),
+                "OpenAI retains the saved reasoning value while disabling its switch");
+        provider->setCurrentValue(QStringLiteral("doubao"));
+        require(reasoning->isEnabled() && reasoning->isChecked(),
+                "switching providers restores editable reasoning without discarding the value");
+        for (const auto& locale :
+             {QStringLiteral("zh_CN"), QStringLiteral("zh_TW"), QStringLiteral("en_US")}) {
+            require(presentation::LanguageManager::instance().setLanguage(locale),
+                    "switch language with the model editor open");
+            flush();
+            require(
+                provider->currentValue() == QStringLiteral("doubao") &&
+                    provider->options().last().label ==
+                        QCoreApplication::translate("CustomAiModelsSettingsWidget", "Doubao") &&
+                    reasoning->isEnabled() && reasoning->isChecked(),
+                "provider labels retranslate without changing the selected provider or reasoning");
+        }
         require(concurrency != nullptr && concurrency->value() == 4 &&
                     concurrency->minimum() == 1 && concurrency->maximum() == 16,
                 "model concurrency defaults to four within the supported range");
@@ -539,12 +602,12 @@ void widgetContracts(QApplication& application) {
             ->setChecked(true);
         reasoning->setChecked(true);
         concurrency->setValue(2);
-        require(sharedEdits >= 7 && sharedCommits == 0,
+        require(sharedEdits >= 8 && sharedCommits == 0,
                 "AI form edits and model fetching must remain drafts until Save succeeds");
         modal->acceptButton()->click();
         flush();
         require(session.customAiModels().size() == 1, "create persists one model");
-        require(sharedCommits == 7, "successful AI save commits each changed shared field once");
+        require(sharedCommits == 8, "successful AI save commits each changed shared field once");
         const auto original = session.customAiModels().first();
         auto* row = widget->findChild<QWidget*>(QStringLiteral("customAiModelRow:") + original.id);
         require(row != nullptr, "saved model has a list row");
@@ -577,7 +640,7 @@ void widgetContracts(QApplication& application) {
         }
         require(original.apiKey == QStringLiteral("portable-secret") && original.supportsVision &&
                     original.supportsReasoning && original.model == QStringLiteral("local-id") &&
-                    original.concurrency == 2,
+                    original.concurrency == 2 && original.provider == QStringLiteral("doubao"),
                 "key, capabilities, and concurrency persist");
         QPointer<QWidget> originalRow(row);
         auto* editAction = row->findChild<AdButton*>(QStringLiteral("edit:") + original.id);
@@ -612,6 +675,7 @@ void widgetContracts(QApplication& application) {
         const auto copied = session.customAiModels();
         require(copied.size() == 3 && copied[1].id != original.id &&
                     copied[1].apiKey == original.apiKey && copied[1].supportsReasoning &&
+                    copied[1].provider == original.provider &&
                     copied[1].concurrency == original.concurrency &&
                     copied[1].name == QStringLiteral("Personal model (Copy)") &&
                     copied[2].name == QStringLiteral("Personal model (Copy 2)"),
@@ -657,6 +721,10 @@ void widgetContracts(QApplication& application) {
             QStringLiteral("customAiModelConcurrency"));
         require(reasoning != nullptr && reasoning->isChecked(),
                 "editor restores reasoning support");
+        provider = modal->contentWidget()->findChild<AdComboBox*>(QStringLiteral("providerType"));
+        require(provider->currentValue() == original.provider && reasoning->isEnabled(),
+                "editor restores the selected provider");
+        provider->setCurrentValue(QStringLiteral("qwen"));
         require(concurrency != nullptr && concurrency->value() == 2, "editor restores concurrency");
         reasoning->setChecked(false);
         concurrency->setValue(1);
@@ -665,6 +733,7 @@ void widgetContracts(QApplication& application) {
         require(session.customAiModels().first().id == original.id &&
                     session.customAiModels().first().name == QStringLiteral("Renamed model") &&
                     !session.customAiModels().first().supportsReasoning &&
+                    session.customAiModels().first().provider == QStringLiteral("qwen") &&
                     session.customAiModels().first().concurrency == 1,
                 "rename preserves identity");
         require(widget->findChild<QWidget*>(QStringLiteral("customAiModelRow:") + original.id)

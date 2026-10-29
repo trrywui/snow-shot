@@ -288,7 +288,8 @@ bool PinnedWindowSelectionController::usesSharedGeometry(
 }
 
 bool PinnedWindowSelectionController::routesPointerToClient(const ScreenshotPinnedWindow& window,
-                                                            const QPoint& position) const {
+                                                            const QPoint& position,
+                                                            Qt::KeyboardModifiers modifiers) const {
     if (window.m_closing || !window.rect().contains(position))
         return false;
     if (window.m_selectionIndicator && window.m_selectionIndicator->isVisible() &&
@@ -296,7 +297,7 @@ bool PinnedWindowSelectionController::routesPointerToClient(const ScreenshotPinn
         return true;
     if (!isSelectable(&window))
         return false;
-    return selectedCount() > 0 || QApplication::keyboardModifiers().testFlag(Qt::ControlModifier) ||
+    return selectedCount() > 0 || modifiers.testFlag(Qt::ControlModifier) ||
            (m_geometryState && (m_geometryState->active || m_geometryState->press));
 }
 

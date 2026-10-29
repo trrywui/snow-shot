@@ -758,6 +758,10 @@ Files:
             <translation>Focused window</translation>
         </message>
         <message>
+            <source>Image Editing</source>
+            <translation>Image Editing</translation>
+        </message>
+        <message>
             <source>Loading preview…</source>
             <translation>Loading preview…</translation>
         </message>
@@ -808,6 +812,48 @@ Files:
         <message>
             <source>This screenshot cannot be pinned</source>
             <translation>This screenshot cannot be pinned</translation>
+        </message>
+    </context>
+    <context>
+        <name>HistoryFileLocation</name>
+        <message>
+            <source>Open Containing Folder</source>
+            <translation>Open Containing Folder</translation>
+        </message>
+        <message>
+            <source>Open in Explorer</source>
+            <translation>Open in Explorer</translation>
+        </message>
+        <message>
+            <source>Reveal in Finder</source>
+            <translation>Reveal in Finder</translation>
+        </message>
+        <message>
+            <source>Unable to open this entry's file location.</source>
+            <translation>Unable to open this entry's file location.</translation>
+        </message>
+    </context>
+    <context>
+        <name>ImageEditingWindow</name>
+        <message>
+            <source>%1 px</source>
+            <translation>%1 px</translation>
+        </message>
+        <message>
+            <source>No available output filename was found.</source>
+            <translation>No available output filename was found.</translation>
+        </message>
+        <message>
+            <source>The editing content could not be prepared for export.</source>
+            <translation>The editing content could not be prepared for export.</translation>
+        </message>
+        <message>
+            <source>The image could not be loaded.</source>
+            <translation>The image could not be loaded.</translation>
+        </message>
+        <message>
+            <source>The save directory is not available.</source>
+            <translation>The save directory is not available.</translation>
         </message>
     </context>
     <context>
@@ -1182,6 +1228,10 @@ Files:
             <translation>All sources</translation>
         </message>
         <message>
+            <source>Batch Actions</source>
+            <translation>Batch Actions</translation>
+        </message>
+        <message>
             <source>Bulk actions for selected pinned windows</source>
             <translation>Bulk actions for selected pinned windows</translation>
         </message>
@@ -1200,14 +1250,6 @@ Files:
         <message>
             <source>Closed</source>
             <translation>Closed</translation>
-        </message>
-        <message>
-            <source>Collage</source>
-            <translation>Collage</translation>
-        </message>
-        <message>
-            <source>Create a collage from selected pinned windows</source>
-            <translation>Create a collage from selected pinned windows</translation>
         </message>
         <message>
             <source>Date</source>
@@ -1265,6 +1307,10 @@ Files:
             <translation>Hidden</translation>
         </message>
         <message>
+            <source>Image Editing</source>
+            <translation>Image Editing</translation>
+        </message>
+        <message>
             <source>Image Splitting</source>
             <translation>Image Splitting</translation>
         </message>
@@ -1295,6 +1341,10 @@ Files:
         <message>
             <source>Pin to Screen Management</source>
             <translation>Pin to Screen Management</translation>
+        </message>
+        <message>
+            <source>Pin to screen</source>
+            <translation>Pin to screen</translation>
         </message>
         <message>
             <source>Pinned images and text will appear here</source>
@@ -1331,6 +1381,10 @@ Files:
         <message>
             <source>Select all entries on this page</source>
             <translation>Select all entries on this page</translation>
+        </message>
+        <message>
+            <source>Select pinned windows from the same group to pin them to the screen.</source>
+            <translation>Select pinned windows from the same group to pin them to the screen.</translation>
         </message>
         <message>
             <source>Select record</source>
@@ -1398,6 +1452,10 @@ Files:
             <translation>All sources</translation>
         </message>
         <message>
+            <source>Batch Actions</source>
+            <translation>Batch Actions</translation>
+        </message>
+        <message>
             <source>Bulk actions for selected screenshot history entries</source>
             <translation>Bulk actions for selected screenshot history entries</translation>
         </message>
@@ -1410,20 +1468,12 @@ Files:
             <translation>Change the source or date range to see more history</translation>
         </message>
         <message>
-            <source>Collage</source>
-            <translation>Collage</translation>
-        </message>
-        <message>
             <source>Copied and pinned screenshots will appear here</source>
             <translation>Copied and pinned screenshots will appear here</translation>
         </message>
         <message>
             <source>Copy to clipboard</source>
             <translation>Copy to clipboard</translation>
-        </message>
-        <message>
-            <source>Create a collage from selected screenshots</source>
-            <translation>Create a collage from selected screenshots</translation>
         </message>
         <message>
             <source>Current monitor</source>
@@ -1516,6 +1566,10 @@ Files:
             <translation>Start date</translation>
         </message>
         <message>
+            <source>Stitch Image</source>
+            <translation>Stitch Image</translation>
+        </message>
+        <message>
             <source>This action cannot be undone</source>
             <translation>This action cannot be undone</translation>
         </message>
@@ -1529,6 +1583,10 @@ Files:
         <message>
             <source>%1%</source>
             <translation>%1%</translation>
+        </message>
+        <message>
+            <source>AirDrop</source>
+            <translation>AirDrop</translation>
         </message>
         <message>
             <source>Always on Top</source>
@@ -1657,6 +1715,10 @@ Files:
         <message>
             <source>Hide to Top</source>
             <translation>Hide to Top</translation>
+        </message>
+        <message>
+            <source>Image Editing</source>
+            <translation>Image Editing</translation>
         </message>
         <message>
             <source>Image file</source>
@@ -1840,6 +1902,77 @@ Files:
         <message>
             <source>Windows · not closed / total</source>
             <translation>Windows · not closed / total</translation>
+        </message>
+    </context>
+    <context>
+        <name>snow_shot::presentation::ImageEditingWindow</name>
+        <message>
+            <source>Configure cloud upload before uploading an image.</source>
+            <translation>Configure cloud upload before uploading an image.</translation>
+        </message>
+        <message>
+            <source>Continue Editing</source>
+            <translation>Continue Editing</translation>
+        </message>
+        <message>
+            <source>Discard Changes</source>
+            <translation>Discard Changes</translation>
+        </message>
+        <message>
+            <source>Discard Changes?</source>
+            <translation>Discard Changes?</translation>
+        </message>
+        <message>
+            <source>Export completed</source>
+            <translation>Export completed</translation>
+        </message>
+        <message>
+            <source>Export could not be started.</source>
+            <translation>Export could not be started.</translation>
+        </message>
+        <message>
+            <source>Exporting…</source>
+            <translation>Exporting…</translation>
+        </message>
+        <message>
+            <source>Fit image to window</source>
+            <translation>Fit image to window</translation>
+        </message>
+        <message>
+            <source>Image Editing</source>
+            <translation>Image Editing</translation>
+        </message>
+        <message>
+            <source>Loading image…</source>
+            <translation>Loading image…</translation>
+        </message>
+        <message>
+            <source>No recognition result is available to export.</source>
+            <translation>No recognition result is available to export.</translation>
+        </message>
+        <message>
+            <source>Printing is unavailable.</source>
+            <translation>Printing is unavailable.</translation>
+        </message>
+        <message>
+            <source>Save as file</source>
+            <translation>Save as file</translation>
+        </message>
+        <message>
+            <source>Text files (*.txt)</source>
+            <translation>Text files (*.txt)</translation>
+        </message>
+        <message>
+            <source>The image could not be loaded.</source>
+            <translation>The image could not be loaded.</translation>
+        </message>
+        <message>
+            <source>This editing window has unsaved changes.</source>
+            <translation>This editing window has unsaved changes.</translation>
+        </message>
+        <message>
+            <source>View at actual size (100%)</source>
+            <translation>View at actual size (100%)</translation>
         </message>
     </context>
     <context>

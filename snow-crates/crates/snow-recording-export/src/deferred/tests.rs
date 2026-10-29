@@ -14,6 +14,483 @@ struct Fixture {
     metadata: RenderMetadata,
 }
 
+fn add_webcam(fixture: &Fixture, shape: snow_recording_model::WebcamShape) {
+    let root = fixture._directory.path();
+    let mut config = fixture.config.clone();
+    config.output_path = root.join("camera.mp4");
+    config.format = crate::ExportFormat::Mp4;
+    config.width = 50;
+    config.height = 50;
+    config.fps = 30;
+    config.audio.clear();
+    let mut encoder = StreamingEncoder::builder(config.clone())
+        .recording_source()
+        .create()
+        .unwrap();
+    for (pts, color) in [
+        (6, [240, 10, 10, 255]),
+        (15, [10, 240, 10, 255]),
+        (27, [10, 10, 240, 255]),
+    ] {
+        let mut pixels = color.repeat(50 * 50);
+        // An off-center white marker proves replay applies orientation exactly once.
+        for y in 32..42 {
+            for x in 32..42 {
+                pixels[(y * 50 + x) * 4..(y * 50 + x + 1) * 4]
+                    .copy_from_slice(&[245, 245, 245, 255]);
+            }
+        }
+        encoder.push_rgba_frame_at_pts(pts, &pixels).unwrap();
+    }
+    encoder.finish_at_duration_ms(1001).unwrap();
+    let camera_index = root.join("camera.index");
+    let mut bytes = b"SVIDX\0\0".to_vec();
+    for (index, at, duration) in [(0u64, 200u64, 300u32), (1, 500, 400), (2, 900, 101)] {
+        bytes.extend(index.to_le_bytes());
+        bytes.extend(at.to_le_bytes());
+        bytes.extend(duration.to_le_bytes());
+    }
+    std::fs::write(&camera_index, bytes).unwrap();
+    let metadata = root.join("camera.bin");
+    snow_recording_model::webcam::write_metadata(
+        &metadata,
+        &snow_recording_model::webcam::WebcamMetadata {
+            style: snow_recording_model::WebcamStyle {
+                size: 50,
+                shape,
+                offset_left: 17,
+                offset_bottom: 31,
+                orientation: snow_recording_model::WebcamOrientation::MirroredClockwise90,
+            },
+            fps: 30,
+            duration_ms: 1001,
+            visibility: vec![(200, true), (700, false), (900, true)],
+        },
+    )
+    .unwrap();
+    let footer = read_recording_bundle_footer(&fixture.bundle).unwrap();
+    let mut bundle = File::open(&fixture.bundle).unwrap();
+    let paths: Vec<_> = footer
+        .assets
+        .iter()
+        .enumerate()
+        .map(|(i, asset)| {
+            let path = root.join(format!("saved-{i}.bin"));
+            bundle.seek(SeekFrom::Start(asset.offset)).unwrap();
+            std::io::copy(
+                &mut (&mut bundle).take(asset.len),
+                &mut File::create(&path).unwrap(),
+            )
+            .unwrap();
+            path
+        })
+        .collect();
+    drop(bundle);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&fixture.bundle)
+        .unwrap()
+        .set_len(footer.video_payload_len)
+        .unwrap();
+    let mut assets: Vec<_> = footer
+        .assets
+        .iter()
+        .zip(&paths)
+        .map(|(asset, path)| RecordingBundleAsset {
+            kind: asset.kind,
+            asset_id: asset.asset_id.as_deref(),
+            path,
+        })
+        .collect();
+    assets.extend([
+        RecordingBundleAsset {
+            kind: BundleAssetKind::WebcamVideo,
+            asset_id: None,
+            path: &config.output_path,
+        },
+        RecordingBundleAsset {
+            kind: BundleAssetKind::WebcamIndex,
+            asset_id: None,
+            path: &camera_index,
+        },
+        RecordingBundleAsset {
+            kind: BundleAssetKind::WebcamMetadata,
+            asset_id: None,
+            path: &metadata,
+        },
+    ]);
+    snow_recording_model::write_recording_bundle(&fixture.bundle, &footer.manifest, &assets)
+        .unwrap();
+}
+
+#[test]
+fn webcam_deferred_formats_replay_gaps_rewinds_and_retries_on_source_time() {
+    for format in [
+        crate::ExportFormat::Mp4,
+        crate::ExportFormat::Gif,
+        crate::ExportFormat::Apng,
+        crate::ExportFormat::Webp,
+    ] {
+        for shape in [
+            snow_recording_model::WebcamShape::Square,
+            snow_recording_model::WebcamShape::Circle,
+        ] {
+            let fixture = fixture_with_source(
+                format,
+                crate::VideoCodec::H264,
+                (240, 180),
+                false,
+                false,
+                (0, 15),
+                false,
+            );
+            add_webcam(&fixture, shape);
+            let cancel = CancellationToken::default();
+            let mut replay = crate::webcam::WebcamReplay::open(&fixture.bundle, &cancel)
+                .unwrap()
+                .unwrap();
+            let held = replay.frame_at(200, &cancel).unwrap().unwrap();
+            assert_eq!(
+                replay.style().orientation,
+                snow_recording_model::WebcamOrientation::MirroredClockwise90
+            );
+            assert!(
+                held.rgba[(36 * 50 + 36) * 4 + 1] > 180,
+                "camera track retains its untransformed marker"
+            );
+            assert!(
+                Arc::ptr_eq(&held, &replay.frame_at(499, &cancel).unwrap().unwrap()),
+                "held camera samples reuse conversion and overlay caches"
+            );
+            for (at, channel) in [
+                (0, None),
+                (200, Some(0)),
+                (499, Some(0)),
+                (500, Some(1)),
+                (700, None),
+                (900, Some(2)),
+                (200, Some(0)),
+            ] {
+                let image = replay.frame_at(at, &cancel).unwrap();
+                assert_eq!(image.is_some(), channel.is_some());
+                if let (Some(image), Some(channel)) = (image, channel) {
+                    assert!(image.rgba[channel] > 200, "camera at {at} has wrong color");
+                }
+            }
+            let mut metadata = fixture.metadata.clone();
+            metadata.render.playback_overlay = PlaybackOverlay::None;
+            let source = crate::clip::ClipSource::open(&fixture.bundle, None).unwrap();
+            let mut reader = crate::clip::VideoReader::open(source, false).unwrap();
+            let mut preview = Vec::new();
+            for (at, channel) in [(200_000, 0), (500_000, 1), (900_000, 2), (200_000, 0)] {
+                reader.read(at, &cancel).unwrap();
+                reader.copy_rgba(&mut preview).unwrap();
+                assert!(
+                    preview[((124 * 240 + 42) * 4) + channel] > 200,
+                    "trim preview camera at {at}"
+                );
+                let marker = (111 * 240 + 29) * 4;
+                assert!(
+                    preview[marker..marker + 3].iter().all(|c| *c > 180),
+                    "oriented marker must survive preview and backward seeks at {at}"
+                );
+            }
+            render_bundle(
+                &fixture.bundle,
+                fixture.config.clone(),
+                metadata.clone(),
+                &cancel,
+                |_, _, _, _| {},
+            )
+            .unwrap();
+            let (frames, width, _, _) = decode_frames(&fixture.config.output_path);
+            let center = ((124 * width + 42) * 4) as usize;
+            let marker = ((111 * width + 29) * 4) as usize;
+            assert!(
+                frames.last().unwrap()[marker..marker + 3]
+                    .iter()
+                    .all(|c| *c > 170),
+                "{format:?}: export must apply the saved orientation"
+            );
+            assert!(
+                frames
+                    .iter()
+                    .any(|frame| frame[center] > 200 && frame[center + 1] < 60),
+                "{format:?}: red camera frame missing {:?}",
+                frames
+                    .iter()
+                    .map(|frame| &frame[center..center + 4])
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                frames
+                    .iter()
+                    .any(|frame| frame[center + 1] > 200 && frame[center] < 60),
+                "{format:?}: green camera frame missing"
+            );
+            assert!(
+                frames.last().unwrap()[center + 2] > 200,
+                "{format:?}: final camera frame missing"
+            );
+            assert!(
+                fixture.bundle.exists(),
+                "rendering must preserve source for retry"
+            );
+            let mut retry = fixture.config.clone();
+            retry.output_path = fixture
+                ._directory
+                .path()
+                .join(format!("retry.{}", format.file_extension()));
+            let result = render_bundle_range_with_speed(
+                &fixture.bundle,
+                retry,
+                metadata,
+                snow_recording_model::TrimRange::new(200_000, 700_000, 1_001_000).unwrap(),
+                snow_recording_model::PlaybackSpeed::from_percent(200).unwrap(),
+                &cancel,
+                |_, _, _, _| {},
+            )
+            .unwrap();
+            assert_eq!(result.duration_ms, 250);
+            let (retimed, width, _, _) = decode_frames(&result.output_path);
+            let center = ((124 * width + 42) * 4) as usize;
+            assert!(retimed.first().unwrap()[center] > 200);
+            assert!(retimed.last().unwrap()[center + 1] > 200);
+            let marker = ((111 * width + 29) * 4) as usize;
+            assert!(
+                retimed.first().unwrap()[marker..marker + 3]
+                    .iter()
+                    .all(|c| *c > 170)
+            );
+            assert!(
+                retimed.last().unwrap()[marker..marker + 3]
+                    .iter()
+                    .all(|c| *c > 170)
+            );
+        }
+    }
+}
+
+#[test]
+fn held_composition_matches_forced_redraw_across_inputs_expiry_webcam_and_playback() {
+    use snow_recording_effects::keyboard_overlay::KeyEvent;
+    for overlay in [
+        PlaybackOverlay::None,
+        PlaybackOverlay::PlaybackTime { rgba: [255; 4] },
+    ] {
+        let fixture = fixture_with_source(
+            crate::ExportFormat::Mp4,
+            crate::VideoCodec::H264,
+            (320, 120),
+            true,
+            false,
+            (0, 15),
+            false,
+        );
+        add_webcam(&fixture, snow_recording_model::WebcamShape::Circle);
+        let mut metadata = fixture.metadata.clone();
+        metadata.render.playback_overlay = overlay;
+        metadata.render.effects.mouse_click_rgba = [255, 100, 20, 255];
+        metadata.render.effects.mouse_trail_rgba = [255, 40, 60, 180];
+        metadata.render.effects.show_keyboard = true;
+        metadata.render.effects.record_mouse_clicks = true;
+        metadata.render.effects.record_mouse_scrolling = true;
+        metadata.render.effects.keyboard = Some(snow_recording_model::KeyboardOverlayConfig {
+            font: None,
+            keycap_size: 32,
+            background_rgba: [0, 0, 0, 180],
+            text_rgba: [255; 4],
+            border_rgba: [255; 4],
+            labels: Default::default(),
+        });
+        let shape = CursorShapeRecord {
+            shape_id: 1,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width: 2,
+            height: 2,
+            mode: CursorShapeCompositionMode::AlphaBlend,
+            shape_rgba: [0, 255, 0, 255].repeat(4),
+        };
+        let key = KeyEvent {
+            at_ms: 90,
+            key: 65,
+            down: true,
+            label: "A".into(),
+            modifiers: Vec::new(),
+        };
+        let mut outputs = Vec::new();
+        for force_redraw in [false, true] {
+            let mut events = vec![
+                (0, RecordedInput::CursorShape(shape.clone())),
+                (
+                    0,
+                    RecordedInput::Cursor(CursorFrameRecord {
+                        timestamp_ms: 0,
+                        x: 4,
+                        y: 4,
+                        visible: true,
+                        shape_id: Some(1),
+                    }),
+                ),
+                (
+                    33,
+                    RecordedInput::Click(snow_recording_model::RecordedMouseClick {
+                        x: 160,
+                        y: 60,
+                        button: snow_recording_model::InputMouseButton::Left,
+                        down: true,
+                        key: KeyEvent {
+                            at_ms: 33,
+                            key: 0x200,
+                            label: "Left click".into(),
+                            ..key.clone()
+                        },
+                    }),
+                ),
+                // Mouse and keyboard observers admit a batch in source-specific
+                // order, while keycap rendering must retain their original times.
+                (
+                    100,
+                    RecordedInput::Scroll(KeyEvent {
+                        at_ms: 100,
+                        key: 0x205,
+                        label: "Scroll up".into(),
+                        ..key.clone()
+                    }),
+                ),
+                (100, RecordedInput::Key(key.clone())),
+                (
+                    200,
+                    RecordedInput::Cursor(CursorFrameRecord {
+                        timestamp_ms: 200,
+                        x: 16,
+                        y: 4,
+                        visible: true,
+                        shape_id: Some(1),
+                    }),
+                ),
+                (
+                    300,
+                    RecordedInput::Key(KeyEvent {
+                        at_ms: 300,
+                        down: false,
+                        ..key.clone()
+                    }),
+                ),
+                (
+                    333,
+                    RecordedInput::Scroll(KeyEvent {
+                        at_ms: 333,
+                        key: 0x205,
+                        label: "Scroll up".into(),
+                        ..key.clone()
+                    }),
+                ),
+                (
+                    400,
+                    RecordedInput::Scroll(KeyEvent {
+                        at_ms: 500,
+                        key: 0x206,
+                        label: "Scroll down".into(),
+                        ..key.clone()
+                    }),
+                ),
+                (700, RecordedInput::Reset),
+                (
+                    733,
+                    RecordedInput::Pointer {
+                        position: Some((240, 60)),
+                        continuity: 0,
+                        at_ms: 800,
+                    },
+                ),
+            ];
+            if force_redraw {
+                // Re-admitting the same shape changes no pixels, but invalidates every
+                // composition. This supplies an independent full-redraw reference.
+                events.extend(metadata.timeline.iter().map(|frame| {
+                    (
+                        frame.timestamp_ms,
+                        RecordedInput::CursorShape(shape.clone()),
+                    )
+                }));
+            }
+            events.sort_by_key(|event| event.0);
+            let footer = read_recording_bundle_footer(&fixture.bundle).unwrap();
+            let mut bundle = File::open(&fixture.bundle).unwrap();
+            let paths: Vec<_> = footer
+                .assets
+                .iter()
+                .enumerate()
+                .map(|(i, asset)| {
+                    let path = fixture
+                        ._directory
+                        .path()
+                        .join(format!("comparison-{force_redraw}-{i}.bin"));
+                    if asset.kind == BundleAssetKind::InputEvents {
+                        let mut writer = InputStoreWriter::new(&path).unwrap();
+                        for (sequence, (timestamp_ms, event)) in events.iter().enumerate() {
+                            writer
+                                .push(&RecordedInputEvent {
+                                    timestamp_ms: *timestamp_ms,
+                                    sequence: sequence as u64,
+                                    event: event.clone(),
+                                })
+                                .unwrap();
+                        }
+                        writer.finish().unwrap();
+                    } else {
+                        bundle.seek(SeekFrom::Start(asset.offset)).unwrap();
+                        std::io::copy(
+                            &mut (&mut bundle).take(asset.len),
+                            &mut File::create(&path).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                    path
+                })
+                .collect();
+            drop(bundle);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fixture.bundle)
+                .unwrap()
+                .set_len(footer.video_payload_len)
+                .unwrap();
+            let assets: Vec<_> = footer
+                .assets
+                .iter()
+                .zip(&paths)
+                .map(|(asset, path)| RecordingBundleAsset {
+                    kind: asset.kind,
+                    asset_id: asset.asset_id.as_deref(),
+                    path,
+                })
+                .collect();
+            snow_recording_model::write_recording_bundle(
+                &fixture.bundle,
+                &footer.manifest,
+                &assets,
+            )
+            .unwrap();
+            let result = render_bundle(
+                &fixture.bundle,
+                fixture.config.clone(),
+                metadata.clone(),
+                &CancellationToken::default(),
+                |_, _, _, _| {},
+            )
+            .unwrap();
+            outputs.push(std::fs::read(result.output_path).unwrap());
+        }
+        assert!(
+            outputs[0] == outputs[1],
+            "held output differs from full redraw: {overlay:?}"
+        );
+    }
+}
+
 #[test]
 fn deferred_static_output_holds_composed_images_without_losing_audio_or_endpoint() {
     let fixture = fixture(
@@ -1247,9 +1724,33 @@ fn decode_frames(path: &Path) -> (Vec<Vec<u8>>, u32, u32, f64) {
         let (width, height) = (u32::from(reader.width()), u32::from(reader.height()));
         let mut frames = Vec::new();
         let mut duration = 0.0;
+        let mut canvas = vec![0; (width * height * 4) as usize];
         while let Some(frame) = reader.read_next_frame().unwrap() {
             duration += f64::from(frame.delay) / 100.0;
-            frames.push(frame.buffer.to_vec());
+            let previous = (frame.dispose == gif::DisposalMethod::Previous).then(|| canvas.clone());
+            for y in 0..usize::from(frame.height) {
+                for x in 0..usize::from(frame.width) {
+                    let from = (y * usize::from(frame.width) + x) * 4;
+                    let to = ((usize::from(frame.top) + y) * width as usize
+                        + usize::from(frame.left)
+                        + x)
+                        * 4;
+                    if frame.buffer[from + 3] != 0 {
+                        canvas[to..to + 4].copy_from_slice(&frame.buffer[from..from + 4]);
+                    }
+                }
+            }
+            frames.push(canvas.clone());
+            if let Some(previous) = previous {
+                canvas = previous;
+            } else if frame.dispose == gif::DisposalMethod::Background {
+                for y in 0..usize::from(frame.height) {
+                    let begin = ((usize::from(frame.top) + y) * width as usize
+                        + usize::from(frame.left))
+                        * 4;
+                    canvas[begin..begin + usize::from(frame.width) * 4].fill(0);
+                }
+            }
         }
         return (frames, width, height, duration);
     }
@@ -1490,17 +1991,38 @@ fn deferred_thread_cap_only_applies_to_the_measured_automatic_domain() {
     config.encode_threads = 0;
     let expected = cfg!(windows).then_some(8);
     assert_eq!(deferred_software_threads(&config, 12), expected);
+    assert_eq!(deferred_conversion_threads(&config, expected, false), 0);
     assert_eq!(
         deferred_software_threads(&config, 4),
         cfg!(windows).then_some(4)
     );
     config.prefer_hardware_h264 = true;
     assert_eq!(deferred_software_threads(&config, 12), expected);
+    config.fps = 60;
+    let threads = deferred_software_threads(&config, 12);
+    assert_eq!(
+        deferred_conversion_threads(&config, threads, false),
+        if cfg!(windows) { 4 } else { 0 }
+    );
+    assert_eq!(deferred_conversion_threads(&config, threads, true), 0);
+    assert_eq!(deferred_conversion_threads(&config, Some(2), false), 0);
+    assert_eq!(
+        deferred_software_threads(&config, 12),
+        cfg!(windows).then_some(4)
+    );
+    assert_eq!(
+        deferred_software_threads(&config, 2),
+        cfg!(windows).then_some(2)
+    );
+    assert_eq!(
+        deferred_software_threads(&config, 0),
+        cfg!(windows).then_some(1)
+    );
     for mutation in [0, 1, 2, 3, 4, 5, 6] {
         let mut other = config.clone();
         match mutation {
             0 => other.encode_threads = 3,
-            1 => other.fps = 60,
+            1 => other.fps = 50,
             2 => other.width = 1920,
             3 => other.codec = crate::VideoCodec::H265,
             4 => other.format = crate::ExportFormat::Gif,
@@ -1508,6 +2030,7 @@ fn deferred_thread_cap_only_applies_to_the_measured_automatic_domain() {
             _ => other.video.speed = VideoEncodingSpeed::Medium,
         }
         assert_eq!(deferred_software_threads(&other, 12), None);
+        assert_eq!(deferred_conversion_threads(&other, None, false), 0);
     }
 }
 
@@ -1604,7 +2127,7 @@ fn animation_guard_avoids_scans_until_idle_without_changing_decoded_frames() {
             pixels.extend((0..32 * 24).flat_map(|_| [20, 30, 40, 255]));
             effects.apply_rgba(&mut pixels, frame).unwrap();
             encoder.set_frame_reuse(
-                if guard && reusable_effect_frame(&effects, &metadata, frame.timestamp_ms) {
+                if guard && reusable_effect_frame(&mut effects, frame.timestamp_ms) {
                     crate::streaming::VideoFrameReuse::ReuseConversion
                 } else {
                     crate::streaming::VideoFrameReuse::Encode
@@ -2029,6 +2552,73 @@ fn replay_preserves_separate_track_titles_defaults_and_bounded_audio_extent() {
 }
 
 #[test]
+fn deferred_pcm_reads_preserve_seeks_routes_and_zero_padding_across_buffer_boundaries() {
+    let fixture = fixture(
+        crate::ExportFormat::Mp4,
+        crate::VideoCodec::H264,
+        false,
+        true,
+        false,
+    );
+    let footer = read_recording_bundle_footer(&fixture.bundle).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&fixture.bundle)
+        .unwrap();
+    let sample = |track: usize, index: usize| (index % 20000) as i16 - 10000 + track as i16 * 3000;
+    for (track, manifest) in footer.manifest.audio_tracks.iter().enumerate() {
+        let asset = footer
+            .asset(BundleAssetKind::AudioTrack, Some(&manifest.asset_id))
+            .unwrap();
+        file.seek(SeekFrom::Start(asset.offset)).unwrap();
+        let bytes: Vec<_> = (0..asset.len as usize / 2)
+            .flat_map(|i| sample(track, i).to_le_bytes())
+            .collect();
+        file.write_all(&bytes).unwrap();
+    }
+    drop(file);
+    let token = CancellationToken::default();
+    for mixed in [false, true] {
+        let mut source = crate::clip::ClipSource::open(&fixture.bundle, None).unwrap();
+        if mixed {
+            source.config.audio.truncate(1);
+            source.config.audio[0].track_id = "mixed".into();
+        }
+        let mut reader = crate::clip::AudioReader::open(&source).unwrap();
+        for (start, count) in [
+            (0, 480),
+            (480, 480),
+            (960, 20000),
+            (47000, 2000),
+            (100, 9),
+            (16000, 8000),
+            (100000, 480),
+            (0, 0),
+        ] {
+            let tracks = reader.read(start, count, &token).unwrap();
+            for (track, samples) in tracks.iter().enumerate() {
+                let expected: Vec<_> = (0..count * 2)
+                    .map(|i| {
+                        let index = start as usize * 2 + i;
+                        if index >= 1001 * 48 * 2 {
+                            0
+                        } else if mixed {
+                            sample(0, index).saturating_add(sample(1, index))
+                        } else {
+                            sample(track, index)
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    *samples, expected,
+                    "mixed={mixed}, start={start}, count={count}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn replay_mixed_and_disabled_audio_route_the_same_raw_source_tracks() {
     let fixture = fixture(
         crate::ExportFormat::Mp4,
@@ -2079,6 +2669,56 @@ fn replay_mixed_and_disabled_audio_route_the_same_raw_source_tracks() {
             .count(),
         0
     );
+}
+
+#[test]
+fn hdr_tone_map_cache_tracks_source_images_and_keeps_composition_out_of_the_cache() {
+    let fixture = fixture(
+        crate::ExportFormat::Mp4,
+        crate::VideoCodec::H264,
+        false,
+        false,
+        true,
+    );
+    let token = CancellationToken::default();
+    let mut video = SequentialVideoSource::open(
+        &fixture.bundle,
+        fixture.metadata.timeline,
+        true,
+        (32, 24),
+        (32, 24),
+        &token,
+    )
+    .unwrap();
+    assert!(video.tone_mapped.is_empty());
+    let mut previous = Vec::new();
+    for pts in [0, 1, 14, 15, 16, 30] {
+        let changed = video.advance(pts, &token).unwrap();
+        if changed {
+            assert!(!video.tone_mapped_valid);
+        }
+        let mut reference = vec![0; 32 * 24 * 4];
+        let stride = video.converted.stride(0);
+        for (y, row) in reference.chunks_exact_mut(32 * 4).enumerate() {
+            snow_media::color::tone_map_rgb48_row(
+                &video.converted.data(0)[y * stride..y * stride + 32 * 6],
+                row,
+            )
+            .unwrap();
+        }
+        if changed && !previous.is_empty() {
+            assert_ne!(reference, previous);
+        }
+        for _ in 0..2 {
+            let mut output = vec![255; reference.len()];
+            video.copy_rgba(&mut output).unwrap();
+            assert_eq!(output, reference);
+            // Composition is free to overwrite its destination.
+            output.fill(0);
+        }
+        assert!(video.tone_mapped_valid);
+        previous = reference;
+    }
 }
 
 #[test]

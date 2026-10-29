@@ -47,9 +47,10 @@ class ScreenshotSelectionToolbarWidget final : public QWidget {
     void setSelectionEditCapabilities(bool editable, bool resizable);
     void setPointerInteractionEnabled(bool enabled);
     void setCornerRadiusApplicable(bool enabled);
+    void setBorderType(ScreenshotSelectionBorderType type);
     void
     setSelectionState(const QRect& selection, bool aspectRatioLocked, int cornerRadius,
-                      int shadowWidth, DisplayMode displayMode = DisplayMode::Full,
+                      int effectWidth, DisplayMode displayMode = DisplayMode::Full,
                       bool canvasUsesPoints = false,
                       std::optional<ScreenshotSelectionDisplayValues> displayValues = std::nullopt,
                       ScreenshotSelectionAspectRatioPreset aspectRatioPreset =
@@ -65,7 +66,7 @@ class ScreenshotSelectionToolbarWidget final : public QWidget {
         Width,
         Height,
         Radius,
-        Shadow,
+        EffectWidth,
     };
 
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -120,7 +121,7 @@ class ScreenshotSelectionToolbarWidget final : public QWidget {
     bool m_canvasUsesPoints = false;
     QLabel* m_heightLabel = nullptr;
     QLabel* m_radiusLabel = nullptr;
-    QLabel* m_shadowLabel = nullptr;
+    QLabel* m_effectLabel = nullptr;
     QLabel* m_lockIconLabel = nullptr;
     adqt::widgets::AdSelect* m_aspectRatioSelect = nullptr;
     ScreenshotSelectionAspectRatioPreset m_aspectRatioPreset =
@@ -143,7 +144,7 @@ class ScreenshotSelectionToolbarWidget final : public QWidget {
     bool m_toolbarHovered = false;
     DisplayMode m_displayMode = DisplayMode::Full;
     int m_cornerRadius = 0;
-    int m_shadowWidth = 0;
+    int m_effectWidth = 0;
 };
 
 #endif // SNOW_SHOT_PRESENTATION_SCREENSHOTSELECTIONTOOLBARWIDGET_H

@@ -155,8 +155,14 @@ struct PlacementWorkspace {
     std::vector<QPainter::PixmapFragment> pixmapFragments;
 };
 
+PlacementWorkspace& placementWorkspaceForCurrentThread() {
+    // Empty STL vectors can allocate in Debug builds. Keep their construction
+    // out of loader TLS initialization, before the executable's CRT is ready.
+    thread_local PlacementWorkspace workspace;
+    return workspace;
+}
+
 UnitCache g_cache;
-thread_local PlacementWorkspace g_workspace;
 thread_local WatermarkRenderDiagnostics g_diagnostics;
 thread_local std::size_t g_fallbackCount = 0;
 
@@ -551,8 +557,9 @@ QRectF inverseRotatedBounds(const QRectF& bounds, const QPointF& center, double 
 
 void planPlacements(const UnitEntry& entry, const QRectF& localBounds, double horizontalStep,
                     double verticalStep, double scaleX, double scaleY) {
-    g_workspace.placements.clear();
-    g_workspace.fragments.clear();
+    auto& workspace = placementWorkspaceForCurrentThread();
+    workspace.placements.clear();
+    workspace.fragments.clear();
     const qint64 firstRow = static_cast<qint64>(std::floor(localBounds.top() / verticalStep)) - 1;
     const qint64 lastRow = static_cast<qint64>(std::ceil(localBounds.bottom() / verticalStep)) + 1;
     const double topMargin = 1.0 / scaleY;
@@ -573,7 +580,7 @@ void planPlacements(const UnitEntry& entry, const QRectF& localBounds, double ho
                     static_cast<std::uint64_t>(entry.alphaChunks.size());
                 continue;
             }
-            g_workspace.placements.push_back(Placement{inkTopLeft});
+            workspace.placements.push_back(Placement{inkTopLeft});
             for (int chunkIndex = 0; chunkIndex < entry.alphaChunks.size(); ++chunkIndex) {
                 const UnitChunk& chunk = entry.alphaChunks.at(chunkIndex);
                 const QRectF chunkRect(inkTopLeft.x() - 1.0 / scaleX +
@@ -585,7 +592,7 @@ void planPlacements(const UnitEntry& entry, const QRectF& localBounds, double ho
                     ++g_diagnostics.culledFragmentCount;
                     continue;
                 }
-                g_workspace.fragments.push_back(Fragment{
+                workspace.fragments.push_back(Fragment{
                     chunkRect.topLeft(),
                     QRect(chunk.sourceX, 0, chunk.contentWidth, entry.physicalSize.height()),
                     chunkIndex,
@@ -596,8 +603,9 @@ void planPlacements(const UnitEntry& entry, const QRectF& localBounds, double ho
 }
 
 double fragmentCoverage(const QRectF& localBounds, double scaleX, double scaleY) {
+    const auto& workspace = placementWorkspaceForCurrentThread();
     double covered = 0.0;
-    for (const Fragment& fragment : g_workspace.fragments) {
+    for (const Fragment& fragment : workspace.fragments) {
         const QRectF destination(fragment.topLeft, QSizeF(fragment.source.width() / scaleX,
                                                           fragment.source.height() / scaleY));
         const QRectF clipped = destination.intersected(localBounds);
@@ -639,7 +647,8 @@ QVector<QPixmap> pixmapsFor(UnitEntry& entry, const QVector<TintedChunk>& chunks
 
 void composeSparseImages(QPainter& painter, const QVector<TintedChunk>& chunks, double scaleX,
                          double scaleY) {
-    for (const Fragment& fragment : g_workspace.fragments) {
+    const auto& workspace = placementWorkspaceForCurrentThread();
+    for (const Fragment& fragment : workspace.fragments) {
         const QImage& image = chunks.at(fragment.chunkIndex).image;
         if (qFuzzyCompare(scaleX, 1.0) && qFuzzyCompare(scaleY, 1.0) &&
             fragment.source == image.rect()) {
@@ -651,30 +660,31 @@ void composeSparseImages(QPainter& painter, const QVector<TintedChunk>& chunks, 
         painter.drawImage(destination, image, fragment.source);
     }
     ++g_diagnostics.sparseBatchCount;
-    g_diagnostics.submittedFragmentCount += g_workspace.fragments.size();
+    g_diagnostics.submittedFragmentCount += workspace.fragments.size();
 }
 
 void composeSparsePixmaps(QPainter& painter, const QVector<QPixmap>& pixmaps, double scaleX,
                           double scaleY) {
+    auto& workspace = placementWorkspaceForCurrentThread();
     for (int chunkIndex = 0; chunkIndex < pixmaps.size(); ++chunkIndex) {
-        g_workspace.pixmapFragments.clear();
-        for (const Fragment& fragment : g_workspace.fragments) {
+        workspace.pixmapFragments.clear();
+        for (const Fragment& fragment : workspace.fragments) {
             if (fragment.chunkIndex != chunkIndex) {
                 continue;
             }
             const QSizeF destinationSize(fragment.source.width() / scaleX,
                                          fragment.source.height() / scaleY);
-            g_workspace.pixmapFragments.push_back(QPainter::PixmapFragment::create(
+            workspace.pixmapFragments.push_back(QPainter::PixmapFragment::create(
                 fragment.topLeft +
                     QPointF(destinationSize.width() / 2.0, destinationSize.height() / 2.0),
                 QRectF(fragment.source), 1.0 / scaleX, 1.0 / scaleY));
         }
-        if (!g_workspace.pixmapFragments.empty()) {
-            painter.drawPixmapFragments(g_workspace.pixmapFragments.data(),
-                                        static_cast<int>(g_workspace.pixmapFragments.size()),
+        if (!workspace.pixmapFragments.empty()) {
+            painter.drawPixmapFragments(workspace.pixmapFragments.data(),
+                                        static_cast<int>(workspace.pixmapFragments.size()),
                                         pixmaps.at(chunkIndex));
             ++g_diagnostics.sparseBatchCount;
-            g_diagnostics.submittedFragmentCount += g_workspace.pixmapFragments.size();
+            g_diagnostics.submittedFragmentCount += workspace.pixmapFragments.size();
         }
     }
 }
@@ -858,7 +868,8 @@ void WatermarkPatternRenderer::render(QPainter& painter, const WatermarkRenderRe
         composeGlyphFallback(painter, *entry, color, localBounds, horizontalStep, verticalStep);
     } else {
         const QVector<TintedChunk> chunks = tintedChunksFor(*entry, tintKey, color);
-        const bool sparse = g_workspace.fragments.size() <= kSparseFragmentLimit &&
+        const auto& workspace = placementWorkspaceForCurrentThread();
+        const bool sparse = workspace.fragments.size() <= kSparseFragmentLimit &&
                             g_diagnostics.fragmentCoverage <= kSparseCoverageLimit;
         bool composed = false;
         if (!sparse) {
@@ -880,7 +891,7 @@ void WatermarkPatternRenderer::render(QPainter& painter, const WatermarkRenderRe
         if (!composed) {
             if (entry->segmented) {
                 g_diagnostics.selectedStrategy = WatermarkRenderStrategy::SegmentedSparse;
-                g_diagnostics.segmentedChunkCount += g_workspace.fragments.size();
+                g_diagnostics.segmentedChunkCount += workspace.fragments.size();
                 composeSparseImages(painter, chunks, scaleX, scaleY);
             } else if (request.purpose == WatermarkRenderPurpose::Widget) {
                 const QVector<QPixmap> pixmaps = pixmapsFor(*entry, chunks);
@@ -944,9 +955,10 @@ std::size_t watermarkPatternCacheBytesForCurrentThread() {
 }
 
 std::size_t watermarkPlacementWorkspaceBytesForCurrentThread() {
-    return g_workspace.placements.capacity() * sizeof(Placement) +
-           g_workspace.fragments.capacity() * sizeof(Fragment) +
-           g_workspace.pixmapFragments.capacity() * sizeof(QPainter::PixmapFragment);
+    const auto& workspace = placementWorkspaceForCurrentThread();
+    return workspace.placements.capacity() * sizeof(Placement) +
+           workspace.fragments.capacity() * sizeof(Fragment) +
+           workspace.pixmapFragments.capacity() * sizeof(QPainter::PixmapFragment);
 }
 
 WatermarkRenderDiagnostics watermarkRenderDiagnosticsForCurrentThread() {
@@ -964,7 +976,7 @@ void resetWatermarkRenderCacheForCurrentThread() {
         removed.swap(g_cache.entries);
         g_cache.bytes = 0;
     }
-    g_workspace = PlacementWorkspace{};
+    placementWorkspaceForCurrentThread() = PlacementWorkspace{};
     g_fallbackCount = 0;
 }
 
