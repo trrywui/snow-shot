@@ -825,6 +825,9 @@ in **System Settings > General > Login Items** (the panel name can vary by macOS
 version). Registration awaiting approval is shown as requested, with an explicit
 approval hint; it does not mean macOS will launch the app yet. Turning the setting
 off also removes a pending registration and does not quit the running app.
+When an eligible installed app has no login item, the switch remains available so
+it can be enabled again. Removing the item in System Settings also leaves it off
+until the user explicitly enables it.
 
 Snow Shot observes changes made in System Settings when its settings page opens
 or the app becomes active by reading the native login-item status. Routine refreshes

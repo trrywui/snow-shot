@@ -76,7 +76,7 @@ class ClassMethodOverride {
     *error = _failure;
     if (_failure != nil)
         return NO;
-    _nativeStatus = SMAppServiceStatusNotRegistered;
+    _nativeStatus = SMAppServiceStatusNotFound;
     return YES;
 }
 - (void)dealloc {
@@ -144,6 +144,7 @@ void nativeStatusAndRegistration() {
                 preference = enabled;
                 return true;
             };
+            auto restartOperations = operations;
             LoginItemService service(std::move(operations));
             require(service.available() &&
                         service.snapshot().status == LoginItemStatus::Unregistered &&
@@ -165,19 +166,30 @@ void nativeStatusAndRegistration() {
             }
             native.nativeStatus = SMAppServiceStatusNotFound;
             service.refresh();
-            require(!service.available() && !service.hint().isEmpty(),
-                    "missing native service remains unavailable with guidance");
+            require(service.available() && !service.snapshot().requested(),
+                    "a missing login item can be enabled from an installed app");
             native.nativeStatus = SMAppServiceStatusNotRegistered;
-            native.failure = [NSError errorWithDomain:SMAppServiceErrorDomain
-                                                 code:kSMErrorInvalidSignature
-                                             userInfo:nil];
-            const auto signatureFailure = service.initialize(true);
-            require(!signatureFailure.success &&
-                        signatureFailure.error.contains(QStringLiteral("valid code signature")) &&
-                        initialized && native.registrations == 1 && !preference &&
-                        !service.pending() &&
+            native.failure =
+                [NSError errorWithDomain:NSPOSIXErrorDomain
+                                    code:kSMErrorInvalidSignature
+                                userInfo:@{NSLocalizedDescriptionKey : @"native failure"}];
+            if (@available(macOS 15.0, *)) {
+                native.failure = [NSError errorWithDomain:SMAppServiceErrorDomain
+                                                     code:kSMErrorInvalidSignature
+                                                 userInfo:nil];
+            }
+            const auto firstFailure = service.initialize(true);
+            require(!firstFailure.success && initialized && native.registrations == 1 &&
+                        !preference && !service.pending() &&
                         service.snapshot().status == LoginItemStatus::Unregistered,
-                    "registration signature failure is explained without falsely enabling login");
+                    "registration failure must not falsely enable login");
+            if (@available(macOS 15.0, *)) {
+                require(firstFailure.error.contains(QStringLiteral("valid code signature")),
+                        "signature failure is explained");
+            } else {
+                require(firstFailure.error == u"Could not change launch at login: native failure",
+                        "native failure is explained on macOS 14");
+            }
             service.refresh();
             require(service.available() && service.initialize(true).success &&
                         native.registrations == 1,
@@ -194,9 +206,16 @@ void nativeStatusAndRegistration() {
             require(service.setEnabled(true).success && service.snapshot().requested() &&
                         preference,
                     "explicit retry can register after signing is repaired");
-            require(service.setEnabled(false).success && !service.snapshot().requested() &&
-                        !preference && native.unregistrations == 1,
-                    "unregistration continues to reflect native status");
+            require(service.setEnabled(false).success && service.available() &&
+                        !service.snapshot().requested() && !preference,
+                    "unregistration leaves a missing login item available and disabled");
+            LoginItemService restarted(std::move(restartOperations));
+            require(restarted.initialize(true).success && restarted.available() &&
+                        !restarted.snapshot().requested() && !preference,
+                    "a disabled login item stays disabled after restarting");
+            require(restarted.setEnabled(true).success && restarted.snapshot().requested() &&
+                        preference,
+                    "a disabled login item can be enabled again after restarting");
         }
         serviceFixture = nil;
         bundleFixture = nil;

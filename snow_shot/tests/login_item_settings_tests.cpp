@@ -111,6 +111,16 @@ int main(int argc, char** argv) {
             "external removal refresh never re-registers");
     const auto registry = settings::buildBuiltInSettingsRegistry();
     settings::SettingsRuntimeSession session(registry, backend);
+    const auto startupField = QStringLiteral("system.auto-start-at-boot");
+    require(session.applySwitchValue(binding, true) && session.state(startupField).enabled &&
+                session.state(startupField).acceptedValue.toBool(),
+            "settings can enable launch at login");
+    require(session.applySwitchValue(binding, false) && session.state(startupField).enabled &&
+                !session.state(startupField).acceptedValue.toBool(),
+            "settings keeps launch at login available after disabling it");
+    require(session.applySwitchValue(binding, true) && session.state(startupField).enabled &&
+                session.state(startupField).acceptedValue.toBool(),
+            "settings can re-enable launch at login");
     SettingsPageWidget page(registry, QStringLiteral("general"), session);
     native = {LoginItemStatus::Unavailable, QStringLiteral("install app")};
     page.show();

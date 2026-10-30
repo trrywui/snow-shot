@@ -66,13 +66,12 @@ LoginItemSnapshot query() {
         // the entire bundle on the GUI thread whenever a settings page is shown.
         switch (SMAppService.mainAppService.status) {
         case SMAppServiceStatusNotRegistered:
+        case SMAppServiceStatusNotFound:
             return {LoginItemStatus::Unregistered, {}};
         case SMAppServiceStatusEnabled:
             return {LoginItemStatus::Enabled, {}};
         case SMAppServiceStatusRequiresApproval:
             return {LoginItemStatus::ApprovalRequired, {}};
-        case SMAppServiceStatusNotFound:
-            break;
         }
         return {LoginItemStatus::Unavailable,
                 (app::edition::isMini
