@@ -5985,9 +5985,20 @@ bool ScreenshotController::Impl::canBeginCapture() const {
 
 bool ScreenshotController::Impl::beginCapture(PendingSelectionAction action,
                                               ScreenshotCaptureWorkflow::StartMode mode) {
-    if (!canBeginCapture() || !snow_shot::presentation::closeCaptureInputBlockers()) {
+    const bool captureReady = canBeginCapture();
+    if (!captureReady || !snow_shot::presentation::closeCaptureInputBlockers()) {
+        snow_shot::diagnostics::logEvent(
+            QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.admission_rejected"),
+            {{QStringLiteral("operation"), QString::number(m_captureState.sessionId)},
+             {QStringLiteral("status"), static_cast<int>(m_captureState.sessionState)},
+             {QStringLiteral("reason"), captureReady ? QStringLiteral("input_blocker")
+                                                     : QStringLiteral("capture_not_ready")}});
         return false;
     }
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.admitted"),
+        {{QStringLiteral("operation"), QString::number(m_captureState.sessionId)},
+         {QStringLiteral("action"), static_cast<int>(action)}});
 
     if (m_autoFilterController) {
         m_autoFilterController->resetSession();

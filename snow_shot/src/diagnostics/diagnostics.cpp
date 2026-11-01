@@ -339,6 +339,7 @@ struct DiagnosticsService::Impl {
                                            QStringLiteral("preview_received"),
                                            QStringLiteral("reason"),
                                            QStringLiteral("operation"),
+                                           QStringLiteral("request_id"),
                                            QStringLiteral("stage"),
                                            QStringLiteral("queue_ms"),
                                            QStringLiteral("worker_ms"),

@@ -10,6 +10,7 @@
 #include "snow_shot/app/applicationrestart.h"
 #include "snow_shot/app/updateconfirmationdialog.h"
 #include "snow_shot/app/featureavailability.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 #include "snow_shot/app/applicationinputguard.h"
 #include "snow_shot/presentation/apppermissionservice.h"
 #ifdef Q_OS_MACOS
@@ -1845,16 +1846,34 @@ class ApplicationController::Impl {
     void dispatchQuickAction(presentation::GlobalShortcutAction action,
                              QuickActionOrigin origin = QuickActionOrigin::Other) {
         runtime::RuntimeActivityTracker::shared().markActivity();
+        diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                              QStringLiteral("action.received"),
+                              {{QStringLiteral("action"), static_cast<int>(action)},
+                               {QStringLiteral("mode"), static_cast<int>(origin)}});
         if (storage::ApplicationStorage::instance().directoryChanging() ||
-            (updates && updates->handoffPending()))
+            (updates && updates->handoffPending())) {
+            diagnostics::logEvent(
+                QStringLiteral("snow_shot.capture_trace"), QStringLiteral("action.rejected"),
+                {{QStringLiteral("action"), static_cast<int>(action)},
+                 {QStringLiteral("reason"), QStringLiteral("storage_or_update_handoff")}});
             return;
+        }
         if (!allowPermissions(
-                presentation::requiredPermissions(action, permissions.microphoneEnabled())))
+                presentation::requiredPermissions(action, permissions.microphoneEnabled()))) {
+            diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                                  QStringLiteral("action.rejected"),
+                                  {{QStringLiteral("action"), static_cast<int>(action)},
+                                   {QStringLiteral("reason"), QStringLiteral("permission_check")}});
             return;
+        }
         const std::optional<FeatureFamily> feature = featureFamilyFor(action);
         if (feature && !featureRouter.dispatch(*feature, [this, action, origin]() {
                 dispatchAvailableQuickAction(action, origin);
             })) {
+            diagnostics::logEvent(
+                QStringLiteral("snow_shot.capture_trace"), QStringLiteral("action.not_dispatched"),
+                {{QStringLiteral("action"), static_cast<int>(action)},
+                 {QStringLiteral("reason"), QStringLiteral("feature_router_returned_false")}});
             return;
         }
         if (!feature) {
@@ -1865,8 +1884,12 @@ class ApplicationController::Impl {
     void dispatchAvailableQuickAction(presentation::GlobalShortcutAction action,
                                       QuickActionOrigin origin) {
         if (origin == QuickActionOrigin::GlobalHotkey && screenshotController &&
-            screenshotController->handleActiveScreenshotShortcut(action))
+            screenshotController->handleActiveScreenshotShortcut(action)) {
+            diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                                  QStringLiteral("action.active_session"),
+                                  {{QStringLiteral("action"), static_cast<int>(action)}});
             return;
+        }
         switch (action) {
         case presentation::GlobalShortcutAction::Screenshot:
             if (ScreenshotController* controller = ensureScreenshotController()) {

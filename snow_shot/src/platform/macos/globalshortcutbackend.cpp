@@ -1,4 +1,5 @@
 #include "globalshortcutbackend_p.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 
 #include <Carbon/Carbon.h>
 
@@ -294,6 +295,14 @@ class MacOSGlobalShortcutBackend final : public GlobalShortcutBackend {
         if (!self.m_registered.contains(registrationId)) {
             return eventNotHandledErr;
         }
+        snow_shot::diagnostics::logEvent(
+            QStringLiteral("snow_shot.capture_trace"), QStringLiteral("shortcut.native"),
+            {{QStringLiteral("operation"), QString::number(registrationId)},
+             {QStringLiteral("stage"), GetEventKind(event) == kEventHotKeyReleased
+                                           ? QStringLiteral("released")
+                                           : QStringLiteral("pressed")},
+             {QStringLiteral("queue_ms"), 1000.0 * (GetCurrentEventTime() - GetEventTime(event))},
+             {QStringLiteral("duplicate"), self.m_pressed.contains(registrationId)}});
         if (GetEventKind(event) == kEventHotKeyReleased) {
             self.m_pressed.remove(registrationId);
             return noErr;

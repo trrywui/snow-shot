@@ -4272,6 +4272,7 @@ if(SNOW_SHOT_BUILD_TESTS)
     target_link_libraries(snow-shot-capture-workflow-tests PRIVATE
         Qt6::Gui
         snow_draw_engine_qt_canvas
+        snow_shot_diagnostics
     )
     add_test(
         NAME snow-shot-capture-workflow-tests

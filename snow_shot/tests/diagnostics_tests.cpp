@@ -159,6 +159,41 @@ void displayMetadata() {
     require(found, "display event persisted");
 }
 
+void firstCaptureMetadataAndNativeError() {
+    QTemporaryDir directory(QDir(QDir::tempPath()).canonicalPath() +
+                            QStringLiteral("/snow-diag-XXXXXX"));
+    DiagnosticsService service;
+    require(service.initialize(optionsFor(directory.path())), "capture trace logger initializes");
+    const QJsonObject metadata{{QStringLiteral("operation"), QStringLiteral("3")},
+                               {QStringLiteral("request_id"), QStringLiteral("1")},
+                               {QStringLiteral("reason"), QStringLiteral("stale_request")},
+                               {QStringLiteral("stage"), 1},
+                               {QStringLiteral("status"), 2},
+                               {QStringLiteral("queue_ms"), 2.5},
+                               {QStringLiteral("duration_ms"), 35}};
+    auto input = metadata;
+    input.insert(QStringLiteral("window_title"), QStringLiteral("private title"));
+    input.insert(QStringLiteral("image"), QStringLiteral("private pixels"));
+    service.record(QtWarningMsg, QStringLiteral("snow_shot.capture_trace"),
+                   QStringLiteral("capture.result_discarded"),
+                   QStringLiteral("ScreenCaptureKit capture failed token=private-value"), input);
+    require(service.flush(), "capture trace flushes");
+    bool found = false;
+    for (const auto& line : read(service.status().currentFile).split('\n')) {
+        const auto record = QJsonDocument::fromJson(line).object();
+        if (record.value(QStringLiteral("event")) != QStringLiteral("capture.result_discarded"))
+            continue;
+        require(record.value(QStringLiteral("fields")).toObject() == metadata,
+                "trace IDs, reason and timings survive while content fields are excluded");
+        const auto message = record.value(QStringLiteral("message")).toString();
+        require(message.contains(QStringLiteral("ScreenCaptureKit capture failed")) &&
+                    !message.contains(QStringLiteral("private-value")),
+                "native failure details survive with credentials redacted");
+        found = true;
+    }
+    require(found, "capture trace persisted");
+}
+
 void concurrentRecordsAndSnapshots() {
     QTemporaryDir directory(QDir(QDir::tempPath()).canonicalPath() +
                             QStringLiteral("/snow-diag-XXXXXX"));
@@ -579,6 +614,7 @@ int main(int argc, char** argv) {
         diagnosticTasksDistinguishBackgroundAndRequestedWork();
         scrollingMetadataAndReportCadence();
         displayMetadata();
+        firstCaptureMetadataAndNativeError();
         concurrentRecordsAndSnapshots();
         restartPublishesPreparedSession();
         restartRetainsInFlightReader();

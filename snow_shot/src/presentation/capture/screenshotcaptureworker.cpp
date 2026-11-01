@@ -12,6 +12,7 @@
 #include "snow_capture.h"
 
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMetaObject>
 
@@ -79,6 +80,14 @@ void ScreenshotCaptureWorker::capture(const ScreenshotCaptureRequest& request,
     ScreenshotCaptureResult captureResult;
     captureResult.requestId = request.requestId;
     captureResult.purpose = request.purpose;
+    QElapsedTimer captureTimer;
+    captureTimer.start();
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.worker_entered"),
+        {{QStringLiteral("operation"), QString::number(request.requestId)},
+         {QStringLiteral("request_kind"), static_cast<int>(request.purpose)},
+         {QStringLiteral("cache_hit"), m_session != nullptr},
+         {QStringLiteral("changed"), request.refreshLayout}});
     if (!ensureSession(request.excludedWindowIds)) {
         captureResult.errorMessage = nativeCaptureError("Failed to create desktop capture session");
         postCaptureResult(coordinator, std::move(captureResult));
@@ -136,6 +145,16 @@ void ScreenshotCaptureWorker::capture(const ScreenshotCaptureRequest& request,
             }
             display.primary = d.is_primary != 0;
             display.active = true;
+            snow_shot::diagnostics::logEvent(
+                QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.native_layout"),
+                {{QStringLiteral("operation"), QString::number(request.requestId)},
+                 {QStringLiteral("display_index"), static_cast<qint64>(i)},
+                 {QStringLiteral("code"), static_cast<qint64>(d.display_id)},
+                 {QStringLiteral("x"), display.physicalRect.x()},
+                 {QStringLiteral("y"), display.physicalRect.y()},
+                 {QStringLiteral("width"), display.physicalRect.width()},
+                 {QStringLiteral("height"), display.physicalRect.height()},
+                 {QStringLiteral("scale"), d.backing_scale}});
             prepared.displays.push_back(std::move(display));
         }
         if (!validLayout) {
@@ -171,8 +190,16 @@ void ScreenshotCaptureWorker::capture(const ScreenshotCaptureRequest& request,
                               : snow_capture_desktop_session_capture(m_session, &nativeRequest);
     }
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("capture.native_returned");
+    // Read the native error before logging or resetting the session can replace it.
+    const QString captureError =
+        nativeResult == nullptr ? nativeCaptureError("Screenshot capture failed") : QString{};
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.native_returned"),
+        {{QStringLiteral("operation"), QString::number(request.requestId)},
+         {QStringLiteral("duration_ms"), captureTimer.elapsed()},
+         {QStringLiteral("outcome"),
+          nativeResult ? QStringLiteral("succeeded") : QStringLiteral("failed")}});
     if (nativeResult == nullptr) {
-        const QString captureError = nativeCaptureError("Screenshot capture failed");
         static_cast<void>(snow_capture_desktop_session_reset_to_prepared(m_session));
         captureResult.errorMessage = captureError;
         postCaptureResult(coordinator, std::move(captureResult));
@@ -341,14 +368,15 @@ void ScreenshotCaptureWorker::postPrepared(
 
 void ScreenshotCaptureWorker::postCaptureResult(
     const QPointer<ScreenshotCaptureCoordinator>& coordinator, ScreenshotCaptureResult result) {
-    snow_shot::diagnostics::logEvent(
+    snow_shot::diagnostics::DiagnosticsService::instance().record(
+        result.succeeded || coordinator.isNull() ? QtInfoMsg : QtWarningMsg,
         QStringLiteral("snow_shot.capture"), QStringLiteral("capture.finished"),
+        result.errorMessage,
         {{QStringLiteral("operation"), QString::number(result.requestId)},
          {QStringLiteral("count"), result.displays.size()},
          {QStringLiteral("outcome"), result.succeeded       ? QStringLiteral("succeeded")
                                      : coordinator.isNull() ? QStringLiteral("cancelled")
-                                                            : QStringLiteral("failed")}},
-        result.succeeded || coordinator.isNull() ? QtInfoMsg : QtWarningMsg);
+                                                            : QStringLiteral("failed")}});
     if (coordinator.isNull()) {
         return;
     }

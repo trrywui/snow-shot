@@ -8,7 +8,11 @@
 #include "snow_shot/presentation/screenshotselectionmodel.h"
 #include "snow_shot/presentation/screenshotselectorworkflow.h"
 #include "snow_shot/presentation/screenshottoolbarpresentationstatefactory.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 
+#include <QFile>
+#include <QJsonDocument>
+#include <QTemporaryDir>
 #include <QVector>
 
 #include <array>
@@ -2440,7 +2444,69 @@ void suspendedCaptureDoesNotStartAndRestoresAfterFailedHandoff() {
             "resuming capture must also restore recapture acquisition");
 }
 
+void firstCaptureTracePreservesCancellationAndStaleRequest() {
+    QTemporaryDir directory;
+    require(directory.isValid(), "capture trace fixture directory");
+    auto& diagnostics = snow_shot::diagnostics::DiagnosticsService::instance();
+    snow_shot::diagnostics::DiagnosticsOptions options;
+    options.directories = {directory.path()};
+    options.enableCrashCapture = false;
+    options.installMessageHandler = false;
+    options.mirrorToConsole = false;
+    require(diagnostics.initialize(options), "capture trace fixture initializes");
+    ScreenshotCaptureState state;
+    ScreenshotDisplaySession displays;
+    ScreenshotGeometryMapper geometry;
+    ScreenshotInteractionState interaction;
+    ScreenshotSelectionModel selection;
+    ScreenshotIntelligentSelectionModel intelligent;
+    CaptureRuntime runtime;
+    auto workflow = makeWorkflow(state, displays, geometry, interaction, selection, intelligent,
+                                 runtime, false);
+    workflow.startCapture();
+    const auto firstRequest = state.sessionId;
+    workflow.handleDisplayConfigurationChanged();
+    const auto cancelledGeneration = state.sessionId;
+    require(!state.captureInProgress && runtime.cancelActiveCaptureCalls == 1,
+            "diagnostics must preserve the existing startup cancellation behavior");
+    ScreenshotCaptureResult stale;
+    stale.requestId = firstRequest;
+    runtime.deliverResult(stale);
+    require(!state.captureInProgress && state.sessionId == cancelledGeneration,
+            "logging a stale result must not restart capture or change its generation");
+    workflow.startCapture();
+    const auto secondRequest = state.sessionId;
+    require(secondRequest > firstRequest && runtime.captureAllAsyncCalls == 2,
+            "the next user request keeps the existing acquisition behavior");
+    require(diagnostics.flush(), "capture trace fixture flushes");
+    QFile log(diagnostics.status().currentFile);
+    require(log.open(QIODevice::ReadOnly), "capture trace fixture log opens");
+    bool startedFirst = false, cancelled = false, discarded = false, startedSecond = false;
+    for (const auto& line : log.readAll().split('\n')) {
+        const auto row = QJsonDocument::fromJson(line).object();
+        const auto event = row.value(QStringLiteral("event")).toString();
+        const auto fields = row.value(QStringLiteral("fields")).toObject();
+        const auto operation = fields.value(QStringLiteral("operation")).toString().toULongLong();
+        if (event == QStringLiteral("capture.started")) {
+            startedFirst |= operation == firstRequest;
+            startedSecond |= operation == secondRequest;
+        } else if (event == QStringLiteral("capture.cancelled")) {
+            cancelled |= operation == firstRequest;
+        } else if (event == QStringLiteral("capture.result_discarded")) {
+            discarded |= operation == cancelledGeneration &&
+                         fields.value(QStringLiteral("request_id")).toString().toULongLong() ==
+                             firstRequest &&
+                         fields.value(QStringLiteral("reason")) == QStringLiteral("stale_request");
+        }
+    }
+    require(startedFirst && cancelled && discarded && startedSecond,
+            "trace must correlate cancellation, late results and the following user request");
+    workflow.cancelCapture();
+    diagnostics.shutdown();
+}
+
 int main() {
+    firstCaptureTracePreservesCancellationAndStaleRequest();
     captureStartSoundDefaultsToDisabled();
     captureStartSoundFollowsSessionLifetime();
     suspendedCaptureDoesNotStartAndRestoresAfterFailedHandoff();

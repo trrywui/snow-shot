@@ -314,9 +314,19 @@ class GlobalShortcutManager::Impl {
             const QString activeKey = m_registrationKeysById.value(registrationId);
             const auto active = m_activeRegistrations.constFind(activeKey);
             if (active == m_activeRegistrations.cend() || !registrationEligible(active->action)) {
+                diagnostics::logEvent(
+                    QStringLiteral("snow_shot.capture_trace"), QStringLiteral("shortcut.ignored"),
+                    {{QStringLiteral("operation"), QString::number(registrationId)},
+                     {QStringLiteral("reason"), active == m_activeRegistrations.cend()
+                                                    ? QStringLiteral("registration_reconciled")
+                                                    : QStringLiteral("action_ineligible")}});
                 return;
             }
             const auto action = active->action;
+            diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                                  QStringLiteral("shortcut.dispatched"),
+                                  {{QStringLiteral("operation"), QString::number(registrationId)},
+                                   {QStringLiteral("action"), static_cast<int>(action)}});
             emit q.bindingActivated(action, registrationId);
             emit q.activated(action);
         });

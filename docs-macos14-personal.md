@@ -1,6 +1,6 @@
 # Snow Shot Intel macOS 维护分支
 
-正式名称为 **Snow Shot**，版本 **1.1.5+up.1.4.3**，Bundle ID 为 `io.github.trrywui.snowshot`。
+正式名称为 **Snow Shot**，版本 **1.1.6+up.1.4.3**，Bundle ID 为 `io.github.trrywui.snowshot`。
 最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `17fad782a3f9`。
 
 ## 构建隔离
@@ -43,16 +43,16 @@ bash scripts/macos14-personal.sh package
 `macos14-personal-jpeg` feature 使 TurboJPEG 与静态 Qt 的 JPEG v8 ABI 一致，不应删除。
 
 ```text
-.tools/macos14-personal/artifacts/1.1.5+up.1.4.3/Snow Shot.app
-.tools/macos14-personal/artifacts/1.1.5+up.1.4.3/snow-shot-1.1.5+up.1.4.3-intel.dmg
-.tools/macos14-personal/artifacts/1.1.5+up.1.4.3/snow-shot-1.1.5+up.1.4.3-intel.dmg.sha256
+.tools/macos14-personal/artifacts/1.1.6+up.1.4.3/Snow Shot.app
+.tools/macos14-personal/artifacts/1.1.6+up.1.4.3/snow-shot-1.1.6+up.1.4.3-intel.dmg
+.tools/macos14-personal/artifacts/1.1.6+up.1.4.3/snow-shot-1.1.6+up.1.4.3-intel.dmg.sha256
 ```
 
 打包保留 OCR 模型、许可证和第三方声明，并验证签名、Mach-O 系统依赖及最低版本。
 不覆盖已有同版本产物；重打包前先移动对应版本目录保存回退材料。
 
 版本唯一配置为 `snow_shot/packaging/macos/maintained-release.json`。
-应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.5`，内部构建号为 `7`。
+应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.6`，内部构建号为 `8`。
 后续发布递增维护版本及构建号，上游版本需与根构建声明一致。
 
 ## 固定签名与覆盖升级权限
@@ -131,6 +131,44 @@ bash scripts/macos14-personal.sh test capabilities::
 `configure-tests` 只开启测试目标供 `build-target` 按名称构建，不运行全量测试。
 `probe` 只验证 Qt / AppKit 初始化，不能代替截图、贴图、快捷键和睡眠恢复等交互验收。
 基准测试只使用 `performance` 配置和相关目标。
+
+## 首次截图临时追踪（1.1.6）
+
+按维护者要求，直接在正式维护版加入事件日志，供正常使用数天后定位长时间闲置的首次截图失败。
+本版不改动截图重试、取消、呈现或资源释放策略，不宣称已经修复该问题。
+后续根据实际记录定位并修复；仅在维护者再次明确要求时移除本次新增日志逻辑。
+
+新增分类为 `snow_shot.capture_trace`，沿用现有异步日志、大小限制和轮转机制，
+不增加后台轮询、截图保活任务或 OCR 常驻。记录的是注册快捷键事件、流程状态、显示几何和错误信息，
+不采集普通键盘输入、屏幕像素、窗口标题或 OCR 内容。
+
+事件链包括 `shortcut.native`、`shortcut.dispatched`、`action.received`、
+`capture.admitted`、`capture.started`、`capture.qt_layout`、`capture.worker_entered`、
+`capture.native_layout`、`capture.native_returned`、`capture.finished`、`capture.presented`。
+错误或中断分支使用 `shortcut.ignored`、`action.rejected`、`action.not_dispatched`、
+`action.active_session`、`capture.admission_rejected`、`capture.start_ignored`、
+`capture.display_changed`、`capture.rejected`、`capture.cancelled` 和 `capture.result_discarded`。
+`capture.finished` 在界面过滤过期结果之前保存经过脱敏的原生错误；这样即使旧结果被丢弃，也能看到实际错误。
+`capture.presented` 表示显示调用已返回，不单凭该事件断言窗口已在屏幕上可见。
+
+`shortcut.*` 的 `operation` 是注册编号，`action` 是 `GlobalShortcutAction` 枚举，
+按现有日志的时间、进程和会话串联到截图入口。`capture.*` 的 `operation` 是截图流程编号；
+过期回调的 `request_id` 是实际返回的旧请求编号。
+工作流 `status` 为 IdleCold=0、IdlePrepared=1、Capturing=2、OverlayVisible=3、Editing=4、Releasing=5；
+工作流 `stage` 为 Inactive=0、Preparing=1、Revealed=2、Live=3。
+`application.state_changed` 的 `status` 使用 Qt ApplicationState：Suspended=0、Hidden=1、Inactive=2、Active=4。
+
+显示通知区分屏幕增减、屏幕参数变化和应用隐藏／挂起，随后保存当前屏幕的坐标、尺寸、缩放和刷新率。
+原生布局事件中的尺寸是像素，Qt 布局事件中的尺寸是逻辑坐标，避免把两者混为一谈。
+
+正常安装后的日志目录为 `~/Library/Application Support/trrywui.snowshot/snowshot/logs/YYYY-MM-DD/`。
+复现时记录第一次失败和第二次成功的大致时间，以及是否刚唤醒、熄屏恢复或切换显示器。
+无需先重启应用或清理日志；维护者提供时间后再对照日志修复，不因等待复现而阻止本版正式发布。
+助手不替换本机应用，由维护者手动下载安装。
+
+相关回归限于 `snow-shot-capture-workflow-tests`、`snow-shot-diagnostics-tests`、
+`snow-shot-global-shortcut-manager-tests`，以及 `python3 scripts/test-macos14-personal.py`。
+其中覆盖取消后过期回调的请求编号关联、下一次请求继续派发、错误信息脱敏及内容字段过滤。
 
 ## 内存和 CPU 采样
 

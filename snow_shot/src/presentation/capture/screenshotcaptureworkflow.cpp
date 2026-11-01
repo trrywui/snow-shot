@@ -1,4 +1,5 @@
 #include "snow_shot/presentation/screenshotcaptureworkflow.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 
 #include "screenshotcaptureperfinstrumentation.h"
 #include "../pinned/screenshotpintoperfinstrumentation.h"
@@ -28,6 +29,20 @@
 #endif
 #include <windows.h>
 #endif
+
+namespace {
+// Temporary first-capture diagnostics: event-driven metadata, using the existing logger.
+void traceCapture(const char* event, const ScreenshotCaptureState& state,
+                  const ScreenshotStartupContext& startup, const char* reason) {
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"), QString::fromLatin1(event),
+        {{QStringLiteral("operation"), QString::number(state.sessionId)},
+         {QStringLiteral("status"), static_cast<int>(state.sessionState)},
+         {QStringLiteral("stage"), static_cast<int>(startup.phase)},
+         {QStringLiteral("changed"), state.layoutDirty},
+         {QStringLiteral("reason"), QString::fromLatin1(reason)}});
+}
+} // namespace
 
 ScreenshotCaptureWorkflow::ScreenshotCaptureWorkflow(ScreenshotCaptureWorkflowContext context)
     : m_startup(std::make_shared<ScreenshotStartupContext>()), m_context(std::move(context)),
@@ -68,8 +83,10 @@ bool ScreenshotCaptureWorkflow::captureSuspended() const {
 void ScreenshotCaptureWorkflow::startCapture(StartMode mode, ToolbarPreparation toolbarPreparation,
                                              ToolbarVisibility toolbarVisibility,
                                              PresentationMode presentation) {
-    if (m_captureSuspended)
+    if (m_captureSuspended) {
+        traceCapture("capture.start_ignored", m_state, *m_startup, "capture_suspended");
         return;
+    }
     const QPoint initialCursorGlobalPosition = m_context.cursorPosition();
     completeRecapture(false);
     if (m_deferredExportCleanup) {
@@ -116,6 +133,7 @@ void ScreenshotCaptureWorkflow::startCapture(StartMode mode, ToolbarPreparation 
     m_startup->logicalPosition = initialCursorGlobalPosition;
     m_startup->anchorCursor = mode != StartMode::ExternalDrag;
     m_startup->phase = ScreenshotStartupContext::Phase::Preparing;
+    traceCapture("capture.started", m_state, *m_startup, coldStart ? "cold" : "prepared");
     if (!m_state.presentationSuppressed)
         m_context.runtime.createColorPicker(initialCursorGlobalPosition);
     if (m_context.screenshotSoundNotification())
@@ -162,6 +180,7 @@ void ScreenshotCaptureWorkflow::handleInitialSmartSelectionResolved(quint64 sess
 }
 
 void ScreenshotCaptureWorkflow::cancelCapture() {
+    traceCapture("capture.cancelled", m_state, *m_startup, "cancel_requested");
     const bool refreshAfterCancel = m_refreshAfterCapture || m_state.layoutDirty;
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("workflow.cancel_requested");
     SNOW_SHOT_CAPTURE_PERF_FINISH(false);
@@ -186,6 +205,7 @@ void ScreenshotCaptureWorkflow::cancelCapture() {
 }
 
 void ScreenshotCaptureWorkflow::cancelCaptureForExport() {
+    traceCapture("capture.export_cleanup", m_state, *m_startup, "export_requested");
     *m_startup = {};
     SNOW_SHOT_PIN_PERF_SCOPE("cleanup.cancel_capture_for_export");
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("workflow.export_cancel_requested");
@@ -357,6 +377,7 @@ void ScreenshotCaptureWorkflow::shutdownCaptureWorker() {
 }
 
 void ScreenshotCaptureWorkflow::handleDisplayConfigurationChanged() {
+    traceCapture("capture.display_changed", m_state, *m_startup, "display_notification");
     if (m_startup->phase == ScreenshotStartupContext::Phase::Preparing) {
         m_state.layoutDirty = true;
         ++m_layoutChangeSerial;
@@ -405,9 +426,18 @@ void ScreenshotCaptureWorkflow::beginCapturePreparation(quint64 sessionId) {
         m_context.refreshCanvasCreationStyles();
     }
     m_context.displaySession.forEachActiveDisplay(
-        [this](qsizetype slot, const CapturedDisplayModel& display) {
+        [this, sessionId](qsizetype slot, const CapturedDisplayModel& display) {
             m_startup->qtDisplays.push_back(display);
             m_startup->qtDisplaySlots.push_back(slot);
+            snow_shot::diagnostics::logEvent(
+                QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.qt_layout"),
+                {{QStringLiteral("operation"), QString::number(sessionId)},
+                 {QStringLiteral("display_index"), slot},
+                 {QStringLiteral("x"), display.logicalRect.x()},
+                 {QStringLiteral("y"), display.logicalRect.y()},
+                 {QStringLiteral("width"), display.logicalRect.width()},
+                 {QStringLiteral("height"), display.logicalRect.height()},
+                 {QStringLiteral("scale"), display.backingScale}});
         });
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("capture.overlay_prep_done");
     // Once Snow Shot's windows are excluded, start native acquisition at
@@ -464,9 +494,17 @@ void ScreenshotCaptureWorkflow::finishCapturePreparation(const ScreenshotCapture
     const quint64 sessionId = result.requestId;
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("capture.ui_finish_entry");
     if (sessionId != m_state.sessionId || !m_state.captureInProgress) {
+        snow_shot::diagnostics::logEvent(
+            QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.result_discarded"),
+            {{QStringLiteral("operation"), QString::number(m_state.sessionId)},
+             {QStringLiteral("request_id"), QString::number(sessionId)},
+             {QStringLiteral("reason"), sessionId != m_state.sessionId
+                                            ? QStringLiteral("stale_request")
+                                            : QStringLiteral("inactive_request")}});
         return;
     }
     if (!result.succeeded || result.displays.isEmpty()) {
+        traceCapture("capture.rejected", m_state, *m_startup, "failed_or_empty_result");
         if (!result.errorMessage.isEmpty()) {
             qWarning("Screenshot capture failed: %s", qPrintable(result.errorMessage));
         }
@@ -475,6 +513,7 @@ void ScreenshotCaptureWorkflow::finishCapturePreparation(const ScreenshotCapture
     }
 
     if (!m_startup->displays || result.displays.size() != m_startup->displays->size()) {
+        traceCapture("capture.rejected", m_state, *m_startup, "display_count_mismatch");
         m_state.layoutDirty = true;
         cancelCapture();
         return;
@@ -501,6 +540,7 @@ void ScreenshotCaptureWorkflow::finishCapturePreparation(const ScreenshotCapture
             display.backend = found->backend;
         });
     if (!layoutMatches || attached.size() != result.displays.size()) {
+        traceCapture("capture.rejected", m_state, *m_startup, "frame_layout_mismatch");
         m_state.layoutDirty = true;
         cancelCapture();
         return;
@@ -608,6 +648,7 @@ void ScreenshotCaptureWorkflow::showCapturePresentationWhenReady(quint64 session
                        ScreenshotGeometryMapper::physicalRectForScreen(*d.screen) != d.physicalRect;
             })) {
         m_state.layoutDirty = true;
+        traceCapture("capture.rejected", m_state, *m_startup, "screen_changed_before_reveal");
         cancelCapture();
         return;
     }
@@ -635,6 +676,14 @@ void ScreenshotCaptureWorkflow::showCapturePresentationWhenReady(quint64 session
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("presentation.composited");
     SNOW_SHOT_CAPTURE_PERF_FINISH(true);
     m_startup->phase = ScreenshotStartupContext::Phase::Revealed;
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.presented"),
+        {{QStringLiteral("operation"), QString::number(sessionId)},
+         {QStringLiteral("status"), static_cast<int>(m_state.sessionState)},
+         {QStringLiteral("stage"), static_cast<int>(m_startup->phase)},
+         {QStringLiteral("reason"), m_state.presentationSuppressed
+                                        ? QStringLiteral("silent")
+                                        : QStringLiteral("overlay_show_requested")}});
     if (!m_state.presentationSuppressed && m_context.presentation.updateColorPicker) {
         m_context.presentation.updateColorPicker();
     }
@@ -701,6 +750,7 @@ void ScreenshotCaptureWorkflow::handleLayoutReady(const ScreenshotCaptureLayout&
     if (layout.requestId != m_state.sessionId || !m_state.captureInProgress || m_startup->displays)
         return;
     const auto fail = [this] {
+        traceCapture("capture.rejected", m_state, *m_startup, "startup_layout_mismatch");
         m_state.layoutDirty = true;
         cancelCapture();
     };
