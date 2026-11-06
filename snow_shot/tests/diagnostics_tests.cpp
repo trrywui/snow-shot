@@ -170,7 +170,15 @@ void firstCaptureMetadataAndNativeError() {
                                {QStringLiteral("stage"), 1},
                                {QStringLiteral("status"), 2},
                                {QStringLiteral("queue_ms"), 2.5},
-                               {QStringLiteral("duration_ms"), 35}};
+                               {QStringLiteral("duration_ms"), 35},
+                               {QStringLiteral("display_id"), 43},
+                               {QStringLiteral("layout_source"), QStringLiteral("cache_reuse")},
+                               {QStringLiteral("refresh_id"), QStringLiteral("2")},
+                               {QStringLiteral("qt_count"), 1},
+                               {QStringLiteral("native_count"), 1},
+                               {QStringLiteral("cached_topology_before"), QStringLiteral("7")},
+                               {QStringLiteral("cached_topology_after"), QStringLiteral("7")},
+                               {QStringLiteral("current_topology"), QStringLiteral("8")}};
     auto input = metadata;
     input.insert(QStringLiteral("window_title"), QStringLiteral("private title"));
     input.insert(QStringLiteral("image"), QStringLiteral("private pixels"));

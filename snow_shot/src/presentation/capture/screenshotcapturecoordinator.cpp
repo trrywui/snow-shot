@@ -48,11 +48,12 @@ void ScreenshotCaptureCoordinator::prepareAsync(quint64 requestId) {
     }));
 }
 
-void ScreenshotCaptureCoordinator::refreshLayoutAsync(quint64 requestId) {
+void ScreenshotCaptureCoordinator::refreshLayoutAsync(quint64 requestId, quint64 captureRequestId) {
     const QPointer<ScreenshotCaptureCoordinator> coordinator(this);
-    static_cast<void>(postWorkerTask([requestId, coordinator](ScreenshotCaptureWorker& worker) {
-        worker.refreshLayout(requestId, coordinator);
-    }));
+    static_cast<void>(
+        postWorkerTask([requestId, captureRequestId, coordinator](ScreenshotCaptureWorker& worker) {
+            worker.refreshLayout(requestId, coordinator, captureRequestId);
+        }));
 }
 
 void ScreenshotCaptureCoordinator::captureAsync(const ScreenshotCaptureRequest& request) {

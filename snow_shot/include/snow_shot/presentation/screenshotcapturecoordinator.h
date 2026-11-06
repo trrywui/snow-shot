@@ -20,7 +20,7 @@ class ScreenshotCaptureCoordinator final : public QObject {
     bool hasWorker() const;
     void ensureWorker();
     void prepareAsync(quint64 requestId);
-    void refreshLayoutAsync(quint64 requestId);
+    void refreshLayoutAsync(quint64 requestId, quint64 captureRequestId);
     void captureAsync(const ScreenshotCaptureRequest& request);
     void cancelActiveCapture();
     void shutdown();

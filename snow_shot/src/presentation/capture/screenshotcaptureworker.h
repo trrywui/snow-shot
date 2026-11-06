@@ -18,8 +18,8 @@ class ScreenshotCaptureWorker final : public QObject {
     ~ScreenshotCaptureWorker() override;
 
     void prepare(quint64 requestId, const QPointer<ScreenshotCaptureCoordinator>& coordinator);
-    void refreshLayout(quint64 requestId,
-                       const QPointer<ScreenshotCaptureCoordinator>& coordinator);
+    void refreshLayout(quint64 requestId, const QPointer<ScreenshotCaptureCoordinator>& coordinator,
+                       quint64 captureRequestId = 0);
     void capture(const ScreenshotCaptureRequest& request,
                  const QPointer<ScreenshotCaptureCoordinator>& coordinator,
                  SnowCaptureCancellationToken* cancellationToken);

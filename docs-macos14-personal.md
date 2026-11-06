@@ -1,6 +1,6 @@
 # Snow Shot Intel macOS 维护分支
 
-正式名称为 **Snow Shot**，版本 **1.1.6+up.1.4.3**，Bundle ID 为 `io.github.trrywui.snowshot`。
+正式名称为 **Snow Shot**，版本 **1.1.7+up.1.4.3**，Bundle ID 为 `io.github.trrywui.snowshot`。
 最低系统为 macOS 14.4，架构为 x86_64。由 trrywui 维护，源自 mg-chao/snow-apps 的 `17fad782a3f9`。
 
 ## 构建隔离
@@ -43,16 +43,16 @@ bash scripts/macos14-personal.sh package
 `macos14-personal-jpeg` feature 使 TurboJPEG 与静态 Qt 的 JPEG v8 ABI 一致，不应删除。
 
 ```text
-.tools/macos14-personal/artifacts/1.1.6+up.1.4.3/Snow Shot.app
-.tools/macos14-personal/artifacts/1.1.6+up.1.4.3/snow-shot-1.1.6+up.1.4.3-intel.dmg
-.tools/macos14-personal/artifacts/1.1.6+up.1.4.3/snow-shot-1.1.6+up.1.4.3-intel.dmg.sha256
+.tools/macos14-personal/artifacts/1.1.7+up.1.4.3/Snow Shot.app
+.tools/macos14-personal/artifacts/1.1.7+up.1.4.3/snow-shot-1.1.7+up.1.4.3-intel.dmg
+.tools/macos14-personal/artifacts/1.1.7+up.1.4.3/snow-shot-1.1.7+up.1.4.3-intel.dmg.sha256
 ```
 
 打包保留 OCR 模型、许可证和第三方声明，并验证签名、Mach-O 系统依赖及最低版本。
 不覆盖已有同版本产物；重打包前先移动对应版本目录保存回退材料。
 
 版本唯一配置为 `snow_shot/packaging/macos/maintained-release.json`。
-应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.6`，内部构建号为 `8`。
+应用和 Git 标签使用完整 SemVer；macOS 数字版本为 `1.1.7`，内部构建号为 `9`。
 后续发布递增维护版本及构建号，上游版本需与根构建声明一致。
 
 ## 固定签名与覆盖升级权限
@@ -135,7 +135,7 @@ bash scripts/macos14-personal.sh test capabilities::
 ## 首次截图临时追踪（1.1.6）
 
 按维护者要求，直接在正式维护版加入事件日志，供正常使用数天后定位长时间闲置的首次截图失败。
-本版不改动截图重试、取消、呈现或资源释放策略，不宣称已经修复该问题。
+1.1.6 不改动截图重试、取消、呈现或资源释放策略，不宣称已经修复该问题。
 后续根据实际记录定位并修复；仅在维护者再次明确要求时移除本次新增日志逻辑。
 
 新增分类为 `snow_shot.capture_trace`，沿用现有异步日志、大小限制和轮转机制，
@@ -170,6 +170,14 @@ bash scripts/macos14-personal.sh test capabilities::
 `snow-shot-global-shortcut-manager-tests`，以及 `python3 scripts/test-macos14-personal.py`。
 其中覆盖取消后过期回调的请求编号关联、下一次请求继续派发、错误信息脱敏及内容字段过滤。
 
+## 睡眠后布局缓存（1.1.7）
+
+屏幕配置变化和系统唤醒使 macOS 截图后端的布局缓存失效；下一次截图按需更新缓存，
+再固定布局和获取图像。布局更新中或截图期间再次发生变化时拒绝过期结果，
+不自动重新启动整次截图。保留 Qt ID、后端 ID、变化计数及刷新耗时的临时诊断，
+不增加轮询、截图保活或 OCR 常驻。若 Qt 当前信息仍旧或系统通知没有被观察到，
+本次修复不保证恢复；需要真实睡眠场景记录继续验证。
+
 ## 内存和 CPU 采样
 
 ```sh
@@ -196,10 +204,9 @@ bash scripts/macos14-personal.sh clean --all
 清理需要专用标记，拒绝危险符号链接；先退出使用这些目录的测试进程。
 源码、Git 分支、已安装应用及其标准目录数据不会被删除。发布后不自动清理缓存。
 
-本机构建并手动发布 GitHub Release，提供 DMG、SHA256、说明和对应源码材料。
-使用 `bash scripts/macos14-personal.sh sources` 在隔离环境中收集并打包依赖源码，
+本机构建并手动发布 GitHub Release，附件仅提供 DMG 和 SHA256。
+本项目源码以发布标签的 Git 源码包提供；不向 Release 上传依赖源码包或签名密钥。
+如需在本地收集依赖源码，可使用 `bash scripts/macos14-personal.sh sources`，
 按实际依赖库存中的校验和验证；同版本源码包已存在时拒绝覆盖。
-源码材料包括 Qt 原始源码包、Rust registry 与锁定 Git crate 源码、原生依赖源码、vcpkg 配方及其本地补丁和来源清单。
-本项目源码以发布标签的 Git 源码包提供；组合使用这两个源码包及构建说明。
 上游发布流程位于 `.github/upstream-workflows/`，不会自动执行。
 同步上游后重新检查 API 判断、JPEG ABI、依赖最低版本、Bundle ID、更新策略及相关功能。

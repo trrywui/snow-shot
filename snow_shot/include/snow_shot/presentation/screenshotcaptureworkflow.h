@@ -102,7 +102,7 @@ class ScreenshotCaptureWorkflow final : private ScreenshotCaptureWorkerEventSink
     void handleLayoutRefreshed(quint64 requestId, bool ok) override;
     void prewarmOverlayPool();
     void initializeIdleResources(quint64 requestId);
-    void scheduleLayoutRefresh(quint64 refreshId);
+    void scheduleLayoutRefresh(quint64 refreshId, quint64 captureRequestId = 0);
     void resetCanvasRuntimeState();
     [[nodiscard]] bool capturePresentationPrepared(quint64 sessionId) const;
 
@@ -118,6 +118,7 @@ class ScreenshotCaptureWorkflow final : private ScreenshotCaptureWorkerEventSink
     bool m_canvasRuntimeClean = false;
     bool m_deferredExportCleanup = false;
     bool m_layoutRefreshInFlight = false;
+    quint64 m_layoutRefreshTraceRequestId = 0;
     bool m_refreshAfterCapture = false;
     bool m_recaptureInProgress = false;
     bool m_captureSuspended = false;

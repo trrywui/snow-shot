@@ -11,6 +11,8 @@
 #include "snow_shot/diagnostics/diagnostics.h"
 
 #include <QFile>
+#include <QFileInfo>
+#include <QDir>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QVector>
@@ -41,9 +43,13 @@ class CaptureRuntime final : public ScreenshotCaptureRuntimePort {
     void prepareAsync(quint64) override {
         ++prepareAsyncCalls;
     }
-    void refreshLayoutAsync(quint64 requestId) override {
+    void refreshLayoutAsync(quint64 requestId, quint64 captureRequestId) override {
         ++refreshLayoutCalls;
         lastRefreshRequestId = requestId;
+        lastRefreshCaptureRequestId = captureRequestId;
+    }
+    void deliverLayoutRefreshed(bool ok = true) {
+        eventSink->handleLayoutRefreshed(lastRefreshRequestId, ok);
     }
     void captureAsync(const ScreenshotCaptureRequest& request) override {
         ++captureAllAsyncCalls;
@@ -147,12 +153,14 @@ class CaptureRuntime final : public ScreenshotCaptureRuntimePort {
         preparedDisplays = &displaySession;
         displaySession.clear();
         {
-            CapturedDisplayModel display;
-            display.stableId = QStringLiteral("primary");
-            display.name = QStringLiteral("Primary");
-            display.physicalRect = QRect(0, 0, 64, 48);
-            display.logicalRect = display.physicalRect;
-            display.active = true;
+            CapturedDisplayModel display = preparedDisplay;
+            if (display.stableId.isEmpty()) {
+                display.stableId = QStringLiteral("primary");
+                display.name = QStringLiteral("Primary");
+                display.physicalRect = QRect(0, 0, 64, 48);
+                display.logicalRect = display.physicalRect;
+                display.active = true;
+            }
             displaySession.appendDisplay(display);
         }
         return true;
@@ -219,6 +227,7 @@ class CaptureRuntime final : public ScreenshotCaptureRuntimePort {
     int cancelActiveCaptureCalls = 0;
     int refreshLayoutCalls = 0;
     quint64 lastRefreshRequestId = 0;
+    quint64 lastRefreshCaptureRequestId = 0;
     int startWorkflowRefreshCalls = 0;
     int releaseSelectorCacheCalls = 0;
     mutable int clearOverlayCanvasCalls = 0;
@@ -249,6 +258,7 @@ class CaptureRuntime final : public ScreenshotCaptureRuntimePort {
     ScreenshotDisplaySession* preparedDisplays = nullptr;
     QPoint queriedPoint;
     ScreenshotCaptureRequest lastCaptureRequest;
+    CapturedDisplayModel preparedDisplay;
     QVector<QString> operations;
 };
 
@@ -2311,10 +2321,128 @@ void startupDisplayIdentityMatchesByNameRectOrNativeId() {
     require(!matchStartupDisplays({qt}, {3}, {wrongId}, alwaysCurrent),
             "a different native display id must not fall through to the same rect");
 
+    StartupDisplayMatchFailure reason = StartupDisplayMatchFailure::None;
+    require(!matchStartupDisplays({qt}, {3}, {wrongId}, alwaysCurrent, &reason) &&
+                reason == StartupDisplayMatchFailure::NativeIdNotFound,
+            "ID mismatch diagnostics identify the native join failure");
+    require(!matchStartupDisplays({qt}, {3}, {}, alwaysCurrent, &reason) &&
+                reason == StartupDisplayMatchFailure::DisplayCount,
+            "count mismatch diagnostics do not report an ID mismatch");
+    auto wrongSize = native;
+    wrongSize.physicalRect.setWidth(wrongSize.physicalRect.width() - 1);
+    require(!matchStartupDisplays({qt}, {3}, {wrongSize}, alwaysCurrent, &reason) &&
+                reason == StartupDisplayMatchFailure::PhysicalGeometry,
+            "physical geometry mismatch diagnostics remain distinct");
+    auto wrongLogical = native;
+    wrongLogical.capturedLogicalRect.setWidth(wrongLogical.capturedLogicalRect.width() - 1);
+    require(!matchStartupDisplays({qt}, {3}, {wrongLogical}, alwaysCurrent, &reason) &&
+                reason == StartupDisplayMatchFailure::LogicalGeometry,
+            "logical geometry mismatch diagnostics remain distinct");
+    require(!matchStartupDisplays(
+                {qt}, {3}, {native}, [](const CapturedDisplayModel&) { return false; }, &reason) &&
+                reason == StartupDisplayMatchFailure::QtScreenChanged,
+            "a changed Qt screen is reported independently");
+
     CapturedDisplayModel duplicate = left;
     duplicate.stableId = QStringLiteral("duplicate");
     require(!matchStartupDisplays({left, left}, {0, 1}, {duplicate}, alwaysCurrent),
             "two Qt displays with the same device name are ambiguous");
+}
+
+void startupLayoutMismatchDoesNotRestartAfterRefresh() {
+    ScreenshotCaptureState state;
+    state.sessionState = ScreenshotSessionState::IdlePrepared;
+    ScreenshotDisplaySession displays;
+    ScreenshotGeometryMapper geometry;
+    ScreenshotInteractionState interaction;
+    ScreenshotSelectionModel selection;
+    ScreenshotIntelligentSelectionModel intelligent;
+    CaptureRuntime runtime;
+    runtime.seedActiveDisplayOnPrepare = false;
+
+    CapturedDisplayModel qtDisplay;
+    qtDisplay.stableId = QStringLiteral("display:old");
+    qtDisplay.name = QStringLiteral("Built-in Display");
+    qtDisplay.nativeDisplayId = 42;
+    qtDisplay.canvasUsesPoints = true;
+    qtDisplay.logicalRect = QRect(0, 0, 1680, 1050);
+    qtDisplay.capturedLogicalRect = qtDisplay.logicalRect;
+    qtDisplay.physicalRect = QRect(0, 0, 3360, 2100);
+    qtDisplay.backingScale = 2.0;
+    qtDisplay.logicalToPhysicalScale = 2.0;
+    qtDisplay.active = true;
+    runtime.preparedDisplay = qtDisplay;
+
+    ScreenshotCaptureWorkflow workflow =
+        makeWorkflow(state, displays, geometry, interaction, selection, intelligent, runtime);
+    workflow.startCapture();
+    const quint64 firstRequest = state.sessionId;
+
+    auto nativeDisplay = qtDisplay;
+    nativeDisplay.stableId = QStringLiteral("display:new");
+    nativeDisplay.nativeDisplayId = 43;
+    runtime.eventSink->handleLayoutReady({firstRequest, firstRequest, {nativeDisplay}});
+    require(!state.captureInProgress && runtime.refreshLayoutCalls == 1 &&
+                runtime.captureAllAsyncCalls == 1,
+            "a changed native display identity must cancel and refresh");
+
+    runtime.preparedDisplay = nativeDisplay;
+    runtime.seedActiveDisplayOnPrepare = true;
+    runtime.deliverLayoutRefreshed();
+    require(!state.captureInProgress && runtime.captureAllAsyncCalls == 1,
+            "refresh completion must not restart the original capture");
+
+    workflow.startCapture();
+    require(state.captureInProgress && runtime.captureAllAsyncCalls == 2,
+            "a new user request must start normally after refresh");
+    const quint64 secondRequest = state.sessionId;
+    runtime.eventSink->handleLayoutReady({secondRequest, secondRequest, {nativeDisplay}});
+
+    auto frame = nativeDisplay;
+    frame.image = QImage(frame.physicalRect.size(), QImage::Format_RGBA8888);
+    runtime.deliverResult(successfulResult(state.sessionId, frame));
+    require(!state.captureInProgress && runtime.showOverlayCalls == 1,
+            "the new user request must present the captured image");
+
+    workflow.cancelCapture();
+}
+
+void cancelDuringLayoutRefreshDoesNotRestartCapture() {
+    ScreenshotCaptureState state;
+    state.sessionState = ScreenshotSessionState::IdlePrepared;
+    ScreenshotDisplaySession displays;
+    ScreenshotGeometryMapper geometry;
+    ScreenshotInteractionState interaction;
+    ScreenshotSelectionModel selection;
+    ScreenshotIntelligentSelectionModel intelligent;
+    CaptureRuntime runtime;
+    runtime.seedActiveDisplayOnPrepare = false;
+
+    CapturedDisplayModel qtDisplay;
+    qtDisplay.stableId = QStringLiteral("display:old");
+    qtDisplay.name = QStringLiteral("Built-in Display");
+    qtDisplay.nativeDisplayId = 42;
+    qtDisplay.canvasUsesPoints = true;
+    qtDisplay.logicalRect = QRect(0, 0, 1680, 1050);
+    qtDisplay.capturedLogicalRect = qtDisplay.logicalRect;
+    qtDisplay.physicalRect = QRect(0, 0, 3360, 2100);
+    qtDisplay.backingScale = 2.0;
+    qtDisplay.logicalToPhysicalScale = 2.0;
+    qtDisplay.active = true;
+    runtime.preparedDisplay = qtDisplay;
+
+    auto workflow =
+        makeWorkflow(state, displays, geometry, interaction, selection, intelligent, runtime);
+    workflow.startCapture();
+    const quint64 firstRequest = state.sessionId;
+    auto nativeDisplay = qtDisplay;
+    nativeDisplay.stableId = QStringLiteral("display:new");
+    nativeDisplay.nativeDisplayId = 43;
+    runtime.eventSink->handleLayoutReady({firstRequest, firstRequest, {nativeDisplay}});
+    workflow.cancelCapture();
+    runtime.deliverLayoutRefreshed();
+    require(!state.captureInProgress && runtime.captureAllAsyncCalls == 1,
+            "an explicit cancel must keep a layout refresh from starting capture");
 }
 
 void injectedLayoutRefreshDoesNotFallBackToEnumeration() {
@@ -2445,7 +2573,8 @@ void suspendedCaptureDoesNotStartAndRestoresAfterFailedHandoff() {
 }
 
 void firstCaptureTracePreservesCancellationAndStaleRequest() {
-    QTemporaryDir directory;
+    const QString temporaryRoot = QFileInfo(QDir::tempPath()).canonicalFilePath();
+    QTemporaryDir directory(QDir(temporaryRoot).filePath(QStringLiteral("snow-shot-XXXXXX")));
     require(directory.isValid(), "capture trace fixture directory");
     auto& diagnostics = snow_shot::diagnostics::DiagnosticsService::instance();
     snow_shot::diagnostics::DiagnosticsOptions options;
@@ -2505,8 +2634,163 @@ void firstCaptureTracePreservesCancellationAndStaleRequest() {
     diagnostics.shutdown();
 }
 
+void layoutTraceDistinguishesCachedBackendFromQtChanges() {
+    const QString tempRoot = QFileInfo(QDir::tempPath()).canonicalFilePath();
+    QTemporaryDir directory(QDir(tempRoot).filePath(QStringLiteral("snow-layout-diag-XXXXXX")));
+    require(directory.isValid(), "layout diagnostic directory");
+    auto& diagnostics = snow_shot::diagnostics::DiagnosticsService::instance();
+    snow_shot::diagnostics::DiagnosticsOptions options;
+    options.directories = {directory.path()};
+    options.enableCrashCapture = false;
+    options.installMessageHandler = false;
+    options.mirrorToConsole = false;
+    require(diagnostics.initialize(options), "layout diagnostic logger initializes");
+
+    const auto display = [](quint32 id) {
+        CapturedDisplayModel model;
+        model.stableId = QStringLiteral("display:%1").arg(id);
+        model.nativeDisplayId = id;
+        model.canvasUsesPoints = true;
+        model.logicalRect = QRect(0, 0, 1680, 1050);
+        model.capturedLogicalRect = model.logicalRect;
+        model.physicalRect = QRect(0, 0, 3360, 2100);
+        model.backingScale = 2.0;
+        model.logicalToPhysicalScale = 2.0;
+        model.active = true;
+        return model;
+    };
+    const auto scenario = [&](quint64 startId, quint32 qtId, quint32 nativeId,
+                              bool cancelBeforeRefresh) {
+        ScreenshotCaptureState state;
+        state.sessionId = startId;
+        state.sessionState = ScreenshotSessionState::IdlePrepared;
+        ScreenshotDisplaySession displays;
+        ScreenshotGeometryMapper geometry;
+        ScreenshotInteractionState interaction;
+        ScreenshotSelectionModel selection;
+        ScreenshotIntelligentSelectionModel intelligent;
+        CaptureRuntime runtime;
+        runtime.seedActiveDisplayOnPrepare = false;
+        runtime.preparedDisplay = display(qtId);
+        auto workflow = makeWorkflow(state, displays, geometry, interaction, selection, intelligent,
+                                     runtime, false);
+        workflow.startCapture();
+        const quint64 first = state.sessionId;
+        runtime.eventSink->handleLayoutReady({first, first, {display(nativeId)}});
+        if (qtId == nativeId) {
+            require(state.captureInProgress && runtime.refreshLayoutCalls == 0,
+                    "matching layout does not refresh");
+        } else {
+            require(!state.captureInProgress && runtime.refreshLayoutCalls == 1 &&
+                        runtime.captureAllAsyncCalls == 1 &&
+                        runtime.lastRefreshCaptureRequestId == first,
+                    "different IDs cancel the original request and schedule a refresh");
+            if (cancelBeforeRefresh)
+                workflow.cancelCapture();
+            runtime.deliverLayoutRefreshed();
+            runtime.deliverResult(successfulResult(first, display(nativeId)));
+            require(!state.captureInProgress && runtime.captureAllAsyncCalls == 1 &&
+                        runtime.showOverlayCalls == 0,
+                    "refresh and stale result cannot restart a rejected capture");
+            return;
+        }
+        auto frame = display(43);
+        frame.image = QImage(frame.physicalRect.size(), QImage::Format_RGBA8888);
+        runtime.deliverResult(successfulResult(state.sessionId, frame));
+        require(!state.captureInProgress && runtime.showOverlayCalls == 1,
+                "matching layout and frame present the screenshot");
+        workflow.cancelCapture();
+    };
+    scenario(100, 43, 43, false); // T1
+    scenario(200, 43, 42, false); // T2/T3: only the backend changes.
+    scenario(300, 42, 43, false); // T4: only Qt changes.
+
+    const auto rejectedLayout = [&](quint64 startId, QVector<CapturedDisplayModel> native) {
+        ScreenshotCaptureState state;
+        state.sessionId = startId;
+        state.sessionState = ScreenshotSessionState::IdlePrepared;
+        ScreenshotDisplaySession displays;
+        ScreenshotGeometryMapper geometry;
+        ScreenshotInteractionState interaction;
+        ScreenshotSelectionModel selection;
+        ScreenshotIntelligentSelectionModel intelligent;
+        CaptureRuntime runtime;
+        runtime.seedActiveDisplayOnPrepare = false;
+        runtime.preparedDisplay = display(43);
+        auto workflow = makeWorkflow(state, displays, geometry, interaction, selection, intelligent,
+                                     runtime, false);
+        workflow.startCapture();
+        runtime.eventSink->handleLayoutReady({state.sessionId, state.sessionId, std::move(native)});
+        require(!state.captureInProgress && runtime.refreshLayoutCalls == 1,
+                "invalid layout is rejected without changing workflow semantics");
+        workflow.cancelCapture();
+    };
+    rejectedLayout(400, {});
+    auto wrongPhysical = display(43);
+    wrongPhysical.physicalRect.setWidth(3359);
+    rejectedLayout(500, {wrongPhysical});
+    auto wrongLogical = display(43);
+    wrongLogical.capturedLogicalRect.setWidth(1679);
+    rejectedLayout(600, {wrongLogical});
+    scenario(700, 43, 42, true); // T6
+
+    require(diagnostics.flush(), "layout diagnostics flush");
+    QFile log(diagnostics.status().currentFile);
+    require(log.open(QIODevice::ReadOnly), "layout diagnostic log opens");
+    bool qt43 = false, qtUnavailable = false, idMismatch = false, countMismatch = false,
+         physicalMismatch = false;
+    bool logicalMismatch = false, stale = false, refreshLinked = false;
+    for (const auto& line : log.readAll().split('\n')) {
+        const auto record = QJsonDocument::fromJson(line).object();
+        const auto event = record.value(QStringLiteral("event")).toString();
+        const auto fields = record.value(QStringLiteral("fields")).toObject();
+        const auto operation = fields.value(QStringLiteral("operation")).toString();
+        const auto reason = fields.value(QStringLiteral("reason")).toString();
+        if (event == QStringLiteral("capture.qt_layout") && operation == QStringLiteral("201"))
+            qt43 = fields.value(QStringLiteral("display_id")) == 43;
+        if (event == QStringLiteral("capture.qt_current_layout") &&
+            operation == QStringLiteral("201"))
+            qtUnavailable =
+                fields.value(QStringLiteral("outcome")) == QStringLiteral("screen_unavailable");
+        if (event == QStringLiteral("capture.layout_match_failed")) {
+            idMismatch |= operation == QStringLiteral("201") &&
+                          reason == QStringLiteral("native_id_not_found") &&
+                          fields.value(QStringLiteral("qt_count")) == 1 &&
+                          fields.value(QStringLiteral("native_count")) == 1 &&
+                          fields.contains(QStringLiteral("refresh_id"));
+            countMismatch |= operation == QStringLiteral("401") &&
+                             reason == QStringLiteral("display_count_mismatch");
+            physicalMismatch |= operation == QStringLiteral("501") &&
+                                reason == QStringLiteral("physical_geometry_mismatch");
+            logicalMismatch |= operation == QStringLiteral("601") &&
+                               reason == QStringLiteral("logical_geometry_mismatch");
+        }
+        if (event == QStringLiteral("capture.layout_refresh_scheduled") &&
+            operation == QStringLiteral("201") && fields.contains(QStringLiteral("refresh_id")))
+            refreshLinked = true;
+        if (event == QStringLiteral("capture.result_discarded") &&
+            fields.value(QStringLiteral("request_id")) == QStringLiteral("701") &&
+            reason == QStringLiteral("stale_request"))
+            stale = true;
+        if (qEnvironmentVariableIsSet("SNOW_SHOT_CAPTURE_EVIDENCE") &&
+            (event == QStringLiteral("capture.qt_layout") ||
+             event == QStringLiteral("capture.qt_current_layout") ||
+             event == QStringLiteral("capture.layout_match_failed") ||
+             event == QStringLiteral("capture.layout_refresh_scheduled") ||
+             event == QStringLiteral("capture.layout_refresh_handled") ||
+             event == QStringLiteral("capture.retry_started") ||
+             event == QStringLiteral("capture.result_discarded")))
+            std::cout << "WORKFLOW_EVIDENCE " << line.constData() << '\n';
+    }
+    require(qt43 && qtUnavailable && idMismatch && countMismatch && physicalMismatch &&
+                logicalMismatch && stale && refreshLinked,
+            "diagnostic IDs, mismatch reasons, refresh correlation and stale result must persist");
+    diagnostics.shutdown();
+}
+
 int main() {
     firstCaptureTracePreservesCancellationAndStaleRequest();
+    layoutTraceDistinguishesCachedBackendFromQtChanges();
     captureStartSoundDefaultsToDisabled();
     captureStartSoundFollowsSessionLifetime();
     suspendedCaptureDoesNotStartAndRestoresAfterFailedHandoff();
@@ -2517,6 +2801,8 @@ int main() {
     confirmedSelectionPreservesRegionTypeInToolbarPresentation();
     customCaptureDoesNotWaitForSelector();
     startupDisplayIdentityMatchesByNameRectOrNativeId();
+    startupLayoutMismatchDoesNotRestartAfterRefresh();
+    cancelDuringLayoutRefreshDoesNotRestartCapture();
     injectedLayoutRefreshDoesNotFallBackToEnumeration();
     startupMatchesNativeDisplayIdentityInLogicalCoordinateSpace();
     invocationSnapshotIsSharedUntilInput();

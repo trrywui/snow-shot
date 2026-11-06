@@ -86,6 +86,43 @@ struct StartupDisplayBinding {
     CapturedDisplayModel display;
 };
 
+enum class StartupDisplayMatchFailure {
+    None,
+    DisplayCount,
+    AmbiguousIdentity,
+    NativeIdNotFound,
+    DeviceIdentityNotFound,
+    InvalidNativeIdentity,
+    PhysicalGeometry,
+    LogicalGeometry,
+    QtScreenChanged,
+};
+
+[[nodiscard]] inline const char*
+startupDisplayMatchFailureName(StartupDisplayMatchFailure failure) {
+    switch (failure) {
+    case StartupDisplayMatchFailure::None:
+        return "none";
+    case StartupDisplayMatchFailure::DisplayCount:
+        return "display_count_mismatch";
+    case StartupDisplayMatchFailure::AmbiguousIdentity:
+        return "ambiguous_identity";
+    case StartupDisplayMatchFailure::NativeIdNotFound:
+        return "native_id_not_found";
+    case StartupDisplayMatchFailure::DeviceIdentityNotFound:
+        return "device_identity_not_found";
+    case StartupDisplayMatchFailure::InvalidNativeIdentity:
+        return "invalid_native_identity";
+    case StartupDisplayMatchFailure::PhysicalGeometry:
+        return "physical_geometry_mismatch";
+    case StartupDisplayMatchFailure::LogicalGeometry:
+        return "logical_geometry_mismatch";
+    case StartupDisplayMatchFailure::QtScreenChanged:
+        return "qt_screen_changed";
+    }
+    return "unknown";
+}
+
 [[nodiscard]] inline bool startupFrameMatchesDisplay(const CapturedDisplayModel& bound,
                                                      const CapturedDisplayModel& frame) {
     return frame.stableId == bound.stableId && frame.physicalRect == bound.physicalRect &&
@@ -95,12 +132,23 @@ struct StartupDisplayBinding {
 }
 
 template <typename QtStillCurrent>
-[[nodiscard]] std::optional<QVector<StartupDisplayBinding>> matchStartupDisplays(
-    const QVector<CapturedDisplayModel>& qtDisplays, const QVector<qsizetype>& qtSlots,
-    const QVector<CapturedDisplayModel>& nativeDisplays, QtStillCurrent qtStillCurrent) {
+[[nodiscard]] std::optional<QVector<StartupDisplayBinding>>
+matchStartupDisplays(const QVector<CapturedDisplayModel>& qtDisplays,
+                     const QVector<qsizetype>& qtSlots,
+                     const QVector<CapturedDisplayModel>& nativeDisplays,
+                     QtStillCurrent qtStillCurrent, StartupDisplayMatchFailure* failure = nullptr) {
+    if (failure)
+        *failure = StartupDisplayMatchFailure::None;
+    const auto reject =
+        [failure](
+            StartupDisplayMatchFailure reason) -> std::optional<QVector<StartupDisplayBinding>> {
+        if (failure)
+            *failure = reason;
+        return std::nullopt;
+    };
     if (nativeDisplays.isEmpty() || nativeDisplays.size() != qtDisplays.size() ||
         qtDisplays.size() != qtSlots.size()) {
-        return std::nullopt;
+        return reject(StartupDisplayMatchFailure::DisplayCount);
     }
 
     struct Match {
@@ -141,16 +189,21 @@ template <typename QtStillCurrent>
                 return identity.samePhysicalRect(identityOf(qt));
             });
         }
-        if (match.ambiguous || match.index < 0 || native.stableId.isEmpty() ||
-            identities.contains(native.stableId)) {
-            return std::nullopt;
-        }
+        if (match.ambiguous)
+            return reject(StartupDisplayMatchFailure::AmbiguousIdentity);
+        if (match.index < 0)
+            return reject(identity.usesNativeId
+                              ? StartupDisplayMatchFailure::NativeIdNotFound
+                              : StartupDisplayMatchFailure::DeviceIdentityNotFound);
+        if (native.stableId.isEmpty() || identities.contains(native.stableId))
+            return reject(StartupDisplayMatchFailure::InvalidNativeIdentity);
         const CapturedDisplayModel& qt = qtDisplays.at(match.index);
-        if (native.physicalRect != qt.physicalRect ||
-            (native.canvasUsesPoints && native.capturedLogicalRect != qt.logicalRect) ||
-            !qtStillCurrent(qt)) {
-            return std::nullopt;
-        }
+        if (native.physicalRect != qt.physicalRect)
+            return reject(StartupDisplayMatchFailure::PhysicalGeometry);
+        if (native.canvasUsesPoints && native.capturedLogicalRect != qt.logicalRect)
+            return reject(StartupDisplayMatchFailure::LogicalGeometry);
+        if (!qtStillCurrent(qt))
+            return reject(StartupDisplayMatchFailure::QtScreenChanged);
         auto display = native;
         display.screen = qt.screen;
         display.logicalRect = qt.logicalRect;

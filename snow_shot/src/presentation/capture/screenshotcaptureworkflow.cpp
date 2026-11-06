@@ -42,6 +42,24 @@ void traceCapture(const char* event, const ScreenshotCaptureState& state,
          {QStringLiteral("changed"), state.layoutDirty},
          {QStringLiteral("reason"), QString::fromLatin1(reason)}});
 }
+
+bool qtDisplayStillCurrent(const CapturedDisplayModel& display, bool checkPhysical = true) {
+    if (QGuiApplication::instance() == nullptr)
+        return true;
+#ifdef Q_OS_MACOS
+    checkPhysical = true;
+#endif
+    if (!display.screen || display.screen->geometry() != display.logicalRect ||
+        (checkPhysical &&
+         ScreenshotGeometryMapper::physicalRectForScreen(*display.screen) != display.physicalRect))
+        return false;
+#ifdef Q_OS_MACOS
+    if (ScreenshotGeometryMapper::preCaptureDisplayModel(*display.screen).nativeDisplayId !=
+        display.nativeDisplayId)
+        return false;
+#endif
+    return true;
+}
 } // namespace
 
 ScreenshotCaptureWorkflow::ScreenshotCaptureWorkflow(ScreenshotCaptureWorkflowContext context)
@@ -182,6 +200,7 @@ void ScreenshotCaptureWorkflow::handleInitialSmartSelectionResolved(quint64 sess
 void ScreenshotCaptureWorkflow::cancelCapture() {
     traceCapture("capture.cancelled", m_state, *m_startup, "cancel_requested");
     const bool refreshAfterCancel = m_refreshAfterCapture || m_state.layoutDirty;
+    const quint64 captureRequestId = m_state.captureInProgress ? m_state.sessionId : 0;
     SNOW_SHOT_CAPTURE_PERF_MILESTONE("workflow.cancel_requested");
     SNOW_SHOT_CAPTURE_PERF_FINISH(false);
     // Termination callbacks can reset visible tools and recognition UI. Conceal the
@@ -200,7 +219,7 @@ void ScreenshotCaptureWorkflow::cancelCapture() {
     resetCanvasRuntimeState();
     finishCaptureSession();
     if (refreshAfterCancel) {
-        scheduleLayoutRefresh(m_layoutChangeSerial);
+        scheduleLayoutRefresh(m_layoutChangeSerial, captureRequestId);
     }
 }
 
@@ -373,6 +392,7 @@ void ScreenshotCaptureWorkflow::shutdownCaptureWorker() {
     completeRecapture(false);
     m_context.runtime.shutdownCaptureWorker();
     m_layoutRefreshInFlight = false;
+    m_layoutRefreshTraceRequestId = 0;
     m_refreshAfterCapture = false;
 }
 
@@ -405,12 +425,18 @@ void ScreenshotCaptureWorkflow::handleDisplayConfigurationChanged() {
     }
 }
 
-void ScreenshotCaptureWorkflow::scheduleLayoutRefresh(quint64 refreshId) {
+void ScreenshotCaptureWorkflow::scheduleLayoutRefresh(quint64 refreshId, quint64 captureRequestId) {
     if (m_layoutRefreshInFlight || !m_context.runtime.captureWorkerCreated()) {
         return;
     }
     m_layoutRefreshInFlight = true;
-    m_context.runtime.refreshLayoutAsync(refreshId);
+    m_layoutRefreshTraceRequestId = captureRequestId;
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"),
+        QStringLiteral("capture.layout_refresh_scheduled"),
+        {{QStringLiteral("operation"), QString::number(captureRequestId)},
+         {QStringLiteral("refresh_id"), QString::number(refreshId)}});
+    m_context.runtime.refreshLayoutAsync(refreshId, captureRequestId);
 }
 
 void ScreenshotCaptureWorkflow::beginCapturePreparation(quint64 sessionId) {
@@ -433,6 +459,7 @@ void ScreenshotCaptureWorkflow::beginCapturePreparation(quint64 sessionId) {
                 QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.qt_layout"),
                 {{QStringLiteral("operation"), QString::number(sessionId)},
                  {QStringLiteral("display_index"), slot},
+                 {QStringLiteral("display_id"), static_cast<qint64>(display.nativeDisplayId)},
                  {QStringLiteral("x"), display.logicalRect.x()},
                  {QStringLiteral("y"), display.logicalRect.y()},
                  {QStringLiteral("width"), display.logicalRect.width()},
@@ -528,8 +555,7 @@ void ScreenshotCaptureWorkflow::finishCapturePreparation(const ScreenshotCapture
                                             });
             if (found == result.displays.cend() || attached.contains(display.stableId) ||
                 !startupFrameMatchesDisplay(display, *found) ||
-                (QGuiApplication::instance() &&
-                 (!display.screen || display.screen->geometry() != display.logicalRect))) {
+                !qtDisplayStillCurrent(display, false)) {
                 layoutMatches = false;
                 return;
             }
@@ -561,7 +587,7 @@ void ScreenshotCaptureWorkflow::finishCapturePreparation(const ScreenshotCapture
     m_capturedPresentationSessionId = sessionId;
     showCapturePresentationWhenReady(sessionId);
     if (refreshAfterCapture) {
-        scheduleLayoutRefresh(m_layoutChangeSerial);
+        scheduleLayoutRefresh(m_layoutChangeSerial, sessionId);
     }
 }
 
@@ -749,19 +775,44 @@ void ScreenshotCaptureWorkflow::enterOverlaySelectionModeAtCursor() {
 void ScreenshotCaptureWorkflow::handleLayoutReady(const ScreenshotCaptureLayout& layout) {
     if (layout.requestId != m_state.sessionId || !m_state.captureInProgress || m_startup->displays)
         return;
-    const auto fail = [this] {
+    StartupDisplayMatchFailure matchFailure = StartupDisplayMatchFailure::None;
+    const auto fail = [this, &layout, &matchFailure] {
+        snow_shot::diagnostics::logEvent(
+            QStringLiteral("snow_shot.capture_trace"),
+            QStringLiteral("capture.layout_match_failed"),
+            {{QStringLiteral("operation"), QString::number(layout.requestId)},
+             {QStringLiteral("refresh_id"), QString::number(m_layoutChangeSerial)},
+             {QStringLiteral("reason"),
+              QString::fromLatin1(startupDisplayMatchFailureName(matchFailure))},
+             {QStringLiteral("qt_count"), m_startup->qtDisplays.size()},
+             {QStringLiteral("native_count"), layout.displays.size()}});
+        for (qsizetype index = 0; index < m_startup->qtDisplays.size(); ++index) {
+            const auto& qt = m_startup->qtDisplays.at(index);
+            QJsonObject fields{{QStringLiteral("operation"), QString::number(layout.requestId)},
+                               {QStringLiteral("display_index"), index}};
+            if (qt.screen) {
+                const auto current = ScreenshotGeometryMapper::preCaptureDisplayModel(*qt.screen);
+                fields.insert(QStringLiteral("outcome"), QStringLiteral("observed"));
+                fields.insert(QStringLiteral("display_id"),
+                              static_cast<qint64>(current.nativeDisplayId));
+                fields.insert(QStringLiteral("x"), current.logicalRect.x());
+                fields.insert(QStringLiteral("y"), current.logicalRect.y());
+                fields.insert(QStringLiteral("width"), current.logicalRect.width());
+                fields.insert(QStringLiteral("height"), current.logicalRect.height());
+                fields.insert(QStringLiteral("scale"), current.backingScale);
+            } else {
+                fields.insert(QStringLiteral("outcome"), QStringLiteral("screen_unavailable"));
+            }
+            snow_shot::diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                                             QStringLiteral("capture.qt_current_layout"), fields);
+        }
         traceCapture("capture.rejected", m_state, *m_startup, "startup_layout_mismatch");
         m_state.layoutDirty = true;
         cancelCapture();
     };
     const auto matched = matchStartupDisplays(
         m_startup->qtDisplays, m_startup->qtDisplaySlots, layout.displays,
-        [](const CapturedDisplayModel& qt) {
-            if (QGuiApplication::instance() == nullptr)
-                return true;
-            return qt.screen && qt.screen->geometry() == qt.logicalRect &&
-                   ScreenshotGeometryMapper::physicalRectForScreen(*qt.screen) == qt.physicalRect;
-        });
+        [](const CapturedDisplayModel& qt) { return qtDisplayStillCurrent(qt); }, &matchFailure);
     if (!matched) {
         fail();
         return;
@@ -833,6 +884,12 @@ void ScreenshotCaptureWorkflow::handleCaptureFinished(const ScreenshotCaptureRes
 
 void ScreenshotCaptureWorkflow::handleLayoutRefreshed(quint64 refreshId, bool ok) {
     m_layoutRefreshInFlight = false;
+    const quint64 captureRequestId = std::exchange(m_layoutRefreshTraceRequestId, 0);
+    snow_shot::diagnostics::logEvent(
+        QStringLiteral("snow_shot.capture_trace"), QStringLiteral("capture.layout_refresh_handled"),
+        {{QStringLiteral("operation"), QString::number(captureRequestId)},
+         {QStringLiteral("refresh_id"), QString::number(refreshId)},
+         {QStringLiteral("outcome"), ok ? QStringLiteral("succeeded") : QStringLiteral("failed")}});
     if (ok && refreshId == m_layoutChangeSerial && !m_state.captureInProgress) {
         m_state.layoutDirty = false;
     }

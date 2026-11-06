@@ -359,8 +359,27 @@ impl Plan {
     }
 }
 static TOPOLOGY: AtomicU64 = AtomicU64::new(1);
+static TOPOLOGY_REGISTERED: OnceLock<bool> = OnceLock::new();
+static WAKE_REGISTERED: OnceLock<()> = OnceLock::new();
+
+fn observed_topology(registered: &OnceLock<bool>, generation: &AtomicU64) -> Option<u64> {
+    registered
+        .get()
+        .copied()
+        .filter(|registered| *registered)
+        .map(|_| generation.load(Ordering::Acquire))
+}
+
+/// Observe the existing display callback without registering one or querying displays.
+pub fn observed_display_topology() -> Option<u64> {
+    observed_topology(&TOPOLOGY_REGISTERED, &TOPOLOGY)
+}
+
+pub fn display_topology() -> MacResult<u64> {
+    topology()
+}
+
 fn topology() -> MacResult<u64> {
-    static REGISTERED: OnceLock<bool> = OnceLock::new();
     unsafe extern "C-unwind" fn changed(
         _: u32,
         _: objc2_core_graphics::CGDisplayChangeSummaryFlags,
@@ -368,7 +387,7 @@ fn topology() -> MacResult<u64> {
     ) {
         TOPOLOGY.fetch_add(1, Ordering::AcqRel);
     }
-    if !REGISTERED.get_or_init(|| unsafe {
+    if !TOPOLOGY_REGISTERED.get_or_init(|| unsafe {
         objc2_core_graphics::CGDisplayRegisterReconfigurationCallback(
             Some(changed),
             std::ptr::null_mut(),
@@ -378,6 +397,23 @@ fn topology() -> MacResult<u64> {
             "display reconfiguration notifications unavailable".into(),
         ));
     }
+    WAKE_REGISTERED.get_or_init(|| {
+        objc2::rc::autoreleasepool(|_| {
+            let center = objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter();
+            let changed =
+                block2::RcBlock::new(|_: std::ptr::NonNull<objc2_foundation::NSNotification>| {
+                    TOPOLOGY.fetch_add(1, Ordering::AcqRel);
+                });
+            unsafe {
+                center.addObserverForName_object_queue_usingBlock(
+                    Some(objc2_app_kit::NSWorkspaceDidWakeNotification),
+                    None,
+                    None,
+                    &changed,
+                );
+            }
+        });
+    });
     Ok(TOPOLOGY.load(Ordering::Acquire))
 }
 
@@ -945,6 +981,38 @@ pub fn inspect(config: &DesktopConfig) -> MacResult<DesktopTransform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn topology_diagnostic_observes_without_registering() {
+        let registered = OnceLock::new();
+        let generation = AtomicU64::new(7);
+        assert_eq!(observed_topology(&registered, &generation), None);
+        assert!(registered.get().is_none());
+        registered.set(true).unwrap();
+        assert_eq!(observed_topology(&registered, &generation), Some(7));
+        generation.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(observed_topology(&registered, &generation), Some(8));
+
+        let failed = OnceLock::new();
+        failed.set(false).unwrap();
+        assert_eq!(observed_topology(&failed, &generation), None);
+    }
+
+    #[test]
+    fn wake_notification_invalidates_topology() {
+        let before = display_topology().unwrap();
+        display_topology().unwrap();
+        objc2::rc::autoreleasepool(|_| {
+            let center = objc2_app_kit::NSWorkspace::sharedWorkspace().notificationCenter();
+            unsafe {
+                center.postNotificationName_object(
+                    objc2_app_kit::NSWorkspaceDidWakeNotification,
+                    None,
+                );
+            }
+        });
+        assert!(observed_display_topology().unwrap() > before);
+    }
     fn display(id: u32, x: f64, width: f64, scale: f64) -> DisplayInfo {
         let bounds = DesktopRect {
             space: DesktopSpace::Points,

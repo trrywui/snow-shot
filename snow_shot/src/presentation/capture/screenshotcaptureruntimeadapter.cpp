@@ -70,9 +70,10 @@ void ScreenshotCaptureRuntimeAdapter::prepareAsync(quint64 requestId) {
     m_captureCoordinator->prepareAsync(requestId);
 }
 
-void ScreenshotCaptureRuntimeAdapter::refreshLayoutAsync(quint64 requestId) {
+void ScreenshotCaptureRuntimeAdapter::refreshLayoutAsync(quint64 requestId,
+                                                         quint64 captureRequestId) {
     ensureCaptureCoordinator();
-    m_captureCoordinator->refreshLayoutAsync(requestId);
+    m_captureCoordinator->refreshLayoutAsync(requestId, captureRequestId);
 }
 
 void ScreenshotCaptureRuntimeAdapter::captureAsync(const ScreenshotCaptureRequest& request) {

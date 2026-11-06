@@ -4149,6 +4149,8 @@ if(SNOW_SHOT_BUILD_TESTS)
         snow_capture_desktop_session_capture_with_layout
         snow_capture_desktop_session_create
         snow_capture_desktop_session_destroy
+        snow_capture_desktop_session_cached_display_id
+        snow_capture_desktop_session_layout_diagnostics
         snow_capture_desktop_session_layout_snapshot
         snow_capture_desktop_session_prepare
         snow_capture_desktop_session_refresh_layout

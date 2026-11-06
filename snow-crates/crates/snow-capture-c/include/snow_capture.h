@@ -369,10 +369,28 @@ typedef struct SnowCaptureDisplayDescriptor {
 } SnowCaptureDisplayDescriptor;
 SnowCaptureDesktopLayout* snow_capture_desktop_session_layout_snapshot(SnowCaptureDesktopSession*,
                                                                        uint8_t refresh);
+/* Temporary, read-only layout diagnostics. A topology value of zero means that
+ * no registered macOS display callback was observable at that instant. The
+ * before/after values refer to the most recent worker rebuild attempt; zero means
+ * that observation was unavailable. Call on the session owner thread. */
+typedef struct SnowCaptureLayoutDiagnostics {
+    uint32_t version, struct_size;
+    size_t worker_count;
+    uint64_t cached_topology_before, cached_topology_after, current_topology;
+} SnowCaptureLayoutDiagnostics;
+uint8_t snow_capture_desktop_session_layout_diagnostics(const SnowCaptureDesktopSession*,
+                                                        SnowCaptureLayoutDiagnostics*);
+uint8_t snow_capture_desktop_session_cached_display_id(const SnowCaptureDesktopSession*, size_t,
+                                                       uint32_t*);
 void snow_capture_desktop_layout_destroy(SnowCaptureDesktopLayout*);
+/* Actual source of this immutable layout: 0 cache reuse, 1 explicit refresh,
+ * 2 empty cache, 3 topology change; 255 means the layout is null. */
+uint8_t snow_capture_desktop_layout_source(const SnowCaptureDesktopLayout*);
 size_t snow_capture_desktop_layout_count(const SnowCaptureDesktopLayout*);
 uint8_t snow_capture_desktop_layout_display(const SnowCaptureDesktopLayout*, size_t,
                                             SnowCaptureDisplayDescriptor*);
+/* Uses the exact layout snapshot and rejects changed display configuration.
+ * On macOS, REFRESH_LAYOUT is invalid here; refresh when creating the snapshot. */
 SnowCaptureScreenshotResult*
 snow_capture_desktop_session_capture_with_layout(SnowCaptureDesktopSession*,
                                                  const SnowCaptureScreenshotRequest*,

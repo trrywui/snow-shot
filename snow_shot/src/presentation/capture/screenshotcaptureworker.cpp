@@ -19,6 +19,7 @@
 #include <limits>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 namespace {
@@ -44,6 +45,48 @@ QString nativeCaptureError(const char* fallback) {
     const char* message = snow_capture_last_error_message();
     return QString::fromUtf8(message != nullptr && *message != '\0' ? message : fallback);
 }
+
+std::optional<SnowCaptureLayoutDiagnostics>
+layoutDiagnostics(const SnowCaptureDesktopSession* session) {
+    SnowCaptureLayoutDiagnostics info{};
+    info.version = 1;
+    info.struct_size = sizeof(info);
+    if (!session || !snow_capture_desktop_session_layout_diagnostics(session, &info))
+        return std::nullopt;
+    return info;
+}
+
+void traceCachedLayout(const SnowCaptureDesktopSession* session,
+                       const std::optional<SnowCaptureLayoutDiagnostics>& info,
+                       QJsonObject correlation, const char* stage) {
+    correlation.insert(QStringLiteral("stage"), QString::fromLatin1(stage));
+    if (!info) {
+        correlation.insert(QStringLiteral("outcome"), QStringLiteral("unavailable"));
+    } else {
+        correlation.insert(QStringLiteral("count"), static_cast<qint64>(info->worker_count));
+        correlation.insert(QStringLiteral("cached_topology_before"),
+                           QString::number(info->cached_topology_before));
+        correlation.insert(QStringLiteral("cached_topology_after"),
+                           QString::number(info->cached_topology_after));
+        correlation.insert(QStringLiteral("current_topology"),
+                           QString::number(info->current_topology));
+    }
+    snow_shot::diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                                     QStringLiteral("capture.layout_cache"), correlation);
+    if (!info)
+        return;
+    const size_t count = std::min(info->worker_count, size_t{128});
+    for (size_t index = 0; index < count; ++index) {
+        std::uint32_t displayId = 0;
+        if (!snow_capture_desktop_session_cached_display_id(session, index, &displayId))
+            continue;
+        auto fields = correlation;
+        fields.insert(QStringLiteral("display_index"), static_cast<qint64>(index));
+        fields.insert(QStringLiteral("display_id"), static_cast<qint64>(displayId));
+        snow_shot::diagnostics::logEvent(QStringLiteral("snow_shot.capture_trace"),
+                                         QStringLiteral("capture.cache_display"), fields);
+    }
+}
 } // namespace
 
 ScreenshotCaptureWorker::~ScreenshotCaptureWorker() {
@@ -60,8 +103,29 @@ void ScreenshotCaptureWorker::prepare(quint64 requestId,
 }
 
 void ScreenshotCaptureWorker::refreshLayout(
-    quint64 requestId, const QPointer<ScreenshotCaptureCoordinator>& coordinator) {
-    const bool ok = ensureSession() && snow_capture_desktop_session_refresh_layout(m_session) != 0;
+    quint64 requestId, const QPointer<ScreenshotCaptureCoordinator>& coordinator,
+    quint64 captureRequestId) {
+    QElapsedTimer timer;
+    const QJsonObject correlation{{QStringLiteral("refresh_id"), QString::number(requestId)},
+                                  {QStringLiteral("operation"), QString::number(captureRequestId)}};
+    const bool sessionReady = ensureSession();
+    if (sessionReady)
+        traceCachedLayout(m_session, layoutDiagnostics(m_session), correlation, "before_refresh");
+    timer.start();
+    const bool ok = sessionReady && snow_capture_desktop_session_refresh_layout(m_session) != 0;
+    const QString error = ok ? QString{} : nativeCaptureError("Failed to refresh desktop layout");
+    const qint64 duration = timer.elapsed();
+    if (sessionReady)
+        traceCachedLayout(m_session, layoutDiagnostics(m_session), correlation, "after_refresh");
+    snow_shot::diagnostics::DiagnosticsService::instance().record(
+        ok ? QtInfoMsg : QtWarningMsg, QStringLiteral("snow_shot.capture_trace"),
+        QStringLiteral("capture.layout_refresh_finished"), error,
+        {{QStringLiteral("refresh_id"), QString::number(requestId)},
+         {QStringLiteral("operation"), QString::number(captureRequestId)},
+         {QStringLiteral("duration_ms"), duration},
+         {QStringLiteral("reason"),
+          sessionReady ? QStringLiteral("native_refresh") : QStringLiteral("session_unavailable")},
+         {QStringLiteral("outcome"), ok ? QStringLiteral("succeeded") : QStringLiteral("failed")}});
     if (!coordinator.isNull()) {
         QMetaObject::invokeMethod(
             coordinator, snow_shot::runtime::trackRuntimeWork([coordinator, requestId, ok]() {
@@ -99,10 +163,45 @@ void ScreenshotCaptureWorker::capture(const ScreenshotCaptureRequest& request,
         layout(nullptr, snow_capture_desktop_layout_destroy);
     if (request.purpose == ScreenshotCapturePurpose::Initial) {
         SNOW_SHOT_CAPTURE_PERF_SCOPE("capture.layout_snapshot");
+        const QJsonObject correlation{
+            {QStringLiteral("operation"), QString::number(request.requestId)}};
+        const auto before = layoutDiagnostics(m_session);
+        traceCachedLayout(m_session, before, correlation, "before_snapshot");
+        QElapsedTimer layoutTimer;
+        layoutTimer.start();
         layout.reset(
             snow_capture_desktop_session_layout_snapshot(m_session, request.refreshLayout ? 1 : 0));
+        const qint64 layoutDuration = layoutTimer.elapsed();
+        const QString layoutError =
+            layout ? QString{} : nativeCaptureError("Failed to snapshot desktop layout");
+        QString source = QStringLiteral("unknown");
+        switch (snow_capture_desktop_layout_source(layout.get())) {
+        case 0:
+            source = QStringLiteral("cache_reuse");
+            break;
+        case 1:
+            source = QStringLiteral("refresh_requested");
+            break;
+        case 2:
+            source = QStringLiteral("empty_cache");
+            break;
+        case 3:
+            source = QStringLiteral("topology_changed");
+            break;
+        default:
+            break;
+        }
+        traceCachedLayout(m_session, layoutDiagnostics(m_session), correlation, "after_snapshot");
+        snow_shot::diagnostics::DiagnosticsService::instance().record(
+            layout ? QtInfoMsg : QtWarningMsg, QStringLiteral("snow_shot.capture_trace"),
+            QStringLiteral("capture.layout_snapshot"), layoutError,
+            {{QStringLiteral("operation"), QString::number(request.requestId)},
+             {QStringLiteral("layout_source"), source},
+             {QStringLiteral("duration_ms"), layoutDuration},
+             {QStringLiteral("outcome"),
+              layout ? QStringLiteral("succeeded") : QStringLiteral("failed")}});
         if (!layout) {
-            captureResult.errorMessage = nativeCaptureError("Failed to snapshot desktop layout");
+            captureResult.errorMessage = layoutError;
             postCaptureResult(coordinator, std::move(captureResult));
             return;
         }
@@ -150,6 +249,7 @@ void ScreenshotCaptureWorker::capture(const ScreenshotCaptureRequest& request,
                 {{QStringLiteral("operation"), QString::number(request.requestId)},
                  {QStringLiteral("display_index"), static_cast<qint64>(i)},
                  {QStringLiteral("code"), static_cast<qint64>(d.display_id)},
+                 {QStringLiteral("display_id"), static_cast<qint64>(d.display_id)},
                  {QStringLiteral("x"), display.physicalRect.x()},
                  {QStringLiteral("y"), display.physicalRect.y()},
                  {QStringLiteral("width"), display.physicalRect.width()},

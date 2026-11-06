@@ -3,11 +3,15 @@
 #include "snow_shot/presentation/screenshotcapturecoordinator.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/settingsadapters.h"
+#include "snow_shot/diagnostics/diagnostics.h"
 
 #include "snow_capture.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
 #include <QSemaphore>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -18,12 +22,18 @@
 #include <iostream>
 #include <memory>
 
-struct SnowCaptureDesktopLayoutImpl {};
+struct SnowCaptureDesktopLayoutImpl {
+    std::uint32_t displayId = 1;
+    std::uint8_t source = 0;
+};
 
 struct SnowCaptureDesktopSessionImpl {
     SnowCaptureDesktopSessionConfig config{};
     bool prepared = false;
     QVector<std::uint32_t> excludedWindowIds;
+    std::uint32_t cachedDisplayId = 1;
+    std::uint64_t cachedTopologyBefore = 1;
+    std::uint64_t cachedTopologyAfter = 1;
 };
 
 struct SnowCaptureFrameLeaseImpl {
@@ -35,6 +45,7 @@ struct SnowCaptureScreenshotResultImpl {
     uint8_t backend = SNOW_CAPTURE_BACKEND_AUTO;
     uint8_t pixelFormat = SNOW_CAPTURE_PIXEL_FORMAT_RGBA8;
     SnowCaptureFrameLease frame;
+    std::uint32_t displayId = 1;
 };
 
 struct SnowCaptureCancellationTokenImpl {
@@ -53,6 +64,11 @@ int leases = 0;
 bool failCreation = false;
 bool failCapture = false;
 bool invalidLayout = false;
+bool failLayoutRefresh = false;
+std::uint32_t initialDisplayId = 1;
+std::uint32_t refreshedDisplayId = 1;
+std::uint64_t observedTopology = 1;
+int layoutRefreshes = 0;
 uint8_t preparedBackend = SNOW_CAPTURE_BACKEND_AUTO;
 uint8_t refreshedBackend = SNOW_CAPTURE_BACKEND_AUTO;
 uint32_t capturedFlags = 0;
@@ -367,6 +383,100 @@ void cursorCompositionFailureDoesNotPublishAnImage() {
             "disabled cursor capture must ignore an attached snapshot");
     failCursorComposition = false;
 }
+
+void cachedLayoutDiagnosticsRecordRefreshWithoutExtraEnumeration() {
+    const QString tempRoot = QDir(QDir::tempPath()).canonicalPath();
+    QTemporaryDir directory(QDir(tempRoot).filePath(QStringLiteral("snow-worker-diag-XXXXXX")));
+    require(directory.isValid(), "worker diagnostic directory");
+    auto& diagnostics = snow_shot::diagnostics::DiagnosticsService::instance();
+    snow_shot::diagnostics::DiagnosticsOptions options;
+    options.directories = {directory.path()};
+    options.enableCrashCapture = false;
+    options.installMessageHandler = false;
+    options.mirrorToConsole = false;
+    require(diagnostics.initialize(options), "worker diagnostics initialize");
+
+    initialDisplayId = 42;
+    refreshedDisplayId = 43;
+    observedTopology = 7;
+    {
+        ScreenshotCaptureWorker worker;
+        worker.prepare(1, {});
+        const int refreshesBefore = layoutRefreshes;
+        require(capture(worker).succeeded && layoutRefreshes == refreshesBefore,
+                "diagnostic reads must not trigger a layout refresh");
+        observedTopology = 8;
+        worker.refreshLayout(101, {}, 42);
+        require(layoutRefreshes == refreshesBefore + 1, "exactly one explicit refresh");
+        require(capture(worker).succeeded && layoutRefreshes == refreshesBefore + 1,
+                "cached snapshot after refresh must not enumerate again");
+        observedTopology = 9;
+        const int capturesBefore = captured;
+        require(capture(worker).succeeded && layoutRefreshes == refreshesBefore + 2 &&
+                    captured == capturesBefore + 1,
+                "topology change refreshes once before the original capture");
+        failLayoutRefresh = true;
+        worker.refreshLayout(102, {});
+        failLayoutRefresh = false;
+        require(layoutRefreshes == refreshesBefore + 3, "failed refresh is attempted once");
+    }
+    require(diagnostics.flush(), "worker diagnostics flush");
+    QFile log(diagnostics.status().currentFile);
+    require(log.open(QIODevice::ReadOnly), "worker diagnostic log opens");
+    bool oldBefore = false, newAfter = false, topologyBefore = false, topologyAfter = false;
+    bool reused = false, automaticRefresh = false, refreshSucceeded = false, refreshFailed = false;
+    for (const auto& line : log.readAll().split('\n')) {
+        const auto record = QJsonDocument::fromJson(line).object();
+        const auto event = record.value(QStringLiteral("event")).toString();
+        const auto fields = record.value(QStringLiteral("fields")).toObject();
+        const auto stage = fields.value(QStringLiteral("stage")).toString();
+        if (event == QStringLiteral("capture.cache_display") &&
+            fields.value(QStringLiteral("refresh_id")) == QStringLiteral("101") &&
+            fields.value(QStringLiteral("operation")) == QStringLiteral("42")) {
+            oldBefore |= stage == QStringLiteral("before_refresh") &&
+                         fields.value(QStringLiteral("display_id")) == 42;
+            newAfter |= stage == QStringLiteral("after_refresh") &&
+                        fields.value(QStringLiteral("display_id")) == 43;
+            topologyBefore |=
+                stage == QStringLiteral("before_refresh") &&
+                fields.value(QStringLiteral("cached_topology_after")) == QStringLiteral("7") &&
+                fields.value(QStringLiteral("current_topology")) == QStringLiteral("8");
+            topologyAfter |=
+                stage == QStringLiteral("after_refresh") &&
+                fields.value(QStringLiteral("cached_topology_after")) == QStringLiteral("8");
+        }
+        if (event == QStringLiteral("capture.layout_snapshot")) {
+            reused |=
+                fields.value(QStringLiteral("layout_source")) == QStringLiteral("cache_reuse") &&
+                fields.contains(QStringLiteral("duration_ms"));
+            automaticRefresh |=
+                fields.value(QStringLiteral("layout_source")) == QStringLiteral("topology_changed");
+        }
+        if (event == QStringLiteral("capture.layout_refresh_finished")) {
+            refreshSucceeded |=
+                fields.value(QStringLiteral("refresh_id")) == QStringLiteral("101") &&
+                fields.value(QStringLiteral("operation")) == QStringLiteral("42") &&
+                fields.value(QStringLiteral("outcome")) == QStringLiteral("succeeded") &&
+                fields.contains(QStringLiteral("duration_ms"));
+            refreshFailed |= fields.value(QStringLiteral("refresh_id")) == QStringLiteral("102") &&
+                             fields.value(QStringLiteral("outcome")) == QStringLiteral("failed") &&
+                             record.value(QStringLiteral("message")) ==
+                                 QStringLiteral("injected native capture failure");
+        }
+        if (qEnvironmentVariableIsSet("SNOW_SHOT_CAPTURE_EVIDENCE") &&
+            (event == QStringLiteral("capture.cache_display") ||
+             event == QStringLiteral("capture.layout_snapshot") ||
+             event == QStringLiteral("capture.layout_refresh_finished")))
+            std::cout << "WORKER_EVIDENCE " << line.constData() << '\n';
+    }
+    require(oldBefore && newAfter && topologyBefore && topologyAfter && reused &&
+                automaticRefresh && refreshSucceeded && refreshFailed,
+            "cache IDs, generation, source, duration and refresh error must reach the log");
+    diagnostics.shutdown();
+    initialDisplayId = 1;
+    refreshedDisplayId = 1;
+    observedTopology = 1;
+}
 } // namespace
 
 // Substitute only the native API; settings, policy, worker, and result delivery are production
@@ -374,9 +484,30 @@ void cursorCompositionFailureDoesNotPublishAnImage() {
 extern "C" {
 SnowCaptureDesktopLayout*
 snow_capture_desktop_session_layout_snapshot(SnowCaptureDesktopSession* session, uint8_t refresh) {
-    if (refresh)
-        snow_capture_desktop_session_refresh_layout(session);
-    return new SnowCaptureDesktopLayout;
+    const uint8_t source = refresh ? 1 : session->cachedTopologyAfter != observedTopology ? 3 : 0;
+    if (source != 0 && !snow_capture_desktop_session_refresh_layout(session))
+        return nullptr;
+    return new SnowCaptureDesktopLayout{session->cachedDisplayId, source};
+}
+uint8_t snow_capture_desktop_layout_source(const SnowCaptureDesktopLayout* layout) {
+    return layout ? layout->source : UINT8_MAX;
+}
+uint8_t snow_capture_desktop_session_layout_diagnostics(const SnowCaptureDesktopSession* session,
+                                                        SnowCaptureLayoutDiagnostics* info) {
+    if (!session || !info || info->version != 1 || info->struct_size != sizeof(*info))
+        return 0;
+    info->worker_count = 1;
+    info->cached_topology_before = session->cachedTopologyBefore;
+    info->cached_topology_after = session->cachedTopologyAfter;
+    info->current_topology = observedTopology;
+    return 1;
+}
+uint8_t snow_capture_desktop_session_cached_display_id(const SnowCaptureDesktopSession* session,
+                                                       size_t index, uint32_t* id) {
+    if (!session || index != 0 || !id)
+        return 0;
+    *id = session->cachedDisplayId;
+    return 1;
 }
 void snow_capture_desktop_layout_destroy(SnowCaptureDesktopLayout* layout) {
     delete layout;
@@ -384,7 +515,7 @@ void snow_capture_desktop_layout_destroy(SnowCaptureDesktopLayout* layout) {
 size_t snow_capture_desktop_layout_count(const SnowCaptureDesktopLayout*) {
     return 1;
 }
-uint8_t snow_capture_desktop_layout_display(const SnowCaptureDesktopLayout*, size_t,
+uint8_t snow_capture_desktop_layout_display(const SnowCaptureDesktopLayout* layout, size_t,
                                             SnowCaptureDisplayDescriptor* d) {
     d->stable_id = "test";
     d->name = "test";
@@ -397,7 +528,7 @@ uint8_t snow_capture_desktop_layout_display(const SnowCaptureDesktopLayout*, siz
     d->backing_scale = invalidLayout ? 0 : 1;
 #ifdef Q_OS_MACOS
     d->coordinate_space = 1;
-    d->display_id = 1;
+    d->display_id = layout->displayId;
 #endif
     return 1;
 }
@@ -415,6 +546,9 @@ snow_capture_desktop_session_create(const SnowCaptureDesktopSessionConfig* confi
     }
     ++created;
     auto* session = new SnowCaptureDesktopSession{*config, false, {}};
+    session->cachedDisplayId = initialDisplayId;
+    session->cachedTopologyBefore = observedTopology;
+    session->cachedTopologyAfter = observedTopology;
     for (size_t index = 0; index < config->exclusions.window_count; ++index) {
         session->excludedWindowIds.push_back(config->exclusions.windows[index]);
     }
@@ -440,7 +574,13 @@ uint8_t snow_capture_desktop_session_state(SnowCaptureDesktopSession* session,
 }
 
 uint8_t snow_capture_desktop_session_refresh_layout(SnowCaptureDesktopSession* session) {
+    ++layoutRefreshes;
     refreshedBackend = session->config.capture_backend;
+    if (failLayoutRefresh)
+        return 0;
+    session->cachedDisplayId = refreshedDisplayId;
+    session->cachedTopologyBefore = observedTopology;
+    session->cachedTopologyAfter = observedTopology;
     return 1;
 }
 
@@ -463,8 +603,10 @@ snow_capture_desktop_session_capture(SnowCaptureDesktopSession* session,
         (request->cancellation_token != nullptr && request->cancellation_token->canceled)) {
         return nullptr;
     }
-    return new SnowCaptureScreenshotResult{
-        session->config.capture_backend, session->config.pixel_format, {}};
+    return new SnowCaptureScreenshotResult{session->config.capture_backend,
+                                           session->config.pixel_format,
+                                           {},
+                                           session->cachedDisplayId};
 }
 
 SnowCaptureCursorSnapshot* snow_capture_cursor_snapshot_create() {
@@ -525,11 +667,11 @@ uint8_t snow_capture_screenshot_result_display_info(const SnowCaptureScreenshotR
     return 1;
 }
 
-uint8_t snow_capture_screenshot_result_display_geometry(const SnowCaptureScreenshotResult*,
+uint8_t snow_capture_screenshot_result_display_geometry(const SnowCaptureScreenshotResult* result,
                                                         size_t index,
                                                         SnowCaptureFrameGeometry* geometry) {
     geometry->coordinate_space = 1;
-    geometry->display_id = static_cast<uint32_t>(index + 1);
+    geometry->display_id = result ? result->displayId : static_cast<uint32_t>(index + 1);
     geometry->x = 0;
     geometry->y = 0;
     geometry->width = 1;
@@ -596,6 +738,7 @@ int main(int argc, char** argv) {
     cursorSnapshotFailureDoesNotDispatchCapture();
 #endif
     cursorCompositionFailureDoesNotPublishAnImage();
+    cachedLayoutDiagnosticsRecordRefreshWithoutExtraEnumeration();
     require(cursorSnapshots == 0, "worker leaked a cursor snapshot");
     require(created == destroyed, "worker leaked a native capture session");
     require(leases == 0, "worker leaked a native frame lease");

@@ -31,6 +31,10 @@ pub struct SnowCaptureDesktopSessionImpl {
     options: CaptureOptions,
     workers: Vec<MonitorWorker>,
     prepared: bool,
+    // Diagnostic observations only; zero means no registered macOS callback was observable.
+    cached_topology_before: u64,
+    cached_topology_after: u64,
+    validated_topology: Option<u64>,
 }
 
 #[repr(C)]
@@ -1000,13 +1004,108 @@ fn reconcile_workers(
     Ok(())
 }
 
-fn rebuild_workers(session: &mut SnowCaptureDesktopSessionImpl) -> Result<(), String> {
+fn observed_layout_topology() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        snow_macos::desktop::observed_display_topology().unwrap_or(0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}
+
+fn current_layout_topology() -> Result<Option<u64>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        snow_macos::desktop::display_topology()
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayoutSource {
+    CacheReuse = 0,
+    RefreshRequested = 1,
+    EmptyCache = 2,
+    TopologyChanged = 3,
+}
+
+fn update_monitor_workers(session: &mut SnowCaptureDesktopSessionImpl) -> Result<(), String> {
     session
         .system
         .refresh_display_configuration()
-        .map_err(|err| err.to_string())?;
+        .map_err(|error| error.to_string())?;
     let entries = build_monitor_entries(&session.system)?;
     reconcile_workers(session, entries)
+}
+
+fn rebuild_workers_with(
+    session: &mut SnowCaptureDesktopSessionImpl,
+    topology: &impl Fn() -> Result<Option<u64>, String>,
+    update: impl FnOnce(&mut SnowCaptureDesktopSessionImpl) -> Result<(), String>,
+) -> Result<(), String> {
+    session.validated_topology = None;
+    session.cached_topology_before = 0;
+    session.cached_topology_after = 0;
+    let before = topology()?;
+    session.cached_topology_before = before.unwrap_or(0);
+    update(session)?;
+    let after = topology()?;
+    session.cached_topology_after = after.unwrap_or(0);
+    if before != after {
+        return Err("desktop layout changed while refreshing".to_owned());
+    }
+    session.validated_topology = after;
+    Ok(())
+}
+
+fn rebuild_workers(session: &mut SnowCaptureDesktopSessionImpl) -> Result<(), String> {
+    rebuild_workers_with(session, &current_layout_topology, update_monitor_workers)
+}
+
+fn ensure_layout_current_with(
+    session: &mut SnowCaptureDesktopSessionImpl,
+    refresh: bool,
+    topology: &impl Fn() -> Result<Option<u64>, String>,
+    update: impl FnOnce(&mut SnowCaptureDesktopSessionImpl) -> Result<(), String>,
+) -> Result<LayoutSource, String> {
+    let current = match topology() {
+        Ok(current) => current,
+        Err(error) => {
+            session.validated_topology = None;
+            return Err(error);
+        }
+    };
+    let source = if refresh {
+        LayoutSource::RefreshRequested
+    } else if session.workers.is_empty() {
+        LayoutSource::EmptyCache
+    } else if current.is_some() && session.validated_topology != current {
+        LayoutSource::TopologyChanged
+    } else {
+        return Ok(LayoutSource::CacheReuse);
+    };
+    rebuild_workers_with(session, topology, update)?;
+    Ok(source)
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_layout_current(
+    session: &mut SnowCaptureDesktopSessionImpl,
+    refresh: bool,
+) -> Result<LayoutSource, String> {
+    ensure_layout_current_with(
+        session,
+        refresh,
+        &current_layout_topology,
+        update_monitor_workers,
+    )
 }
 
 #[cfg_attr(target_os = "macos", allow(dead_code))]
@@ -1478,6 +1577,9 @@ pub extern "C" fn snow_capture_desktop_session_create(
                 options,
                 workers: Vec::new(),
                 prepared: false,
+                cached_topology_before: 0,
+                cached_topology_after: 0,
+                validated_topology: None,
             };
             if let Err(error) = rebuild_workers(&mut session) {
                 set_last_error(error);
@@ -1665,6 +1767,14 @@ pub unsafe extern "C" fn snow_capture_desktop_session_capture(
     session: *mut SnowCaptureDesktopSessionImpl,
     request: *const SnowCaptureScreenshotRequest,
 ) -> *mut SnowCaptureScreenshotResultImpl {
+    unsafe { capture_desktop_session(session, request, None) }
+}
+
+unsafe fn capture_desktop_session(
+    session: *mut SnowCaptureDesktopSessionImpl,
+    request: *const SnowCaptureScreenshotRequest,
+    layout: Option<&SnowCaptureDesktopLayoutImpl>,
+) -> *mut SnowCaptureScreenshotResultImpl {
     let Some(session) = session_mut(session) else {
         return ptr::null_mut();
     };
@@ -1706,21 +1816,60 @@ pub unsafe extern "C" fn snow_capture_desktop_session_capture(
     #[cfg(not(windows))]
     let correction = None;
 
-    if session.workers.is_empty() {
-        if let Err(error) = rebuild_workers(session) {
-            set_last_error(error);
+    #[cfg(target_os = "macos")]
+    if let Some(layout) = layout {
+        if request.flags & SCREENSHOT_REQUEST_REFRESH_LAYOUT != 0 {
+            set_last_error("cannot refresh a fixed desktop layout");
             return ptr::null_mut();
         }
-        if session.workers.is_empty() {
+        match desktop_layout::layout_matches_session(layout, session) {
+            Ok(true) => {}
+            Ok(false) => {
+                set_last_error("desktop layout changed before capture");
+                return ptr::null_mut();
+            }
+            Err(error) => {
+                set_last_error(error);
+                return ptr::null_mut();
+            }
+        }
+    } else if let Err(error) = ensure_layout_current(
+        session,
+        request.flags & SCREENSHOT_REQUEST_REFRESH_LAYOUT != 0,
+    ) {
+        set_last_error(error);
+        return ptr::null_mut();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = layout;
+    if session.workers.is_empty() {
+        #[cfg(target_os = "macos")]
+        {
             set_last_error("no active displays are available");
             return ptr::null_mut();
         }
+        #[cfg(not(target_os = "macos"))]
+        {
+            if let Err(error) = rebuild_workers(session) {
+                set_last_error(error);
+                return ptr::null_mut();
+            }
+            if session.workers.is_empty() {
+                set_last_error("no active displays are available");
+                return ptr::null_mut();
+            }
+        }
     }
+
+    #[cfg(target_os = "macos")]
+    let capture_topology = session.validated_topology;
 
     if !session.prepared && snow_capture_desktop_session_prepare(session as *mut _) == 0 {
         return ptr::null_mut();
     }
 
+    #[cfg(not(target_os = "macos"))]
     if request.flags & SCREENSHOT_REQUEST_REFRESH_LAYOUT != 0
         && let Err(error) = rebuild_workers(session)
     {
@@ -1807,6 +1956,19 @@ pub unsafe extern "C" fn snow_capture_desktop_session_capture(
         }
         None => None,
     };
+
+    #[cfg(target_os = "macos")]
+    match current_layout_topology() {
+        Ok(current) if current.is_some() && current == capture_topology => {}
+        Ok(_) => {
+            set_last_error("desktop layout changed during capture");
+            return ptr::null_mut();
+        }
+        Err(error) => {
+            set_last_error(error);
+            return ptr::null_mut();
+        }
+    }
 
     session.prepared = true;
     clear_last_error();
@@ -3114,6 +3276,9 @@ mod tests {
             options: CaptureOptions::default(),
             workers: Vec::new(),
             prepared: true,
+            cached_topology_before: 0,
+            cached_topology_after: 0,
+            validated_topology: None,
         };
         let mut state = SnowCaptureDesktopSessionState {
             worker_count: usize::MAX,
